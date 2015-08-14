@@ -1,0 +1,948 @@
+OBJECT Codeunit 50304 Whse. LF Purch. JobQueue Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=21.04.15;
+    Time=14:38:08;
+    Modified=Yes;
+    Version List=HME2158;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=BEGIN
+            CASE "Parameter String" OF
+              'WEA': ExportWEA;
+              'WEM': ImportWEM;
+              'WEM_PROCESS': ProcessWEM;
+              'WMP': ImportWMP;
+              'WMP_PROCESS': ProcessWMP;
+              'WMP_PSE_PROCESS': ProcessWMPPSE;
+              'BMP': ImportBMP;
+              'BMP_PROCESS': ProcessBMP;
+              'UMP': ImportUMP;
+              'UMP_PROCESS': ProcessUMP;
+            END;
+          END;
+
+  }
+  CODE
+  {
+
+    PROCEDURE "*** WEA ***"@1000000025();
+    BEGIN
+    END;
+
+    PROCEDURE ExportWEA@1000000000();
+    VAR
+      PurchExportHeaderL@1000000001 : Record 50301;
+      PurchExportHeader2L@1000000002 : Record 50301;
+      PurchaseImExMgtL@1000000000 : Codeunit 50305;
+    BEGIN
+      PurchExportHeaderL.RESET;
+      PurchExportHeaderL.SETRANGE(Status,PurchExportHeaderL.Status::Unprocessed);
+      IF PurchExportHeaderL.FINDSET THEN BEGIN
+        REPEAT
+          CLEARLASTERROR;
+          PurchExportHeader2L.GET(PurchExportHeaderL."Entry No.");
+          CLEAR(PurchaseImExMgtL);
+          IF NOT PurchaseImExMgtL.RUN(PurchExportHeader2L) THEN BEGIN
+            PurchExportHeader2L.GET(PurchExportHeaderL."Entry No.");
+            PurchExportHeader2L.Status := PurchExportHeader2L.Status::Error;
+            PurchaseImExMgtL.DeleteFileAfterError;
+          END ELSE BEGIN
+            PurchExportHeader2L.GET(PurchExportHeaderL."Entry No.");
+            PurchExportHeader2L.Status := PurchExportHeader2L.Status::Exported;
+          END;
+          IF NOT PurchExportHeader2L.MODIFY THEN
+            PurchaseImExMgtL.DeleteFileAfterError;
+          //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+          CreateLogWEA(PurchExportHeader2L,PurchExportHeader2L."Whse. H24 Identifier Code");
+          //H2157,H2158 18.02.15 DMO --------------------------
+          COMMIT;
+        UNTIL PurchExportHeaderL.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE CreateLogWEA@1000000001(PurchExportHeaderV@1000000001 : Record 50301;WhseH24IdentifierV@1000000004 : Code[10]);
+    VAR
+      PurchaseLogL@1000000000 : Record 50313;
+      ErrorTextL@1000000002 : Text[1000];
+      WhseLFGenMgtL@1000000003 : Codeunit 50307;
+    BEGIN
+      PurchaseLogL.INIT;
+      PurchaseLogL."Entry No." := WhseLFGenMgtL.GetNextEntryNo(DATABASE::"Whse. LF Purchase Log");
+      PurchaseLogL.INSERT;
+
+      PurchaseLogL."Action Type" := PurchaseLogL."Action Type"::Export;
+      PurchaseLogL."Action Subtype" := PurchaseLogL."Action Subtype"::WEA;
+      CASE PurchExportHeaderV.Status OF
+        PurchExportHeaderV.Status::Exported:
+          BEGIN
+            PurchaseLogL.Status := PurchaseLogL.Status::Success;
+            PurchaseLogL.Filename := PurchExportHeaderV.Filename;
+          END;
+        PurchExportHeaderV.Status::Canceled:
+          BEGIN
+            PurchaseLogL.Status := PurchaseLogL.Status::Error;
+            ErrorTextL := COPYSTR(GETLASTERRORTEXT,1,1000);
+            PurchaseLogL."Error Description" := COPYSTR(ErrorTextL,1,250);
+            PurchaseLogL."Error Description 2" := COPYSTR(ErrorTextL,251,250);
+            PurchaseLogL."Error Description 3" := COPYSTR(ErrorTextL,501,250);
+            PurchaseLogL."Error Description 4" := COPYSTR(ErrorTextL,751,250);
+          END;
+      END;
+      PurchaseLogL."Processing Date" := TODAY;
+      PurchaseLogL."Processing Time" := TIME;
+      PurchaseLogL."Attached to Interface Entry" := PurchExportHeaderV."Entry No.";
+      //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+      PurchaseLogL."Whse. H24 Identifier Code" := WhseH24IdentifierV;
+      //H2157,H2158 18.02.15 DMO --------------------------
+
+      PurchaseLogL.MODIFY;
+    END;
+
+    PROCEDURE ImportWEM@1000000002();
+    VAR
+      WhseLFSetupL@1000000005 : Record 50300;
+      FPCInterfaceSetupL@1000000001 : Record 50014;
+      WhseLFPurchImportL@1000000000 : Record 50303;
+      WhseH24SubInterfaceL@1000000006 : Record 50506;
+      FileRecL@1000000003 : Record 2000000022;
+      WhseLFPurchImpExportMgtL@1000000002 : Codeunit 50305;
+      FileNameL@1000000004 : Text[1024];
+      ArchiveFilenameL@1000000007 : Text[500];
+    BEGIN
+      WhseLFSetupL.GET;
+      //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+      WhseLFSetupL.TESTFIELD("Record Type WEM");
+      WhseH24SubInterfaceL.RESET;
+      WhseH24SubInterfaceL.SETRANGE("File Type",WhseLFSetupL."Record Type WEM");
+      WhseH24SubInterfaceL.FINDSET;
+      REPEAT
+        FPCInterfaceSetupL.GET(WhseH24SubInterfaceL."FPC Interface Setup Code");
+      //H2157,H2158 18.02.15 DMO --------------------------
+        FPCInterfaceSetupL.TESTFIELD("Import Folder");
+        FPCInterfaceSetupL.TESTFIELD("Archive Root Folder");
+
+        IF COPYSTR(FPCInterfaceSetupL."Import Folder",STRLEN(FPCInterfaceSetupL."Import Folder"),1) <> '\' THEN
+          FPCInterfaceSetupL."Import Folder" := FPCInterfaceSetupL."Import Folder" + '\';
+
+        IF COPYSTR(FPCInterfaceSetupL."Archive Root Folder",STRLEN(FPCInterfaceSetupL."Archive Root Folder"),1) <> '\' THEN
+          FPCInterfaceSetupL."Archive Root Folder" := FPCInterfaceSetupL."Archive Root Folder" + '\';
+
+        FileRecL.RESET;
+        FileRecL.SETRANGE(Path,FPCInterfaceSetupL."Import Folder");
+        FileRecL.SETRANGE("Is a file",TRUE);
+        CLEARLASTERROR;
+        IF FileRecL.FINDSET THEN BEGIN
+          REPEAT
+            FileNameL := FPCInterfaceSetupL."Import Folder" + FileRecL.Name;
+            //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+            IF FPCInterfaceSetupL."Archive Root Folder"[STRLEN(FPCInterfaceSetupL."Archive Root Folder")] = '\' THEN
+              ArchiveFilenameL := FPCInterfaceSetupL."Archive Root Folder" + FileRecL.Name
+            ELSE
+              ArchiveFilenameL := FPCInterfaceSetupL."Archive Root Folder" + '\' + FileRecL.Name;
+            //H2157,H2158 18.02.15 DMO --------------------------
+            IF WhseLFPurchImpExportMgtL.ReadWEM(FileNameL,FileRecL.Name) THEN BEGIN
+              FILE.RENAME(FPCInterfaceSetupL."Import Folder" + FileRecL.Name,ArchiveFilenameL);
+              //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+              CreateLogWEM(TRUE,FileRecL.Name,WhseH24SubInterfaceL."Whse. H24 Identifier Code");
+              //H2157,H2158 18.02.15 DMO --------------------------
+              COMMIT;
+            END ELSE BEGIN
+              FILE.RENAME(FPCInterfaceSetupL."Import Folder" + FileRecL.Name,ArchiveFilenameL);
+              //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+              CreateLogWEM(TRUE,FileRecL.Name,WhseH24SubInterfaceL."Whse. H24 Identifier Code");
+              //H2157,H2158 18.02.15 DMO --------------------------
+            END;
+          UNTIL FileRecL.NEXT = 0;
+        END;
+      //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+      UNTIL WhseH24SubInterfaceL.NEXT = 0;
+      //H2157,H2158 18.02.15 DMO --------------------------
+    END;
+
+    PROCEDURE "*** WEM ***"@1000000024();
+    BEGIN
+    END;
+
+    PROCEDURE CreateLogWEM@1000000003(SuccessV@1000000003 : Boolean;FileNameV@1000000004 : Text[1024];WhseH24IdentifierV@1000000005 : Code[10]);
+    VAR
+      PurchaseLogL@1000000000 : Record 50313;
+      ErrorTextL@1000000002 : Text[1000];
+      WhseLFGenLogL@1000000001 : Codeunit 50307;
+    BEGIN
+      PurchaseLogL.INIT;
+      PurchaseLogL."Entry No." := WhseLFGenLogL.GetNextEntryNo(DATABASE::"Whse. LF Purchase Log");
+      PurchaseLogL.INSERT;
+
+      PurchaseLogL."Action Type" := PurchaseLogL."Action Type"::Import;
+      PurchaseLogL."Action Subtype" := PurchaseLogL."Action Subtype"::WEM;
+      PurchaseLogL.Filename := FileNameV;
+
+      IF NOT SuccessV THEN BEGIN
+        PurchaseLogL.Status := PurchaseLogL.Status::Error;
+        ErrorTextL := COPYSTR(GETLASTERRORTEXT,1,1000);
+        PurchaseLogL."Error Description" := COPYSTR(ErrorTextL,1,250);
+        PurchaseLogL."Error Description 2" := COPYSTR(ErrorTextL,251,250);
+        PurchaseLogL."Error Description 3" := COPYSTR(ErrorTextL,501,250);
+        PurchaseLogL."Error Description 4" := COPYSTR(ErrorTextL,751,250);
+      END ELSE
+        PurchaseLogL.Status := PurchaseLogL.Status::Success;
+
+      PurchaseLogL."Processing Date" := TODAY;
+      PurchaseLogL."Processing Time" := TIME;
+      PurchaseLogL."Processed By" := USERID;
+      //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+      PurchaseLogL."Whse. H24 Identifier Code" := WhseH24IdentifierV;
+      //H2157,H2158 18.02.15 DMO --------------------------
+      PurchaseLogL.MODIFY;
+    END;
+
+    PROCEDURE ProcessWEM@1000000004();
+    VAR
+      WhseLFPurchImportL@1000000000 : Record 50303;
+      WhseLFPurchImport2L@1000000002 : Record 50303;
+      WhseLFPurchaseInterfaceMgtL@1000000001 : Codeunit 50306;
+      LastErrorTextL@1000000003 : Text[1024];
+      GOB001@1000000004 : TextConst 'DEU=Inbound Entry %1 successfully processed.;ENU=Inbound Entry %1 successfully processed.';
+      WhseLFSetupL@1000000006 : Record 50300;
+    BEGIN
+      WhseLFPurchImportL.RESET;
+      WhseLFPurchImportL.SETCURRENTKEY("Import Status");
+      WhseLFPurchImportL.SETRANGE("Import Status",WhseLFPurchImportL."Import Status"::Unprocessed);
+      WhseLFSetupL.GET;
+      WhseLFPurchImportL.SETFILTER("Record Type",'%1',WhseLFSetupL."Record Type WEM");
+      IF WhseLFPurchImportL.FIND('-') THEN
+        REPEAT
+          IF WhseLFPurchaseInterfaceMgtL.RUN(WhseLFPurchImportL) THEN BEGIN
+            WhseLFPurchImport2L.GET(WhseLFPurchImportL."Entry No.");
+            WhseLFPurchImport2L."Import Status" := WhseLFPurchImportL."Import Status"::Processed;
+            WhseLFPurchImport2L."Process Timestamp" := CURRENTDATETIME;
+            WhseLFPurchImport2L."Error Description 1" := '';
+            WhseLFPurchImport2L.MODIFY;
+            //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+            CreateLogProcessWEM(
+              TRUE,STRSUBSTNO(GOB001,WhseLFPurchImportL."Entry No."),WhseLFPurchImport2L.Filename,WhseLFPurchImportL."Client Identifier"
+      );
+            //H2157,H2158 18.02.15 DMO --------------------------
+          END ELSE BEGIN
+            WhseLFPurchImport2L.GET(WhseLFPurchImportL."Entry No.");
+            WhseLFPurchImport2L."Import Status" := WhseLFPurchImportL."Import Status"::Error;
+            WhseLFPurchImport2L."Process Timestamp" := CURRENTDATETIME;
+
+            IF STRLEN(GETLASTERRORTEXT) > 0 THEN
+              LastErrorTextL := COPYSTR(GETLASTERRORTEXT,1,1000);
+            WhseLFPurchImport2L."Error Description 1" := COPYSTR(LastErrorTextL,1,250);
+            IF STRLEN(LastErrorTextL) > 250 THEN
+              WhseLFPurchImport2L."Error Description 2" := COPYSTR(LastErrorTextL,251,250);
+            IF STRLEN(LastErrorTextL) > 500 THEN
+              WhseLFPurchImport2L."Error Description 3" := COPYSTR(LastErrorTextL,501,250);
+            IF STRLEN(LastErrorTextL) > 750 THEN
+              WhseLFPurchImport2L."Error Description 4" := COPYSTR(LastErrorTextL,751,250);
+
+            WhseLFPurchImport2L.MODIFY;
+            //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+            CreateLogProcessWEM(FALSE,'',WhseLFPurchImport2L.Filename,WhseLFPurchImportL."Client Identifier");
+            //H2157,H2158 18.02.15 DMO --------------------------
+          END;
+          COMMIT;
+        UNTIL WhseLFPurchImportL.NEXT = 0;
+    END;
+
+    PROCEDURE CreateLogProcessWEM@1000000005(SuccessV@1000000003 : Boolean;MessageV@1000000004 : Text[1024];FileNameV@1000000005 : Text[250];WhseH24IdentifierV@1000000006 : Code[10]);
+    VAR
+      PurchaseLogL@1000000000 : Record 50313;
+      ErrorTextL@1000000002 : Text[1000];
+      WhseLFGenLogL@1000000001 : Codeunit 50307;
+    BEGIN
+      PurchaseLogL.INIT;
+      PurchaseLogL."Entry No." := WhseLFGenLogL.GetNextEntryNo(DATABASE::"Whse. LF Purchase Log");
+      PurchaseLogL.INSERT;
+
+      PurchaseLogL."Action Type" := PurchaseLogL."Action Type"::Import;
+      PurchaseLogL."Action Subtype" := PurchaseLogL."Action Subtype"::WEM;
+      PurchaseLogL.Filename := FileNameV;
+
+      IF NOT SuccessV THEN
+        PurchaseLogL.Status := PurchaseLogL.Status::Error
+      ELSE
+        PurchaseLogL.Status := PurchaseLogL.Status::Information;
+
+      IF MessageV <> '' THEN
+        ErrorTextL := MessageV
+      ELSE
+        ErrorTextL := COPYSTR(GETLASTERRORTEXT,1,1000);
+      PurchaseLogL."Error Description" := COPYSTR(ErrorTextL,1,250);
+      PurchaseLogL."Error Description 2" := COPYSTR(ErrorTextL,251,250);
+      PurchaseLogL."Error Description 3" := COPYSTR(ErrorTextL,501,250);
+      PurchaseLogL."Error Description 4" := COPYSTR(ErrorTextL,751,250);
+
+      PurchaseLogL."Processing Date" := TODAY;
+      PurchaseLogL."Processing Time" := TIME;
+      PurchaseLogL."Processed By" := USERID;
+      //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+      PurchaseLogL."Whse. H24 Identifier Code" := WhseH24IdentifierV;
+      //H2157,H2158 18.02.15 DMO --------------------------
+
+      PurchaseLogL.MODIFY;
+    END;
+
+    PROCEDURE "*** WMP ***"@1000000006();
+    BEGIN
+    END;
+
+    PROCEDURE ProcessWMPPSE@1000000013();
+    VAR
+      WhseLFPurchImportL@1000000000 : Record 50303;
+      WhseLFPurchImport2L@1000000002 : Record 50303;
+      WhseLFSetupL@1000000005 : Record 50300;
+      ItemJournalLineL@1000000004 : Record 83;
+      ItemJnlPostL@1000000006 : Codeunit 23;
+      WhseLFPurchaseInterfaceMgtL@1000000001 : Codeunit 50306;
+      LastErrorTextL@1000000003 : Text[1024];
+      LINE_PROCESS_SUCCESS@1000000008 : TextConst 'DEU=Inbound Entry %1 successfully processed.;ENU=Item Journal Line for Inbound Entry %1 successfully created.';
+    BEGIN
+      WhseLFSetupL.GET;
+      WhseLFPurchImportL.RESET;
+      WhseLFPurchImportL.SETCURRENTKEY("Import Status");
+      WhseLFPurchImportL.SETRANGE("Import Status",WhseLFPurchImportL."Import Status"::Unprocessed);
+      WhseLFPurchImportL.SETRANGE("Record Type",'PSE');
+
+      IF WhseLFPurchImportL.FINDFIRST THEN BEGIN
+        REPEAT
+          CLEARLASTERROR;
+          IF WhseLFPurchaseInterfaceMgtL.RUN(WhseLFPurchImportL) THEN BEGIN
+            WhseLFPurchImport2L.GET(WhseLFPurchImportL."Entry No.");
+            WhseLFPurchImport2L."Import Status" := WhseLFPurchImportL."Import Status"::Processed;
+            WhseLFPurchImport2L."Process Timestamp" := CURRENTDATETIME;
+            WhseLFPurchImport2L."Error Description 1" := '';
+            WhseLFPurchImport2L.MODIFY;
+          END ELSE BEGIN
+            WhseLFPurchImport2L.GET(WhseLFPurchImportL."Entry No.");
+            WhseLFPurchImport2L."Import Status" := WhseLFPurchImportL."Import Status"::Error;
+            WhseLFPurchImport2L."Process Timestamp" := CURRENTDATETIME;
+
+            IF STRLEN(GETLASTERRORTEXT) > 0 THEN
+              LastErrorTextL := COPYSTR(GETLASTERRORTEXT,1,1000);
+            WhseLFPurchImport2L."Error Description 1" := COPYSTR(LastErrorTextL,1,250);
+            IF STRLEN(LastErrorTextL) > 250 THEN
+              WhseLFPurchImport2L."Error Description 2" := COPYSTR(LastErrorTextL,251,250);
+            IF STRLEN(LastErrorTextL) > 500 THEN
+              WhseLFPurchImport2L."Error Description 3" := COPYSTR(LastErrorTextL,501,250);
+            IF STRLEN(LastErrorTextL) > 750 THEN
+              WhseLFPurchImport2L."Error Description 4" := COPYSTR(LastErrorTextL,751,250);
+
+            WhseLFPurchImport2L.MODIFY;
+            //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+            CreateLogProcessWMP(
+              FALSE,STRSUBSTNO(LINE_PROCESS_SUCCESS,WhseLFPurchImportL."Entry No."),
+              WhseLFPurchImport2L.Filename,WhseLFPurchImportL."Client Identifier");
+            //H2157,H2158 18.02.15 DMO -------------------------
+          END;
+          COMMIT;
+        UNTIL WhseLFPurchImportL.NEXT = 0;
+
+        CLEARLASTERROR;
+
+        ItemJournalLineL.RESET;
+        ItemJournalLineL.SETRANGE("Journal Template Name",'ARTIKEL');
+        ItemJournalLineL.SETRANGE("Journal Batch Name",'WHSLF');
+        IF ItemJournalLineL.FINDFIRST THEN BEGIN
+          IF NOT ItemJnlPostL.RUN(ItemJournalLineL) THEN BEGIN
+            //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+            CreateLogProcessWMP(
+              FALSE,COPYSTR(GETLASTERRORTEXT,1,1000),WhseLFPurchImport2L.Filename,'');
+            //H2157,H2158 18.02.15 DMO --------------------------
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE ImportWMP@1000000022();
+    VAR
+      WhseLFSetupL@1000000005 : Record 50300;
+      FPCInterfaceSetupL@1000000001 : Record 50014;
+      WhseLFPurchImportL@1000000000 : Record 50303;
+      WhseH24SubInterfaceL@1000000006 : Record 50506;
+      FileRecL@1000000003 : Record 2000000022;
+      WhseLFPurchImpExportMgtL@1000000002 : Codeunit 50305;
+      FileNameL@1000000004 : Text[1024];
+      ArchiveFilenameL@1000000007 : Text[500];
+    BEGIN
+      WhseLFSetupL.GET;
+      //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+      WhseLFSetupL.TESTFIELD("Record Type WMP");
+      WhseH24SubInterfaceL.RESET;
+      WhseH24SubInterfaceL.SETRANGE("File Type",WhseLFSetupL."Record Type WMP");
+      WhseH24SubInterfaceL.FINDSET;
+      REPEAT
+        FPCInterfaceSetupL.GET(WhseH24SubInterfaceL."FPC Interface Setup Code");
+      //H2157,H2158 18.02.15 DMO --------------------------
+        FPCInterfaceSetupL.TESTFIELD("Import Folder");
+        FPCInterfaceSetupL.TESTFIELD("Archive Root Folder");
+
+        IF COPYSTR(FPCInterfaceSetupL."Import Folder",STRLEN(FPCInterfaceSetupL."Import Folder"),1) <> '\' THEN
+          FPCInterfaceSetupL."Import Folder" := FPCInterfaceSetupL."Import Folder" + '\';
+
+        IF COPYSTR(FPCInterfaceSetupL."Archive Root Folder",STRLEN(FPCInterfaceSetupL."Archive Root Folder"),1) <> '\' THEN
+          FPCInterfaceSetupL."Archive Root Folder" := FPCInterfaceSetupL."Archive Root Folder" + '\';
+
+        FileRecL.RESET;
+        FileRecL.SETRANGE(Path,FPCInterfaceSetupL."Import Folder");
+        FileRecL.SETRANGE("Is a file",TRUE);
+        CLEARLASTERROR;
+        IF FileRecL.FINDSET THEN BEGIN
+          REPEAT
+            FileNameL := FPCInterfaceSetupL."Import Folder" + FileRecL.Name;
+            //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+            IF FPCInterfaceSetupL."Archive Root Folder"[STRLEN(FPCInterfaceSetupL."Archive Root Folder")] = '\' THEN
+              ArchiveFilenameL := FPCInterfaceSetupL."Archive Root Folder" + FileRecL.Name
+            ELSE
+              ArchiveFilenameL := FPCInterfaceSetupL."Archive Root Folder" + '\' + FileRecL.Name;
+            //H2157,H2158 18.02.15 DMO --------------------------
+            IF WhseLFPurchImpExportMgtL.ReadWMP(FileNameL,FileRecL.Name) THEN BEGIN
+              FILE.RENAME(FPCInterfaceSetupL."Import Folder" + FileRecL.Name,ArchiveFilenameL);
+              //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+              CreateLogWMP(TRUE,FileRecL.Name,WhseH24SubInterfaceL."Whse. H24 Identifier Code");
+              //H2157,H2158 18.02.15 DMO --------------------------
+              COMMIT;
+            END ELSE BEGIN
+              FILE.RENAME(FPCInterfaceSetupL."Import Folder" + FileRecL.Name,ArchiveFilenameL);
+              //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+              CreateLogWMP(TRUE,FileRecL.Name,WhseH24SubInterfaceL."Whse. H24 Identifier Code");
+              //H2157,H2158 18.02.15 DMO --------------------------
+            END;
+          UNTIL FileRecL.NEXT = 0;
+        END;
+      //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+      UNTIL WhseH24SubInterfaceL.NEXT = 0;
+      //H2157,H2158 18.02.15 DMO DMO --------------------------
+    END;
+
+    PROCEDURE CreateLogWMP@1000000021(SuccessV@1000000003 : Boolean;FileNameV@1000000004 : Text[1024];WhseH24IdentifierV@1000000005 : Code[10]);
+    VAR
+      PurchaseLogL@1000000000 : Record 50313;
+      ErrorTextL@1000000002 : Text[1000];
+      WhseLFGenLogL@1000000001 : Codeunit 50307;
+    BEGIN
+      PurchaseLogL.INIT;
+      PurchaseLogL."Entry No." := WhseLFGenLogL.GetNextEntryNo(DATABASE::"Whse. LF Purchase Log");
+      PurchaseLogL.INSERT;
+
+      PurchaseLogL."Action Type" := PurchaseLogL."Action Type"::Import;
+      PurchaseLogL."Action Subtype" := PurchaseLogL."Action Subtype"::WMP;
+      PurchaseLogL.Filename := FileNameV;
+
+      IF NOT SuccessV THEN BEGIN
+        PurchaseLogL.Status := PurchaseLogL.Status::Error;
+        ErrorTextL := COPYSTR(GETLASTERRORTEXT,1,1000);
+        PurchaseLogL."Error Description" := COPYSTR(ErrorTextL,1,250);
+        PurchaseLogL."Error Description 2" := COPYSTR(ErrorTextL,251,250);
+        PurchaseLogL."Error Description 3" := COPYSTR(ErrorTextL,501,250);
+        PurchaseLogL."Error Description 4" := COPYSTR(ErrorTextL,751,250);
+      END ELSE
+        PurchaseLogL.Status := PurchaseLogL.Status::Success;
+
+      PurchaseLogL."Processing Date" := TODAY;
+      PurchaseLogL."Processing Time" := TIME;
+      PurchaseLogL."Processed By" := USERID;
+      //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+      PurchaseLogL."Whse. H24 Identifier Code" := WhseH24IdentifierV;
+      //H2157,H2158 18.02.15 DMO --------------------------
+
+      PurchaseLogL.MODIFY;
+    END;
+
+    PROCEDURE ProcessWMP@1000000020();
+    VAR
+      WhseLFPurchImportL@1000000000 : Record 50303;
+      WhseLFPurchImport2L@1000000002 : Record 50303;
+      WhseLFPurchaseInterfaceMgtL@1000000001 : Codeunit 50306;
+      LastErrorTextL@1000000003 : Text[1024];
+      GOB001@1000000004 : TextConst 'DEU=Inbound Entry %1 successfully processed.;ENU=Inbound Entry %1 successfully processed.';
+      WhseLFSetupL@1000000006 : Record 50300;
+    BEGIN
+      WhseLFPurchImportL.RESET;
+      WhseLFPurchImportL.SETCURRENTKEY("Import Status");
+      WhseLFPurchImportL.SETRANGE("Import Status",WhseLFPurchImportL."Import Status"::Unprocessed);
+      WhseLFSetupL.GET;
+      WhseLFPurchImportL.SETFILTER("Record Type",'%1',WhseLFSetupL."Record Type WMP");
+      IF WhseLFPurchImportL.FIND('-') THEN
+        REPEAT
+          IF WhseLFPurchaseInterfaceMgtL.RUN(WhseLFPurchImportL) THEN BEGIN
+            WhseLFPurchImport2L.GET(WhseLFPurchImportL."Entry No.");
+            WhseLFPurchImport2L."Import Status" := WhseLFPurchImportL."Import Status"::Processed;
+            WhseLFPurchImport2L."Process Timestamp" := CURRENTDATETIME;
+            WhseLFPurchImport2L."Error Description 1" := '';
+            WhseLFPurchImport2L.MODIFY;
+            //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+            CreateLogProcessWMP(
+              TRUE,STRSUBSTNO(GOB001,WhseLFPurchImportL."Entry No."),WhseLFPurchImport2L.Filename,WhseLFPurchImportL."Client Identifier"
+      );
+            //H2157,H2158 18.02.15 DMO --------------------------
+          END ELSE BEGIN
+            WhseLFPurchImport2L.GET(WhseLFPurchImportL."Entry No.");
+            WhseLFPurchImport2L."Import Status" := WhseLFPurchImportL."Import Status"::Error;
+            WhseLFPurchImport2L."Process Timestamp" := CURRENTDATETIME;
+
+            IF STRLEN(GETLASTERRORTEXT) > 0 THEN
+              LastErrorTextL := COPYSTR(GETLASTERRORTEXT,1,1000);
+            WhseLFPurchImport2L."Error Description 1" := COPYSTR(LastErrorTextL,1,250);
+            IF STRLEN(LastErrorTextL) > 250 THEN
+              WhseLFPurchImport2L."Error Description 2" := COPYSTR(LastErrorTextL,251,250);
+            IF STRLEN(LastErrorTextL) > 500 THEN
+              WhseLFPurchImport2L."Error Description 3" := COPYSTR(LastErrorTextL,501,250);
+            IF STRLEN(LastErrorTextL) > 750 THEN
+              WhseLFPurchImport2L."Error Description 4" := COPYSTR(LastErrorTextL,751,250);
+
+            WhseLFPurchImport2L.MODIFY;
+            //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+            CreateLogProcessWMP(FALSE,'',WhseLFPurchImport2L.Filename,WhseLFPurchImportL."Client Identifier");
+            //H2157,H2158 18.02.15 DMO --------------------------
+          END;
+          COMMIT;
+        UNTIL WhseLFPurchImportL.NEXT = 0;
+    END;
+
+    PROCEDURE CreateLogProcessWMP@1000000019(SuccessV@1000000003 : Boolean;MessageV@1000000004 : Text[1024];FileNameV@1000000005 : Text[250];WhseH24IdentifierV@1000000006 : Code[10]);
+    VAR
+      PurchaseLogL@1000000000 : Record 50313;
+      ErrorTextL@1000000002 : Text[1000];
+      WhseLFGenLogL@1000000001 : Codeunit 50307;
+    BEGIN
+      PurchaseLogL.INIT;
+      PurchaseLogL."Entry No." := WhseLFGenLogL.GetNextEntryNo(DATABASE::"Whse. LF Purchase Log");
+      PurchaseLogL.INSERT;
+
+      PurchaseLogL."Action Type" := PurchaseLogL."Action Type"::Import;
+      PurchaseLogL."Action Subtype" := PurchaseLogL."Action Subtype"::WMP;
+      PurchaseLogL.Filename := FileNameV;
+
+      IF NOT SuccessV THEN
+        PurchaseLogL.Status := PurchaseLogL.Status::Error
+      ELSE
+        PurchaseLogL.Status := PurchaseLogL.Status::Information;
+
+      IF MessageV <> '' THEN
+        ErrorTextL := MessageV
+      ELSE
+        ErrorTextL := COPYSTR(GETLASTERRORTEXT,1,1000);
+      PurchaseLogL."Error Description" := COPYSTR(ErrorTextL,1,250);
+      PurchaseLogL."Error Description 2" := COPYSTR(ErrorTextL,251,250);
+      PurchaseLogL."Error Description 3" := COPYSTR(ErrorTextL,501,250);
+      PurchaseLogL."Error Description 4" := COPYSTR(ErrorTextL,751,250);
+
+      PurchaseLogL."Processing Date" := TODAY;
+      PurchaseLogL."Processing Time" := TIME;
+      PurchaseLogL."Processed By" := USERID;
+      //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+      PurchaseLogL."Whse. H24 Identifier Code" := WhseH24IdentifierV;
+      //H2157,H2158 18.02.15 DMO --------------------------
+
+      PurchaseLogL.MODIFY;
+    END;
+
+    PROCEDURE "*** BMP ***"@1000000007();
+    BEGIN
+    END;
+
+    PROCEDURE CreateLogBMP@1000000009(SuccessV@1000000003 : Boolean;FileNameV@1000000004 : Text[1024];WhseH24IdentifierV@1000000005 : Code[10]);
+    VAR
+      PurchaseLogL@1000000000 : Record 50313;
+      ErrorTextL@1000000002 : Text[1000];
+      WhseLFGenLogL@1000000001 : Codeunit 50307;
+    BEGIN
+      PurchaseLogL.INIT;
+      PurchaseLogL."Entry No." := WhseLFGenLogL.GetNextEntryNo(DATABASE::"Whse. LF Purchase Log");
+      PurchaseLogL.INSERT;
+
+      PurchaseLogL."Action Type" := PurchaseLogL."Action Type"::Import;
+      PurchaseLogL."Action Subtype" := PurchaseLogL."Action Subtype"::BMP;
+      PurchaseLogL.Filename := FileNameV;
+
+      IF NOT SuccessV THEN BEGIN
+        PurchaseLogL.Status := PurchaseLogL.Status::Error;
+        ErrorTextL := COPYSTR(GETLASTERRORTEXT,1,1000);
+        PurchaseLogL."Error Description" := COPYSTR(ErrorTextL,1,250);
+        PurchaseLogL."Error Description 2" := COPYSTR(ErrorTextL,251,250);
+        PurchaseLogL."Error Description 3" := COPYSTR(ErrorTextL,501,250);
+        PurchaseLogL."Error Description 4" := COPYSTR(ErrorTextL,751,250);
+      END ELSE
+        PurchaseLogL.Status := PurchaseLogL.Status::Success;
+
+      PurchaseLogL."Processing Date" := TODAY;
+      PurchaseLogL."Processing Time" := TIME;
+      PurchaseLogL."Processed By" := USERID;
+      //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+      PurchaseLogL."Whse. H24 Identifier Code" := WhseH24IdentifierV;
+      //H2157,H2158 18.02.15 DMO --------------------------
+      PurchaseLogL.MODIFY;
+    END;
+
+    PROCEDURE CreateLogProcessBMP@1000000017(SuccessV@1000000003 : Boolean;MessageV@1000000004 : Text[1024];WhseH24IdentifierV@1000000005 : Code[10]);
+    VAR
+      PurchaseLogL@1000000000 : Record 50313;
+      ErrorTextL@1000000002 : Text[1000];
+      WhseLFGenLogL@1000000001 : Codeunit 50307;
+    BEGIN
+      PurchaseLogL.INIT;
+      PurchaseLogL."Entry No." := WhseLFGenLogL.GetNextEntryNo(DATABASE::"Whse. LF Purchase Log");
+      PurchaseLogL.INSERT;
+
+      PurchaseLogL."Action Type" := PurchaseLogL."Action Type"::Import;
+      PurchaseLogL."Action Subtype" := PurchaseLogL."Action Subtype"::BMP;
+      PurchaseLogL.Filename := '';
+
+      IF NOT SuccessV THEN
+        PurchaseLogL.Status := PurchaseLogL.Status::Error
+      ELSE
+        PurchaseLogL.Status := PurchaseLogL.Status::Information;
+
+      IF MessageV <> '' THEN
+        ErrorTextL := MessageV
+      ELSE
+        ErrorTextL := COPYSTR(GETLASTERRORTEXT,1,1000);
+      PurchaseLogL."Error Description" := COPYSTR(ErrorTextL,1,250);
+      PurchaseLogL."Error Description 2" := COPYSTR(ErrorTextL,251,250);
+      PurchaseLogL."Error Description 3" := COPYSTR(ErrorTextL,501,250);
+      PurchaseLogL."Error Description 4" := COPYSTR(ErrorTextL,751,250);
+
+      PurchaseLogL."Processing Date" := TODAY;
+      PurchaseLogL."Processing Time" := TIME;
+      PurchaseLogL."Processed By" := USERID;
+      //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+      PurchaseLogL."Whse. H24 Identifier Code" := WhseH24IdentifierV;
+      //H2157,H2158 18.02.15 DMO --------------------------
+
+      PurchaseLogL.MODIFY;
+    END;
+
+    PROCEDURE ImportBMP@1000000008();
+    VAR
+      WhseLFSetupL@1000000005 : Record 50300;
+      FPCInterfaceSetupL@1000000001 : Record 50014;
+      WhseLFBMPImportL@1000000000 : Record 50310;
+      WhseH24SubInterfaceL@1000000006 : Record 50506;
+      FileRecL@1000000003 : Record 2000000022;
+      WhseLFPurchImpExportMgtL@1000000002 : Codeunit 50305;
+      FileNameL@1000000004 : Text[1024];
+      ArchiveFilenameL@1000000007 : Text[500];
+    BEGIN
+      WhseLFSetupL.GET;
+      //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+      WhseLFSetupL.TESTFIELD("Record Type BMP");
+      WhseH24SubInterfaceL.RESET;
+      WhseH24SubInterfaceL.SETRANGE("File Type",WhseLFSetupL."Record Type BMP");
+      WhseH24SubInterfaceL.FINDSET;
+      REPEAT
+        FPCInterfaceSetupL.GET(WhseH24SubInterfaceL."FPC Interface Setup Code");
+      //H2157,H2158 18.02.15 DMO --------------------------
+        FPCInterfaceSetupL.TESTFIELD("Import Folder");
+        FPCInterfaceSetupL.TESTFIELD("Archive Root Folder");
+
+        IF COPYSTR(FPCInterfaceSetupL."Import Folder",STRLEN(FPCInterfaceSetupL."Import Folder"),1) <> '\' THEN
+          FPCInterfaceSetupL."Import Folder" := FPCInterfaceSetupL."Import Folder" + '\';
+
+        IF COPYSTR(FPCInterfaceSetupL."Archive Root Folder",STRLEN(FPCInterfaceSetupL."Archive Root Folder"),1) <> '\' THEN
+          FPCInterfaceSetupL."Archive Root Folder" := FPCInterfaceSetupL."Archive Root Folder" + '\';
+
+        FileRecL.RESET;
+        FileRecL.SETRANGE(Path,FPCInterfaceSetupL."Import Folder");
+        FileRecL.SETRANGE("Is a file",TRUE);
+        CLEARLASTERROR;
+
+        //WhseLFBMPImportL.DELETEALL;
+        IF FileRecL.FINDSET THEN BEGIN
+          REPEAT
+            FileNameL := FPCInterfaceSetupL."Import Folder" + FileRecL.Name;
+            //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+            IF FPCInterfaceSetupL."Archive Root Folder"[STRLEN(FPCInterfaceSetupL."Archive Root Folder")] = '\' THEN
+              ArchiveFilenameL := FPCInterfaceSetupL."Archive Root Folder" + FileRecL.Name
+            ELSE
+              ArchiveFilenameL := FPCInterfaceSetupL."Archive Root Folder" + '\' + FileRecL.Name;
+            //H2157,H2158 18.02.15 DMO --------------------------
+
+            IF WhseLFPurchImpExportMgtL.ReadBMP(FileNameL,FileRecL.Name) THEN BEGIN
+              FILE.RENAME(FPCInterfaceSetupL."Import Folder" + FileRecL.Name,ArchiveFilenameL);
+              //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+              CreateLogBMP(TRUE,FileRecL.Name,WhseH24SubInterfaceL."Whse. H24 Identifier Code");
+              //H2157,H2158 18.02.15 DMO --------------------------
+              COMMIT;
+            END ELSE BEGIN
+              FILE.RENAME(FPCInterfaceSetupL."Import Folder" + FileRecL.Name,ArchiveFilenameL);
+              //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+              CreateLogBMP(TRUE,FileRecL.Name,WhseH24SubInterfaceL."Whse. H24 Identifier Code");
+              //H2157,H2158 18.02.15 DMO --------------------------
+            END;
+          UNTIL FileRecL.NEXT = 0;
+        END;
+      //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+      UNTIL WhseH24SubInterfaceL.NEXT = 0;
+      //H2157,H2158 18.02.15 DMO --------------------------
+    END;
+
+    PROCEDURE ProcessBMP@1000000011();
+    VAR
+      WhseLFBMPImportL@1000000000 : Record 50310;
+      WhseLFBMPImport2L@1000000002 : Record 50310;
+      WhseLFPurchaseInterfaceMgtL@1000000001 : Codeunit 50306;
+      LastErrorTextL@1000000003 : Text[1024];
+    BEGIN
+      WhseLFBMPImportL.RESET;
+      WhseLFBMPImportL.SETRANGE("Import Status",WhseLFBMPImportL."Import Status"::Unprocessed);
+      IF WhseLFBMPImportL.FINDFIRST THEN
+        REPEAT
+          IF WhseLFPurchaseInterfaceMgtL.ProcessBMPLine(WhseLFBMPImportL) THEN BEGIN
+            WhseLFBMPImportL.GET(WhseLFBMPImportL."Entry No.");
+            WhseLFBMPImportL."Import Status" := WhseLFBMPImport2L."Import Status"::Processed;
+            WhseLFBMPImportL."Process Timestamp" := CURRENTDATETIME;
+            WhseLFBMPImportL."Error Description 1" := '';
+            WhseLFBMPImportL.MODIFY;
+          END ELSE BEGIN
+            WhseLFBMPImport2L.GET(WhseLFBMPImportL."Entry No.");
+            WhseLFBMPImport2L."Import Status" := WhseLFBMPImportL."Import Status"::Error;
+            WhseLFBMPImportL."Process Timestamp" := CURRENTDATETIME;
+
+            IF STRLEN(GETLASTERRORTEXT) > 0 THEN
+              LastErrorTextL := COPYSTR(GETLASTERRORTEXT,1,1000);
+            WhseLFBMPImport2L."Error Description 1" := COPYSTR(LastErrorTextL,1,250);
+            IF STRLEN(LastErrorTextL) > 250 THEN
+              WhseLFBMPImport2L."Error Description 2" := COPYSTR(LastErrorTextL,251,250);
+            IF STRLEN(LastErrorTextL) > 500 THEN
+              WhseLFBMPImport2L."Error Description 3" := COPYSTR(LastErrorTextL,501,250);
+            IF STRLEN(LastErrorTextL) > 750 THEN
+              WhseLFBMPImport2L."Error Description 4" := COPYSTR(LastErrorTextL,751,250);
+
+            WhseLFBMPImport2L.MODIFY;
+            //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+            CreateLogProcessBMP(FALSE,'',WhseLFBMPImportL."Client Identifier");
+            //H2157,H2158 18.02.15 DMO --------------------------
+          END;
+          COMMIT;
+        UNTIL WhseLFBMPImportL.NEXT = 0;
+    END;
+
+    PROCEDURE "*** UMP ***"@1000000010();
+    BEGIN
+    END;
+
+    PROCEDURE CreateLogUMP@1000000012(SuccessV@1000000003 : Boolean;FileNameV@1000000004 : Text[1024];WhseH24IdentifierV@1000000005 : Code[10]);
+    VAR
+      PurchaseLogL@1000000000 : Record 50313;
+      ErrorTextL@1000000002 : Text[1000];
+      WhseLFGenLogL@1000000001 : Codeunit 50307;
+    BEGIN
+      PurchaseLogL.INIT;
+      PurchaseLogL."Entry No." := WhseLFGenLogL.GetNextEntryNo(DATABASE::"Whse. LF Purchase Log");
+      PurchaseLogL.INSERT;
+
+      PurchaseLogL."Action Type" := PurchaseLogL."Action Type"::Import;
+      PurchaseLogL."Action Subtype" := PurchaseLogL."Action Subtype"::UMP;
+      PurchaseLogL.Filename := FileNameV;
+
+      IF NOT SuccessV THEN BEGIN
+        PurchaseLogL.Status := PurchaseLogL.Status::Error;
+        ErrorTextL := COPYSTR(GETLASTERRORTEXT,1,1000);
+        PurchaseLogL."Error Description" := COPYSTR(ErrorTextL,1,250);
+        PurchaseLogL."Error Description 2" := COPYSTR(ErrorTextL,251,250);
+        PurchaseLogL."Error Description 3" := COPYSTR(ErrorTextL,501,250);
+        PurchaseLogL."Error Description 4" := COPYSTR(ErrorTextL,751,250);
+      END ELSE
+        PurchaseLogL.Status := PurchaseLogL.Status::Success;
+
+      PurchaseLogL."Processing Date" := TODAY;
+      PurchaseLogL."Processing Time" := TIME;
+      PurchaseLogL."Processed By" := USERID;
+      //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+      PurchaseLogL."Whse. H24 Identifier Code" := WhseH24IdentifierV;
+      //H2157,H2158 18.02.15 DMO --------------------------
+      PurchaseLogL.MODIFY;
+    END;
+
+    PROCEDURE CreateLogProcessUMP@1000000016(SuccessV@1000000003 : Boolean;MessageV@1000000004 : Text[1024];FileNameV@1000000005 : Text[250];WhseH24IdentifierV@1000000006 : Code[10]);
+    VAR
+      PurchaseLogL@1000000000 : Record 50313;
+      ErrorTextL@1000000002 : Text[1000];
+      WhseLFGenLogL@1000000001 : Codeunit 50307;
+    BEGIN
+      PurchaseLogL.INIT;
+      PurchaseLogL."Entry No." := WhseLFGenLogL.GetNextEntryNo(DATABASE::"Whse. LF Purchase Log");
+      PurchaseLogL.INSERT;
+
+      PurchaseLogL."Action Type" := PurchaseLogL."Action Type"::Import;
+      PurchaseLogL."Action Subtype" := PurchaseLogL."Action Subtype"::UMP;
+      PurchaseLogL.Filename := FileNameV;
+
+      IF NOT SuccessV THEN
+        PurchaseLogL.Status := PurchaseLogL.Status::Error
+      ELSE
+        PurchaseLogL.Status := PurchaseLogL.Status::Information;
+
+      IF MessageV <> '' THEN
+        ErrorTextL := MessageV
+      ELSE
+        ErrorTextL := COPYSTR(GETLASTERRORTEXT,1,1000);
+      PurchaseLogL."Error Description" := COPYSTR(ErrorTextL,1,250);
+      PurchaseLogL."Error Description 2" := COPYSTR(ErrorTextL,251,250);
+      PurchaseLogL."Error Description 3" := COPYSTR(ErrorTextL,501,250);
+      PurchaseLogL."Error Description 4" := COPYSTR(ErrorTextL,751,250);
+
+      PurchaseLogL."Processing Date" := TODAY;
+      PurchaseLogL."Processing Time" := TIME;
+      PurchaseLogL."Processed By" := USERID;
+      //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+      PurchaseLogL."Whse. H24 Identifier Code" := WhseH24IdentifierV;
+      //H2157,H2158 18.02.15 DMO --------------------------
+      PurchaseLogL.MODIFY;
+    END;
+
+    PROCEDURE ImportUMP@1000000014();
+    VAR
+      WhseLFSetupL@1000000005 : Record 50300;
+      FPCInterfaceSetupL@1000000001 : Record 50014;
+      WhseLFPurchImportL@1000000000 : Record 50303;
+      WhseH24SubInterfaceL@1000000006 : Record 50506;
+      FileRecL@1000000003 : Record 2000000022;
+      WhseLFPurchImpExportMgtL@1000000002 : Codeunit 50305;
+      FileNameL@1000000004 : Text[1024];
+      ArchiveFilenameL@1000000007 : Text[500];
+    BEGIN
+      WhseLFSetupL.GET;
+      //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+      WhseLFSetupL.TESTFIELD("Record Type UMP");
+      WhseH24SubInterfaceL.RESET;
+      WhseH24SubInterfaceL.SETRANGE("File Type",WhseLFSetupL."Record Type UMP");
+      WhseH24SubInterfaceL.FINDSET;
+      REPEAT
+        FPCInterfaceSetupL.GET(WhseH24SubInterfaceL."FPC Interface Setup Code");
+      //H2157,H2158 18.02.15 DMO --------------------------
+
+        FPCInterfaceSetupL.TESTFIELD("Import Folder");
+        FPCInterfaceSetupL.TESTFIELD("Archive Root Folder");
+
+        IF COPYSTR(FPCInterfaceSetupL."Import Folder",STRLEN(FPCInterfaceSetupL."Import Folder"),1) <> '\' THEN
+          FPCInterfaceSetupL."Import Folder" := FPCInterfaceSetupL."Import Folder" + '\';
+
+        IF COPYSTR(FPCInterfaceSetupL."Archive Root Folder",STRLEN(FPCInterfaceSetupL."Archive Root Folder"),1) <> '\' THEN
+          FPCInterfaceSetupL."Archive Root Folder" := FPCInterfaceSetupL."Archive Root Folder" + '\';
+
+        FileRecL.RESET;
+        FileRecL.SETRANGE(Path,FPCInterfaceSetupL."Import Folder");
+        FileRecL.SETRANGE("Is a file",TRUE);
+        CLEARLASTERROR;
+        IF FileRecL.FINDSET THEN BEGIN
+          REPEAT
+            FileNameL := FPCInterfaceSetupL."Import Folder" + FileRecL.Name;
+            //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+            IF FPCInterfaceSetupL."Archive Root Folder"[STRLEN(FPCInterfaceSetupL."Archive Root Folder")] = '\' THEN
+              ArchiveFilenameL := FPCInterfaceSetupL."Archive Root Folder" + FileRecL.Name
+            ELSE
+              ArchiveFilenameL := FPCInterfaceSetupL."Archive Root Folder" + '\' + FileRecL.Name;
+            //H2157,H2158 18.02.15 DMO --------------------------
+
+            IF WhseLFPurchImpExportMgtL.ReadUMP(FileNameL,FileRecL.Name) THEN BEGIN
+              FILE.RENAME(FPCInterfaceSetupL."Import Folder" + FileRecL.Name,ArchiveFilenameL);
+              //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+              CreateLogUMP(TRUE,FileRecL.Name,WhseH24SubInterfaceL."Whse. H24 Identifier Code");
+              //H2157,H2158 18.02.15 DMO --------------------------
+              COMMIT;
+            END ELSE BEGIN
+              FILE.RENAME(FPCInterfaceSetupL."Import Folder" + FileRecL.Name,ArchiveFilenameL);
+              //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+              CreateLogUMP(FALSE,FileRecL.Name,WhseH24SubInterfaceL."Whse. H24 Identifier Code");
+              //H2157,H2158 18.02.15 DMO --------------------------
+            END;
+          UNTIL FileRecL.NEXT = 0;
+        END;
+      //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+      UNTIL WhseH24SubInterfaceL.NEXT = 0;
+      //H2157,H2158 18.02.15 DMO --------------------------
+    END;
+
+    PROCEDURE ProcessUMP@1000000015();
+    VAR
+      UMPImportLineL@1000000000 : Record 50309;
+      UMPImportLine2L@1000000002 : Record 50309;
+      WhseLFSetupL@1000000008 : Record 50300;
+      ItemJournalLineL@1000000007 : Record 83;
+      WhseLFPurchaseInterfaceMgtL@1000000001 : Codeunit 50306;
+      ItemJnlPostL@1000000006 : Codeunit 23;
+      NoSeriesManagementL@1000000005 : Codeunit 396;
+      DocumentNoL@1000000004 : Code[20];
+      LastErrorTextL@1000000003 : Text[1024];
+    BEGIN
+      UMPImportLineL.RESET;
+      UMPImportLineL.SETCURRENTKEY("Import Status");
+      UMPImportLineL.SETRANGE("Record Type",'UMP');
+      UMPImportLineL.SETRANGE("Import Status",UMPImportLineL."Import Status"::Unprocessed);
+      IF UMPImportLineL.FINDFIRST THEN BEGIN
+        REPEAT
+          CLEARLASTERROR;
+          IF WhseLFPurchaseInterfaceMgtL.ProcessUMPLine(UMPImportLineL) THEN BEGIN
+            UMPImportLine2L.GET(UMPImportLineL."Entry No.");
+            UMPImportLine2L."Import Status" := UMPImportLine2L."Import Status"::Processed;
+            UMPImportLine2L."Process Timestamp" := CURRENTDATETIME;
+            UMPImportLine2L."Error Description 1" := '';
+            UMPImportLine2L.MODIFY;
+          END ELSE BEGIN
+            UMPImportLine2L.GET(UMPImportLineL."Entry No.");
+            UMPImportLine2L."Import Status" := UMPImportLine2L."Import Status"::Error;
+            UMPImportLine2L."Process Timestamp" := CURRENTDATETIME;
+
+            IF STRLEN(GETLASTERRORTEXT) > 0 THEN
+              LastErrorTextL := COPYSTR(GETLASTERRORTEXT,1,1000);
+            UMPImportLine2L."Error Description 2" := COPYSTR(LastErrorTextL,1,250);
+            IF STRLEN(LastErrorTextL) > 250 THEN
+              UMPImportLine2L."Error Description 3" := COPYSTR(LastErrorTextL,251,250);
+            IF STRLEN(LastErrorTextL) > 500 THEN
+              UMPImportLine2L."Error Description 4" := COPYSTR(LastErrorTextL,501,250);
+            IF STRLEN(LastErrorTextL) > 750 THEN
+              UMPImportLine2L."Error Description 4" := COPYSTR(LastErrorTextL,751,250);
+
+            UMPImportLine2L.MODIFY;
+            //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+            CreateLogProcessUMP(FALSE,'',UMPImportLine2L."File Name",UMPImportLineL."Client Identifier");
+            //H2157,H2158 18.02.15 DMO --------------------------
+          END;
+          COMMIT;
+        UNTIL UMPImportLineL.NEXT = 0;
+      END;
+
+      WhseLFSetupL.GET;
+      DocumentNoL := NoSeriesManagementL.GetNextNo(WhseLFSetupL."Transfer Item Journal Nos.",WORKDATE,TRUE);
+      COMMIT;
+
+      ItemJournalLineL.RESET;
+      ItemJournalLineL.SETRANGE("Journal Template Name",'ARTIKEL');
+      ItemJournalLineL.SETRANGE("Journal Batch Name",'WHSLF');
+      ItemJournalLineL.SETRANGE("Document No.",DocumentNoL);
+      IF ItemJournalLineL.FINDSET THEN BEGIN
+        IF NOT ItemJnlPostL.RUN(ItemJournalLineL) THEN BEGIN
+          //H2157,H2158 18.02.15 DMO ++++++++++++++++++++++++++
+          CreateLogProcessUMP(FALSE,COPYSTR(GETLASTERRORTEXT,1,1000),UMPImportLine2L."File Name",'');
+          //H2157,H2158 18.02.15 DMO --------------------------
+        END;
+      END;
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+      H1408     05.08.14   DMA       Copy RHD Interface, rename and implement as Whs LF Interface
+      H2157     18.02.15   DMO       CODECHANGE: Log creation functions take additional parameter;
+      H2158     25.02.15   DMO       CODECHANGE: ImportWEM,ImportWMP,ImportBMP and ImportUMP are modified;
+    }
+    END.
+  }
+}
+

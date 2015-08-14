@@ -1,0 +1,3450 @@
+OBJECT Codeunit 50009 Import Framework Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=17.10.14;
+    Time=11:00:11;
+    Modified=Yes;
+    Version List=DYN(7),chrmu,GOB,HME1626;
+  }
+  PROPERTIES
+  {
+    OnRun=VAR
+            Files@1000000003 : TEMPORARY Record 50013;
+            LT_PurchHeader@1000000010 : Record 38;
+            LT_TempPurchHeader@1000000012 : TEMPORARY Record 38;
+            LT_PurchLine@1000000008 : Record 39;
+            LT_PurchRcptLine@1000000011 : Record 121;
+            Window@1000000002 : Dialog;
+            FileRec@1000000001 : File;
+            ArchivFileName@1000000000 : Text[1024];
+            FullArchiveName@1000000007 : Text[1024];
+            bigTxt@1000000004 : BigText;
+            StartText@1000000005 : Text[30];
+            ArchFilter@1000000009 : Text[250];
+            i@1000000006 : Integer;
+          BEGIN
+            IF Interface.Code = '' THEN
+              Interface.GET('RHENUS');
+
+            UseInterim :=
+              (Interface.Code = 'RHENUS')
+            // H0730 09.12.13 FX ++++++++++++++++++++++++
+              OR
+              (Interface.Code = 'FIEGE');
+            // H0730 09.12.13 FX ------------------------
+            IFSetup.GET;
+            Interface.TESTFIELD("Import Folder");
+            Interface.TESTFIELD("Archive Root Folder");
+            ImportLog.LOCKTABLE;
+
+            CompanyInfo.GET;
+            GLSetup.GET;
+
+            IF Interface."Use FTP" THEN
+              FTPDownload;
+
+            ListFoldervbScript(Interface."Import Folder");
+            ListFolder(Files);
+            ListFolder(ArchFiles);
+
+            Files.SETFILTER("Message Text",Interface."Upload File Filter");
+            IF Files.FIND('-') THEN REPEAT
+
+              ProcessFile(Files."Message Text");
+
+              // 7.00 B DYN(eich) 07.08.12 >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+              IF Interface.Code = 'INVOIC' THEN BEGIN
+                LT_TempPurchHeader.RESET;
+                LT_TempPurchHeader.DELETEALL;
+                LT_PurchLine.SETRANGE("Document Type",LT_PurchLine."Document Type"::Invoice);
+                LT_PurchLine.SETFILTER(Quantity,'<>0');
+                LT_PurchLine.SETRANGE("Status Code",'IMPORT');
+                IF LT_PurchLine.FINDSET THEN REPEAT
+                  IF NOT LT_TempPurchHeader.GET(LT_PurchLine."Document Type",LT_PurchLine."Document No.") THEN BEGIN
+                    LT_PurchHeader.GET(LT_PurchLine."Document Type",LT_PurchLine."Document No.");
+                    LT_TempPurchHeader := LT_PurchHeader;
+                    LT_TempPurchHeader.INSERT;
+                  END;
+                UNTIL LT_PurchLine.NEXT = 0;
+                IF LT_TempPurchHeader.FIND('-') THEN REPEAT
+                  LT_PurchRcptLine.CheckPurchInvLines(LT_TempPurchHeader);
+            //S/P1117
+            // See Documentation Trigger
+            {***************
+            //H0541 18.09.13 ARI +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+                  LT_PurchRcptLine.ReplacePostingDescription(LT_TempPurchHeader);
+            //H0541 18.09.13 ARI -----------------------------------------------------------------------------
+            ***************}
+            //E/P1117
+                UNTIL LT_TempPurchHeader.NEXT = 0;
+              END;
+              // 7.00 E DYN(eich) 07.08.12 <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+            UNTIL Files.NEXT = 0;
+            IF UseInterim THEN
+              ProcessInterim;
+
+            InsertLogEntry('', Text005, FALSE, TRUE,0);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      FileSysAutomation@1000000026 : Automation "{420B2830-E718-11CF-893D-00A0C9054228} 1.0:{0D43FE01-F093-11CF-8940-00A0C9054228}:'Microsoft Scripting Runtime'.FileSystemObject";
+      FileCollection@1000000043 : Automation "{420B2830-E718-11CF-893D-00A0C9054228} 1.0:{EE09B103-97E0-11CF-978F-00A02463E06F}:'Microsoft Scripting Runtime'.Dictionary";
+      oneFile@1000000042 : Automation "{420B2830-E718-11CF-893D-00A0C9054228} 1.0:{C7C3F5B5-88A3-11D0-ABCB-00A0C90FFFC0}:'Microsoft Scripting Runtime'.File";
+      IFSetup@1000000000 : Record 50012;
+      Text001@1000000002 : TextConst 'ENU=Process file %1.';
+      Text002@1000000003 : TextConst 'ENU=Import of file %1 is done.';
+      Text003@1000000004 : TextConst 'ENU=Text line "%1" is processed.';
+      Text004@1000000005 : TextConst 'ENU=File %1 cannot be opened.';
+      Text005@1000000006 : TextConst 'ENU=The import is done.';
+      Text006@1000000007 : TextConst 'ENU=The field %1 cannot have value %2.';
+      GLSetup@1000000022 : Record 98;
+      ImportLog@1000000019 : Record 50013;
+      CompanyInfo@1000000018 : Record 79;
+      PurchHeader@1000000021 : Record 38;
+      SalesHeader@1000000027 : Record 36;
+      Interface@1000000028 : Record 50014;
+      Vendor@1000000041 : Record 23;
+      ArchFiles@1000000044 : TEMPORARY Record 50013;
+      ImpDoc@1000000047 : Record 50034;
+      ImpDocLine@1000000048 : Record 50035;
+      IFProcessing@1000000008 : Codeunit 50010;
+      Text007@1000000009 : TextConst 'ENU=Processing error.';
+      rr1@1000000015 : RecordRef;
+      rr2@1000000014 : RecordRef;
+      rr3@1000000013 : RecordRef;
+      rr4@1000000012 : RecordRef;
+      rr5@1000000011 : RecordRef;
+      btxt@1000000020 : BigText;
+      GlobalVar@1000000001 : ARRAY [5] OF Text[50];
+      Text008@1000000010 : TextConst 'ENU=Vendor %1 does not exist.';
+      txt@1000000016 : Text[1024];
+      Text009@1000000017 : TextConst 'ENU=Item %1 does not exist.';
+      ItemAccNo@1000000023 : Code[20];
+      ChargeAccNo@1000000024 : Code[20];
+      VendorNo@1000000025 : Code[20];
+      Text010@1000000029 : TextConst 'ENU=The value of the field %1 was changed from %2 to %3.';
+      Text011@1000000030 : TextConst 'ENU=Process %1 order %2.';
+      Text012@1000000031 : TextConst 'ENU=The %1 order %2 cannot be posted. Fix the problem and post it manually.';
+      OldOrderStatus@1000000057 : Integer;
+      Post@1000000032 : Boolean;
+      Text013@1000000033 : TextConst 'ENU=The %1 order %2 was posted.';
+      Text014@1000000034 : TextConst 'ENU=Item journal line %1 for the item %2 with quantity %3 was posted.';
+      Text015@1000000035 : TextConst 'ENU=Item journal line %1 for the item %2 cannot be inserted.';
+      Text016@1000000036 : TextConst 'ENU=purchase';
+      Text017@1000000037 : TextConst 'ENU=sales';
+      Text018@1000000038 : TextConst 'ENU=transfer';
+      badPost@1000000039 : Boolean;
+      lastOrderNo@1000000040 : Code[20];
+      Text019@1000000045 : TextConst 'ENU=The VAT Registration No. %1 is not the same than for Vendor %2.';
+      Text019a@1000000062 : TextConst 'DEU=Die USt.-Id fehlt im Import bei Kreditor %1.;ENU=VAT-ID empty in import for vendor %1.';
+      Text020@1000000046 : TextConst 'ENU=The item quality should be %1 for order %2.';
+      UseInterim@1000000049 : Boolean;
+      Text021@1000000050 : TextConst 'ENU=Cannot download from FTP. Check FTP credentials.';
+      ErrorExist@1000000051 : Boolean;
+      Text022@1000000052 : TextConst 'ENU=The order %1 doesnt exist.';
+      Text023@1000000053 : TextConst 'ENU=The Qty to Ship field value (%1) is bigger then Quantity (%2) for order %3.';
+      Text024@1000000054 : TextConst 'ENU=Item journal line %1 for the item %2 with quantity %3 was created.';
+      Text025@1000000055 : TextConst 'ENU=The line %1 for order %2 doesnt exist.';
+      Text026@1000000056 : TextConst 'ENU=The folder %1 doesnt exist.';
+      Text027@1000000058 : TextConst 'ENU=The line %1 for order %2 was already shipped.';
+      Text028@1000000059 : TextConst 'ENU=There is no line with item %1 for order %2.';
+      Text029@1000000061 : TextConst 'ENU=Imported file.';
+      Text030@1000000060 : TextConst 'ENU=The line %1 for order %2 contains Purch. Order No. field filled.';
+      ProcessErrors@1000000063 : Boolean;
+      Text031@1000000064 : TextConst 'ENU=Archived Sales Order %1 not found.';
+      gReprocessCompleted@1000000067 : Boolean;
+      gEntryNo@1000000068 : Integer;
+      Text032@1000000066 : TextConst 'ENU=Overdelivery: %1 / %2 in PO %3 Line %4.';
+      Text033@1000000065 : TextConst 'ENU=Goods receipt: %1 for PO %2 Line %3.';
+      WEMQuality@1000000069 : Code[10];
+      Text034@1000000080 : TextConst 'ENU=Unknown Quality %1.';
+      Text035@1000000081 : TextConst 'ENU=No flawless quality: %1.';
+      Transfer@1000000076 : Boolean;
+      TransferOrder@1000000075 : Record 5740;
+      Text036@1000000071 : TextConst 'ENU=The Transfer Order %1 doesnt exist.';
+      TransferLine@1000000074 : Record 5741;
+      Text037@1000000073 : TextConst 'ENU=There is no line with item %1 for Transfer Order %2.';
+      PostTransferReceipt@1000000082 : Codeunit 5705;
+      TransferOrder2@1000000072 : Record 5740;
+      BranchCode@1000000070 : Code[10];
+      text038@1000000098 : TextConst 'ENU=Transfer';
+      Text039@1000000099 : TextConst 'ENU=Overdelivery: %1 / %2 in Transfer Order %3 Line %4. Check Quantity Shipped.';
+      "***P1047 global***"@1000000077 : Integer;
+      gFilename@1000000078 : Text[250];
+      PurchHeader2@1000000079 : Record 38;
+      RecRef@1000000083 : RecordRef;
+      CUParcelStatusHistoryMgmt@1000000084 : Codeunit 80011;
+      Text040@1000000085 : TextConst 'ENU=WEM line created %1';
+      Text041@1000000086 : TextConst 'ENU=Error creating WEM Line %1';
+      "* HME *************"@1000000087 : Integer;
+      ImportDHLProactive@1000000088 : Record 50097;
+
+    PROCEDURE ProcessFile@1000000011(FileName@1000000000 : Text[1024]);
+    VAR
+      FileRec@1000000003 : File;
+      ArchivFileName@1000000002 : Text[1024];
+      FullArchiveName@1000000001 : Text[1024];
+      bigTxt@1000000007 : BigText;
+      StartText@1000000006 : Text[30];
+      ArchFilter@1000000005 : Text[250];
+      i@1000000004 : Integer;
+      RhenusEasyLogImport@1000000008 : Codeunit 50042;
+      "--- P1043 Locals ---"@1000000009 : Integer;
+      UTFStream@1000000014 : Automation "{2A75196C-D9EB-4129-B803-931327F72D5C} 2.8:{00000566-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.8 Library'.Stream";
+      ReadCache@1000000013 : BigText;
+      char@1000000011 : Char;
+    BEGIN
+      // S/P1047
+      gFilename := FileName;
+      // E/P1047
+      InsertLogEntry('', STRSUBSTNO(Text001, FileName), FALSE, TRUE,0);
+      COMMIT;
+      ErrorExist := FALSE;
+      CLEAR(FileRec);
+      FileRec.TEXTMODE(TRUE);
+
+      // A/gob-lku/21.03.2013/P0832
+      IF STRPOS(FileName,'ELSendEx') = 1 THEN
+        RhenusEasyLogImport.ReadFile(Interface."Import Folder" + '\' + FileName)
+      ELSE BEGIN
+      // E/gob-lku/21.03.2013/P0832
+
+        //A,gob-Fuchs,25.07.13,P1043
+        IF Interface."Import UTF-8 File" THEN BEGIN
+
+          IF FileRec.OPEN(Interface."Import Folder" + '\' + FileName) THEN BEGIN
+            CREATE(UTFStream);
+
+            UTFStream.Open();
+            UTFStream.Charset('UTF-8');
+            UTFStream.LoadFromFile(Interface."Import Folder" + '\' + FileName);
+
+            WHILE NOT UTFStream.EOS DO BEGIN
+              EVALUATE(char,UTFStream.ReadText(1));
+
+              IF (char <> 10) AND (char <> 13) THEN
+                txt += FORMAT(char)
+              ELSE
+              IF txt <> '' THEN BEGIN
+                IF NOT UseInterim THEN
+                  ProcessLine(txt)
+                ELSE
+                  FillInterim(txt, FileName);
+                txt := '';
+              END;
+
+            END;
+            UTFStream.Close;
+            FileRec.CLOSE;
+          END ELSE
+            InsertLogEntry('',STRSUBSTNO(Text004, Interface."Import Folder" + '\' +FileName), TRUE, FALSE,0);
+
+        END ELSE BEGIN
+        //E,gob-Fuchs,25.07.13,P1043
+          IF FileRec.OPEN(Interface."Import Folder" + '\' + FileName) THEN BEGIN
+            Post := TRUE;
+            REPEAT
+              FileRec.READ(bigTxt);
+              bigTxt.GETSUBTEXT(txt,1,1024);
+              IF bigTxt.LENGTH > 1024 THEN BEGIN   // comments
+                StartText := COPYSTR(txt,1,7);
+                i := 0;
+                WHILE i < 2600 DO BEGIN
+                  bigTxt.GETSUBTEXT(txt,8 + i,512);
+                  txt := DELCHR(txt,'<>',' ');
+                  IF txt <> '' THEN BEGIN
+                    txt := StartText + txt;
+                    IF NOT UseInterim THEN
+                      ProcessLine(Ansi2Ascii(txt))
+                    ELSE
+                      FillInterim(Ansi2Ascii(txt),FileName);
+                  END;
+                  i := i + 512;
+                END;
+              END ELSE
+                IF NOT UseInterim THEN
+                  ProcessLine(Ansi2Ascii(txt))
+                ELSE
+                  FillInterim(Ansi2Ascii(txt),FileName);
+                // ProcessLine(Ansi2Ascii(txt));  // non comments
+
+            UNTIL (FileRec.POS = FileRec.LEN) OR ErrorExist;
+            FileRec.CLOSE;
+
+            //InsertLogEntry('',STRSUBSTNO(Text002, Files.Name), FALSE, FALSE);
+          END ELSE
+            InsertLogEntry('',STRSUBSTNO(Text004, Interface."Import Folder" + '\' +FileName), TRUE, FALSE,0);
+
+        //A,gob-Fuchs,25.07.13,P1043
+        END;
+      END;
+      //E,gob-Fuchs,25.07.13,P1043
+
+      COMMIT;
+      //DYN0006 07.08.12  nas >>>
+      //IF ErrorExist AND UseInterim THEN EXIT;
+      IF (NOT ErrorExist) OR UseInterim THEN BEGIN
+      //DYN0006 07.08.12  nas <<<
+
+        //ArchivFileName := DELCHR(FORMAT(TIME),'=',':') + '_' + FileName;
+        ArchivFileName := FileName;
+
+        IF ISCLEAR(FileSysAutomation) THEN
+          CREATE(FileSysAutomation);
+
+        FullArchiveName := Interface."Archive Root Folder" + '\' + VendorNo + '\';
+        IF NOT FileSysAutomation.FolderExists(FullArchiveName) THEN
+          FileSysAutomation.CreateFolder(FullArchiveName);
+
+        FullArchiveName := FullArchiveName + DELCHR(FORMAT(TODAY),'=','.\/') + '\';
+        IF NOT FileSysAutomation.FolderExists(FullArchiveName) THEN
+          FileSysAutomation.CreateFolder(FullArchiveName);
+
+        //FILE.RENAME
+        //18.07.12  nas check existance >>
+        IF FileSysAutomation.FileExists(FullArchiveName + ArchivFileName) THEN
+          ArchivFileName := DELCHR(FORMAT(TIME),'=',':') + '_' + FileName;
+        //18.07.12  nas check existance <<
+        FileSysAutomation.MoveFile(Interface."Import Folder" + '\' + FileName,
+          FullArchiveName + ArchivFileName);
+
+      //DYN0006 07.08.12  nas >>>
+      END;
+      //DYN0006 07.08.12  nas <<<
+
+      {
+      i := STRPOS(UPPERCASE(FileName),'INVOIC_');
+      IF i > 0 THEN BEGIN
+        ArchFilter := '*' +
+                      COPYSTR(FileName,i + 8,STRLEN(FileName) - i - 10) +
+                      'zip';
+        ArchFiles.SETFILTER("Message Text",ArchFilter);
+        IF ArchFiles.FINDFIRST THEN
+          FILE.RENAME(Interface."Import Folder" + '\' + ArchFiles."Message Text",
+                      FullArchiveName + DELCHR(FORMAT(TIME),'=',':') + '_' + ArchFiles."Message Text");
+      END;
+      }
+    END;
+
+    PROCEDURE SetInterface@1000000006(InterfaceCode@1000000000 : Code[10]);
+    BEGIN
+      Interface.GET(InterfaceCode);
+    END;
+
+    PROCEDURE InsertLogEntry@1113800003(ImportFrmCode@1000000001 : Code[20];MsgText@1113800000 : Text[250];IsError@1113800002 : Boolean;NewImportNo@1113800003 : Boolean;FieldNo@1000000003 : Integer);
+    VAR
+      ErrorText@1113800004 : Text[1024];
+      LastImportNo@1000000000 : Integer;
+      intVar@1000000002 : Integer;
+    BEGIN
+      //H1006  14.04.14  MBY  ++++++++++++++++++++++++++++
+      IFSetup.GET;
+      IF NOT IFSetup."Disable Import Framework Log" THEN BEGIN
+      //H1006  14.04.14  MBY  ----------------------------
+        ImportLog.RESET;
+        IF ImportLog.FINDLAST THEN
+          LastImportNo := ImportLog."Import No."
+        ELSE
+          LastImportNo := 0;
+
+        IF NewImportNo THEN LastImportNo := LastImportNo + 1;
+
+        ImportLog.INIT;
+        ImportLog."Entry No." := 0;
+        ImportLog.Date := TODAY;
+        ImportLog.Time := TIME;
+        ImportLog."Import No." := LastImportNo;
+        ImportLog.Interface := Interface.Code;
+        ImportLog."Proc. Entry No." := ImpDocLine."Entry No.";
+        IF rr1.NUMBER = 36 THEN
+          ImportLog."Source Type" := ImportLog."Source Type"::Sales
+        ELSE
+          ImportLog."Source Type" := ImportLog."Source Type"::Purchase;
+
+        ImportLog."Document No." := GlobalVar[2];
+        IF EVALUATE(intVar,GlobalVar[1]) THEN
+          ImportLog."Document Type" := intVar;
+
+        ImportLog."Field ID" := FieldNo;
+        IF IsError THEN BEGIN
+          ImportLog.Type := ImportLog.Type::Error;
+
+        END ELSE
+          ImportLog.Type := ImportLog.Type::Message;
+
+        ImportLog."Import Framework Code" := ImportFrmCode;
+        ImportLog."Message Text" := MsgText;
+        ImportLog.INSERT;
+      //H1006  14.04.14  MBY  ++++++++++++++++++++++++++++
+      END;
+      //H1006  14.04.14  MBY  ----------------------------
+
+      IF IsError AND UseInterim THEN
+      IF ImpDocLine.StartPos > 0 THEN BEGIN
+        ImpDocLine.Error := TRUE;
+        ImpDocLine."Error Message" := MsgText;
+        ImpDocLine.MODIFY;
+      {
+      END ELSE
+        IF ImpDoc."Entry No." > 0 THEN BEGIN
+          ImpDoc.Error := TRUE;
+          ImpDoc."Error Message" := MsgText;
+          ImpDoc.MODIFY;
+      }
+      END;
+    END;
+
+    PROCEDURE InsertComparisionLog@1000000004(ImportFrameworkLine@1000000007 : Record 50011;NewValue@1000000006 : Text[1000];OldValue@1000000003 : Text[1000]);
+    VAR
+      CompLog@1000000004 : Record 50019;
+      POLine@1000000001 : Record 39;
+      ErrorText@1113800004 : Text[1024];
+      LastImportNo@1000000000 : Integer;
+      intVar@1000000002 : Integer;
+    BEGIN
+      {
+      CompLog.INIT;
+      CompLog."Status Date" := TODAY;
+      CompLog.Interface := Interface.Code;
+      IF rr1.NUMBER = 36 THEN
+        CompLog."Source Type" := CompLog."Source Type"::Sales
+      ELSE
+        CompLog."Source Type" := CompLog."Source Type"::Purchase;
+
+      CompLog."Document No." := GlobalVar[2];
+      IF EVALUATE(intVar,GlobalVar[1]) THEN
+        CompLog."Document Type" := intVar;
+
+      CompLog."Table ID" := ImportFrameworkLine."Table ID";
+      CompLog.Status := ImportFrameworkLine."Field ID";
+      CompLog.Time := NewValue;
+      CompLog."User ID" := OldValue;
+      IF ImportFrameworkLine."Table ID" = 39 THEN BEGIN
+        rr2.SETTABLE(POLine);
+        CompLog."Line No." := POLine."Line No.";
+      END;
+      CompLog.INSERT;
+      }
+    END;
+
+    PROCEDURE GetFieldValue@1140000(ImportFrameworkLine@1140000 : Record 50011;TextLine@1140001 : Text[1024]) : Integer;
+    VAR
+      importvalue@1140009 : Text[250];
+      FieldRef@1140010 : FieldRef;
+      Field@1140011 : Record 2000000041;
+      decVar@1140012 : Decimal;
+      intVar@1000000000 : Integer;
+      dateVar@1000000001 : Date;
+      oldValue@1000000002 : Text[250];
+      returnValue@1000000003 : Integer;
+      BoolVar@1000000004 : Boolean;
+    BEGIN
+      WITH ImportFrameworkLine DO BEGIN
+        // S/P1076
+        IF NOT UseInterim THEN // fÅr RHENUS schon vorher prÅfen
+          IF NOT CheckStipulation(ImportFrameworkLine,TextLine) THEN
+            EXIT(0);
+        // E/P1076
+        CASE "Action Taken" OF
+          "Action Taken"::"Open/Init" : BEGIN
+             CASE RecordRef OF
+                RecordRef::"1": BEGIN rr1.CLOSE;rr1.OPEN("Table ID");rr1.LOCKTABLE;rr1.INIT;END;
+                RecordRef::"2": BEGIN rr2.CLOSE;rr2.OPEN("Table ID");rr2.LOCKTABLE;rr2.INIT;END;
+                RecordRef::"3": BEGIN rr3.CLOSE;rr3.OPEN("Table ID");rr3.LOCKTABLE;rr3.INIT;END;
+                RecordRef::"4": BEGIN rr4.CLOSE;rr4.OPEN("Table ID");rr4.LOCKTABLE;rr4.INIT;END;
+                RecordRef::"5": BEGIN rr5.CLOSE;rr5.OPEN("Table ID");rr5.LOCKTABLE;rr5.INIT;END;
+             END;
+          END;
+        END;
+
+        importvalue := '';
+        IF StartPos <> 0 THEN BEGIN
+          IF UseInterim THEN
+            importvalue := TextLine //new
+          ELSE BEGIN
+            //a/gob-sfe/P0191/15.08.2012
+            IF ImportFrameworkLine."Backwards Counting" THEN BEGIN
+              importvalue := DELCHR(COPYSTR(COPYSTR(DELCHR(TextLine,'<>',' '),
+                STRLEN(importvalue)-StartPos,Length),1,MAXSTRLEN(importvalue)),'<>',' ')
+            END ELSE
+            //e/gob-sfe/P0191/15.08.2012
+              importvalue := DELCHR(COPYSTR(COPYSTR(DELCHR(TextLine,'<>',' '),StartPos,Length),1,MAXSTRLEN(importvalue)),'<>',' ');
+          END;
+        END;
+
+        // DYN0019 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        IF ImportFrameworkLine."Value Filter" <> '' THEN
+          IF importvalue <> ImportFrameworkLine."Value Filter" THEN
+            EXIT(1);
+        // DYN0019 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+        IF "Fixed Value" <> '' THEN
+          importvalue := "Fixed Value";
+
+        IF "Field ID" <> 0 THEN BEGIN
+          CASE RecordRef OF
+             RecordRef::"1": BEGIN FieldRef :=rr1.FIELD("Field ID");END;
+             RecordRef::"2": BEGIN FieldRef :=rr2.FIELD("Field ID");END;
+             RecordRef::"3": BEGIN FieldRef :=rr3.FIELD("Field ID");END;
+             RecordRef::"4": BEGIN FieldRef :=rr4.FIELD("Field ID");END;
+             RecordRef::"5": BEGIN FieldRef :=rr5.FIELD("Field ID");END;
+          END;
+
+          IF NOT Field.GET("Table ID","Field ID") THEN
+            Field.INIT;
+
+          oldValue := FORMAT(FieldRef.VALUE);
+
+          IF "Call Function" <> 0 THEN BEGIN
+            returnValue := FunctionCall(ImportFrameworkLine,importvalue,FieldRef);
+            IF returnValue > 0 THEN
+              EXIT(returnValue);
+          END ELSE
+            IF importvalue <> '' THEN
+              CASE Field.Type OF
+                Field.Type::Text      : BEGIN
+                  FieldRef.VALUE := COPYSTR(importvalue,1,Field.Len);
+                END;
+                Field.Type::Code      : BEGIN
+                  IF "Validate Field" THEN FieldRef.VALIDATE(COPYSTR(importvalue,1,Field.Len))
+                  ELSE FieldRef.VALUE := COPYSTR(importvalue,1,Field.Len);
+                END;
+                Field.Type::Decimal   : BEGIN
+                  IF EVALUATE(decVar,importvalue) THEN FieldRef.VALUE := decVar
+                  ELSE BEGIN
+                    InsertLogEntry(
+                      ImportFrameworkLine.Code,
+                      STRSUBSTNO(Text006, FieldRef.CAPTION, importvalue), TRUE, FALSE,FieldRef.NUMBER);
+                    FieldRef.VALUE := 0;
+                  END;
+                END;
+                Field.Type::Integer   : BEGIN
+                  IF EVALUATE(intVar,importvalue) THEN FieldRef.VALUE := intVar
+                  ELSE BEGIN
+                    InsertLogEntry(
+                      ImportFrameworkLine.Code,
+                      STRSUBSTNO(Text006, FieldRef.CAPTION, importvalue), TRUE, FALSE,FieldRef.NUMBER);
+                    FieldRef.VALUE := 0;
+                  END;
+                END;
+                Field.Type::Date      : BEGIN
+                  IF EVALUATE(dateVar,importvalue) THEN FieldRef.VALUE := dateVar
+                  ELSE BEGIN
+                    InsertLogEntry(
+                      ImportFrameworkLine.Code,
+                      STRSUBSTNO(Text006, FieldRef.CAPTION, importvalue), TRUE, FALSE,FieldRef.NUMBER);
+                    FieldRef.VALUE := 0D;
+                  END;
+                END;
+                Field.Type::Option    : BEGIN
+                  IF EVALUATE(intVar,importvalue) THEN FieldRef.VALUE := intVar
+                  ELSE BEGIN
+                    InsertLogEntry(
+                      ImportFrameworkLine.Code,
+                      STRSUBSTNO(Text006, FieldRef.CAPTION, importvalue), TRUE, FALSE,FieldRef.NUMBER);
+                    FieldRef.VALUE := 0;
+                  END;
+                END;
+
+                // DYN0019 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                Field.Type::Boolean   : BEGIN
+                  IF EVALUATE(BoolVar,importvalue) THEN
+                    FieldRef.VALUE := BoolVar
+                  ELSE BEGIN
+                    InsertLogEntry(
+                      ImportFrameworkLine.Code,
+                      STRSUBSTNO(Text006, FieldRef.CAPTION, importvalue), TRUE, FALSE,FieldRef.NUMBER);
+                    FieldRef.VALUE := 0;
+                  END;
+                END;
+                // DYN0019 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+              END;
+
+          IF "Action Taken" = "Action Taken"::Compare THEN BEGIN
+            IF oldValue <> FORMAT(FieldRef.VALUE) THEN
+              InsertComparisionLog(ImportFrameworkLine,FORMAT(FieldRef.VALUE),oldValue);
+            {
+              InsertLogEntry(
+                ImportFrameworkLine.Code,
+                STRSUBSTNO(Text010, FieldRef.CAPTION, oldValue,FORMAT(FieldRef.VALUE)),
+                TRUE, FALSE,FieldRef.NUMBER);
+                }
+          END;
+
+          //S/P0711
+          //IF (oldValue <> FORMAT(FieldRef.VALUE)) AND "Validate Field" THEN FieldRef.VALIDATE;
+          IF (oldValue <> FORMAT(FieldRef.VALUE)) AND ("Validate Field")  AND (NOT Transfer) THEN
+            FieldRef.VALIDATE;
+          //E/P0711
+        END ELSE
+          IF "Call Function" <> 0 THEN BEGIN
+            returnValue := FunctionCall(ImportFrameworkLine,importvalue,FieldRef);
+            IF returnValue > 0 THEN
+              EXIT(returnValue);
+          END;
+
+        // DYN0019 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        //original IF ImportFrameworkLine."Value Filter" <> '' THEN
+        //original   IF importvalue <> ImportFrameworkLine."Value Filter" THEN EXIT(1);
+        // DYN0019 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+        IF ImportFrameworkLine."Field ID" <> 0 THEN
+          SaveInGlobal(ImportFrameworkLine,FORMAT(FieldRef.VALUE))
+        ELSE
+          SaveInGlobal(ImportFrameworkLine,importvalue);
+
+        IF "Find if Exists" THEN
+           CASE RecordRef OF
+              RecordRef::"1": BEGIN IF NOT rr1.FIND('=') THEN;END;
+              RecordRef::"2": BEGIN IF NOT rr2.FIND('=') THEN;END;
+              RecordRef::"3": BEGIN IF NOT rr3.FIND('=') THEN;END;
+              RecordRef::"4": BEGIN IF NOT rr4.FIND('=') THEN;END;
+              RecordRef::"5": BEGIN IF NOT rr5.FIND('=') THEN;END;
+           END;
+
+        CASE "Action Taken" OF
+          "Action Taken"::"Insert/Modify" : BEGIN
+             CASE RecordRef OF
+                RecordRef::"1": BEGIN IF NOT rr1.INSERT("Run Trigger") THEN rr1.MODIFY("Run Trigger");END;
+                RecordRef::"2": BEGIN IF NOT rr2.INSERT("Run Trigger") THEN rr2.MODIFY("Run Trigger");END;
+                RecordRef::"3": BEGIN IF NOT rr3.INSERT("Run Trigger") THEN rr3.MODIFY("Run Trigger");END;
+                RecordRef::"4": BEGIN IF NOT rr4.INSERT("Run Trigger") THEN rr4.MODIFY("Run Trigger");END;
+                RecordRef::"5": BEGIN IF NOT rr5.INSERT("Run Trigger") THEN rr5.MODIFY("Run Trigger");END;
+             END;
+          END;
+
+          "Action Taken"::Insert : BEGIN
+             CASE RecordRef OF
+                RecordRef::"1": BEGIN rr1.INSERT;rr1.CLOSE;END;
+                RecordRef::"2": BEGIN rr2.INSERT;rr2.CLOSE;END;
+                RecordRef::"3": BEGIN rr3.INSERT;rr3.CLOSE;END;
+                RecordRef::"4": BEGIN rr4.INSERT;rr4.CLOSE;END;
+                RecordRef::"5": BEGIN rr5.INSERT;rr5.CLOSE;END;
+             END;
+          END;
+
+          "Action Taken"::Modify : BEGIN
+             CASE RecordRef OF
+                RecordRef::"1": BEGIN rr1.MODIFY;rr1.CLOSE;END;
+                RecordRef::"2": BEGIN rr2.MODIFY;rr2.CLOSE;END;
+                RecordRef::"3": BEGIN rr3.MODIFY;rr3.CLOSE;END;
+                RecordRef::"4": BEGIN rr4.MODIFY;rr4.CLOSE;END;
+                RecordRef::"5": BEGIN rr5.MODIFY;rr5.CLOSE;END;
+             END;
+          END;
+        END;
+      END;
+      EXIT(0);
+    END;
+
+    PROCEDURE ProcessLine@1000000000(TextLine@1000000003 : Text[1024]);
+    VAR
+      StartText@1000000002 : Text[30];
+      ImportFrm@1000000001 : Record 50010;
+      ImportFrmLine@1000000000 : Record 50011;
+      i@1000000005 : Integer;
+      NextLoop@1000000004 : Integer;
+    BEGIN
+      IFSetup.GET;
+      TextLine := DELCHR(TextLine,'<>',' ');
+      StartText := DELCHR(COPYSTR(TextLine,1,Interface."Start Characters Amount"),'<>',' ');
+      ImportFrm.RESET;
+      ImportFrm.SETRANGE(Blocked,FALSE);
+      ImportFrm.SETRANGE("Interface Code",Interface.Code);
+      ImportFrm.SETRANGE("Import/Export",ImportFrm."Import/Export"::Import);
+      ImportFrm.SETRANGE("Start Characters",StartText);
+
+      IF ImportFrm.FINDSET THEN
+        REPEAT
+          //InsertLogEntry(ImportFrm.Code, STRSUBSTNO(Text003, ImportFrm."Start Characters"), FALSE, FALSE);
+          ImportFrmLine.RESET;
+          ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+          IF ImportFrmLine.FINDSET THEN
+            REPEAT
+              NextLoop := GetFieldValue(ImportFrmLine,DELCHR(TextLine,'<>',' '));
+            UNTIL (ImportFrmLine.NEXT = 0) OR (NextLoop > 0);
+        UNTIL (ImportFrm.NEXT = 0) OR ErrorExist;
+    END;
+
+    PROCEDURE FillInterim@1000000012(TextLine@1000000003 : Text[1024];FileName@1000000006 : Text[250]);
+    VAR
+      StartText@1000000002 : Text[30];
+      ImportFrm@1000000001 : Record 50010;
+      ImportFrmLine@1000000000 : Record 50011;
+      i@1000000005 : Integer;
+      NextLoop@1000000004 : Boolean;
+    BEGIN
+      IFSetup.GET;
+      TextLine := DELCHR(TextLine,'<>',' ');
+      StartText := DELCHR(COPYSTR(TextLine, 1, Interface."Start Characters Amount"), '<>', ' ');
+      ImportFrm.RESET;
+      ImportFrm.SETRANGE(Blocked, FALSE);
+      ImportFrm.SETRANGE("Interface Code", Interface.Code);
+      ImportFrm.SETRANGE("Import/Export", ImportFrm."Import/Export"::Import);
+      ImportFrm.SETRANGE("Start Characters", StartText);
+
+      IF ImportFrm.FINDSET THEN
+        REPEAT
+          ImpDoc.INIT;
+          ImpDoc."Entry No." := 0;
+          ImpDoc."Creation Date" := CURRENTDATETIME;
+          ImpDoc."Start Text" := StartText;
+          ImpDoc."File Name" := FileName;
+          ImpDoc.Interface := Interface.Code;
+          ImpDoc."Import Framework Code" := ImportFrm.Code;
+          ImpDoc.INSERT;
+
+          //InsertLogEntry(ImportFrm.Code, STRSUBSTNO(Text003, ImportFrm."Start Characters"), FALSE, FALSE);
+          ImportFrmLine.RESET;
+          ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+          ImportFrmLine.SETFILTER(StartPos,'<>0');
+          IF ImportFrmLine.FINDSET THEN
+            REPEAT
+              // S/P1076
+              IF CheckStipulation(ImportFrmLine, TextLine) THEN BEGIN
+                // E/P1076
+                ImpDocLine.INIT;
+                ImpDocLine."Entry No." := ImpDoc."Entry No.";
+                ImpDocLine."Line No" := ImportFrmLine."Line No";
+                ImpDocLine.Description := ImportFrmLine.Description;
+                ImpDocLine.StartPos := ImportFrmLine.StartPos;
+                //a/gob-sfe/P0191/15.08.2012
+                IF ImportFrmLine."Backwards Counting" THEN BEGIN
+                  ImpDocLine."Field Value" :=
+                    DELCHR(COPYSTR(COPYSTR(DELCHR(TextLine,'<>',' '),
+                      STRLEN(TextLine)-ImportFrmLine.StartPos,ImportFrmLine.Length),1,250),'<>',' ');
+                  //ImpDocLine.StartPos := STRLEN(TextLine)-ImportFrmLine.StartPos; //P0606/gob-sfe/23.11.12
+                END ELSE
+                //a/gob-sfe/P0191/15.08.2012
+                  ImpDocLine."Field Value" :=
+                    DELCHR(COPYSTR(COPYSTR(DELCHR(TextLine,'<>',' '),ImportFrmLine.StartPos,ImportFrmLine.Length),1,250),'<>',' ');
+                ImpDocLine.INSERT;
+
+                IF ImportFrmLine."Find if Exists" THEN BEGIN
+                  ImpDoc."Document No." := ImpDocLine."Field Value";
+                  ImpDoc.MODIFY;
+                END;
+                // S/P1076
+              END;
+              // E/P1076
+            UNTIL ImportFrmLine.NEXT = 0;
+
+            ImpDoc.Imported := TRUE;
+            ImpDoc.MODIFY;
+        UNTIL ImportFrm.NEXT = 0;
+    END;
+
+    PROCEDURE ProcessInterim@1000000013();
+    VAR
+      StartText@1000000002 : Text[30];
+      ImportFrm@1000000001 : Record 50010;
+      ImportFrmLine@1000000000 : Record 50011;
+      ImpDoc2@1000000006 : Record 50034;
+      i@1000000005 : Integer;
+      NextLoop@1000000004 : Integer;
+      FieldValue@1000000003 : Text[250];
+      ImpDocTmp@1000000007 : TEMPORARY Record 50034;
+    BEGIN
+      // S/P1047
+      CLEAR(gFilename);
+      // E/P1047
+      ImpDoc.RESET;
+      ImpDoc.SETCURRENTKEY(Interface,Imported,Complete,"Import Framework Code","Document No.");
+      ImpDoc.SETRANGE(Interface,Interface.Code);
+      ImpDoc.SETRANGE(Imported,TRUE);
+      ImpDoc.SETRANGE(Complete,FALSE);
+
+      //DYN0008  08.08.12  nas  run only new entries >>
+      IF NOT ProcessErrors THEN
+        ImpDoc.SETRANGE(Error,FALSE);
+
+      //A,gob-Fuchs,23.10.12,P0493
+      IF gReprocessCompleted THEN BEGIN
+        ImpDoc.RESET;
+        ImpDoc.SETCURRENTKEY("Entry No.");
+        ImpDoc.SETRANGE("Entry No.",gEntryNo);
+      END;
+      //E,gob-Fuchs,23.10.12,P0493
+
+      IF ImpDocTmp.FINDSET THEN
+        ImpDocTmp.DELETEALL;
+
+      //A/gob-adb/08.07.13
+      //IF ImpDoc.FINDSET(TRUE,TRUE) THEN
+      IF ImpDoc.FIND('-') THEN
+      //E/gob-adb/08.07.13
+        REPEAT
+          ImpDocTmp := ImpDoc;
+          ImpDocTmp.INSERT;
+          // H0670 FX 07.11.13 ++++++++++++
+          FillWEMTable(ImpDoc);
+          // H0670 FX 07.11.13 --------------
+        UNTIL ImpDoc.NEXT = 0;
+
+      //DYN0008  08.08.12  nas  run only new entries <<
+      IF ImpDocTmp.FINDSET THEN
+
+      //Schleife Åber Temp
+      REPEAT
+        // S/P1047
+        gFilename := ImpDocTmp."File Name";
+        // E/P1047
+        ImpDoc.GET(ImpDocTmp."Entry No.");
+
+        ImportFrm.GET(ImpDoc."Import Framework Code");
+        ImportFrmLine.RESET;
+        Post := TRUE;
+        ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+        IF ImpDoc."Document No." <> '' THEN BEGIN
+          ImpDoc.SETRANGE("Import Framework Code",ImpDoc."Import Framework Code");
+          ImpDoc.SETRANGE("Document No.",ImpDoc."Document No.");
+        END ELSE
+          ImpDoc.SETRANGE("Entry No.",ImpDoc."Entry No.");
+
+        ImpDocLine.RESET;
+        ImpDocLine.SETRANGE("Entry No.",ImpDoc."Entry No.");
+        ImpDocLine.MODIFYALL(Error,FALSE);
+        ImpDocLine.MODIFYALL("Error Message",'');
+
+        //Schleife Åber tats. ImpDocs
+        //REPEAT //gob-sfe/P0459/18.10.12
+          IF ImportFrm.Blocked THEN NextLoop := 3;
+          IF (NOT ImportFrm.Blocked) AND ImportFrmLine.FINDSET THEN
+            REPEAT
+              FieldValue := '';
+              ImpDocLine.RESET;
+              IF ImportFrmLine.StartPos > 0 THEN BEGIN
+                ImpDocLine.SETRANGE("Entry No.",ImpDoc."Entry No.");
+                ImpDocLine.SETRANGE(StartPos,ImportFrmLine.StartPos);
+                // S/P1076
+                ImpDocLine.SETRANGE("Line No",ImportFrmLine."Line No");
+                IF ImpDocLine.ISEMPTY THEN
+                  i := 1
+                ELSE
+                  i := 0;
+                // E/P1076
+                IF ImpDocLine.FINDFIRST THEN
+                  FieldValue := ImpDocLine."Field Value"
+              END ELSE
+                ImpDocLine.INIT;
+              // S/P1076
+              IF i = 0 THEN
+              // E/P1076
+              NextLoop := GetFieldValue(ImportFrmLine,FieldValue);
+              ImpDocLine.RESET;
+            UNTIL (ImportFrmLine.NEXT = 0) OR (NextLoop > 0);
+
+          //DYN0004  06.08.12  nas skip ORDER-INFO lines in STA - fix >>
+          IF (NextLoop = 0) OR (NextLoop = 5) THEN BEGIN
+          //DYN0004  06.08.12  nas skip ORDER-INFO lines in STA - fix <<
+            ImpDoc2.GET(ImpDoc."Entry No.");
+            ImpDoc2.Complete := TRUE;
+            ImpDoc2.Error := FALSE;
+            ImpDoc2."Error Message" := '';
+            ImpDoc2.MODIFY;
+            COMMIT;
+          END;
+          IF NextLoop = 3 THEN BEGIN
+            ImpDoc2.COPYFILTERS(ImpDoc);
+            ImpDoc2.MODIFYALL(ImpDoc2.Complete,TRUE);
+            COMMIT;
+          END;
+
+        //UNTIL (ImpDoc.NEXT = 0) OR (NextLoop > 0); //gob-sfe/P0459/18.10.12
+
+        IF ImpDoc.FINDLAST THEN
+          ;
+
+        IF ImpDoc."Document No." <> '' THEN BEGIN
+          ImpDoc.SETRANGE("Document No.");
+          ImpDoc.SETRANGE("Import Framework Code");
+        END ELSE
+          ImpDoc.SETRANGE("Entry No.");
+
+      UNTIL ImpDocTmp.NEXT = 0;
+    END;
+
+    PROCEDURE FunctionCall@1140001(ImportFrameworkLine@1140007 : Record 50011;ImportedValue@1000000000 : Text[250];VAR FieldRef@1000000001 : FieldRef) : Integer;
+    VAR
+      CommentLine@1000000006 : Record 43;
+      POLine@1000000026 : Record 39;
+      POLine2@1000000007 : Record 39;
+      POLine3@1000000045 : Record 39;
+      SO@1000000030 : Record 36;
+      SOLine@1000000028 : Record 37;
+      SOLine2@1000000027 : Record 37;
+      SOImportLog@1000000034 : Record 50001;
+      Item@1000000009 : Record 27;
+      ItemCrossReference@1000000010 : Record 5717;
+      Res@1000000035 : Record 156;
+      SalesLine@1000000012 : Record 37;
+      PurchLine@1000000013 : Record 39;
+      RhenusSetupHistory@1000000014 : Record 50021;
+      UOM@1000000017 : Record 204;
+      InvSetup@1000000018 : Record 313;
+      TOrder@1000000019 : Record 5740;
+      TOLine@1000000020 : Record 5741;
+      Location@1000000021 : Record 14;
+      ItemJLine@1000000024 : Record 83;
+      ImpDoc2@1000000031 : Record 50034;
+      ParcelStatusDHL@1000000032 : Record 50021;
+      DHLSetup@1000000033 : Record 50022;
+      Purchasing@1170000000 : Record 5721;
+      TransferPostShipment@1000000023 : Codeunit 5704;
+      TransferPostReceipt@1000000022 : Codeunit 5705;
+      ItemJPost@1000000025 : Codeunit 22;
+      SalesPost@1000000016 : Codeunit 80;
+      PurchPost@1000000015 : Codeunit 90;
+      tempBText@1000000011 : BigText;
+      decVar@1000000004 : Decimal;
+      intVar@1000000003 : Integer;
+      dateVar@1000000002 : Date;
+      timeVar@1000000029 : Time;
+      LastLineNo@1000000008 : Integer;
+      TempStatus@1000000005 : Integer;
+      DocLog@1000000036 : Record 50070;
+      SONo@1000000037 : Code[20];
+      "--- P0073 ---"@1000000039 : Integer;
+      SalesHeaderArchive@1000000040 : Record 5107;
+      SalesLineArchive@1000000038 : Record 5108;
+      SalesLineArchive2@1000000041 : Record 5108;
+      ImportFrameworkDocumentLine@1000000042 : Record 50035;
+      SalesHeaderGOB@1000000043 : Record 36;
+      SalesHeaderArchivGOB@1000000044 : Record 5107;
+      Transferline2@1000000046 : Record 5741;
+      TempTimeStamp@1000000048 : DateTime;
+      NewStatus@1000000049 : Boolean;
+      FPCGeneralSetup@1000000050 : Record 50055;
+      InterfaceProcessMgt@1000000051 : Codeunit 50087;
+      rPurchHeader@1000000053 : Record 38;
+      LT_InvImpExt@1000000047 : Record 50135;
+      ParcelStatusHistory@1000000052 : Record 80013;
+      ParcelStatusHistoryArchive@1000000055 : Record 50187;
+    BEGIN
+      //S/P1133
+      FPCGeneralSetup.GET;
+      //E/P1133
+
+      ImportedValue := DELCHR(ImportedValue,'<>',' ');
+      CASE ImportFrameworkLine."Call Function" OF
+        1 : BEGIN // recognize document type
+              CASE ImportedValue OF
+                '220' : FieldRef.VALIDATE(1);
+                '380' : FieldRef.VALIDATE(2);
+                '381' : FieldRef.VALIDATE(3);
+                '1'   : FieldRef.VALIDATE(1);
+                '12'  : FieldRef.VALIDATE(1);
+                '2'   : FieldRef.VALIDATE(5);
+                ELSE
+                  FieldRef.VALIDATE(1);
+                  InsertLogEntry(
+                    ImportFrameworkLine.Code,
+                    STRSUBSTNO(Text006, FieldRef.CAPTION, ImportedValue), TRUE, FALSE,FieldRef.NUMBER);
+              END;
+            END;
+        2 : BEGIN // get decimal 3 digits
+
+              // 5.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+              //original IF EVALUATE(decVar,ImportedValue) THEN FieldRef.VALUE := (decVar/1000)
+              IF EVALUATE(decVar,ImportedValue) THEN BEGIN
+                FieldRef.VALUE := (decVar/1000);
+                IF (ImportFrameworkLine."Table ID" = 39) AND (ImportFrameworkLine."Field ID" = 103) THEN BEGIN
+                  rr2.SETTABLE(POLine);
+                  IF (POLine."Direct Unit Cost" = 0) AND (POLine.Quantity <> 0) AND (decVar <> 0) THEN
+                    POLine.VALIDATE("Direct Unit Cost",ROUND(decVar/1000/POLine.Quantity,0.00001));
+
+                  // 6.00 B DYN(eich) 07.08.12 >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                  // DYN0019 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                  //original  IF POLine."Direct Unit Cost" <> 0 THEN
+                  IF (POLine."Direct Unit Cost" = 0) OR (POLine.Quantity = 0) THEN
+                    FieldRef.VALUE := 0
+                  ELSE
+                  // DYN0019 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+                  // 6.00 E DYN(eich) 07.08.12 <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+                    POLine.VALIDATE("Line Amount",ROUND(decVar/1000));
+                  POLine.MODIFY;
+                  rr2.GETTABLE(POLine);
+                END;
+              END
+              // 5.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+              ELSE BEGIN
+                InsertLogEntry(
+                 ImportFrameworkLine.Code,
+                 STRSUBSTNO(Text006, FieldRef.CAPTION, ImportedValue), TRUE, FALSE,FieldRef.NUMBER);
+                FieldRef.VALUE := 0;
+              END;
+            END;
+        3 : BEGIN // get decimal 4 digits
+              IF EVALUATE(decVar,ImportedValue) THEN FieldRef.VALUE := (decVar/10000)
+              ELSE BEGIN
+                InsertLogEntry(
+                  ImportFrameworkLine.Code,
+                  STRSUBSTNO(Text006, FieldRef.CAPTION, ImportedValue), TRUE, FALSE,FieldRef.NUMBER);
+                FieldRef.VALUE := 0;
+              END;
+            END;
+        4 : BEGIN // find vendor
+              Vendor.RESET;
+              Vendor.SETRANGE(Vendor."GLN/ILN",GlobalVar[3]);
+              IF Vendor.FINDFIRST THEN BEGIN
+                VendorNo := Vendor."No.";
+
+                // DYN0019 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                //original Vendor.SETRANGE(Vendor."VAT Registration No.",ImportedValue);
+                IF ImportedValue <> '' THEN
+                  Vendor.SETRANGE(Vendor."VAT Registration No.",DELCHR(ImportedValue,'=',' '));
+                // DYN0019 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+                IF Vendor.FINDFIRST THEN BEGIN
+                  IF GlobalVar[1] = '2' THEN
+                    Vendor.TESTFIELD(Vendor."Invoice Processing",TRUE);
+                  ChargeAccNo := Vendor."Charge Account No.";
+                  ItemAccNo := Vendor."Item G/L Account No.";
+                  VendorNo := Vendor."No.";
+                  FieldRef.VALUE := Vendor."No.";
+                END ELSE BEGIN
+
+                  // DYN0019 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                  IF ImportedValue <> '' THEN BEGIN
+                  // DYN0019 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+                    InsertLogEntry(
+                      ImportFrameworkLine.Code,
+                      STRSUBSTNO(Text019, ImportedValue, VendorNo), TRUE, FALSE,FieldRef.NUMBER);
+                    //ERROR(Text019, ImportedValue, VendorNo);
+                    ErrorExist := TRUE;
+                    EXIT(2);
+
+                  // DYN0019 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                  END;
+                  // DYN0019 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+                END;
+              END ELSE BEGIN
+                InsertLogEntry(
+                  ImportFrameworkLine.Code,
+                  STRSUBSTNO(Text008, GlobalVar[3]), TRUE, FALSE,FieldRef.NUMBER);
+                  ErrorExist := TRUE;
+                //ERROR(Text008, GlobalVar[3]);
+                EXIT(2);
+              END;
+            END;
+        5 : BEGIN // find comment header
+              IF EVALUATE(intVar,GlobalVar[1]) THEN BEGIN
+                CommentLine.SETRANGE("Document Type",intVar);
+                CommentLine.SETRANGE("No.",GlobalVar[2]);
+                IF CommentLine.FINDLAST THEN
+                  LastLineNo := CommentLine."Line No." + 10000
+                ELSE
+                  LastLineNo := 10000;
+                CommentLine.INIT;
+                CommentLine."Document Type" := intVar;
+                CommentLine."No." := GlobalVar[2];
+                CommentLine."Line No." := LastLineNo;
+                CommentLine.Date := WORKDATE;
+                CommentLine.INSERT;
+                rr2.GETTABLE(CommentLine);
+              END;
+            END;
+        6 : BEGIN // create line
+              IF EVALUATE(intVar,GlobalVar[1]) THEN BEGIN
+                POLine.INIT;
+                POLine.SETRANGE(POLine."Document Type",intVar);
+                POLine.SETRANGE(POLine."Document No.",GlobalVar[2]);
+                IF POLine.FINDLAST THEN
+                  LastLineNo := POLine."Line No." + 10000
+                ELSE
+                  LastLineNo := 10000;
+                POLine.INIT;
+                POLine."Document Type" := intVar;
+                POLine."Document No." := GlobalVar[2];
+                POLine."Line No." := LastLineNo;
+                IF EVALUATE(intVar,ImportedValue) THEN
+                  POLine.VALIDATE(Type,intVar);
+
+                IF EVALUATE(decVar,GlobalVar[4]) THEN
+                  POLine."VAT %" := decVar;
+                //A/gob-rste/04.06.12/GOB1.00
+                //POLine."Dropshipnr." := GetBigIntFromText(GlobalVar[5]);
+
+                // 5.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                //original POLine."Dropshipnr." := GlobalVar[5];
+                POLine."Dropshipnr." := GetOrderFromText(GlobalVar[5]);
+                // 5.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+                //E/gob-rste/04.06.12/GOB1.00
+                POLine.INSERT(TRUE);
+                rr2.GETTABLE(POLine);
+
+              END;
+            END;
+        7 : BEGIN // calc VAT
+              IF EVALUATE(decVar,GlobalVar[4]) THEN
+                FieldRef.VALUE := decVar;
+                rr2.SETTABLE(POLine);
+                //A/gob-rste/04.06.12/GOB1.00
+                //POLine."Dropshipnr." := GetBigIntFromText(GlobalVar[5]);
+
+                // 5.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                //original POLine."Dropshipnr." := GlobalVar[5];
+                POLine."Dropshipnr." := GetOrderFromText(GlobalVar[5]);
+                // 5.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+                //E/gob-rste/04.06.12/GOB1.00
+                POLine.MODIFY;
+                rr2.GETTABLE(POLine);
+            END;
+        8 : BEGIN // check vendor type
+              IF ImportedValue <> 'SU' THEN EXIT(1);
+            END;
+        9 : BEGIN // check company GNL
+
+              // 6.00 B DYN(eich) 07.08.12 >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+              //original CompanyInfo.TESTFIELD(CompanyInfo."GLN/ILN",ImportedValue);
+              IF CompanyInfo."GLN/ILN" <> ImportedValue THEN BEGIN
+                Location.RESET;
+                Location.SETRANGE("GLN/ILN",ImportedValue);
+                IF NOT Location.FINDFIRST THEN
+                  CompanyInfo.TESTFIELD(CompanyInfo."GLN/ILN",ImportedValue);
+              END;
+              // 6.00 E DYN(eich) 07.08.12 <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+            END;
+        10 : BEGIN // get Purch. Header
+              rr1.SETTABLE(PurchHeader);
+              FieldRef.VALUE := PurchHeader."No.";
+              InsertLogEntry(
+                ImportFrameworkLine.Code,
+                STRSUBSTNO(Text011, Text016, PurchHeader."No."), FALSE, FALSE,0);
+            END;
+        11 : BEGIN // get item
+
+              // 7.00 B DYN(eich) 07.08.12 >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+              // complete redesign
+              // DYN0019 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+              rr2.SETTABLE(POLine);
+              IF (POLine."Cross-Reference No." = '') AND Item.GET(ImportedValue) THEN
+                FieldRef.VALUE := ImportedValue
+              ELSE
+              // DYN0019 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+              WITH ItemCrossReference DO BEGIN
+                RESET;
+                SETCURRENTKEY("Cross-Reference No.","Cross-Reference Type","Cross-Reference Type No.","Discontinue Bar Code");
+                SETRANGE("Cross-Reference No.",ImportedValue);
+                SETFILTER("Cross-Reference Type",'%1|%2',"Cross-Reference Type"::"Bar Code","Cross-Reference Type"::" ");
+                SETRANGE("Discontinue Bar Code",FALSE);
+                IF FINDLAST THEN
+
+                  // DYN0019 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                  //original FieldRef.VALUE := ImportedValue
+                  FieldRef.VALUE := ItemCrossReference."Item No."
+                  // DYN0019 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+                ELSE
+                  InsertLogEntry(ImportFrameworkLine.Code,
+                    STRSUBSTNO(Text009,ImportedValue),TRUE,FALSE,FieldRef.NUMBER);
+              END;
+              rr2.SETTABLE(POLine);
+              POLine.VALIDATE(Type,POLine.Type::"G/L Account");
+              Vendor.TESTFIELD("Item G/L Account No.");
+              POLine.VALIDATE("No.",Vendor."Item G/L Account No.");
+              POLine."Dropshipnr." := GetOrderFromText(GlobalVar[5]);
+              POLine."Cross-Reference No." := FieldRef.VALUE;
+              POLine."Status Code" := 'IMPORT';
+              POLine.MODIFY;
+              rr2.GETTABLE(POLine);
+              // 7.00 E DYN(eich) 07.08.12 <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+            END;
+        12 : BEGIN // get Charge Account
+              rr2.SETTABLE(POLine);
+              IF POLine."Direct Unit Cost" = 0 THEN BEGIN
+                POLine.DELETE;
+                EXIT(2);
+              END;
+
+              // DYN0019 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+              LT_InvImpExt.RESET;
+              LT_InvImpExt.SETRANGE("Vendor No.",Vendor."No.");
+              LT_InvImpExt.SETRANGE("Import Extention",ImportedValue);
+              IF NOT LT_InvImpExt.FINDFIRST THEN
+                LT_InvImpExt.SETRANGE("Import Extention",'');
+              IF LT_InvImpExt.FINDFIRST THEN BEGIN
+                LT_InvImpExt.TESTFIELD("Item Charge No.");
+                CASE LT_InvImpExt."Item Charge Type" OF
+                  LT_InvImpExt."Item Charge Type"::"G/L Account":
+                    POLine.VALIDATE(Type,POLine.Type::"G/L Account");
+                  LT_InvImpExt."Item Charge Type"::"Item Charge":
+                    POLine.VALIDATE(Type,POLine.Type::"Charge (Item)");
+                END; //case
+                POLine.VALIDATE("No.",LT_InvImpExt."Item Charge No.");
+                POLine."Dropshipnr." := GetOrderFromText(GlobalVar[5]);
+                POLine."Status Code" := 'IMPORT-H';
+                POLine.MODIFY;
+                rr2.GETTABLE(POLine);
+              END ELSE BEGIN
+              // DYN0019 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+                Vendor.TESTFIELD("Charge Account No.");
+                FieldRef.VALUE := Vendor."Charge Account No.";
+
+              // DYN0019 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+              END;
+              // DYN0019 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+            END;
+        13 : BEGIN // get currency
+              IF GLSetup."LCY Code" = ImportedValue THEN
+                FieldRef.VALUE := ''
+              ELSE
+                FieldRef.VALUE := ImportedValue;
+            END;
+        14 : BEGIN // get sales line
+              rr1.SETTABLE(SalesHeader);
+              rr2.SETTABLE(SalesLine);
+              // S/P1041
+              SalesLine.SETRANGE("Document Type",SalesHeader."Document Type");
+              SalesLine.SETRANGE("Document No.",SalesHeader."No.");
+              // S/P1041-1
+              //IF (FORMAT(rr2.FIELD(4)) <> '0') THEN
+              //  SalesLine.SETFILTER("Line No.",FORMAT(rr2.FIELD(4)));
+              IF (FORMAT(rr2.FIELD(6)) <> '0') THEN
+                SalesLine.SETFILTER("No.",FORMAT(rr2.FIELD(6)));
+              // E/P1041-1
+              EVALUATE(intVar,ImportedValue);
+              SalesLine.SETRANGE("Seq. No.",intVar);
+              IF SalesLine.FINDFIRST THEN
+                rr2.GETTABLE(SalesLine)
+              ELSE
+                SalesLine.SETRANGE("Seq. No.");
+              // E/P1041
+              IF SalesLine."No." = '' THEN BEGIN
+                SalesLine.SETRANGE("Document Type",SalesHeader."Document Type");
+                SalesLine.SETRANGE("Document No.",SalesHeader."No.");
+                IF GlobalVar[2] = '121' THEN BEGIN
+                  Res.SETRANGE(Res.Type,Res.Type::Assembly);
+                  IF Res.FINDFIRST THEN BEGIN
+                    SalesLine.SETRANGE(Type,SalesLine.Type::Resource);
+                    SalesLine.SETRANGE("No.",Res."No.");
+                  END;
+                END ELSE BEGIN
+                  //SalesLine.SETRANGE(Type,SalesLine.Type::Item);
+                  IF GlobalVar[5] <> '' THEN
+                    SalesLine.SETRANGE("No.",COPYSTR(GlobalVar[5],1,MAXSTRLEN(SalesLine."No."))); //P0703, GlobalVar[5] kÅrzen
+                END;
+                // S/P1041
+                //EVALUATE(intVar,ImportedValue);
+                // E/P1041
+                SalesLine.SETRANGE("Seq. No.",intVar);
+                IF SalesLine.FINDFIRST THEN
+                  rr2.GETTABLE(SalesLine)
+                ELSE BEGIN
+                    rr1.SETTABLE(SalesHeader);
+                    SalesHeader.Status := OldOrderStatus;
+                    SalesHeader.MODIFY;
+
+                    InsertLogEntry(
+                      ImportFrameworkLine.Code,
+                      STRSUBSTNO(Text025, intVar, SalesHeader."No."), TRUE, FALSE, 0);
+                    EXIT(2);
+                END;
+              END;
+              // 090712 chrmu Purch. Order No. >>>>>>>>>>>>>
+              IF SalesLine."Purchase Order No." <> '' THEN BEGIN
+                rr1.SETTABLE(SalesHeader);
+                SalesHeader.Status := OldOrderStatus;
+                SalesHeader.MODIFY;
+
+                InsertLogEntry(
+                  ImportFrameworkLine.Code,
+                  STRSUBSTNO(Text030, intVar, SalesHeader."No."), TRUE, FALSE, 0);
+                EXIT(2);
+              END;
+              // 090712 chrmu Purch. Order No. <<<<<<<<<<<<
+
+              GlobalVar[5] := '';
+            END;
+        15 : BEGIN // get purch line by seq.no.
+              rr1.SETTABLE(PurchHeader);
+              POLine.SETRANGE("Document Type",PurchHeader."Document Type");
+              POLine.SETRANGE("Document No.",PurchHeader."No.");
+              POLine.SETRANGE(Type,POLine.Type::Item);
+              EVALUATE(intVar,ImportedValue);
+              POLine.SETRANGE("Seq. No.",intVar);
+              IF POLine.FINDFIRST THEN
+                rr2.GETTABLE(POLine);
+            END;
+        16 : BEGIN // get purch line by item no.
+              //30.07.12  nas skip ORDER-INFO lines in STA >>
+              //10.10.12  rr1 <> 5107, gob-Fuchs,P0426
+              IF (ImportedValue = 'ORDER-INFO') AND (rr1.NUMBER <> 5107) THEN BEGIN
+              //DYN0004 06.08.12  nas skip ORDER-INFO lines in STA - fix >>
+                rr1.SETTABLE(SalesHeader);
+                SalesHeader.Status := OldOrderStatus;
+                SalesHeader.MODIFY;
+                EXIT(5);
+              //DYN0004 06.08.12  nas skip ORDER-INFO lines in STA - fix <<
+              END;
+              //30.07.12  nas skip ORDER-INFO lines in STA <<
+              IF rr1.NUMBER = 36 THEN BEGIN
+                GlobalVar[5] := '';
+                rr1.SETTABLE(SO);
+                GlobalVar[5] := ImportedValue;
+                SOLine.SETRANGE("Document Type",SO."Document Type");
+                SOLine.SETRANGE("Document No.",SO."No.");
+                //A,gob-Fuchs,15.11.12,P0589
+                SOLine.SETFILTER("Outstanding Quantity", '<>0');
+                //E,gob-Fuchs,15.11.12,P0589
+                IF GlobalVar[2] = '121' THEN BEGIN
+                  Res.SETRANGE(Res.Type,Res.Type::Assembly);
+                  IF Res.FINDFIRST THEN BEGIN
+                    SOLine.SETRANGE(Type,SOLine.Type::Resource);
+                    SOLine.SETRANGE("No.",Res."No.");
+                  END;
+                END ELSE BEGIN
+                  SOLine.SETRANGE(Type,SOLine.Type::Item);
+                  SOLine.SETRANGE("No.",COPYSTR(ImportedValue,1,MAXSTRLEN(SOLine."No."))); //P0703,ImportedValue gekÅrzt
+                END;
+                //IF (SOLine.COUNT = 1)THEN    //110712 nas
+                  IF SOLine.FINDFIRST THEN
+                    rr2.GETTABLE(SOLine)
+              END;
+              IF (rr1.NUMBER = 38) AND NOT Transfer THEN BEGIN
+                rr1.SETTABLE(PurchHeader);
+                POLine.SETRANGE("Document Type",PurchHeader."Document Type");
+                POLine.SETRANGE("Document No.",PurchHeader."No.");
+                POLine.SETRANGE(Type,POLine.Type::Item);
+                POLine.SETRANGE("No.",ImportedValue);
+                IF POLine.FINDFIRST THEN
+                  rr2.GETTABLE(POLine)
+                ELSE BEGIN
+                  //a/P0452/gob-sfe/24.10.12
+                  InsertLogEntry(
+                    ImportFrameworkLine.Code,
+                    STRSUBSTNO(Text028, ImportedValue, PurchHeader."No."),
+                    TRUE, FALSE,FieldRef.NUMBER);
+                  //e/P0452/gob-sfe/24.10.12
+                  EXIT(3);
+                END;
+              END;
+              //A/P0632
+              IF (rr1.NUMBER = 38) AND Transfer THEN BEGIN
+                //S/p0605
+                TransferLine.RESET;
+                TransferLine.SETRANGE("Document No.",TransferOrder."No.");
+                TransferLine.SETRANGE("Item No.",ImportedValue);
+                IF TransferLine.FINDFIRST THEN
+                  rr4.GETTABLE(TransferLine)
+                ELSE BEGIN
+                    InsertLogEntry(
+                      ImportFrameworkLine.Code,
+                      STRSUBSTNO(Text037, ImportedValue, TransferOrder."No."),
+                      TRUE, FALSE,FieldRef.NUMBER);
+                    EXIT(3);
+                END;
+                //e/p0605
+              END;
+              // S/P0605/test....
+              {
+              IF rr1.NUMBER = 5740 THEN BEGIN
+                rr1.SETTABLE(TransferOrder);
+                TransferLine.RESET;
+                TransferLine.SETRANGE("Document No.",TransferOrder."No.");
+                TransferLine.SETRANGE("Item No.",ImportedValue);
+                IF TransferLine.FINDFIRST THEN
+                  rr2.GETTABLE(TransferLine)
+                ELSE BEGIN
+                    InsertLogEntry(
+                      ImportFrameworkLine.Code,
+                      STRSUBSTNO(Text037, ImportedValue, TransferOrder."No."),
+                      TRUE, FALSE,FieldRef.NUMBER);
+                    EXIT(3);
+                END;
+              END;
+              }
+              // E/P0605
+              //A,gob-Fuchs,19.09.12,P0350
+              IF rr1.NUMBER = 5107 THEN BEGIN
+                rr1.SETTABLE(SalesHeaderArchive);
+
+                SalesHeaderArchive.SETRANGE("Document Type",SalesHeaderArchive."Document Type");
+                SalesHeaderArchive.SETRANGE("No.",SalesHeaderArchive."No.");
+                IF NOT SalesHeaderArchive.FINDLAST THEN BEGIN
+                  SalesHeaderArchive.SETRANGE("Document Type",SalesHeaderArchive."Document Type");
+                  SalesHeaderArchive.SETRANGE("No.",COPYSTR(SalesHeaderArchive."No.",1,STRLEN(SalesHeaderArchive."No.") - 3));
+                  IF NOT SalesHeaderArchive.FINDLAST THEN BEGIN
+                    SalesLineArchive.RESET;
+                    //A/gob-adb/16.05.13
+                    SalesLineArchive.SETCURRENTKEY("Dropship No.");
+                    //E/gob-adb/16.05.13
+                    SalesLineArchive.SETRANGE("Dropship No.",SalesHeaderArchive."No.");
+                    IF NOT SalesLineArchive.FINDLAST THEN
+                      InsertLogEntry(
+                        ImportFrameworkLine.Code,
+                        STRSUBSTNO(Text031, ImportedValue, SO."No."),
+                        TRUE, FALSE,FieldRef.NUMBER);
+                  END;
+                END;
+
+                SalesLineArchive.RESET;
+                SalesLineArchive.SETRANGE("Document Type",SalesHeaderArchive."Document Type");
+                SalesLineArchive.SETRANGE("Document No.",SalesHeaderArchive."No.");
+                SalesLineArchive.SETRANGE(Type,SalesLineArchive.Type::Item);
+                SalesLineArchive.SETRANGE("No.",COPYSTR(ImportedValue,1,MAXSTRLEN(SalesLineArchive."No.")));
+      //P0703,ImportedValue gekÅrzt
+                IF SalesLineArchive.FINDFIRST THEN
+                  rr2.GETTABLE(SalesLineArchive)
+                ELSE BEGIN
+                    InsertLogEntry(
+                      ImportFrameworkLine.Code,
+                      STRSUBSTNO(Text028, ImportedValue, SalesHeaderArchive."No."),
+                      TRUE, FALSE,FieldRef.NUMBER);
+                    EXIT(3);
+                END;
+              END;
+              //E,gob-Fuchs,19.09.12,P0350
+            END;
+        17 : BEGIN // update order status history
+              rr2.SETTABLE(SOLine);
+              //19.07.12  nas delivery date >>>
+              IF ImportedValue <> '3' THEN
+                SOLine."Promised Delivery Date" := 0D;
+              //19.07.12  nas delivery date <<<
+
+              // > 270412 chrmu group lines
+              SOLine2.RESET;
+              SOLine2.SETRANGE("Document Type",SOLine."Document Type");
+              SOLine2.SETRANGE("Document No.",SOLine."Document No.");
+              SOLine2.SETRANGE(Type,SOLine.Type);
+              SOLine2.SETRANGE("No.",SOLine."No.");
+              SOLine2.SETRANGE("Location Code",SOLine."Location Code");
+              IF SOLine2.FINDSET THEN
+              REPEAT
+                //S/P1117
+                //S/P1133
+                IF FPCGeneralSetup."Active Parcel Status History" IN
+                  [FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+                  FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+                  FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New"]
+                THEN BEGIN
+                //E/P113
+                  RhenusSetupHistory.RESET;
+                  //A/gob-adb/17.04.13
+                  RhenusSetupHistory.SETCURRENTKEY("Document No.","Document Line No.","Document Type","Time Stamp");
+                  //E/gob-adb/17.04.13
+                  RhenusSetupHistory.SETRANGE("Document Type",SOLine2."Document Type");
+                  RhenusSetupHistory.SETRANGE("Document No.",SOLine2."Document No.");
+                  RhenusSetupHistory.SETRANGE("Document Line No.",SOLine2."Line No.");
+                  RhenusSetupHistory.SETRANGE("Status Code",ImportedValue);
+                  RhenusSetupHistory.SETRANGE("Rhenus Entry",TRUE);
+                  IF NOT RhenusSetupHistory.FINDFIRST THEN BEGIN
+                    RhenusSetupHistory.INIT;
+                    RhenusSetupHistory."Entry No." := 0;
+                    RhenusSetupHistory."Document Type" := SOLine2."Document Type";
+                    RhenusSetupHistory."Document No." := SOLine2."Document No.";
+                    RhenusSetupHistory."Document Line No." := SOLine2."Line No.";
+                    RhenusSetupHistory."Status Code" := ImportedValue;
+                    RhenusSetupHistory."Rhenus Entry" := TRUE;
+
+                    // A/gob-lku/10.10.12/P0429
+                    RhenusSetupHistory."Shipment through" := RhenusSetupHistory."Shipment through"::Rhenus;
+                    // E/gob-lku/10.10.12/P0429
+
+                    //19.07.12  nas delivery date >>>
+                    IF ImportedValue = '3' THEN
+                      RhenusSetupHistory."Delivery Date" := SOLine."Promised Delivery Date";
+                    //19.07.12  nas delivery date <<<
+                    IF GlobalVar[4] <> '' THEN BEGIN
+                      IF NOT EVALUATE(dateVar,COPYSTR(GlobalVar[4],1,10)) THEN
+                        dateVar := WORKDATE;
+                      IF NOT EVALUATE(timeVar,COPYSTR(GlobalVar[4],12,8)) THEN
+                        timeVar := TIME;
+                      RhenusSetupHistory."Time Stamp" := CREATEDATETIME(dateVar,timeVar);
+                    END
+                    ELSE
+                      RhenusSetupHistory."Time Stamp" := CREATEDATETIME(WORKDATE,TIME);
+                    //A/gob-rste/18.10.12/P0466
+                    RhenusSetupHistory."Import Time Stamp" := CURRENTDATETIME;
+                    RhenusSetupHistory."Time Difference" := RhenusSetupHistory."Time Stamp" - RhenusSetupHistory."Import Time Stamp";
+                    SalesHeaderGOB.RESET;
+                    IF SalesHeaderGOB.GET(SOLine."Document Type",SOLine."Document No.") THEN
+                      IF RhenusSetupHistory."Order Date" = 0D THEN
+                        RhenusSetupHistory."Order Date" := SalesHeaderGOB."Order Date";
+                    //E/gob-rste/18.10.12/P0466
+                    // S/P1047
+                    IF gFilename <> '' THEN
+                      RhenusSetupHistory."File Name" := gFilename;
+                    // E/P1047
+                    IF RhenusSetupHistory.INSERT(TRUE) THEN;
+                  //A/P0712
+                  //END;
+                  END ELSE BEGIN
+                    //IF ImportedValue IN ['3','03'] THEN BEGIN
+                    IF RhenusSetupHistory.FINDSET THEN BEGIN
+                      TempTimeStamp := 0DT;
+                      NewStatus := TRUE;
+                      REPEAT
+                        TempTimeStamp := 0DT;
+                        IF GlobalVar[4] <> '' THEN BEGIN
+                         IF NOT EVALUATE(dateVar,COPYSTR(GlobalVar[4],1,10)) THEN
+                            dateVar := WORKDATE;
+                          IF NOT EVALUATE(timeVar,COPYSTR(GlobalVar[4],12,8)) THEN
+                            timeVar := TIME;
+                          TempTimeStamp := CREATEDATETIME(dateVar,timeVar);
+                        END ELSE BEGIN
+                          TempTimeStamp := CREATEDATETIME(WORKDATE,TIME);
+                        END;
+                        IF TempTimeStamp = RhenusSetupHistory."Time Stamp" THEN
+                          NewStatus := FALSE;
+                      UNTIL RhenusSetupHistory.NEXT = 0;
+                      IF NewStatus THEN BEGIN
+                        RhenusSetupHistory.INIT;
+                        RhenusSetupHistory."Entry No." := 0;
+                        RhenusSetupHistory."Document Type" := SOLine2."Document Type";
+                        RhenusSetupHistory."Document No." := SOLine2."Document No.";
+                        RhenusSetupHistory."Document Line No." := SOLine2."Line No.";
+                        RhenusSetupHistory."Status Code" := ImportedValue;
+                        RhenusSetupHistory."Rhenus Entry" := TRUE;
+                        RhenusSetupHistory."Shipment through" := RhenusSetupHistory."Shipment through"::Rhenus;
+                        RhenusSetupHistory."Delivery Date" := SOLine."Promised Delivery Date";
+                        IF GlobalVar[4] <> '' THEN BEGIN
+                         IF NOT EVALUATE(dateVar,COPYSTR(GlobalVar[4],1,10)) THEN
+                            dateVar := WORKDATE;
+                          IF NOT EVALUATE(timeVar,COPYSTR(GlobalVar[4],12,8)) THEN
+                            timeVar := TIME;
+                          TempTimeStamp := CREATEDATETIME(dateVar,timeVar);
+                        END ELSE BEGIN
+                          TempTimeStamp := CREATEDATETIME(WORKDATE,TIME);
+                        END;
+                        RhenusSetupHistory."Time Stamp" := TempTimeStamp;
+                        IF ImportedValue = '3' THEN
+                          RhenusSetupHistory."Delivery Date" := SOLine."Promised Delivery Date";
+                        RhenusSetupHistory."Import Time Stamp" := CURRENTDATETIME;
+                        RhenusSetupHistory."Time Difference" := RhenusSetupHistory."Time Stamp" - RhenusSetupHistory."Import Time Stamp"
+      ;
+                        SalesHeaderGOB.RESET;
+                        IF SalesHeaderGOB.GET(SOLine."Document Type",SOLine."Document No.") THEN
+                          IF RhenusSetupHistory."Order Date" = 0D THEN
+                            RhenusSetupHistory."Order Date" := SalesHeaderGOB."Order Date";
+                        // S/P1047
+                        IF gFilename <> '' THEN
+                          RhenusSetupHistory."File Name" := gFilename;
+                        // E/P1047
+                        IF RhenusSetupHistory.INSERT(TRUE) THEN;
+                      END;
+                    END;
+                  END;
+                //S/P1133
+                END;
+
+                IF FPCGeneralSetup."Active Parcel Status History" IN
+                  [FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+                  FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+                  FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History"]
+                THEN BEGIN
+                //E/P1133
+                  ParcelStatusHistory.RESET;
+                  ParcelStatusHistory.SETCURRENTKEY(
+                    "Document No.","Document Line No.","Document Type");
+                  ParcelStatusHistory.SETRANGE("Document No.",SOLine2."Document No.");
+                  ParcelStatusHistory.SETRANGE("Document Line No.",SOLine2."Line No.");
+                  ParcelStatusHistory.SETRANGE("Document Type",SOLine2."Document Type");
+                  ParcelStatusHistory.SETRANGE("Used Interface",ParcelStatusHistory."Used Interface"::Rhenus);
+                  ParcelStatusHistory.SETRANGE("Status Sub Code",ImportedValue);
+                  IF ParcelStatusHistory.ISEMPTY THEN BEGIN
+                    CLEAR(CUParcelStatusHistoryMgmt);
+                    RecRef.GETTABLE(SOLine2);
+                    IF ImportedValue = '3' THEN
+                      CUParcelStatusHistoryMgmt.SetDateGlobals(0D,SOLine."Promised Delivery Date",0D);
+                    IF GlobalVar[4] <> '' THEN BEGIN
+                      IF NOT EVALUATE(dateVar,COPYSTR(GlobalVar[4],1,10)) THEN
+                        dateVar := WORKDATE;
+                      IF NOT EVALUATE(timeVar,COPYSTR(GlobalVar[4],12,8)) THEN
+                        timeVar := TIME;
+                      CUParcelStatusHistoryMgmt.SetDateTimeGlobal(CREATEDATETIME(dateVar,timeVar));
+                    END ELSE
+                      CUParcelStatusHistoryMgmt.SetDateTimeGlobal(CREATEDATETIME(WORKDATE,TIME));
+                    IF gFilename <> '' THEN
+                      CUParcelStatusHistoryMgmt.SetFileNameGlobal(gFilename);
+                    CUParcelStatusHistoryMgmt.FillHistoryByDocLine(
+                          RecRef,         // Rec
+                          1,              // p_Command
+                          0,              // p_InfoDirection::  Incoming,Outgoing
+                          5,              // p_UsedInterface::  ,EDI,DHL,DocData,Drop Shipment,Rhenus,UPS
+                          'RHEHD',        // p_ShippingAgentCode
+                          '',             // p_TrackingCode
+                          '',             // p_PieceCode
+                          '',             // p_StatusCode
+                          ImportedValue,  // p_StatusRICCode
+                          '',             // p_Comment
+                          0);             // p_HandleStatusDescription
+                  END ELSE BEGIN
+                    IF ParcelStatusHistory.FINDSET THEN BEGIN
+                      TempTimeStamp := 0DT;
+                      NewStatus := TRUE;
+                      REPEAT
+                        TempTimeStamp := 0DT;
+                        IF GlobalVar[4] <> '' THEN BEGIN
+                          IF NOT EVALUATE(dateVar,COPYSTR(GlobalVar[4],1,10)) THEN
+                            dateVar := WORKDATE;
+                          IF NOT EVALUATE(timeVar,COPYSTR(GlobalVar[4],12,8)) THEN
+                            timeVar := TIME;
+                          TempTimeStamp := CREATEDATETIME(dateVar,timeVar);
+                        END ELSE
+                          TempTimeStamp := CREATEDATETIME(WORKDATE,TIME);
+                        IF TempTimeStamp = RhenusSetupHistory."Time Stamp" THEN
+                          NewStatus := FALSE;
+                      UNTIL ParcelStatusHistory.NEXT = 0;
+                      IF NewStatus THEN BEGIN
+                        CLEAR(CUParcelStatusHistoryMgmt);
+                        RecRef.GETTABLE(SOLine2);
+                        IF ImportedValue = '3' THEN
+                          CUParcelStatusHistoryMgmt.SetDateGlobals(0D,SOLine."Promised Delivery Date",0D);
+                        IF GlobalVar[4] <> '' THEN BEGIN
+                          IF NOT EVALUATE(dateVar,COPYSTR(GlobalVar[4],1,10)) THEN
+                            dateVar := WORKDATE;
+                          IF NOT EVALUATE(timeVar,COPYSTR(GlobalVar[4],12,8)) THEN
+                            timeVar := TIME;
+                          CUParcelStatusHistoryMgmt.SetDateTimeGlobal(CREATEDATETIME(dateVar,timeVar));
+                        END ELSE
+                          CUParcelStatusHistoryMgmt.SetDateTimeGlobal(CREATEDATETIME(WORKDATE,TIME));
+                        IF gFilename <> '' THEN
+                          CUParcelStatusHistoryMgmt.SetFileNameGlobal(gFilename);
+                        IF gFilename <> '' THEN
+                          CUParcelStatusHistoryMgmt.SetFileNameGlobal(gFilename);
+                        CUParcelStatusHistoryMgmt.FillHistoryByDocLine(
+                              RecRef,         // Rec
+                              1,              // p_Command
+                              0,              // p_InfoDirection::  Incoming,Outgoing
+                              5,              // p_UsedInterface::  ,EDI,DHL,DocData,Drop Shipment,Rhenus,UPS
+                              'RHEHD',        // p_ShippingAgentCode
+                              '',             // p_TrackingCode
+                              '',             // p_PieceCode
+                              '',             // p_StatusCode
+                              ImportedValue,  // p_StatusRICCode
+                              '',             // p_Comment
+                              0);             // p_HandleStatusDescription
+                      END;
+                    END;
+                  END;
+                //S/P1133
+                END;
+                //E/P1133
+                //E/P1117
+
+                //E/P0712
+                IF SOLine2."Line No." <> SOLine."Line No." THEN BEGIN
+                  //19.07.12  nas delivery date >>>
+                  SOLine2."Promised Delivery Date" := SOLine."Promised Delivery Date";
+                  //19.07.12  nas delivery date <<<
+                  SOLine2."Status Code" := ImportedValue;
+                  SOLine2.MODIFY;
+                END;
+              UNTIL SOLine2.NEXT = 0;
+              // < 270412 chrmu group lines
+
+              //A,gob-Fuchs,11.12.12,P0664,P0718
+              IF (SOLine.Type = SOLine.Type::Item) AND (ImportedValue = '50') AND (GlobalVar[2] = '1') THEN
+                SOLine.VALIDATE("Actual Delivery Date",RhenusSetupHistory."Time Stamp");
+              //E,gob-Fuchs,11.12.12,P0664
+
+              //19.07.12  nas delivery date >>>
+              //FieldRef.VALUE := ImportedValue;
+              SOLine."Status Code" := ImportedValue;
+              SOLine.MODIFY;
+              rr2.GETTABLE(SOLine);
+              //19.07.12  nas delivery date <<<
+
+              //IF Post THEN BEGIN
+                Post := FALSE;
+                //IF (((ImportedValue = '50') AND (GlobalVar[2] = '12'))
+                // OR ((ImportedValue = '01') AND (GlobalVar[2] = '1'))) THEN
+                //new rule 070312
+                IF ((ImportedValue = '1') AND (GlobalVar[2] = '1')) THEN
+                    Post := TRUE;
+                IF ((ImportedValue = '50') AND (GlobalVar[2] = '1')) THEN BEGIN // [002]
+                  //S/P1133
+                  CASE FPCGeneralSetup."Active Parcel Status History" OF
+                    FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+                    FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old":
+                      BEGIN
+                  //E/P1133
+                        RhenusSetupHistory.RESET;
+                        //A/gob-adb/17.04.13
+                        RhenusSetupHistory.SETCURRENTKEY("Document No.","Document Line No.","Document Type","Time Stamp");
+                        //E/gob-adb/17.04.13
+                        RhenusSetupHistory.SETRANGE("Document Type",SOLine."Document Type");
+                        RhenusSetupHistory.SETRANGE("Document No.",SOLine."Document No.");
+                        RhenusSetupHistory.SETRANGE("Document Line No.",SOLine."Line No.");
+                        RhenusSetupHistory.SETRANGE("Status Code",'1');
+                        RhenusSetupHistory.SETRANGE("Rhenus Entry",TRUE);
+                        IF NOT RhenusSetupHistory.FINDFIRST THEN
+                          Post := TRUE;
+                  //S/P1133
+                      END;
+                    FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+                    FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History":
+                      BEGIN
+                        ParcelStatusHistory.RESET;
+                        ParcelStatusHistory.SETCURRENTKEY("Document No.","Document Line No.","Document Type");
+                        ParcelStatusHistory.SETRANGE("Document No.",SOLine."Document No.");
+                        ParcelStatusHistory.SETRANGE("Document Line No.",SOLine."Line No.");
+                        ParcelStatusHistory.SETRANGE("Document Type",SOLine."Document Type");
+                        ParcelStatusHistory.SETRANGE("Used Interface",ParcelStatusHistory."Used Interface"::Rhenus);
+                        ParcelStatusHistory.SETRANGE("Status Sub Code",'1');
+                        IF NOT ParcelStatusHistory.FINDFIRST THEN
+                          Post := TRUE;
+                      END;
+                  END;
+                  //E/P1133
+                END;
+                IF ((ImportedValue = '50') AND (GlobalVar[2] = '12') AND
+                  // 20.07.12 nas post Rhenus locations >>
+                  (IFProcessing.IsRhenusLocation(SOLine."Location Code"))) THEN
+                  // 20.07.12 nas post Rhenus locations <<
+                    Post := TRUE;
+
+                //A,gob-Fuchs,29.10.12,P0530
+                IF (ImportedValue = '50') AND (GlobalVar[2] = '1') THEN
+                  IF Purchasing.GET(SOLine."Purchasing Code") THEN
+                    IF Purchasing."Shipment through" = Purchasing."Shipment through"::Rhenus THEN
+                      Post := TRUE;
+                //E,gob-Fuchs,29.10.12,P0530
+
+                IF Purchasing.GET(SOLine."Purchasing Code") THEN
+                  IF Purchasing."Dont Post Automatically" THEN Post := FALSE;
+              //END;
+              //A/P0564
+              IF (GlobalVar[2] = '1') AND (ImportedValue IN ['1','10','11','50']) THEN BEGIN
+                FPCGeneralSetup.RESET;
+                FPCGeneralSetup.GET;
+                FPCGeneralSetup.TESTFIELD("Status Transport");
+                FPCGeneralSetup.TESTFIELD("Interface Code Rhenus");
+                FPCGeneralSetup.TESTFIELD("Trigger Rhenus Interface");
+                IF InterfaceProcessMgt.TriggerActive(FPCGeneralSetup."Trigger Rhenus Interface") THEN
+                  InterfaceProcessMgt.InsertInterfaceRecords(0,
+                                                             SOLine."Document Type",
+                                                             SOLine."Document No.",
+                                                             SOLine."Line No.",
+                                                             FPCGeneralSetup."Interface Code Rhenus",
+                                                             FPCGeneralSetup."Status Transport",
+                                                             FPCGeneralSetup."Trigger Rhenus Interface");
+              END;
+              //E/P0564
+
+            END;
+        //A,gob-Fuchs,19.09.12,P0350
+        70717 : BEGIN // update order status history
+              rr2.SETTABLE(SalesLineArchive);
+
+              // group lines
+              SalesLineArchive2.RESET;
+              SalesLineArchive2.SETRANGE("Document Type",SalesLineArchive."Document Type");
+              SalesLineArchive2.SETRANGE("Document No.",SalesLineArchive."Document No.");
+              SalesLineArchive2.SETRANGE(Type,SalesLineArchive.Type);
+              SalesLineArchive2.SETRANGE("No.",SalesLineArchive."No.");
+              SalesLineArchive2.SETRANGE("Location Code",SalesLineArchive."Location Code");
+              IF SalesLineArchive2.FINDSET THEN
+              REPEAT
+                //S/P1117
+                //S/P1133
+                IF FPCGeneralSetup."Active Parcel Status History" IN
+                  [FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+                  FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+                  FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New"]
+                THEN BEGIN
+                //E/P113
+                  RhenusSetupHistory.RESET;
+                  //A/gob-adb/17.04.13
+                  RhenusSetupHistory.SETCURRENTKEY("Document No.","Document Line No.","Document Type","Time Stamp");
+                  //E/gob-adb/17.04.13
+                  RhenusSetupHistory.SETRANGE("Document Type",SalesLineArchive2."Document Type");
+                  RhenusSetupHistory.SETRANGE("Document No.",SalesLineArchive2."Document No.");
+                  RhenusSetupHistory.SETRANGE("Document Line No.",SalesLineArchive2."Line No.");
+                  RhenusSetupHistory.SETRANGE("Status Code",ImportedValue);
+                  RhenusSetupHistory.SETRANGE("Rhenus Entry",TRUE);
+                  IF NOT RhenusSetupHistory.FINDFIRST THEN BEGIN
+                    RhenusSetupHistory.INIT;
+                    RhenusSetupHistory."Entry No." := 0;
+                    RhenusSetupHistory."Document Type" := SalesLineArchive2."Document Type";
+                    RhenusSetupHistory."Document No." := SalesLineArchive2."Document No.";
+                    RhenusSetupHistory."Document Line No." := SalesLineArchive2."Line No.";
+                    RhenusSetupHistory."Status Code" := ImportedValue;
+                    RhenusSetupHistory."Rhenus Entry" := TRUE;
+
+                    // A/gob-lku/10.10.12/P0429
+                    RhenusSetupHistory."Shipment through" := RhenusSetupHistory."Shipment through"::Rhenus;
+                    // E/gob-lku/10.10.12/P0429
+
+                    //19.07.12  nas delivery date >>>
+                    IF ImportedValue = '3' THEN
+                      RhenusSetupHistory."Delivery Date" := SalesLineArchive2."Promised Delivery Date";
+                    //19.07.12  nas delivery date <<<
+                    IF GlobalVar[4] <> '' THEN BEGIN
+                      IF NOT EVALUATE(dateVar,COPYSTR(GlobalVar[4],1,10)) THEN
+                        dateVar := WORKDATE;
+                      IF NOT EVALUATE(timeVar,COPYSTR(GlobalVar[4],12,8)) THEN
+                        timeVar := TIME;
+                      RhenusSetupHistory."Time Stamp" := CREATEDATETIME(dateVar,timeVar);
+                    END
+                    ELSE
+                      RhenusSetupHistory."Time Stamp" := CREATEDATETIME(WORKDATE,TIME);
+                    //A/gob-rste/18.10.12/P0466
+                    RhenusSetupHistory."Import Time Stamp" := CURRENTDATETIME;
+                    RhenusSetupHistory."Time Difference" := RhenusSetupHistory."Time Stamp" - RhenusSetupHistory."Import Time Stamp";
+                    SalesHeaderArchivGOB.RESET;
+                    SalesHeaderArchivGOB.SETRANGE("Document Type",SalesLineArchive2."Document Type");
+                    SalesHeaderArchivGOB.SETRANGE("No.",SalesLineArchive2."Document No.");
+                    IF SalesHeaderArchivGOB.FINDFIRST THEN
+                      IF RhenusSetupHistory."Order Date" = 0D THEN
+                        RhenusSetupHistory."Order Date" := SalesHeaderArchivGOB."Order Date";
+                    //E/gob-rste/18.10.12/P0466
+                    // S/P1047
+                    IF gFilename <> '' THEN
+                      RhenusSetupHistory."File Name" := gFilename;
+                    // E/P1047
+                    IF RhenusSetupHistory.INSERT(TRUE) THEN;
+                  END;
+                //S/P1133
+                END;
+
+                IF FPCGeneralSetup."Active Parcel Status History" IN
+                  [FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+                  FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+                  FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History"]
+                THEN BEGIN
+                //E/P113
+                  //P1129
+                  ParcelStatusHistory.RESET;
+                  ParcelStatusHistory.SETCURRENTKEY(
+                    "Document No.","Document Line No.","Document Type");
+                  ParcelStatusHistory.SETRANGE("Document No.",SalesLineArchive2."Document No.");
+                  ParcelStatusHistory.SETRANGE("Document Line No.",SalesLineArchive2."Line No.");
+                  ParcelStatusHistory.SETRANGE("Document Type",SalesLineArchive2."Document Type");
+                  ParcelStatusHistory.SETRANGE("Used Interface",ParcelStatusHistory."Used Interface"::Rhenus);
+                  ParcelStatusHistory.SETRANGE("Status Sub Code",ImportedValue);
+                  //S/P1129
+                  //IF ParcelStatusHistory.ISEMPTY THEN BEGIN
+                  ParcelStatusHistoryArchive.RESET;
+                  ParcelStatusHistoryArchive.SETCURRENTKEY(
+                    "Document No.","Document Line No.","Document Type");
+                  ParcelStatusHistoryArchive.SETRANGE("Document No.",SalesLineArchive2."Document No.");
+                  ParcelStatusHistoryArchive.SETRANGE("Document Line No.",SalesLineArchive2."Line No.");
+                  ParcelStatusHistoryArchive.SETRANGE("Document Type",SalesLineArchive2."Document Type");
+                  ParcelStatusHistoryArchive.SETRANGE("Used Interface",ParcelStatusHistoryArchive."Used Interface"::Rhenus);
+                  ParcelStatusHistoryArchive.SETRANGE("Status Sub Code",ImportedValue);
+                  IF (ParcelStatusHistory.ISEMPTY) AND
+                     (ParcelStatusHistoryArchive.ISEMPTY)
+                  THEN BEGIN
+                  //E/P1129
+                    CLEAR(CUParcelStatusHistoryMgmt);
+                    RecRef.GETTABLE(SalesLineArchive2);
+                    IF ImportedValue = '3' THEN
+                      CUParcelStatusHistoryMgmt.SetDateGlobals(0D,SOLine."Promised Delivery Date",0D);
+                    IF GlobalVar[4] <> '' THEN BEGIN
+                      IF NOT EVALUATE(dateVar,COPYSTR(GlobalVar[4],1,10)) THEN
+                        dateVar := WORKDATE;
+                      IF NOT EVALUATE(timeVar,COPYSTR(GlobalVar[4],12,8)) THEN
+                        timeVar := TIME;
+                      CUParcelStatusHistoryMgmt.SetDateTimeGlobal(CREATEDATETIME(dateVar,timeVar));
+                    END ELSE
+                      CUParcelStatusHistoryMgmt.SetDateTimeGlobal(CREATEDATETIME(WORKDATE,TIME));
+                    IF gFilename <> '' THEN
+                      CUParcelStatusHistoryMgmt.SetFileNameGlobal(gFilename);
+                    CUParcelStatusHistoryMgmt.FillHistoryByDocLine(
+                          RecRef,         // Rec
+                          1,              // p_Command
+                          0,              // p_InfoDirection::  Incoming,Outgoing
+                          5,              // p_UsedInterface::  ,EDI,DHL,DocData,Drop Shipment,Rhenus,UPS
+                          'RHEHD',        // p_ShippingAgentCode
+                          '',             // p_TrackingCode
+                          '',             // p_PieceCode
+                          '',             // p_StatusCode
+                          ImportedValue,  // p_StatusRICCode
+                          '',             // p_Comment
+                          0);             // p_HandleStatusDescription
+                  END;
+                  //S/P1129
+                  CUParcelStatusHistoryMgmt.MoveParcelInfosToArchive(
+                    1,                                  // p_Command::All,SalesDoc,PurchDoc,Date,EntryNo
+                    SalesLineArchive2."Document No.",   // p_DocNo
+                    0,                                  // p_LineNo
+                    SalesLineArchive2."Document Type",  // p_DocType
+                    '',                                 // p_DateFilterString
+                    0);                                 // p_EntryNo
+                  //E/P1129
+                //S/P1133
+                END;
+                //E/P1133
+                //E/P1117
+
+                IF SalesLineArchive2."Line No." <> SalesLineArchive."Line No." THEN BEGIN
+                  SalesLineArchive2."Status Code" := ImportedValue;
+                  SalesLineArchive2.MODIFY;
+                END;
+              UNTIL SalesLineArchive2.NEXT = 0;
+              // group lines
+
+              //19.07.12  nas delivery date >>>
+              SalesLineArchive."Status Code" := ImportedValue;
+              SalesLineArchive.MODIFY;
+              rr2.GETTABLE(SalesLineArchive);
+              //19.07.12  nas delivery date <<<
+            END;
+        //E,gob-Fuchs,19.09.12,P0350
+        18 : BEGIN // post purch order
+              // S/P0605
+              //IF Post THEN BEGIN
+
+              IF Post AND NOT Transfer THEN BEGIN
+              // E/P0605
+                COMMIT;
+                rr1.SETTABLE(PurchHeader);
+                PurchHeader.Receive := TRUE;
+                PurchHeader.Invoice := FALSE;
+                //S/P1042
+                //IF PurchPost.RUN(PurchHeader) THEN
+                IF PurchPost.RUN(PurchHeader) THEN BEGIN
+                //E/P1042
+                  InsertLogEntry(
+                    ImportFrameworkLine.Code,
+                    STRSUBSTNO(Text013,Text016, PurchHeader."No."), FALSE, FALSE, 0);
+                  //S/P1042
+                  ImpDoc2.GET(ImpDoc."Entry No.");
+                  ImpDoc2.Complete := TRUE;
+                  ImpDoc2.Error := FALSE;
+                  ImpDoc2."Error Message" := '';
+                  ImpDoc2.MODIFY;
+                //ELSE BEGIN
+                END ELSE BEGIN
+                //E/P1042
+                  Post := FALSE;
+                  InsertLogEntry(
+                    ImportFrameworkLine.Code,
+                    STRSUBSTNO(Text012,Text016, PurchHeader."No."), TRUE, FALSE, 0);
+                  InsertLogEntry(
+                    ImportFrameworkLine.Code,
+                    COPYSTR(GETLASTERRORTEXT,1,250), TRUE, FALSE, 0);
+                  EXIT(2);
+                END;
+              // S/P0605  wieder deaktiviert in 27
+              END;
+            END;
+        19 : BEGIN // post sales order
+              rr1.SETTABLE(SalesHeader);
+              SalesHeader.Status := OldOrderStatus;
+              SalesHeader.MODIFY;
+              rr1.GETTABLE(SalesHeader);
+              //24.07.12  nas remove check for many KADs >>
+              // 17.07.12 nas skip orders >>>
+              DocLog.RESET;
+              DocLog.SETRANGE(DocLog."Source Type",DocLog."Source Type"::Sales);
+              DocLog.SETRANGE(DocLog."Document Type",SalesHeader."Document Type");
+              DocLog.SETRANGE(DocLog."Document No.",SalesHeader."No.");
+              IF DocLog.FINDLAST THEN
+                IF DocLog."Seq. Code" <> '001' THEN EXIT(0);
+              // 17.07.12 nas skip orders <<<
+              //24.07.12  nas remove check for many KADs <<
+              //A/gob-rste/01.10.12/P0395
+              IF ImpDoc."Start Text" = 'STA' THEN BEGIN
+                ImportFrameworkDocumentLine.RESET;
+                IF ImportFrameworkDocumentLine.GET(ImpDoc."Entry No.",25000) THEN
+                  IF ImportFrameworkDocumentLine."Field Value" <> '50' THEN
+                    Post := FALSE;
+              END;
+              //E/gob-rste/01.10.12/P0395
+              IF Post THEN BEGIN
+                COMMIT;
+                rr1.SETTABLE(SalesHeader);
+                IF SalesHeader."Document Type" = SalesHeader."Document Type"::Order THEN
+                  SalesHeader.Ship := TRUE
+                ELSE
+                  SalesHeader.Receive := TRUE;
+                SalesHeader.Invoice := FALSE;
+                CLEAR(SalesPost);
+                SalesPost.SetNoDialog(TRUE);
+                IF SalesPost.RUN(SalesHeader) THEN
+                  InsertLogEntry(
+                    ImportFrameworkLine.Code,
+                    STRSUBSTNO(Text013,Text017, SalesHeader."No."), FALSE, FALSE, 0)
+                ELSE BEGIN
+                  Post := FALSE;
+                  //12.07.12  nas fix error "another user has changed" >>
+                  IF SalesHeader.GET(SalesHeader."Document Type",SalesHeader."No.") THEN BEGIN
+                  //12.07.12  nas fix error "another user has changed" <<
+                    SalesHeader.Status := OldOrderStatus;
+                    SalesHeader.MODIFY;
+                    rr2.GETTABLE(SalesHeader);
+                  END;
+                  InsertLogEntry(
+                    ImportFrameworkLine.Code,
+                    STRSUBSTNO(Text012,Text017, SalesHeader."No."), TRUE, FALSE, 0);
+                  InsertLogEntry(
+                    ImportFrameworkLine.Code,
+                    COPYSTR(GETLASTERRORTEXT,1,250), TRUE, FALSE, 0);
+                  EXIT(2);
+                END;
+              END;
+            END;
+        20 : BEGIN // clear qty to ship
+              rr1.SETTABLE(SalesHeader);
+
+              OldOrderStatus := SalesHeader.Status;
+              dateVar := SalesHeader."Posting Date";
+              SalesHeader.Status := SalesHeader.Status::Open;
+              IF NOT SalesHeader.MODIFY THEN BEGIN
+              // 18.07.12 nas >>>
+                SONo := COPYSTR(SalesHeader."No.",1,STRLEN(SalesHeader."No.") - 3);
+                IF SalesHeader.GET(SalesHeader."Document Type",SONo) THEN BEGIN
+                //100712  chrmu use sales lines instead of table 50001 <<<<
+                  OldOrderStatus := SalesHeader.Status;
+                  Post := FALSE;
+                  SalesHeader.Status := SalesHeader.Status::Open;
+                  IF dateVar <> 0D THEN
+                    SalesHeader."Posting Date" := dateVar;
+                  SalesHeader.MODIFY;
+                END ELSE BEGIN
+              // 18.07.12 nas <<<
+
+                  //100712  chrmu use sales lines instead of table 50001 >>>>
+                  SOLine.RESET;
+                  //A/gob-adb/16.05.13
+                  SOLine.SETCURRENTKEY("Dropship No.");
+                  //E/gob-adb/16.05.13
+                  SOLine.SETRANGE("Dropship No.",SalesHeader."No.");
+                  IF NOT SOLine.FINDFIRST THEN BEGIN
+                  //100712  chrmu use sales lines instead of table 50001 <<<<
+                    InsertLogEntry(
+                      ImportFrameworkLine.Code,
+                      STRSUBSTNO(Text022, SalesHeader."No."), TRUE, FALSE, 0);
+                    EXIT(3);
+                  END;
+                  //100712  chrmu use sales lines instead of table 50001 >>>>
+                  //IF SalesHeader.GET(SalesHeader."Document Type",SOImportLog."Order No.") THEN BEGIN
+                  IF SalesHeader.GET(SalesHeader."Document Type",SOLine."Document No.") THEN BEGIN
+                  //100712  chrmu use sales lines instead of table 50001 <<<<
+                    OldOrderStatus := SalesHeader.Status;
+                    Post := FALSE;
+                    SalesHeader.Status := SalesHeader.Status::Open;
+                    IF dateVar <> 0D THEN
+                      SalesHeader."Posting Date" := dateVar;
+                    SalesHeader.MODIFY;
+                  END ELSE BEGIN
+                    InsertLogEntry(
+                      ImportFrameworkLine.Code,
+                      STRSUBSTNO(Text022, SalesHeader."No."), TRUE, FALSE, 0);
+                    EXIT(3);
+                  END;
+                END;
+              END;
+              // 01.06.12 chrmu >>>>>>>> // 040712 moved below
+              // 24.07.12 nas get status back >>>>>>>>
+              IF (IFSetup."STA Import Filter" <> '') AND (STRPOS(SalesHeader."No.",IFSetup."STA Import Filter") <> 1) THEN BEGIN
+                  SalesHeader.Status := OldOrderStatus;
+                  SalesHeader.MODIFY;
+                  EXIT(3);
+              END;
+              // 24.07.12 nas get status back <<<<<<
+              // 01.06.12 chrmu <<<<<<<
+              rr1.GETTABLE(SalesHeader);
+
+              rr1.ADDLINK(IFSetup."Rhenus Archive Folder" +
+                                  DELCHR(FORMAT(TODAY),'=','.\/') + '/' +
+                                  ImpDoc."File Name",Text029);
+              //24.07.12  nas remove check for many KADs >>
+              // 17.07.12 nas skip orders >>>
+              {
+              DocLog.RESET;
+              DocLog.SETRANGE(DocLog."Source Type",DocLog."Source Type"::Sales);
+              DocLog.SETRANGE(DocLog."Document Type",SalesHeader."Document Type");
+              DocLog.SETRANGE(DocLog."Document No.",SalesHeader."No.");
+              IF DocLog.FINDLAST THEN
+                IF DocLog."Seq. Code" <> '001' THEN EXIT(2);
+                }
+              // 17.07.12 nas skip orders <<<
+              //24.07.12  nas remove check for many KADs <<
+
+              IF Post THEN BEGIN
+                SalesLine.SETRANGE("Document Type",SalesHeader."Document Type");
+                SalesLine.SETRANGE("Document No.",SalesHeader."No.");
+                IF SalesLine.FINDSET THEN
+                  REPEAT
+                    SalesLine.VALIDATE("Qty. to Ship",0);
+                    SalesLine.VALIDATE("Qty. to Invoice",0);
+                    SalesLine.MODIFY;
+                  UNTIL SalesLine.NEXT = 0;
+              END;
+            END;
+        21 : BEGIN // clear qty to receipt
+              IF Post THEN BEGIN
+                //a/P0606/gob-sfe/23.11.12
+                IF NOT Transfer THEN BEGIN
+                  rr1.SETTABLE(PurchHeader);
+                  POLine.SETRANGE("Document Type",PurchHeader."Document Type");
+                  POLine.SETRANGE("Document No.",PurchHeader."No.");
+                  IF POLine.FINDSET THEN
+                    REPEAT
+                      POLine.VALIDATE("Qty. to Receive",0);
+                      POLine.VALIDATE("Qty. to Invoice",0);
+                      POLine.MODIFY;
+                    UNTIL POLine.NEXT = 0;
+                //e/P0606/gob-sfe/23.11.12
+                END ELSE BEGIN
+                  rr3.SETTABLE(TransferOrder);
+                  Transferline2.SETRANGE("Document No.",TransferOrder."No.");
+                  Transferline2.SETRANGE("Derived From Line No.",0);
+                  IF Transferline2.FINDSET THEN
+                    REPEAT
+                      Transferline2.VALIDATE("Qty. to Receive",0);
+                      Transferline2.MODIFY;
+                    UNTIL Transferline2.NEXT = 0;
+
+                END;
+                //P0606
+              END;
+            END;
+        22 : BEGIN // get uom
+              IF UOM.GET(ImportedValue) THEN
+                FieldRef.VALUE := ImportedValue
+              ELSE BEGIN
+                UOM.RESET;
+                UOM.SETRANGE(UOM."Alternative Code",ImportedValue);
+                IF UOM.FINDFIRST THEN
+                  FieldRef.VALUE := UOM.Code
+                ELSE
+                  InsertLogEntry(
+                    ImportFrameworkLine.Code,
+                    STRSUBSTNO(Text006, FieldRef.CAPTION, ImportedValue), TRUE, FALSE,FieldRef.NUMBER);
+              END;
+            END;
+        23 : BEGIN // post broken items
+              IF ImportedValue = '' THEN EXIT(0);
+              IF NOT EVALUATE(decVar,ImportedValue) THEN EXIT(0);
+              IF decVar = 0 THEN EXIT(0);
+
+              rr2.SETTABLE(PurchLine);
+              InvSetup.GET;
+              InvSetup.TESTFIELD("Broken Items Location");
+              PostItemJnlLine(
+                PurchLine."No.",decVar,
+                PurchLine."Location Code",InvSetup."Broken Items Location",
+                PurchHeader."Posting Date",0,FORMAT(TIME));
+            END;
+        24 : BEGIN // get TO Header
+              rr1.SETTABLE(TOrder);
+              FieldRef.VALUE := TOrder."No.";
+              InsertLogEntry(
+                ImportFrameworkLine.Code,
+                STRSUBSTNO(Text011,Text018, TOrder."No."), FALSE, FALSE,0);
+            END;
+        25 : BEGIN //check item qty
+              rr2.SETTABLE(TOLine);
+              decVar := CheckAvail(TOLine);
+              IF decVar > 0 THEN BEGIN
+                PostItemJnlLine(
+                  TOLine."Item No.",decVar,
+                  TOLine."Transfer-from Code",'',
+                  TOrder."Posting Date",1,FORMAT(TIME));
+              END;
+            END;
+        26 : BEGIN //get Quality
+              Location.RESET;
+              Location.SETRANGE(Mandant,GlobalVar[3]);
+              Location.SETRANGE("Item Quality Code",ImportedValue);
+              IF Location.FINDFIRST THEN BEGIN
+              //a/P0606/22.11.12/gob-sfe
+                WEMQuality := ImportedValue;
+                IF WEMQuality<>'M' THEN
+                  InsertLogEntry(
+                    ImportFrameworkLine.Code,
+                    STRSUBSTNO(Text035, WEMQuality), TRUE, FALSE, 0);
+              END ELSE BEGIN
+                CLEAR(WEMQuality);
+                InsertLogEntry(
+                  ImportFrameworkLine.Code,
+                  STRSUBSTNO(Text034, WEMQuality), TRUE, FALSE, 0);
+              END;
+              //e/P0606/22.11.12/gob-sfe
+            END;
+        27 : BEGIN //post transfer
+             // S/P0605
+             CLEAR(PostTransferReceipt);
+             FieldRef := rr3.FIELD(1);
+             //A/P0980
+             //IF TransferOrder2.GET(FieldRef.VALUE) THEN BEGIN
+             IF TransferOrder2.GET(TransferOrder."No.") THEN BEGIN
+             //E/P0980
+               COMMIT;
+      //H0550 09.09.13 ARI ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+               PostTransferReceipt.SetHideValidationDialog(TRUE);
+      //H0550 09.09.13 ARI ----------------------------------------------------------------
+               IF PostTransferReceipt.RUN(TransferOrder2) THEN BEGIN
+               //S/P0711
+                  InsertLogEntry(
+                    ImportFrameworkLine.Code,
+                    STRSUBSTNO(Text013,text038, TransferOrder2."No."), FALSE, FALSE, 0);
+                END ELSE BEGIN
+                  InsertLogEntry(
+                    ImportFrameworkLine.Code,
+                    STRSUBSTNO(Text012, text038, TransferOrder2."No."), TRUE, FALSE, 0);
+                  InsertLogEntry(
+                    ImportFrameworkLine.Code,
+                    COPYSTR(GETLASTERRORTEXT,1,250), TRUE, FALSE, 0);
+                  EXIT(2);
+                END;
+               //E/P0711
+             END;
+             {
+              rr2.SETTABLE(TOLine);
+
+              IF PostItemJnlLine(
+                  TOLine."Item No.",TOLine.Quantity,
+                  TOLine."Transfer-from Code",TOLine."Transfer-to Code",
+                  TOrder."Posting Date",0,FORMAT(TIME)) THEN
+                EXIT(0)
+              ELSE
+                EXIT(2);
+             }
+             // E/P0605
+
+
+        {
+              rr1.SETTABLE(TOrder);
+              TransferPostShipment.SetHideValidationDialog(TRUE);
+              TransferPostReceipt.SetHideValidationDialog(TRUE);
+              CODEUNIT.RUN(CODEUNIT::"Release Transfer Document",TOrder);
+              COMMIT;
+              IF TransferPostShipment.RUN(TOrder) THEN
+                InsertLogEntry(
+                  ImportFrameworkLine.Code,
+                  STRSUBSTNO(Text013,Text018,TOrder."No."), FALSE, FALSE, 0)
+              ELSE BEGIN
+                InsertLogEntry(
+                  ImportFrameworkLine.Code,
+                  STRSUBSTNO(Text012,Text018,TOrder."No."), TRUE, FALSE, 0);
+                InsertLogEntry(
+                  ImportFrameworkLine.Code,
+                  COPYSTR(GETLASTERRORTEXT,1,250), TRUE, FALSE, 0);
+              END;
+              COMMIT;
+              IF TransferPostReceipt.RUN(TOrder) THEN
+                InsertLogEntry(
+                  ImportFrameworkLine.Code,
+                  STRSUBSTNO(Text013,Text018,TOrder."No."), FALSE, FALSE, 0)
+              ELSE BEGIN
+                InsertLogEntry(
+                  ImportFrameworkLine.Code,
+                  STRSUBSTNO(Text012,Text018,TOrder."No."), TRUE, FALSE, 0);
+                InsertLogEntry(
+                  ImportFrameworkLine.Code,
+                  COPYSTR(GETLASTERRORTEXT,1,250), TRUE, FALSE, 0);
+              END;
+              }
+            END;
+        28 : BEGIN //post item difference
+              rr2.SETTABLE(TOLine);
+              decVar := CheckAvail(TOLine);
+              Location.GET(TOLine."Transfer-from Code");
+              Location.TESTFIELD("Item Difference Location");
+              IF decVar > 0 THEN BEGIN
+                IF NOT PostItemJnlLine(
+                  TOLine."Item No.",decVar,
+                  TOLine."Transfer-from Code",'',
+                  TOrder."Posting Date",1,FORMAT(TIME)) THEN
+                  EXIT(0)
+                ELSE
+                  EXIT(2);
+             // END;
+              END ELSE IF decVar < 0 THEN BEGIN
+                IF PostItemJnlLine(
+                  TOLine."Item No.",-decVar,
+                  TOLine."Transfer-from Code",Location."Item Difference Location",
+                  TOrder."Posting Date",0,FORMAT(TIME)) THEN
+                  EXIT(0)
+                ELSE
+                  EXIT(2);
+              END;
+            END;
+        29 : BEGIN // check vendor
+
+              // DYN0019 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+              //original IF Vendor."VAT Registration No." <> ImportedValue THEN BEGIN
+              IF Vendor."VAT Registration No." <> DELCHR(ImportedValue,'=',' ') THEN BEGIN
+              // DYN0019 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+                // 5.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                IF ImportedValue <> '' THEN BEGIN
+                // 5.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+                InsertLogEntry(
+                  ImportFrameworkLine.Code,
+                  STRSUBSTNO(Text019, ImportedValue, Vendor."No."), TRUE, FALSE,FieldRef.NUMBER);
+                //ERROR(Text019, ImportedValue, Vendor."No.");
+                EXIT(2);
+
+                // 5.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                END ELSE BEGIN
+                  InsertLogEntry(ImportFrameworkLine.Code,
+                    STRSUBSTNO(Text019a, ImportedValue, Vendor."No."),FALSE,FALSE,FieldRef.NUMBER);
+                  EXIT(0);
+                END;
+                // 5.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+              END;
+            END;
+        30 : BEGIN // evaluate date
+              FieldRef.VALUE := ConvertDate(ImportedValue);
+            END;
+        31 : BEGIN // Update qty to receive
+              //a/P0452/gob-sfe/24.10.12
+             IF EVALUATE(intVar,ImportedValue) AND (WEMQuality='M') THEN BEGIN //P0606/22.11.12/gob-sfe
+               // S/P0605/prÅfen Transfer Variable... STEP 2
+               IF Transfer THEN BEGIN
+                 rr3.SETTABLE(TransferOrder);
+                 rr4.SETTABLE(TransferLine);
+                 //S/P1049
+                 // S/P0711
+                 //IF TransferLine.Quantity < intVar THEN BEGIN
+                 IF TransferLine."Quantity Shipped" < intVar THEN BEGIN
+                  //FieldRef.VALUE := TransferLine.Quantity;
+                  FieldRef.VALUE := TransferLine."Quantity Shipped";
+                 // E/P0711
+
+                  TransferLine.FIND('=');
+                  // S/P0711
+                  //TransferLine.VALIDATE("Qty. to Receive",TransferLine.Quantity);
+                  TransferLine.VALIDATE("Qty. to Receive",TransferLine."Quantity Shipped");
+                  // E/P0711
+
+                  TransferLine.MODIFY;
+                  InsertLogEntry(
+                    ImportFrameworkLine.Code,
+                    //S/P0711
+                    //STRSUBSTNO(Text032, intVar,TransferLine.Quantity,
+                    STRSUBSTNO(Text039, intVar,TransferLine."Quantity Shipped",
+                    //E/P0711
+                      TransferLine."Document No.",TransferLine."Line No."), TRUE, FALSE, 0);
+                 IF PurchHeader2.GET(PurchHeader2."Document Type"::Order,TransferLine."Purchase Order No.") THEN BEGIN
+                   PurchHeader2.Overdelivery := TRUE;
+                   PurchHeader2.MODIFY;
+                 END;
+                 //E/P1049
+                 END ELSE BEGIN
+                   FieldRef.VALUE := intVar;
+                   TransferLine.FIND('=');
+                   TransferLine.VALIDATE("Qty. to Receive",intVar);
+                   TransferLine.MODIFY;
+                   InsertLogEntry(
+                     ImportFrameworkLine.Code,
+                     STRSUBSTNO(Text033, intVar,TransferLine."Document No.",TransferLine."Line No."), FALSE, FALSE, 0);
+                 END;
+               END ELSE BEGIN
+               // E/P0605
+               rr2.SETTABLE(POLine);
+               rr1.SETTABLE(PurchHeader);
+               POLine.SuspendStatusCheck(TRUE);
+               IF intVar > POLine."Outstanding Quantity" THEN BEGIN
+               //a/P0618/gob-sfe/28.11.12
+                 POLine3.RESET;
+                 POLine3.SETRANGE("Document Type",POLine."Document Type");
+                 POLine3.SETRANGE("Document No.",POLine."Document No.");
+                 POLine3.SETRANGE(Type,POLine.Type);
+                 POLine3.SETRANGE("No.",POLine."No.");
+                 POLine3.SETRANGE("Location Code",POLine."Location Code");
+                 POLine3.SETRANGE("Variant Code",POLine."Variant Code");
+                 POLine3.SETRANGE("Quantity Received",0);
+                 POLine3.SETFILTER("Outstanding Quantity", '<>0');
+                 POLine3.LOCKTABLE(TRUE);
+                 IF (POLine3.COUNT>1) THEN BEGIN
+                   // Overdelivery
+                   IF (intVar > POLine3.COUNT) THEN
+                     InsertLogEntry(
+                       ImportFrameworkLine.Code,
+                       STRSUBSTNO(Text032, intVar, POLine."Outstanding Quantity", POLine."Document No.", POLine."Line No."),
+                       TRUE, FALSE, 0
+                       );
+
+                   IF POLine3.FINDSET THEN
+                     REPEAT
+                       POLine3.VALIDATE("Qty. to Receive",1);
+                       POLine3.MODIFY;
+                       InsertLogEntry(
+                         ImportFrameworkLine.Code,
+                         STRSUBSTNO(Text033, 1,POLine."Document No.",POLine."Line No."), FALSE, FALSE, 0);
+                       intVar := intVar - 1;
+                     UNTIL (POLine3.NEXT = 0) OR (intVar = 0);
+                 //e/P0618/gob-sfe/28.11.12
+                 END ELSE BEGIN
+                   //overdelivery
+                   FieldRef.VALUE := POLine."Outstanding Quantity";
+                   InsertLogEntry(
+                     ImportFrameworkLine.Code,
+                     STRSUBSTNO(Text032, intVar,POLine."Outstanding Quantity",POLine."Document No.",POLine."Line No."), TRUE, FALSE, 0);
+                 END;
+               END ELSE BEGIN
+                 //everything ok/goods receipt
+                 FieldRef.VALUE := intVar;
+                 InsertLogEntry(
+                   ImportFrameworkLine.Code,
+                   STRSUBSTNO(Text033, intVar,POLine."Document No.",POLine."Line No."), FALSE, FALSE, 0);
+               END;
+               END;
+               // S/P0605
+               END;
+               // E/P0605
+             END;
+             //a/P0452/gob-sfe/24.10.12
+        32 : BEGIN // Update qty to ship
+              //IF (GlobalVar[5] = '50') THEN BEGIN
+              //IF (((GlobalVar[5] = '50') AND (GlobalVar[2] = '12'))
+              // OR ((GlobalVar[5] = '01') AND (GlobalVar[2] = '1'))) THEN BEGIN
+
+              IF EVALUATE(intVar,ImportedValue) THEN
+
+              //IF ((GlobalVar[5] = '50') AND (GlobalVar[2] = '1')) THEN BEGIN //[002]
+              IF Post THEN BEGIN // new rule 070312
+
+                rr2.SETTABLE(SOLine);
+                  IF SOLine."Quantity Shipped" <> 0 THEN BEGIN
+                    rr1.SETTABLE(SalesHeader);
+                    SalesHeader.Status := OldOrderStatus;
+                    SalesHeader.MODIFY;
+
+                    InsertLogEntry(
+                      ImportFrameworkLine.Code,
+                      STRSUBSTNO(Text027, FORMAT(SOLine."Line No."),
+                        SOLine."Document No."),
+                      TRUE, FALSE,FieldRef.NUMBER);
+                    EXIT(0);
+                  END;
+
+                  // > 270412 chrmu group lines
+                  // > 020712 chrmu fix group line
+                  IF SOLine."Outstanding Quantity" < intVar THEN BEGIN
+                  // < 020712 chrmu fix group line
+                    SOLine2.RESET;
+                    SOLine2.SETRANGE("Document Type",SOLine."Document Type");
+                    SOLine2.SETRANGE("Document No.",SOLine."Document No.");
+                    SOLine2.SETRANGE(Type,SOLine.Type);
+                    SOLine2.SETRANGE("No.",SOLine."No.");
+                    SOLine2.SETRANGE("Location Code",SOLine."Location Code");
+                    SOLine2.SETRANGE("Variant Code",SOLine."Variant Code");
+                    SOLine2.SETRANGE("Quantity Shipped",0);
+                    //A/P0382
+                    SOLine2.SETFILTER("Outstanding Quantity", '<>0');
+                    //E/P0382
+                    // < 270412 chrmu group lines
+
+                    IF (intVar > SOLine2.COUNT) AND (intVar > SOLine."Outstanding Quantity") THEN BEGIN
+                    //IF intVar > SOLine."Outstanding Quantity" THEN BEGIN
+                      rr1.SETTABLE(SalesHeader);
+                      SalesHeader.Status := OldOrderStatus;
+                      SalesHeader.MODIFY;
+
+                      InsertLogEntry(
+                        ImportFrameworkLine.Code,
+                        STRSUBSTNO(Text023, FORMAT(intVar),
+                          FORMAT(SOLine."Outstanding Quantity"),
+                          SOLine."Document No."),
+                        TRUE, FALSE,FieldRef.NUMBER);
+                      EXIT(3);
+                    END;
+                    // > 270412 chrmu group lines
+                    //FieldRef.VALUE := intVar;
+                    FieldRef.VALUE := 1;
+                    IF SOLine2.FINDSET THEN
+                    REPEAT
+                      IF SOLine2."Line No." <> SOLine."Line No." THEN BEGIN
+                        SOLine2.VALIDATE("Qty. to Ship",1);
+                        SOLine2.MODIFY;
+                      END;
+                      intVar := intVar - 1;
+                    UNTIL (SOLine2.NEXT = 0) OR (intVar = 0);
+                  // > 020712 chrmu fix group line
+                  END ELSE BEGIN
+                    FieldRef.VALUE := intVar;
+                  END;
+                  // < 020712 chrmu fix group line
+                  // < 270412 chrmu group lines
+                  //IF Post AND (SOLine.Quantity <> SOLine."Qty. to Ship" + intVar) THEN
+                  //  Post := FALSE;
+              END
+              ELSE
+              IF GlobalVar[5] = '70' THEN BEGIN
+                rr1.SETTABLE(SalesHeader);
+                rr2.SETTABLE(SOLine);
+                SO.INIT;
+                SO.TRANSFERFIELDS(SalesHeader);
+                SO."Document Type" := SO."Document Type"::"Return Order";
+                SO."No." := '';
+                SO."Applies-to Doc. Type" := SO."Applies-to Doc. Type"::Order;
+                SO."Applies-to Doc. No." := SalesHeader."No.";
+                SO.INSERT(TRUE);
+                SOLine2.INIT;
+                SOLine2."Document Type" := SOLine2."Document Type"::"Return Order";
+                SOLine2."Document No." := SO."No.";
+                SOLine2."Line No." := 10000;
+                SOLine2.INSERT(TRUE);
+                SOLine2.VALIDATE(Type,SOLine.Type);
+                SOLine2.VALIDATE("No.",SOLine."No.");
+                SOLine2.VALIDATE("Location Code",SOLine."Location Code");
+                SOLine2.VALIDATE("Shortcut Dimension 1 Code",SOLine."Shortcut Dimension 1 Code");
+                SOLine2.VALIDATE("Shortcut Dimension 2 Code",SOLine."Shortcut Dimension 2 Code");
+                SOLine2.VALIDATE("Unit of Measure",SOLine."Unit of Measure");
+                SOLine2.VALIDATE(Quantity,intVar);
+                SOLine2."Return Qty. to Receive" := SOLine2.Quantity;
+                SOLine2.VALIDATE("Unit Price",SOLine."Unit Price");
+                SOLine2.MODIFY;
+                rr1.GETTABLE(SO);
+                rr2.GETTABLE(SOLine2);
+                Post := TRUE;
+              END;
+            END;
+        33 : BEGIN // change quality
+              //a/P0452/gob-sfe/24.10.12
+              Location.RESET;
+              Location.SETRANGE(Mandant,GlobalVar[3]);
+              Location.SETRANGE("Item Quality Code",ImportedValue);
+              IF Location.FINDFIRST THEN BEGIN
+                IF FORMAT(FieldRef.VALUE) <> Location.Code THEN BEGIN
+                  rr2.SETTABLE(POLine);
+                  rr1.SETTABLE(PurchHeader);
+
+                  //P0452/Code gelîscht
+
+
+                END;
+
+              END ELSE BEGIN
+                InsertLogEntry(
+                  ImportFrameworkLine.Code,
+                  STRSUBSTNO(Text020, FORMAT(FieldRef.VALUE),POLine."Document No."), TRUE, FALSE,FieldRef.NUMBER);
+                EXIT(2);
+              END;
+              //e/P0452/gob-sfe/24.10.12
+            END;
+        34 : BEGIN // change quality
+              rr2.SETTABLE(SOLine);
+              // 090712 chrmu filter by branch code >>>>>>>>>>>>>>>
+              IF Location.GET(SOLine."Location Code") THEN;
+              // 090712 chrmu filter by branch code <<<<<<<<<<<<<
+              //A,gob-Fuchs,24.10.12,P0510
+              IF Location."Item Quality Code" <> ImportedValue THEN BEGIN
+              //E,gob-Fuchs,24.10.12,P0510
+                Location.RESET;
+                Location.SETRANGE(Mandant,GlobalVar[3]);
+                // 090712 chrmu filter by branch code >>>>>>>>>>>>>>>
+                Location.SETRANGE("Branch Code",Location."Branch Code");
+                // 090712 chrmu filter by branch code <<<<<<<<<<<<<
+                Location.SETRANGE("Item Quality Code",ImportedValue);
+                IF Location.FINDFIRST THEN
+                  IF FORMAT(FieldRef.VALUE) <> Location.Code THEN BEGIN
+                    rr2.SETTABLE(SOLine);
+                    IF SOLine."Quantity Shipped" = 0 THEN BEGIN
+                      SOLine.VALIDATE("Location Code",Location.Code);
+                      SOLine.MODIFY;
+                      rr2.GETTABLE(SOLine);
+                    END ELSE BEGIN
+                      rr1.SETTABLE(SalesHeader);
+                      SalesHeader.Status := OldOrderStatus;
+                      SalesHeader.MODIFY;
+
+                      InsertLogEntry(
+                        ImportFrameworkLine.Code,
+                        STRSUBSTNO(Text020, FORMAT(FieldRef.VALUE),SOLine."Document No."), TRUE, FALSE,FieldRef.NUMBER);
+                      //ERROR(Text020, Location.Code);
+                      EXIT(2);
+                    END;
+                  END;
+              //A,gob-Fuchs,24.10.12,P0510
+              END;
+              //E,gob-Fuchs,24.10.12,P0510
+            END;
+        35 : BEGIN // update date
+              Location.RESET;
+              Location.SETRANGE(Mandant,GlobalVar[3]);
+              Location.SETRANGE("Item Quality Code",ImportedValue);
+              IF Location.FINDFIRST THEN
+                IF FORMAT(FieldRef.VALUE) <> Location.Code THEN BEGIN
+                  InsertLogEntry(
+                    ImportFrameworkLine.Code,
+                    STRSUBSTNO(Text020, Location.Code), TRUE, FALSE,FieldRef.NUMBER);
+                  //ERROR(Text020, Location.Code);
+                  EXIT(2);
+                END;
+            END;
+        36 : BEGIN // money in cents
+              IF EVALUATE(decVar,ImportedValue) THEN FieldRef.VALUE := decVar/100
+              ELSE BEGIN
+                InsertLogEntry(
+                  ImportFrameworkLine.Code,
+                  STRSUBSTNO(Text006, FieldRef.CAPTION, ImportedValue), TRUE, FALSE,FieldRef.NUMBER);
+                FieldRef.VALUE := 0;
+              END;
+            END;
+        37 : BEGIN // WEM for purch order
+              //A,gob-dst,10.05.2013,P0909
+              //a/P0452/gob-sfe/24.10.12
+              //ImportedValue := COPYSTR(ImportedValue,1, STRLEN(ImportedValue)-3);
+              //a/P0452/gob-sfe/24.10.12
+
+              //PO-Nummer nur kÅrzen, wenn vorher keine Bestellung mit der vollstÑndigen Nummer gefunden werden konnte
+              IF NOT rPurchHeader.GET(rPurchHeader."Document Type"::Order,ImportedValue) THEN
+                ImportedValue := COPYSTR(ImportedValue,1, STRLEN(ImportedValue)-3);
+              //E,gob-dst,10.05.2013,P0909
+
+              // S/P0605/PrÅfung der Ursprungsdatensatzes. STEP1
+              // Imported Value = PO Nummer
+              DocLog.RESET;
+              DocLog.SETRANGE(DocLog."Source Type",DocLog."Source Type" :: Transfer);
+              DocLog.SETRANGE(DocLog."Document Type",DocLog."Document Type" :: Order);
+              DocLog.SETRANGE(DocLog."Document No.",ImportedValue);
+              //Branch Code
+              DocLog.SETRANGE("Branch Code",BranchCode);
+
+              IF DocLog.FINDLAST THEN
+                Transfer := TRUE
+              ELSE
+                Transfer := FALSE;
+              //Fehler nur wenn kein Transfer...
+              IF NOT Transfer THEN BEGIN
+                IF (NOT PurchHeader.GET(PurchHeader."Document Type"::Order,ImportedValue)) THEN BEGIN
+                  //P0606
+                  rr1.GETTABLE(PurchHeader);
+                  InsertLogEntry(
+                    ImportFrameworkLine.Code,
+                    STRSUBSTNO(Text022, ImportedValue), TRUE, FALSE, 0);
+                  EXIT(2);
+                END;
+                //a/gob-sfe/P0791
+                //Give error if Container Order
+                IF (PurchHeader.GET(PurchHeader."Document Type"::Order,ImportedValue)) THEN BEGIN
+                  IF PurchHeader."Shipping Type"<>'' THEN BEGIN
+                    rr1.GETTABLE(PurchHeader);
+                    InsertLogEntry(
+                      ImportFrameworkLine.Code,
+                      STRSUBSTNO(Text036, ImportedValue), TRUE, FALSE, 0);
+                    EXIT(2);
+                  END;
+                END;
+                //e/gob-sfe/P0791
+
+                FieldRef.VALUE := FORMAT(ImportedValue);
+              END ELSE BEGIN
+
+                IF (NOT TransferOrder.GET(DocLog."Transfer No.")) THEN BEGIN
+                  InsertLogEntry(
+                    ImportFrameworkLine.Code,
+                    STRSUBSTNO(Text036, DocLog."Transfer No."), TRUE, FALSE, 0);
+                  EXIT(2);
+                END;
+                //Transfer Order holen...
+                rr3.GETTABLE(TransferOrder);
+                rr4.GETTABLE(TransferLine);
+
+                //rr3.SETTABLE(TransferOrder);
+                FieldRef.VALUE := FORMAT(DocLog."Transfer No.");
+              END;
+              // E/P0605
+            END;
+        38 : BEGIN // WEM for sales return
+              IF (STRPOS(FORMAT(ImportedValue),'R') <> 1) THEN BEGIN
+                ImpDoc2.GET(ImpDoc."Entry No.");
+                ImpDoc2.Complete := TRUE;
+                ImpDoc2.Error := FALSE;
+                ImpDoc2."Error Message" := '';
+                ImpDoc2.MODIFY;
+                //COMMIT;
+                EXIT(1)
+              END ELSE BEGIN
+                IF (NOT SO.GET(SO."Document Type"::"Return Order",ImportedValue)) THEN
+                  EXIT(2);
+                FieldRef.VALUE := FORMAT(ImportedValue);
+              END;
+            END;
+        39 : BEGIN // TRA
+              rr1.SETTABLE(SO);
+              rr2.SETTABLE(SOLine);
+              DHLSetup.GET;
+              SOLine."DHL Shipment Number" := FORMAT(ImportedValue);
+              SOLine."Status Event Code" := DHLSetup."DHL Create Ship. Event Code";
+              SOLine."Status Code" := DHLSetup."DHL Create Ship. RIC Code";
+              IF SOLine."Seq. No." > 0 THEN
+                SOLine.MODIFY;
+
+              //S/P1117
+              //S/P1133
+              IF FPCGeneralSetup."Active Parcel Status History" IN
+                [FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+                FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+                FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New"]
+              THEN BEGIN
+              //E/P1133
+                CLEAR(ParcelStatusDHL);
+                ParcelStatusDHL."DHL Shipment Code" := UPPERCASE(SOLine."DHL Shipment Number");
+                ParcelStatusDHL."Document Line No." := SOLine."Line No.";
+                ParcelStatusDHL."Document No." := SO."No.";
+                ParcelStatusDHL."Document Type" := ParcelStatusDHL."Document Type"::Order;
+                ParcelStatusDHL."Time Stamp" := CURRENTDATETIME;
+                ParcelStatusDHL."Current Status" := TRUE;
+                ParcelStatusDHL."Status Event" := DHLSetup."DHL Create Ship. Event Code";
+                ParcelStatusDHL."Status Code" := DHLSetup."DHL Create Ship. RIC Code";
+                IF EVALUATE(dateVar,COPYSTR(GlobalVar[4],1,10)) THEN
+                  ParcelStatusDHL."Delivery Date" := dateVar;
+                // S/P1047
+                IF gFilename <> '' THEN
+                  ParcelStatusDHL."File Name" := gFilename;
+                // E/P1047
+                //H0875  18.02.14  MBY  ++++++++++++++++++++++++++++
+                {
+                //H0875  18.02.14  MBY  ----------------------------
+                ParcelStatusDHL.INSERT;
+                //H0875  18.02.14  MBY  ++++++++++++++++++++++++++++
+                }
+                ParcelStatusDHL.INSERT(TRUE);
+                //H0875  18.02.14  MBY  ----------------------------
+              //S/P1133
+              END;
+
+              IF FPCGeneralSetup."Active Parcel Status History" IN
+                [FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+                FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+                FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History"]
+              THEN BEGIN
+              //E/P1133
+                RecRef.GETTABLE(SOLine);
+                CLEAR(CUParcelStatusHistoryMgmt);
+                IF EVALUATE(dateVar,COPYSTR(GlobalVar[4],1,10)) THEN
+                  CUParcelStatusHistoryMgmt.SetDateGlobals(0D,dateVar,0D);
+                IF gFilename <> '' THEN
+                  CUParcelStatusHistoryMgmt.SetFileNameGlobal(gFilename);
+                CUParcelStatusHistoryMgmt.FillHistoryByDocLine(
+                    RecRef,                                   // Rec
+                    0,                                        // p_Command
+                    1,                                        // p_InfoDirection::  Incoming,Outgoing
+                    2,                                        // p_UsedInterface::  ,EDI,DHL,DocData,Drop Shipment,Rhenus,UPS
+                    'DHL',                                    // p_ShippingAgentCode
+                    UPPERCASE(SOLine."DHL Shipment Number"),  // p_TrackingCode
+                    '',                                       // p_PieceCode
+                    DHLSetup."DHL Create Ship. Event Code",   // p_StatusCode
+                    DHLSetup."DHL Create Ship. RIC Code",     // p_StatusRICCode
+                    '',                                       // p_Comment
+                    0);                                       // p_HandleStatusDescription
+              //S/P1133
+              END;
+              //E/P1133
+              //E/P1117
+            END;
+        40 : BEGIN // get item
+              IF STRLEN(ImportedValue) > MAXSTRLEN(Item."No.") THEN
+              BEGIN
+                InsertLogEntry(
+                  ImportFrameworkLine.Code,
+                  STRSUBSTNO(Text009, ImportedValue), TRUE, FALSE,FieldRef.NUMBER);
+                EXIT(2);
+              END;
+
+              IF NOT Item.GET(ImportedValue) THEN
+              BEGIN
+                InsertLogEntry(
+                  ImportFrameworkLine.Code,
+                  STRSUBSTNO(Text009, ImportedValue), TRUE, FALSE,FieldRef.NUMBER);
+                EXIT(2);
+              END ELSE
+                FieldRef.VALUE := FORMAT(ImportedValue);
+            END;
+        41 : BEGIN // get order no
+              FieldRef.VALUE := COPYSTR(ImportedValue,1,STRLEN(ImportedValue) - 3);
+            END;
+        42 : BEGIN // promised delivery date
+              rr2.SETTABLE(SOLine);
+              IF SOLine."Status Code"  = '3' THEN
+                IF EVALUATE(dateVar,ImportedValue) THEN
+                  FieldRef.VALUE := dateVar;
+            END;
+        // S/P0605
+        43 : BEGIN
+             BranchCode := ImportedValue;
+             END;
+        // E/P0605
+
+        // DYN0019 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        44 : BEGIN // get Charge Account line
+              rr2.SETTABLE(POLine);
+              IF ImportedValue = 'DI' THEN BEGIN
+                POLine.DELETE;
+                EXIT(2);
+              END;
+              LT_InvImpExt.RESET;
+              LT_InvImpExt.SETRANGE("Vendor No.",Vendor."No.");
+              LT_InvImpExt.SETRANGE("Import Extention",ImportedValue);
+              IF NOT LT_InvImpExt.FINDFIRST THEN
+                LT_InvImpExt.SETRANGE("Import Extention",'');
+              LT_InvImpExt.FINDFIRST;
+              LT_InvImpExt.TESTFIELD("Item Charge No.");
+              CASE LT_InvImpExt."Item Charge Type" OF
+                LT_InvImpExt."Item Charge Type"::"G/L Account":
+                  POLine.VALIDATE(Type,POLine.Type::"G/L Account");
+                LT_InvImpExt."Item Charge Type"::"Item Charge":
+                  POLine.VALIDATE(Type,POLine.Type::"Charge (Item)");
+              END; //case
+              POLine.VALIDATE("No.",LT_InvImpExt."Item Charge No.");
+              POLine."Dropshipnr." := GetOrderFromText(GlobalVar[5]);
+              POLine."Status Code" := 'IMPORT-L';
+              POLine.MODIFY;
+              rr2.GETTABLE(POLine);
+             END;
+        // DYN0019 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+        // H0730 FX 06.12.13 +++++++++++++++++++++++++++++++++++++++
+        666 : BEGIN
+                ImportDHLProactive.RESET;
+                ImportDHLProactive.FINDLAST;
+                FieldRef.VALUE := ImportDHLProactive."Entry No." + 1;
+              END;
+
+        667 : BEGIN
+                FieldRef.VALUE := CURRENTDATETIME;
+              END;
+
+        668 : BEGIN
+                FieldRef.VALUE := 'FIEGE';
+              END;
+
+        // H0730 FX 06.12.13 -----------------------------------------
+
+      END;
+      EXIT(0);
+    END;
+
+    PROCEDURE ConvertDate@1000000001(DateText@1000000003 : Text[12]) : Date;
+    VAR
+      YYYY@1000000002 : Integer;
+      MM@1000000001 : Integer;
+      DD@1000000000 : Integer;
+    BEGIN
+      IF NOT EVALUATE(YYYY,COPYSTR(DateText,1,4)) THEN
+        EXIT(WORKDATE);
+      IF YYYY < 100 THEN YYYY := 2000 + YYYY;
+      IF NOT EVALUATE(MM,COPYSTR(DateText,5,2)) THEN
+        EXIT(WORKDATE);
+      IF NOT EVALUATE(DD,COPYSTR(DateText,7,2)) THEN
+        EXIT(WORKDATE);
+      IF DD*MM*YYYY = 0 THEN
+        EXIT(WORKDATE);
+      EXIT(DMY2DATE(DD,MM,YYYY));
+    END;
+
+    PROCEDURE SaveInGlobal@1000000002(ImportFrameworkLine@1000000002 : Record 50011;newValue@1000000000 : Text[250]);
+    BEGIN
+      IF ImportFrameworkLine."Global Variable" <> ImportFrameworkLine."Global Variable"::" " THEN
+          GlobalVar[ImportFrameworkLine."Global Variable"] := newValue;
+    END;
+
+    PROCEDURE GetBigIntFromText@1000000003(TextLine@1000000000 : Text[250]) : BigInteger;
+    VAR
+      i@1000000001 : Integer;
+      TextNumber@1000000003 : Text[30];
+      intVal@1000000002 : BigInteger;
+    BEGIN
+      i := 1;
+      WHILE i <= STRLEN(TextLine) DO BEGIN
+        IF TextLine[i] IN ['0'..'9'] THEN BEGIN
+          WHILE (TextLine[i] IN ['0'..'9']) AND (i <= STRLEN(TextLine)) DO BEGIN
+            TextNumber := TextNumber + FORMAT(TextLine[i]);
+            i := i + 1;
+          END;
+          EVALUATE(intVal,TextNumber);
+          EXIT(intVal);
+        END;
+        i := i + 1;
+      END;
+      EXIT(0);
+    END;
+
+    LOCAL PROCEDURE PostItemJnlLine@1000000007(ItemNo@1000 : Code[20];Qty@1001 : Decimal;OldLocation@1002 : Code[10];NewLocation@1000000003 : Code[10];PostingDate@1000000005 : Date;EntryType@1000000006 : 'Transfer,Adjustment';DocNo@1000000007 : Code[10]) : Boolean;
+    VAR
+      TempJnlLineDim@1007 : TEMPORARY Record 356;
+      ItemChargePurchLine@1008 : Record 39;
+      OriginalItemJnlLine@1014 : Record 83;
+      TempWhseJnlLine@1012 : TEMPORARY Record 7311;
+      TempWhseTrackingSpecification@1016 : TEMPORARY Record 336;
+      TempWhseJnlLine2@1011 : TEMPORARY Record 7311;
+      ItemJnlLine@1000000000 : Record 83;
+      TempDocDim@1000000001 : TEMPORARY Record 357;
+      DimMgt@1000000002 : Codeunit 408;
+      ItemJnlPostLine@1000000004 : Codeunit 22;
+      Factor@1009 : Decimal;
+      PostWhseJnlLine@1013 : Boolean;
+      CheckApplToItemEntry@1015 : Boolean;
+      PostJobConsumptionBeforePurch@1018 : Boolean;
+      NextReservationEntryNo@1017 : Integer;
+      LineNo@1000000008 : Integer;
+    BEGIN
+      LineNo := 10000;
+      IFSetup.GET;
+      IF (IFSetup."Item Jrnl. Template Name" <> '') AND (IFSetup."Item Jrnl. Batch Name" <> '') THEN BEGIN
+        ItemJnlLine.SETRANGE("Journal Template Name",IFSetup."Item Jrnl. Template Name");
+        ItemJnlLine.SETRANGE("Journal Batch Name",IFSetup."Item Jrnl. Batch Name");
+        IF ItemJnlLine.FINDLAST THEN
+          LineNo := ItemJnlLine."Line No." + 10000;
+      END;
+
+      ItemJnlLine.INIT;
+      ItemJnlLine."Journal Template Name" := IFSetup."Item Jrnl. Template Name";
+      ItemJnlLine."Journal Batch Name" := IFSetup."Item Jrnl. Batch Name";
+      ItemJnlLine."Line No." := LineNo;
+
+      IF EntryType = EntryType::Transfer THEN
+        ItemJnlLine.VALIDATE("Entry Type",ItemJnlLine."Entry Type"::Transfer)
+      ELSE
+        ItemJnlLine.VALIDATE("Entry Type",ItemJnlLine."Entry Type"::"Positive Adjmt.");
+
+      ItemJnlLine.VALIDATE("Document No.",DocNo);
+
+      IF PostingDate <> 0D THEN
+        ItemJnlLine.VALIDATE("Posting Date",PostingDate)
+      ELSE
+        ItemJnlLine.VALIDATE("Posting Date",WORKDATE);
+
+      ItemJnlLine.VALIDATE("Item No.",ItemNo);
+      ItemJnlLine.VALIDATE("Location Code",OldLocation);
+      IF EntryType = EntryType::Transfer THEN
+        ItemJnlLine.VALIDATE("New Location Code",NewLocation);
+
+      ItemJnlLine.VALIDATE(Quantity,Qty);
+      {
+      COMMIT;
+
+      //ItemJnlPostLine.RUN(ItemJnlLine);
+      IF ItemJnlPostLine.RUN(ItemJnlLine) THEN
+        InsertLogEntry(
+          '',
+          STRSUBSTNO(Text014, DocNo,ItemNo,Qty), FALSE, FALSE, 0)
+      ELSE BEGIN
+        InsertLogEntry(
+          '',
+          STRSUBSTNO(Text015, DocNo,ItemNo), TRUE, FALSE, 0);
+        InsertLogEntry(
+          '',
+          COPYSTR(GETLASTERRORTEXT,1,250), TRUE, FALSE, 0);
+        //IF ItemJnlLine.INSERT THEN;
+        EXIT(FALSE);
+      END;
+      }
+      IF ItemJnlLine.INSERT THEN
+        InsertLogEntry(
+          '',
+          STRSUBSTNO(Text024, DocNo,ItemNo,Qty), FALSE, FALSE, 0)
+      ELSE BEGIN
+        InsertLogEntry(
+          '',
+          STRSUBSTNO(Text015, DocNo,ItemNo), TRUE, FALSE, 0);
+        InsertLogEntry(
+          '',
+          COPYSTR(GETLASTERRORTEXT,1,250), TRUE, FALSE, 0);
+        EXIT(FALSE);
+      END;
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE CheckAvail@1000000005(TransLine@1000000000 : Record 5741) : Decimal;
+    VAR
+      Item@1000000001 : Record 27;
+    BEGIN
+      WITH Item DO BEGIN
+        GET(TransLine."Item No.");
+        SETRANGE("No.",TransLine."Item No.");
+        SETRANGE("Variant Filter",TransLine."Variant Code");
+        SETRANGE("Location Filter",TransLine."Transfer-from Code");
+        SETRANGE("Drop Shipment Filter",FALSE);
+        IF TransLine."Shipment Date" = 0D THEN
+          SETRANGE("Date Filter",0D,WORKDATE)
+        ELSE
+          SETRANGE("Date Filter",0D,TransLine."Shipment Date");
+        CALCFIELDS(Inventory,"Reserved Qty. on Inventory");
+        EXIT(TransLine.Quantity - Inventory + "Reserved Qty. on Inventory");
+      END;
+    END;
+
+    PROCEDURE Temp@1000000008();
+    BEGIN
+              //PostItemJnlLine(PurchLine,decVar,InvSetup."Broken Items Location");
+              {
+              Location.RESET;
+              Location.SETRANGE("Use As In-Transit",TRUE);
+              Location.FINDFIRST;
+              TOrder.INIT;
+              TOrder.INSERT(TRUE);
+              TOrder.VALIDATE("Transfer-from Code",PurchLine."Location Code");
+              TOrder.VALIDATE("Transfer-to Code",InvSetup."Broken Items Location");
+              TOrder.VALIDATE("In-Transit Code",Location.Code);
+              TOrder.MODIFY(TRUE);
+              TOLine.INIT;
+              TOLine."Document No." := TOrder."No.";
+              TOLine."Line No." := 10000;
+              TOLine.VALIDATE("Item No.",PurchLine."No.");
+              TOLine.VALIDATE(Quantity,decVar);
+              TOLine.VALIDATE("Unit of Measure Code",PurchLine."Unit of Measure Code");
+              TOLine.INSERT(TRUE);
+              TransferPostShipment.SetHideValidationDialog(TRUE);
+              TransferPostReceipt.SetHideValidationDialog(TRUE);
+              CODEUNIT.RUN(CODEUNIT::"Release Transfer Document",TOrder);
+              //TransferPostShipment.RUN(TOrder);
+              //TransferPostReceipt.RUN(TOrder);
+              COMMIT;
+              IF TransferPostShipment.RUN(TOrder) THEN
+                InsertLogEntry(
+                  ImportFrameworkLine.Code,
+                  STRSUBSTNO(Text013, TOrder."No."), FALSE, FALSE, 0)
+              ELSE
+                InsertLogEntry(
+                  ImportFrameworkLine.Code,
+                  STRSUBSTNO(Text012, TOrder."No."), TRUE, FALSE, 0);
+              COMMIT;
+              IF TransferPostReceipt.RUN(TOrder) THEN
+                InsertLogEntry(
+                  ImportFrameworkLine.Code,
+                  STRSUBSTNO(Text013, TOrder."No."), FALSE, FALSE, 0)
+              ELSE
+                InsertLogEntry(
+                  ImportFrameworkLine.Code,
+                  STRSUBSTNO(Text012, TOrder."No."), TRUE, FALSE, 0);
+              }
+    END;
+
+    PROCEDURE ListFolder@1000000009(VAR tmpFile@1000000004 : TEMPORARY Record 50013);
+    VAR
+      i@1000000005 : Integer;
+    BEGIN
+      tmpFile.RESET;
+      tmpFile.DELETEALL;
+      FOR i := 1 TO FileCollection.Count() DO BEGIN
+        oneFile := FileCollection.Item(i);
+        tmpFile.INIT;
+        tmpFile."Entry No." := i;
+        tmpFile."Message Text" := COPYSTR(oneFile.Name,1,250);
+        tmpFile.INSERT;
+      END;
+    END;
+
+    PROCEDURE ListFoldervbScript@1000000010(FolderName@1000000008 : Text[1024]);
+    VAR
+      scr@1000000000 : Automation "{0E59F1D2-1FBE-11D0-8FF2-00A0D10038BC} 1.0:{0E59F1D5-1FBE-11D0-8FF2-00A0D10038BC}:'Microsoft Script Control 1.0'.ScriptControl";
+      txtCode@1000000001 : Text[1024];
+      RetVal@1000000002 : Variant;
+      count@1000000003 : Integer;
+      i@1000000004 : Integer;
+      txtCR@1000000005 : Text[30];
+      FileName@1000000006 : Text[1024];
+      FileSysAutomation@1000000012 : Automation "{420B2830-E718-11CF-893D-00A0C9054228} 1.0:{0D43FE01-F093-11CF-8940-00A0C9054228}:'Microsoft Scripting Runtime'.FileSystemObject";
+      Folder@1000000011 : Automation "{420B2830-E718-11CF-893D-00A0C9054228} 1.0:{C7C3F5B3-88A3-11D0-ABCB-00A0C90FFFC0}:'Microsoft Scripting Runtime'.Folder";
+      Files@1000000010 : Automation "{420B2830-E718-11CF-893D-00A0C9054228} 1.0:{C7C3F5B6-88A3-11D0-ABCB-00A0C90FFFC0}:'Microsoft Scripting Runtime'.Files";
+    BEGIN
+      CREATE(FileSysAutomation);
+      IF NOT FileSysAutomation.FolderExists(FolderName) THEN
+        ERROR(Text026,FolderName);
+      Folder := FileSysAutomation.GetFolder(FolderName);
+      Files := Folder.Files;
+      CREATE(FileCollection);
+
+      txtCR := ' '; txtCR[1] := 13;
+      CREATE(scr);
+      scr.Language := 'VBScript';
+      scr.AddObject('FilesByName', Files);
+      scr.AddObject('FilesById', FileCollection);
+      txtCR := ' '; txtCR[1] := 13;
+      txtCode :=
+      'dim f1' + txtCR +
+      'For Each f1 in FilesByName' + txtCR +
+      ' FilesById.Add (FilesById.Count+1), f1' + txtCR +
+      'Next' + txtCR;
+      scr.ExecuteStatement(txtCode);
+
+      CLEAR(scr);
+    END;
+
+    PROCEDURE Ansi2Ascii@10(_String@1150001 : Text[1024]) _Output@1150000 : Text[1024];
+    BEGIN
+      // Converts from ANSI to ASCII
+      EXIT(CONVERTSTR(_String,'«¸È‚‰‡ÂÁÍÎËÔÓÏƒ≈…Ê∆ÙˆÚ˚˘ˇ÷‹¯£ÿ◊É·ÌÛ˙Ò—™∫øÆ¡¬¿ À»ÕŒœÃ”ﬂ‘“⁄€Ÿ',
+                              'ÄÅÇÉÑÖÜáàâäãåçéèêëíìîïñóòôöõúùûü†°¢£§•¶ß®©µ∂∑“”‘÷◊ÿﬁ‡·‚„ÈÍÎ'));
+    END;
+
+    PROCEDURE Ascii2Ansi@1150001(_String@1150001 : Text[1024]) @1150000 : Text[1024];
+    BEGIN
+      // Converts from ASCII to ANSI
+      EXIT(CONVERTSTR(_String,'ÄÅÇÉÑÖÜáàâäãåçéèêëíìîïñóòôöõúùûü†°¢£§•¶ß®©µ∂∑“”‘÷◊ÿﬁ‡·‚„ÈÍÎ',
+                              '«¸È‚‰‡ÂÁÍÎËÔÓÏƒ≈…Ê∆ÙˆÚ˚˘ˇ÷‹¯£ÿ◊É·ÌÛ˙Ò—™∫øÆ¡¬¿ À»ÕŒœÃ”ﬂ‘“⁄€Ÿ'));
+    END;
+
+    PROCEDURE FTPDownload@1000000014() : Boolean;
+    VAR
+      FTPClient@1000000000 : Automation "{42A8A505-1CD3-4CA4-A7EA-E6EBCC481DDC} 1.0:{B32A3669-654B-4CEF-980E-C7753F1FA524}:'FTPNav'.FTPNavClass";
+    BEGIN
+      IF ISCLEAR(FTPClient) THEN CREATE(FTPClient);
+      IF NOT FTPClient.DownloadDirectory(
+              Interface."FTP Import Address",
+              Interface."FTP Import User",
+              Interface."FTP Import Password",
+              Interface."FTP Import Folder",
+              Interface."Import Folder",
+              TRUE,FALSE)
+      THEN BEGIN
+        InsertLogEntry('',Text021, TRUE, FALSE, 0);
+        InsertLogEntry('',FTPClient.GetLastErrorText, TRUE, FALSE, 0);
+        EXIT(FALSE);
+      END;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE GetOrderFromText@1000000015(TextLine@1000000000 : Text[250]) : Code[30];
+    VAR
+      TextNumber@1000000001 : Text[30];
+      L_Pos@1000000002 : Integer;
+      i@1000000003 : Integer;
+    BEGIN
+      //H1626 17.10.14 ARI +++++++++++++++++++++++++++++++++++++++
+      i := 1;
+      WHILE i <= STRLEN(TextLine) DO BEGIN
+        IF TextLine[i] IN ['0'..'9'] THEN BEGIN
+          L_Pos := i;
+          WHILE (TextLine[i] IN ['0'..'9']) AND (i <= STRLEN(TextLine)) DO BEGIN
+            TextNumber := TextNumber + FORMAT(TextLine[i]);
+            i := i + 1;
+          END;
+          IF L_Pos >= 3 THEN
+            IF COPYSTR(TextLine,L_Pos - 2,2) IN ['CD','DS'] THEN
+              TextNumber := COPYSTR(TextLine,L_Pos - 2,2) + TextNumber;
+          EXIT(TextNumber);
+        END;
+        i := i + 1;
+      END;
+      EXIT('');
+      //H1626 17.10.14 ARI ---------------------------------------
+    END;
+
+    PROCEDURE SepProcessErrors@1000000016(ProcErrors@1000000000 : Boolean);
+    BEGIN
+      //DYN0008  08.08.12  nas  run only new entries >>
+      ProcessErrors := ProcErrors;
+      //DYN0008  08.08.12  nas  run only new entries <<
+    END;
+
+    PROCEDURE "--- P0493 ---"@1000000017();
+    BEGIN
+    END;
+
+    PROCEDURE SetReprocessCompleted@1000000018(EntryNo@1000000000 : Integer);
+    BEGIN
+      gReprocessCompleted := TRUE;
+      UseInterim := TRUE;
+      gEntryNo := EntryNo;
+    END;
+
+    PROCEDURE "***P1076 fct***"@1000000020();
+    BEGIN
+    END;
+
+    PROCEDURE CheckStipulation@1000000021(pImportFrameworkLine@1000000000 : Record 50011;pImportString@1000000001 : Text[1024]) : Boolean;
+    VAR
+      lIFStipulation@1000000002 : Record 50125;
+    BEGIN
+      lIFStipulation.SETRANGE(Code,pImportFrameworkLine.Code);
+      lIFStipulation.SETRANGE("Line No",pImportFrameworkLine."Line No");
+      IF lIFStipulation.ISEMPTY THEN
+        EXIT(TRUE);
+
+      lIFStipulation.FINDSET;
+      REPEAT
+        IF (STRLEN(pImportString) >= lIFStipulation.StartPos) THEN BEGIN //copystr ist mîglich
+          IF STRPOS(COPYSTR(pImportString,lIFStipulation.StartPos,lIFStipulation.Length),lIFStipulation."Comparison Value") > 0 THEN
+      BEGIN
+            IF lIFStipulation.Negative THEN // Negativbedingung, hÑtte nicht gefunden werden sollen
+              EXIT(FALSE);
+          END ELSE // Wert nicht gefunden
+            IF NOT lIFStipulation.Negative THEN // nicht fÅr Negativbedingung, sollte auch nicht gefunden werden
+              EXIT(FALSE);
+        END;
+      UNTIL (lIFStipulation.NEXT = 0);
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE "*** HME **********************"@1000000019();
+    BEGIN
+    END;
+
+    PROCEDURE FillWEMTable@1000000022(ImpDocV@1000000008 : Record 50034);
+    VAR
+      ImportFrameworkDocs@1000000007 : Record 50034;
+      ImportFrmDocsLine@1000000009 : Record 50035;
+      ImportFrameworkWEM@1000000006 : Record 50195;
+      QtyWEM@1000000005 : Integer;
+      QtyDamagedWEM@1000000004 : Integer;
+      PackPiece@1000000010 : Integer;
+      DD@1000000003 : Integer;
+      MM@1000000002 : Integer;
+      YYYY@1000000001 : Integer;
+      ReceiptDateWEM@1000000000 : Date;
+    BEGIN
+      // H0670 FX 14.11.13 +++++++++++++++++++++++
+      // Fills up the new table 50195 - Import Framework WEM
+      IF ImportFrameworkDocs.GET(ImpDocV."Entry No.") THEN BEGIN
+        IF ImportFrameworkDocs."Import Framework Code" <> 'R-WEM' THEN
+          EXIT;
+        ImportFrameworkWEM.INIT;
+        ImportFrameworkWEM."Entry No." := ImportFrameworkDocs."Entry No.";
+        ImportFrameworkWEM."Creation Date" := ImportFrameworkDocs."Creation Date";
+        ImportFrameworkWEM."Start Text" := ImportFrameworkDocs."Start Text";
+        ImportFrameworkWEM."File Name" := ImportFrameworkDocs."File Name";
+        ImportFrameworkWEM.Imported := ImportFrameworkDocs.Imported;
+        ImportFrameworkWEM.Complete := ImportFrameworkDocs.Complete;
+        ImportFrameworkWEM.Interface := ImportFrameworkDocs.Interface;
+        ImportFrameworkWEM."Import Framework Code" := ImportFrameworkDocs."Import Framework Code";
+        ImportFrameworkWEM."STA ReProcessed" := ImportFrameworkDocs."STA ReProcessed";
+
+        // Transfer Lines
+        ImportFrmDocsLine.SETRANGE("Entry No.", ImportFrameworkDocs."Entry No.");
+        IF ImportFrmDocsLine.FINDFIRST THEN BEGIN
+
+          ImportFrmDocsLine.SETRANGE(StartPos, 4);
+          IF ImportFrmDocsLine.FINDFIRST THEN
+            ImportFrameworkWEM.Mandant := ImportFrmDocsLine."Field Value";
+
+          ImportFrmDocsLine.SETRANGE(StartPos, 8);
+          IF ImportFrmDocsLine.FINDFIRST THEN
+            ImportFrameworkWEM."Branch Code" := ImportFrmDocsLine."Field Value";
+
+          ImportFrmDocsLine.SETRANGE(StartPos, 14);
+          IF ImportFrmDocsLine.FINDFIRST THEN
+            ImportFrameworkWEM."Document No." := ImportFrmDocsLine."Field Value";
+
+          ImportFrmDocsLine.SETRANGE(StartPos, 30);
+          IF ImportFrmDocsLine.FINDFIRST THEN
+            ImportFrameworkWEM."Posting Date" := ConvertWEMDate(ImportFrmDocsLine."Field Value");
+
+          ImportFrmDocsLine.SETRANGE(StartPos, 29);
+          IF ImportFrmDocsLine.FINDFIRST THEN
+            ImportFrameworkWEM."Invoice/Delivery No." :=
+              COPYSTR(ImportFrmDocsLine."Field Value", 1, MAXSTRLEN(ImportFrameworkWEM."Invoice/Delivery No."));
+
+          ImportFrmDocsLine.SETRANGE(StartPos, 59);
+          IF ImportFrmDocsLine.FINDFIRST THEN
+            IF ImportFrmDocsLine."Field Value" <> '' THEN
+              EVALUATE(ImportFrameworkWEM."Invoice/Delivery Line", ImportFrmDocsLine."Field Value")
+            ELSE
+              ImportFrameworkWEM."Invoice/Delivery Line" := 0;
+
+          ImportFrmDocsLine.SETRANGE(StartPos, 74);
+          IF ImportFrmDocsLine.FINDFIRST THEN
+            ImportFrameworkWEM."Item No." := ImportFrmDocsLine."Field Value";
+
+          ImportFrmDocsLine.SETRANGE(StartPos, 69);
+          IF ImportFrmDocsLine.FINDFIRST THEN
+            ImportFrameworkWEM.Quality := ImportFrmDocsLine."Field Value";
+
+          ImportFrmDocsLine.SETRANGE(StartPos, 70);
+          IF ImportFrmDocsLine.FINDFIRST THEN
+            IF EVALUATE(QtyDamagedWEM, ImportFrmDocsLine."Field Value") THEN
+              ImportFrameworkWEM."Damaged Items" := QtyDamagedWEM;
+
+          ImportFrmDocsLine.SETRANGE(StartPos, 64);
+          IF ImportFrmDocsLine.FINDFIRST THEN
+            IF EVALUATE(QtyWEM, ImportFrmDocsLine."Field Value") THEN
+              ImportFrameworkWEM.Quantity := QtyWEM;
+
+          ImportFrmDocsLine.SETRANGE(StartPos, 104);
+          IF ImportFrmDocsLine.FINDFIRST THEN
+            ImportFrameworkWEM."Item Description" := COPYSTR(ConvertWEMText(ImportFrmDocsLine."Field Value"),
+              1, MAXSTRLEN(ImportFrameworkWEM."Item Description"));
+
+          ImportFrmDocsLine.SETRANGE(StartPos, 154);
+          IF ImportFrmDocsLine.FINDFIRST THEN
+            ImportFrameworkWEM."Item Barcode" :=
+              COPYSTR(ImportFrmDocsLine."Field Value", 1, MAXSTRLEN(ImportFrameworkWEM."Item Barcode"));
+
+          ImportFrmDocsLine.SETRANGE(StartPos, 186);
+          IF ImportFrmDocsLine.FINDFIRST THEN
+            IF EVALUATE(PackPiece, ImportFrmDocsLine."Field Value") THEN
+              ImportFrameworkWEM."Package Pieces" := PackPiece;
+
+          ImportFrmDocsLine.SETRANGE(StartPos, 188);
+          IF ImportFrmDocsLine.FINDFIRST THEN
+            ImportFrameworkWEM.Volume := ImportFrmDocsLine."Field Value";
+
+          ImportFrmDocsLine.SETRANGE(StartPos, 193);
+          IF ImportFrmDocsLine.FINDFIRST THEN
+            ImportFrameworkWEM.Weight := ImportFrmDocsLine."Field Value";
+
+          ImportFrmDocsLine.SETRANGE(StartPos, 207);
+          IF ImportFrmDocsLine.FINDFIRST THEN
+            ImportFrameworkWEM."Sales Order No." := ImportFrmDocsLine."Field Value";
+
+          ImportFrmDocsLine.SETRANGE(StartPos, 30);
+          IF ImportFrmDocsLine.FINDFIRST THEN
+            ImportFrameworkWEM."Receipt Date" := ConvertWEMDate(ImportFrmDocsLine."Field Value");
+
+          {
+          // Non filled fields
+          ImportFrameworkWEM."Document Type" :=
+          ImportFrameworkWEM."Prepare Lines" :=
+          ImportFrameworkWEM."Empty Qty to Receive" :=
+          ImportFrameworkWEM.Post :=
+          ImportFrameworkWEM."No." :=
+          ImportFrameworkWEM."Post Transfer" :=
+          }
+
+        END;
+
+        IF ImportFrameworkWEM.INSERT THEN
+          InsertLogEntry('', STRSUBSTNO(Text040, Interface."Import Folder" + '\' + ImportFrameworkWEM."File Name"),
+            FALSE, FALSE, 0)
+        ELSE
+          InsertLogEntry('', STRSUBSTNO(Text041, Interface."Import Folder" + '\' + ImportFrameworkWEM."File Name"),
+            TRUE, FALSE, 0);
+      END;
+
+      // H0670 FX 14.11.13 ----------------------------
+    END;
+
+    PROCEDURE ConvertWEMDate@1000000024(DateText@1000000003 : Text[12]) : Date;
+    VAR
+      YYYY@1000000002 : Integer;
+      MM@1000000001 : Integer;
+      DD@1000000000 : Integer;
+    BEGIN
+      // H0670 FX 07.11.13 +++++++++++++++++++++++
+      IF STRLEN(DateText) <> 10 THEN
+        EXIT;
+      IF NOT EVALUATE(YYYY, COPYSTR(DateText, 7, 4)) THEN
+        EXIT(0D);
+      IF YYYY < 100 THEN
+        YYYY := 2000 + YYYY;
+      IF NOT EVALUATE(MM, COPYSTR(DateText, 4, 2)) THEN
+        EXIT(0D);
+      IF NOT EVALUATE(DD, COPYSTR(DateText, 1, 2)) THEN
+        EXIT(0D);
+      IF DD * MM * YYYY = 0 THEN
+        EXIT(0D);
+
+      EXIT(DMY2DATE(DD, MM, YYYY));
+      // H0670 FX 07.11.13 ----------------------------
+    END;
+
+    PROCEDURE ConvertWEMText@1000000025(InitString@1000000000 : Text[1024]) : Text[1024];
+    BEGIN
+      // H0670 FX 07.11.13 +++++++++++++++++++++++
+      InitString := CONVERTSTR(InitString, '§ü∂º', 'Ñ·îÅ');
+      InitString := DELCHR(InitString, '=', '√');
+      EXIT(InitString);
+      // H0670 FX 07.11.13 ----------------------------
+    END;
+
+    BEGIN
+    {
+      [001] 07.12.2011 HBl change parameter and returnvalue Text250 auf 1024 at local function Ansi2Ascii
+      [002] 08.02.2012 chrmu  changing rule for posting STA - order type = 1, order status = 50
+      [003] 28.03.2012  chrmu handle only STA "1000*"
+                              handle order nos with '/'
+      [004] 27.04.12 chrmu group lines
+      [005] 31.05.12 eich  add any functions for IWOFURN-Import
+      6.00  07.08.12 eich  check multiple GLN/ILN in IWOFURN-Import
+      7.00  08.08.12 eich  find order/Delivery for IWOFURN-Import (DYN0014)
+
+      +-----------------------------------------------------+
+      |               GOB Software & Systeme                |
+      +-----------------------------------------------------+
+      |                FP Commerce Anpassungen              |
+      -------------------------------------------------------
+
+      Version        Bemerkung
+      -------------------------------------------------------
+      P0014          gob-rste 31.05.2012  Dropshinr. from BigInteger to Code
+      17.07.12 nas skip orders
+      18.07.12  nas check existance
+      19.07.12  nas fill the delivery date from STA
+      20.07.12  nas post Rhenus locations
+      24.07.12  nas remove check for many KADs
+      30.07.12  nas skip ORDER-INFO lines in STA
+      DYN0004  06.08.12  nas skip ORDER-INFO lines in STA - fix - fix(DYN0012)
+      DYN0006  07.08.12  nas skip files with errors
+      DYN0008  08.08.12  nas  run only new entries
+      DYN0008  14.08.12  loop changed to temp variable
+      P0191    15.08.12  Workaround bugfix UTF-8 WEM files
+      P0350    19.09.12  STAs fÅr archivierte AuftrÑge
+      P0382    26.09.12  Bugfix fÅr Rhenus Mengen-Meldung
+      P0395    01.10.12  IF not 50 Then Post = FALSE;
+      P0426    10.10.12  Fix fÅr STAs fÅr archivierte AuftrÑge
+      P0429    10.10.12  Fill "Shipment thorugh" in DHL Parcels History Table
+      P0459    18.10.12  Bugfix fÅr ÅberflÅssige Schleife bei ProcessInterim
+      P0466    18.10.12  New Timestamps Fields
+      P0452    18.10.12  gob-sfe  inbound WEM bugfixing
+      P0493    23.10.12  gob-Fuchs ReProcess STA Import
+      P0510    24.10.12  gob-Fuchs keine LagerortÑnderung wenn Lagerort bereits der ArtikelqualitÑt entspricht
+      P0530    29.10.12  gob-Fuchs Neue Buchungsregel: Wenn Order Status = 50 und Shipment through = Rhenus, dann Post := true
+      P0589    15.11.12  gob-Fuchs rr2 nicht fÅr stornierte Zeilen
+      P0605    22.11.12  gob-mab   Anpassungen Container
+      P0606    22.11.12  gob-sfe   WEM Quality
+      P0605    22.11.12  gob-mab   Anpassungen Container
+      P0618    28.11.12  gob-sfe   WEM Changes
+      P0605    29.11.12  gob-mab   neue Fkt. 43, Branch Code fÅr Filterung in 37
+      P0632    30.11.12  gob-rste  PO Transfer Import New correct Case
+      P0664    11.12.12  gob-Fuchs Actual Delivery Date fÅllen
+      P0692    18.12.12  gob-Fuchs Anpassung P0664 nur fÅr Artikel
+      P0703    19.12.12  gob-Fuchs KÅrzung bei zu langen RÅckmeldungen
+      p0711    20.12.12  gob-mab   korrektur
+      P0712    20.12.12  gob-rste  Import doppelte Avise
+      P0718    21.12.12  gob-Fuchs énderung beim Aktualisieren
+      P0791    05.02.12  gob-sfe   Function 37, Bugfix37
+      P0564    12.02.13  gob-rste  Insert Interface Process Status INDELIVERY
+      P0832    21.03.13  gob-lku   Einbindung der Rhenus Easylog Dateien
+      P0890    17.04.13  gob-adb   SETCURRENTKEYs added
+      P0909    10.05.13  gob-dst   WEM: Identifizierung PO (Nr. evtl. nicht kÅrzen)
+      P0980    19.06.13  gob-mab   FIX WEM Container Order
+      DYN0019  20.06.13  eich      import of purchase invoice mark as Import; use Home24 SKU when EAN-No. empty
+      P1041    24.07.13  gob-sil   Filterung Seq. No. optimiert
+      P1042    24.07.13  gob-mab   Complete WEM Error Fix
+      P1043    26.07.13  gob-Fuchs Rhenus WEM Import als UTF-8
+      P1047    26.07.13  gob-sil   Filename in DHL Status eintragen
+      P1049    29.07.13  gob-mab   Overdelivery Transfer Orders
+      P1041-1  16.08.13  gob-sil   Optimierung Filterung
+      P1117    07.10.13  gob-mlan  - Deaktivation of H0541 -> Function doesn't exists -> CU not compilable
+                                   - Redesign of "DHL Parcel Status History"
+                                   - Code within with //S/P1117/++S+++++++ and //E/P1117/--E-------
+                                     will be replaced by the new code and/or it will be deactivated
+      P1129    21.10.13  gob-mlan  - Redesign of "DHL Parcel Status History" Phase 2
+      P1133    05.11.13  gob-mlan  - Redesign of "DHL Parcel Status History"
+      P1076    14.08.13  gob-sil   BerÅcksichtigung Bedingungen
+
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+
+      H0550       09.09.13 ARI       PostTransferReceipt.SetHideValidationDialog(true)
+      H0670       14.11.13  FX        New table WEM Overview: Switch trigger of WEM processing
+      H0730       06.12.13  FX        Fiege -> Create Import Framework
+      H0875       18.02.14  MBY       Execute OnInsert trigger in "DHL Parcels Status History" table
+      H1006       14.04.14  MBY       Stop Filling Import Framework Log
+      H1626       17.10.14  ARI       Invoice Processing for CD orders - Get Receipt Lines
+    }
+    END.
+  }
+}
+

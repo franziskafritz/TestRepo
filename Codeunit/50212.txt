@@ -1,0 +1,262 @@
+OBJECT Codeunit 50212 Purchase Blanket Order
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02.09.13;
+    Time=14:59:54;
+    Version List=HME0513;
+  }
+  PROPERTIES
+  {
+    Subtype=Test;
+    OnRun=BEGIN
+            IsInitialized := FALSE;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Assert@1002 : Codeunit 50200;
+      LibraryUtility@1003 : Codeunit 50206;
+      LibrarySCM@1006 : Codeunit 50210;
+      LibraryFinance@1102601000 : Codeunit 50207;
+      IsInitialized@1000 : Boolean;
+      VATAmountErrorMessage@1004 : TextConst 'ENU=%1 must be %2 in %3.';
+      FieldError@1005 : TextConst 'ENU=%1 not updated correctly.';
+
+    LOCAL PROCEDURE Initialize@12();
+    VAR
+      BackupManagement@1000 : Codeunit 50201;
+    BEGIN
+      RANDOMIZE(1);  // Seed RANDOM function.
+      IF IsInitialized THEN
+        EXIT;
+
+      BackupManagement.DefaultFixture;
+
+      LibraryFinance.InitializeGeneralPostingSetup;
+      LibraryFinance.InitializeVATPostingSetup;
+
+      IsInitialized := TRUE;
+      COMMIT;
+    END;
+
+    [Test]
+    PROCEDURE PurchaseBlanketOrderCreation@3();
+    VAR
+      PurchaseHeader@1001 : Record 38;
+      PurchaseLine@1000 : Record 39;
+    BEGIN
+      // Verify the Creation of Purchase Blanket Order.
+
+      // Setup.
+      Initialize;
+
+      // Exercise: Create Purchase Blanket Order.
+      CreatePurchaseBlanketOrder(PurchaseHeader,PurchaseLine);
+
+      // Verify: Verify that Correct Purchase Blanket Order created.
+      PurchaseHeader.GET(PurchaseHeader."Document Type",PurchaseHeader."No.");
+      PurchaseLine.GET(PurchaseLine."Document Type",PurchaseLine."Document No.",PurchaseLine."Line No.");
+    END;
+
+    [Test]
+    PROCEDURE VATAmountPurchaseBlanketOrder@4();
+    VAR
+      PurchaseHeader@1002 : Record 38;
+      PurchaseLine@1001 : Record 39;
+      GeneralLedgerSetup@1006 : Record 98;
+      VATAmountLine@1005 : Record 290;
+      ReleasePurchaseDocument@1000 : Codeunit 415;
+      QtyType@1003 : 'General,Invoicing,Shipping';
+    BEGIN
+      // Verify the VAT Amount after creating Purchase Blanket Order.
+
+      // Setup: Create a Purchase Blanket Order.
+      Initialize;
+      CreatePurchaseBlanketOrder(PurchaseHeader,PurchaseLine);
+
+      // Exercise: Calculate VAT Amount on VAT Amount Line from Purchase Line.
+      PurchaseLine.CalcVATAmountLines(QtyType::Invoicing,PurchaseHeader,PurchaseLine,VATAmountLine);
+      ReleasePurchaseDocument.PerformManualRelease(PurchaseHeader);
+
+      // Verify: Verify VAT Amount on Purchase Blanket Order.
+      GeneralLedgerSetup.GET;
+      PurchaseHeader.CALCFIELDS(Amount);
+      Assert.AreNearlyEqual(
+        PurchaseHeader.Amount * PurchaseLine."VAT %" / 100,VATAmountLine."VAT Amount",GeneralLedgerSetup."Amount Rounding Precision",
+        STRSUBSTNO(VATAmountErrorMessage,VATAmountLine.FIELDCAPTION("VAT Amount"),PurchaseHeader.Amount * PurchaseLine."VAT %" / 100,
+          VATAmountLine.TABLECAPTION));
+    END;
+
+    [Test]
+    PROCEDURE PurchaseBlanketOrderReport@5();
+    VAR
+      PurchaseHeader@1004 : Record 38;
+      PurchaseLine@1003 : Record 39;
+      BlanketPurchaseOrder@1002 : Report 410;
+      FilePath@1000 : Text[1024];
+    BEGIN
+      // Verify that Purchase Blanket Order Report contains some data after generating it from Purchase Blanket Order Created.
+
+      // Setup: Create a Purchase Blanket Order.
+      Initialize;
+      CreatePurchaseBlanketOrder(PurchaseHeader,PurchaseLine);
+
+      // Exercise: Generate Purchase Blanket Order Report and save it as external file.
+      PurchaseHeader.SETRANGE("Document Type",PurchaseHeader."Document Type"::"Blanket Order");
+      PurchaseHeader.SETRANGE("No.",PurchaseHeader."No.");
+      BlanketPurchaseOrder.SETTABLEVIEW(PurchaseHeader);
+      IF ISSERVICETIER THEN BEGIN
+        FilePath := TEMPORARYPATH + FORMAT(PurchaseHeader."Document Type") + PurchaseHeader."No." + '.xls';
+        BlanketPurchaseOrder.SAVEASEXCEL(FilePath);
+      END ELSE BEGIN
+        FilePath := TEMPORARYPATH + FORMAT(PurchaseHeader."Document Type") + PurchaseHeader."No." + '.xml';
+        BlanketPurchaseOrder.SAVEASXML(FilePath);
+      END;
+
+      // Verify: Verify that saved files have some data.
+      LibraryUtility.CheckFileNotEmpty(FilePath);
+    END;
+
+    [Test]
+    PROCEDURE PurchaseOrderFromBlanketOrder@6();
+    VAR
+      PurchaseHeader@1001 : Record 38;
+      PurchaseHeader2@1005 : Record 38;
+      PurchaseLine@1000 : Record 39;
+      PurchaseLine2@1004 : Record 39;
+      QtyToReceive@1002 : Decimal;
+    BEGIN
+      // Verify that Purchase Order created successfully from Purchase Blanket Order.
+
+      // Setup: Create Purchase Blanket Order with Quantity greater than 1. Change the Quantity to Receive and store it in a variable.
+      Initialize;
+      LibrarySCM.CreatePurchaseHeader(PurchaseHeader,PurchaseHeader."Document Type"::"Blanket Order",CreateVendor);
+      LibrarySCM.CreatePurchaseLine(
+        PurchaseHeader,PurchaseLine,PurchaseLine.Type::Item,CreateItem,2 * RANDOM(10));
+      PurchaseLine.VALIDATE("Qty. to Receive",PurchaseLine.Quantity - 1);
+      PurchaseLine.MODIFY(TRUE);
+      QtyToReceive := PurchaseLine."Qty. to Receive";
+
+      // Exercise: Create Purchase Order from Purchase Blanket Order and post it.
+      CODEUNIT.RUN(CODEUNIT::"Blanket Purch. Order to Order",PurchaseHeader);
+      PurchaseLine2.SETRANGE("Blanket Order No.",PurchaseLine."Document No.");
+      PurchaseLine2.SETRANGE("Document Type",PurchaseLine2."Document Type"::Order);
+      PurchaseLine2.FINDFIRST;
+      PurchaseHeader2.GET(PurchaseLine2."Document Type",PurchaseLine2."Document No.");
+      PurchaseHeader2.VALIDATE("Vendor Invoice No.",PurchaseHeader2."No.");
+      PurchaseHeader2.MODIFY(TRUE);
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader2,TRUE,TRUE);
+
+      // Verify: Verify that the correct Quantity has been updated on Purchase Blanket Order Line.
+      PurchaseLine.GET(PurchaseLine."Document Type",PurchaseLine."Document No.",PurchaseLine."Line No.");
+      Assert.AreEqual(
+        QtyToReceive,PurchaseLine."Quantity Received",STRSUBSTNO(FieldError,PurchaseLine.FIELDCAPTION("Quantity Received")));
+    END;
+
+    [Test]
+    [HandlerFunctions(MessageHandler)]
+    PROCEDURE LocationOnPurchaseBlanketOrder@7();
+    VAR
+      PurchaseHeader@1001 : Record 38;
+      PurchaseHeader2@1004 : Record 38;
+      PurchaseLine@1000 : Record 39;
+      PurchaseLine2@1003 : Record 39;
+      Location@1002 : Record 14;
+    BEGIN
+      // Create the Purchase Order from Purchase Blanket Order with a Location and check that the correct Location has been
+      // updated on Purchase Order Header.
+
+      // Setup: Create a Purchase Blanket Order. Find a Location and Update it on Purcahse Header.
+      Initialize;
+      CreatePurchaseBlanketOrder(PurchaseHeader,PurchaseLine);
+      Location.SETRANGE("Use As In-Transit",FALSE);
+      Location.NEXT(RANDOM(Location.COUNT));
+      PurchaseHeader.VALIDATE("Location Code",Location.Code);
+      PurchaseHeader.MODIFY(TRUE);
+
+      // Exercise: Create Purchase Order From Purchase Blanket Order.
+      CODEUNIT.RUN(CODEUNIT::"Blanket Purch. Order to Order",PurchaseHeader);
+      PurchaseLine2.SETRANGE("Blanket Order No.",PurchaseHeader."No.");
+      PurchaseLine2.SETRANGE("Document Type",PurchaseLine2."Document Type"::Order);
+      PurchaseLine2.FINDFIRST;
+
+      // Verify: Verify that correct Location has been updated on the newly created Purchase Order.
+      PurchaseHeader2.GET(PurchaseLine2."Document Type",PurchaseLine2."Document No.");
+      Assert.AreEqual(
+        Location.Code,PurchaseHeader2."Location Code",STRSUBSTNO(FieldError,PurchaseHeader2.FIELDCAPTION("Location Code")));
+    END;
+
+    LOCAL PROCEDURE CreatePurchaseBlanketOrder@11(VAR PurchaseHeader@1002 : Record 38;VAR PurchaseLine@1000 : Record 39);
+    VAR
+      Counter@1003 : Integer;
+    BEGIN
+      // Create Multiple Purchase Lines with Random Quantity more than one and Direct Unit Cost. greater than 99 (Standard Value).
+      LibrarySCM.CreatePurchaseHeader(PurchaseHeader,PurchaseHeader."Document Type"::"Blanket Order",CreateVendor);
+      FOR Counter := 1 TO 1 + RANDOM(10) DO BEGIN
+        LibrarySCM.CreatePurchaseLine(
+          PurchaseHeader,PurchaseLine,PurchaseLine.Type::Item,CreateItem,RANDOM(10));
+        PurchaseLine.VALIDATE("Direct Unit Cost",100 * RANDOM(10));
+      END;
+      PurchaseLine.MODIFY(TRUE);
+    END;
+
+    LOCAL PROCEDURE CreateItem@10() : Code[20];
+    VAR
+      Item@1001 : Record 27;
+      VATPostingSetup@1002 : Record 325;
+      InventorySetup@1004 : Record 313;
+      LibrarySCM@1000 : Codeunit 50210;
+    BEGIN
+      // Modify Item No. Series in Inventory setup, Find VAT Posting Setup and update VAT Prod. Posting Setup in Item.
+      InventorySetup.GET;
+      InventorySetup.VALIDATE("Item Nos.",LibraryUtility.GetNoSeriesCode);
+      InventorySetup.MODIFY(TRUE);
+      LibrarySCM.CreateItem(Item);
+      FindVATPostingSetup(VATPostingSetup);
+      Item.VALIDATE("VAT Prod. Posting Group",VATPostingSetup."VAT Prod. Posting Group");
+      Item.MODIFY(TRUE);
+      EXIT(Item."No.");
+    END;
+
+    LOCAL PROCEDURE CreateVendor@15() : Code[20];
+    VAR
+      Vendor@1000 : Record 23;
+      VATPostingSetup@1003 : Record 325;
+    BEGIN
+      // Create Vendor with General Business Posting Group.
+      FindVATPostingSetup(VATPostingSetup);
+      LibrarySCM.CreateVendor(Vendor);
+      Vendor.VALIDATE("Gen. Bus. Posting Group",VATPostingSetup."VAT Bus. Posting Group");
+      Vendor.MODIFY(TRUE);
+      EXIT(Vendor."No.");
+    END;
+
+    LOCAL PROCEDURE FindVATPostingSetup@13(VAR VATPostingSetup@1000 : Record 325);
+    BEGIN
+      VATPostingSetup.SETRANGE("VAT Calculation Type",VATPostingSetup."VAT Calculation Type"::"Normal VAT");
+      VATPostingSetup.SETFILTER("VAT %",'>0');
+      LibraryFinance.FindVATPostingSetup(VATPostingSetup)
+    END;
+
+    [MessageHandler]
+    PROCEDURE MessageHandler@78(Message@1000 : Text[1024]);
+    BEGIN
+      // Message Handler.
+    END;
+
+    BEGIN
+    {
+      Create and Verify various functionalities of Purchase Blanket Order.
+        1. Test that a Purchase Blanket Order Header and Lines exist after Purchase Blanket Order creation.
+        2. Test VAT Amount calculated correctly on Purchase Blanket Order.
+        3. Test that a Report generated from Purchase Blanket Order and it contains some data.
+        4. Test that Quantity Received field updated after posting Purchase Order. Create Purchase Order from Purchase Blanket Order.
+        5. Test that Correct Location updated on Purchase Header after creating Purchase Order from Purchase Blanket Order.
+    }
+    END.
+  }
+}
+

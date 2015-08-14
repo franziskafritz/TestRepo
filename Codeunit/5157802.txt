@@ -1,0 +1,1721 @@
+OBJECT Codeunit 5157802 FinanceTools
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09.06.15;
+    Time=18:07:45;
+    Modified=Yes;
+    Version List=OPP7.02.01,6.0,AR,HME4337;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 17=r,
+                TableData 21=r,
+                TableData 25=r,
+                TableData 254=rim,
+                TableData 271=rm,
+                TableData 275=rim,
+                TableData 276=rim,
+                TableData 287=rim,
+                TableData 288=rim,
+                TableData 355=rim,
+                TableData 383=r,
+                TableData 5157809=rm;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text001@5157808 : TextConst 'DEU="Belegnr. %1 , Zeile %2. Bei RÅcklastbuchungen muss die Kontoart Debitor sein. ";ENU=You cannot unapply %1 No. %2 because the account type has to be customer.';
+      Text002@5157807 : TextConst 'DEU="Belegnr. %1 , Zeile %2. Bei RÅcklastbuchungen muss ein Betrag angegeben sein. ";ENU=You cannot unapply %1 No. %2 because you have to specify an amount.';
+      Text003@5157806 : TextConst 'DEU="Belegnr. %1 , Zeile %2. RÅcklastbuchung: Der Betrag der Buchungszeile %3 passt nicht zu den BetrÑgen der zu îffnenden Posten %4. ";ENU=You cannot unapply %1 No. %2 because the amount of the booking line does not match to the amounts of the entries.';
+      Text004@5157805 : TextConst 'DEU=Belegnr. %1 , Zeile %2. RÅcklastbuchung: Sie kînnen den Ausgleich fÅr %3 Nr. %4 nicht aufheben, weil der Posten bereits Gegenstand einer Stornierung war.;ENU=You cannot unapply %1 No. %2 because the entry has been involved in a reversal.';
+      Text005@5157804 : TextConst 'DEU=Belegnr. %1 , Zeile %2. RÅcklastbuchung: %3 Nr. %4 verfÅgt Åber keinen Ausgleichsposten.;ENU=%1 No. %2 does not have an application entry.';
+      Text006@5157803 : TextConst 'DEU=Belegnr. %1 , Zeile %2. RÅcklastbuchung: %3 Nr. %4 ist verfÅgt bereits Åber einen Ausgleichstorno.;ENU=%1 No. %2 does not have an application entry.';
+      Text007@5157802 : TextConst 'DEU=Verarbeite Belegnr. #1###########;ENU=Processing Document No. #1###########';
+      OPPSetup@5157823 : Record 5157802;
+      GLSetup@5157811 : Record 98;
+      Customer@5157821 : Record 18;
+      CustLedgEntry@5157820 : Record 21;
+      DtldCustLedgEntry2@5157818 : Record 379;
+      DtldCustLedgEntryBuf@5157817 : TEMPORARY Record 379;
+      GenJnlLine@5157815 : Record 81;
+      PmtImportInterface@5157826 : Record 5157810;
+      PmtImportRegister@5157827 : Record 5157808;
+      BankAccount@5157828 : Record 270;
+      CEEdit@5157813 : Codeunit 103;
+      CEApp@5157812 : Codeunit 226;
+      Dlg@5157810 : Dialog;
+      TestAmt@5157809 : Decimal;
+      OPPSetupRead@5157824 : Boolean;
+      fso@5157825 : Automation "{420B2830-E718-11CF-893D-00A0C9054228} 1.0:{0D43FE01-F093-11CF-8940-00A0C9054228}:'Microsoft Scripting Runtime'.FileSystemObject";
+      Text008@5157830 : TextConst 'DEU=Bei einer Scheckeinreicherbuchung darf das Gegenkonto nicht verwendet werden.\%1: %2\%3: %4\%5: %6;ENU=When posting a check collection you must not use bal. accounts.\%1: %2\%3: %4\%5: %6';
+      Text10000@5157829 : TextConst 'DEU=Die Einrichtungsdaten wurden erstellt.;ENU=The setup data have been created.';
+
+    PROCEDURE ReleaseNo@6() : Text[30];
+    VAR
+      Text001@1000000000 : TextConst 'DEU=OPplus 7.02;ENU=OPplus 7.02';
+    BEGIN
+      EXIT(Text001);
+    END;
+
+    PROCEDURE Norm_String@25(InStr@1000 : Text[100]) : Text[250];
+    VAR
+      OutStr@1004 : Text[250];
+      Dummy@1003 : Text[2];
+      n@1001 : Integer;
+      Length@1002 : Integer;
+    BEGIN
+      InStr := CONVERTSTR(InStr,'Ü†ÖÉÇäà°çå¢ïì£óñµ∑∂èê‘“÷ﬁ◊‡„‚ÈÎÍ','aaaaeeeiiiooouuuAAAAEEEIIIOOOUUU');
+      InStr := DELCHR(UPPERCASE(InStr));
+
+      Length := STRLEN(InStr);
+      OutStr := '';
+
+      FOR n := 1 TO Length DO BEGIN
+        Dummy := COPYSTR(InStr,n,1);
+        IF STRPOS('ABCDEFGHIJKLMNOPQRSTUVWXYZ',Dummy) > 0 THEN
+          OutStr := OutStr + Dummy;
+        IF STRPOS('éÑ',Dummy) > 0 THEN
+          OutStr := OutStr + 'AE';
+        IF STRPOS('ôî',Dummy) > 0 THEN
+          OutStr := OutStr + 'OE';
+        IF STRPOS('öÅ',Dummy) > 0 THEN
+          OutStr := OutStr + 'UE';
+        IF Dummy = '·' THEN
+          OutStr := OutStr + 'SS';
+      END;
+
+      EXIT(OutStr);
+    END;
+
+    PROCEDURE Installation_Initialize@1();
+    VAR
+      GenJnlTemplate@1001 : Record 80;
+      OPplusSetup@1006 : Record 5157802;
+      SourceCode@1011 : Record 230;
+      BankAccount@1028 : Record 270;
+      Text000@5157813 : TextConst 'DEU=Wollen Sie Mandant %1 einrichten?;ENU=Setup Company %1?';
+      Text001@5157812 : TextConst 'DEU=ZE-ERW;ENU=CR-EXT';
+      Text003@5157810 : TextConst 'DEU=Erw. Zahlungseingang;ENU=Ext. Cash-Receipt';
+      Text005@5157807 : TextConst 'DEU=Verrechnung Zahlung;ENU=Settlement of payment';
+      Text006@5157806 : TextConst 'DEU=Ausgleich von Beleg %1;ENU=Applied Doc. %1';
+      Text007@5157823 : TextConst 'DEU=Ausgleich von Beleg %1;ENU=Applied Doc. %1';
+      Text008@5157805 : TextConst 'DEU=Ausgleichssaldo;ENU=Balance of Apply';
+      Text009@5157804 : TextConst 'DEU=Rundungsdifferenz;ENU=Rounding Residual';
+      AccountingRule@1000000007 : Record 5157811;
+      AccountingRule2@5157809 : Record 5157811;
+      PmtImportLine@1000000008 : Record 5157809;
+      Text010@5157827 : TextConst 'DEU=SCHECK;ENU=CHECK';
+      Text011@5157826 : TextConst 'DEU=Scheckeinreicher;ENU=Check Receipts Journal';
+      Text012@5157825 : TextConst 'DEU=KASSE;ENU=CASHBOOK';
+      Text013@5157824 : TextConst 'DEU=Kassenbuch;ENU=Cash Book Journal';
+      Text014@5157830 : TextConst 'DEU=http://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml;ENU=http://www.ecb.int/stats/eurofxref/eurofxref-daily.xml';
+      Text015@5157829 : TextConst 'DEU=http://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist.xml;ENU=http://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist.xml';
+      Text016@5157833 : TextConst 'DEU=ZLG_IMP_1;ENU=PMT_IMP_1';
+      Text017@5157834 : TextConst 'DEU=Zlg.-Importjournal;ENU=Pmt. Importregister';
+      Text018@5157835 : TextConst 'DEU=ZLG_IMP_2;ENU=PMT_IMP_2';
+      Text019@5157836 : TextConst 'DEU=Zlg.-Importschnittstelle;ENU=Pmt.-Importregister';
+      Text021@5157837 : TextConst 'DEU=PI_000000;ENU=PI_000000';
+      Text022@5157838 : TextConst 'DEU=IF_000000;ENU=IF_000000';
+      Text023@5157841 : TextConst 'DEU=*.STA;ENU=*.STA';
+      Text2001@5157816 : TextConst 'DEU=004;ENU=004';
+      Text2002@5157815 : TextConst 'DEU=005;ENU=005';
+      Text2004@5157814 : TextConst 'DEU=009;ENU=009';
+      Text2005@5157803 : TextConst 'DEU=051;ENU=051';
+      Text2006@5157802 : TextConst 'DEU=052;ENU=052';
+      NoSeries@5157839 : Record 308;
+      NoSeriesLine@5157840 : Record 309;
+      CSVPortProcedures@5157831 : Codeunit 5157804;
+      Text024@5157842 : TextConst 'DEU=http://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist-90d.xml;ENU=http://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist-90d.xml';
+    BEGIN
+      IF CONFIRM(Text000,FALSE,COMPANYNAME) THEN BEGIN
+
+        IF NOT OPplusSetup.GET THEN
+          OPplusSetup.INIT;
+
+        SourceCode.INIT;
+        SourceCode.Code := Text001;
+        SourceCode.Description := Text003;
+        IF SourceCode.INSERT THEN;
+
+        SourceCode.Code := Text010;
+        SourceCode.Description := Text011;
+        IF SourceCode.INSERT THEN;
+
+        SourceCode.Code := Text012;
+        SourceCode.Description := Text013;
+        IF SourceCode.INSERT THEN;
+
+        GenJnlTemplate.INIT;
+        GenJnlTemplate."Application Method" := GenJnlTemplate."Application Method"::Extended;
+        GenJnlTemplate.Name := Text001;
+        GenJnlTemplate.Description := Text003;
+        GenJnlTemplate."Form ID" := FORM::"Ext. Cash Receipt Journal";
+        GenJnlTemplate.Type := GenJnlTemplate.Type::"Cash Receipts";
+        GenJnlTemplate."Force Doc. Balance" := TRUE;
+        GenJnlTemplate."Source Code" := Text001;
+        GenJnlTemplate."Test Report ID" := 5157804;
+        GenJnlTemplate."Posting Report ID" := 3;
+        GenJnlTemplate.VALIDATE("Form ID");
+        GenJnlTemplate.VALIDATE("Test Report ID");
+        GenJnlTemplate.VALIDATE("Posting Report ID");
+        IF GenJnlTemplate.INSERT THEN;
+
+        GenJnlTemplate.Name := Text010;
+        GenJnlTemplate.Description := Text011;
+        GenJnlTemplate."Source Code" := Text010;
+        GenJnlTemplate."Form ID" := FORM::"Check Receipt Journal";
+        GenJnlTemplate.Type := GenJnlTemplate.Type::General;
+        GenJnlTemplate.VALIDATE("Form ID");
+        GenJnlTemplate."Test Report ID" := 5157804;
+        GenJnlTemplate."Posting Report ID" := 3;
+        GenJnlTemplate.VALIDATE("Form ID");
+        GenJnlTemplate.VALIDATE("Test Report ID");
+        GenJnlTemplate.VALIDATE("Posting Report ID");
+        IF GenJnlTemplate.INSERT THEN;
+
+        GenJnlTemplate.Name := Text012;
+        GenJnlTemplate.Description := Text013;
+        GenJnlTemplate."Source Code" := Text012;
+        GenJnlTemplate."Form ID" := FORM::"Cash Book Journal";
+        GenJnlTemplate.Type := GenJnlTemplate.Type::General;
+        GenJnlTemplate.VALIDATE("Form ID");
+        GenJnlTemplate."Test Report ID" := 5157804;
+        GenJnlTemplate."Posting Report ID" := 3;
+        GenJnlTemplate.VALIDATE("Form ID");
+        GenJnlTemplate.VALIDATE("Test Report ID");
+        GenJnlTemplate.VALIDATE("Posting Report ID");
+        IF GenJnlTemplate.INSERT THEN;
+
+        { nicht anlegen, fÅhrt zur Verwirrung
+        AccountingHintText.Type := AccountingHintText.Type::"Customer No.";
+        AccountingHintText."Hint Text" := Text1000;
+        IF AccountingHintText.INSERT THEN;
+        AccountingHintText."Hint Text" := Text1001;
+        IF AccountingHintText.INSERT THEN;
+        AccountingHintText."Hint Text" := Text1002;
+        IF AccountingHintText.INSERT THEN;
+
+        AccountingHintText.Type := AccountingHintText.Type::"Document No.";
+        AccountingHintText."Hint Text" := Text1003;
+        IF AccountingHintText.INSERT THEN;
+        AccountingHintText."Hint Text" := Text1004;
+        IF AccountingHintText.INSERT THEN;
+        AccountingHintText."Hint Text" := Text1005;
+        IF AccountingHintText.INSERT THEN;
+        }
+
+        AccountingRule2.SETCURRENTKEY(Catchword,"Import to Account No.","Field No.");
+        AccountingRule2.SETRANGE("Field No.",PmtImportLine.FIELDNO("Business Case Code"));
+        AccountingRule2.SETRANGE(Catchword,Text2001);
+        IF AccountingRule2.ISEMPTY THEN BEGIN
+          AccountingRule.INIT;
+          AccountingRule.VALIDATE("Field No.",PmtImportLine.FIELDNO("Business Case Code"));
+          AccountingRule."Check Only Account Type" := TRUE;
+          AccountingRule."Document Type" := AccountingRule."Document Type"::Payment;
+          AccountingRule."Account Type" := AccountingRule."Account Type"::Vendor;
+          AccountingRule.Catchword := Text2001;
+          AccountingRule.INSERT(TRUE);
+        END;
+
+        AccountingRule2.SETRANGE(Catchword,Text2002);
+        IF AccountingRule2.ISEMPTY THEN BEGIN
+          AccountingRule.INIT;
+          AccountingRule.VALIDATE("Field No.",PmtImportLine.FIELDNO("Business Case Code"));
+          AccountingRule."Check Only Account Type" := TRUE;
+          AccountingRule."Document Type" := AccountingRule."Document Type"::Payment;
+          AccountingRule."Account Type" := AccountingRule."Account Type"::Vendor;
+          AccountingRule.Catchword := Text2002;
+          AccountingRule.INSERT(TRUE);
+        END;
+
+        AccountingRule2.SETRANGE(Catchword,Text2004);
+        IF AccountingRule2.ISEMPTY THEN BEGIN
+          AccountingRule.INIT;
+          AccountingRule.VALIDATE("Field No.",PmtImportLine.FIELDNO("Business Case Code"));
+          AccountingRule."Check Only Account Type" := TRUE;
+          AccountingRule."Document Type" := AccountingRule."Document Type"::Payment;
+          AccountingRule."Account Type" := AccountingRule."Account Type"::Customer;
+          AccountingRule.Catchword := Text2004;
+          AccountingRule.INSERT(TRUE);
+        END;
+        AccountingRule2.SETRANGE(Catchword,Text2005);
+        IF AccountingRule2.ISEMPTY THEN BEGIN
+          AccountingRule.INIT;
+          AccountingRule.VALIDATE("Field No.",PmtImportLine.FIELDNO("Business Case Code"));
+          AccountingRule."Check Only Account Type" := TRUE;
+          AccountingRule."Document Type" := AccountingRule."Document Type"::Payment;
+          AccountingRule."Account Type" := AccountingRule."Account Type"::Customer;
+          AccountingRule.Catchword := Text2005;
+          AccountingRule.INSERT(TRUE);
+        END;
+        AccountingRule2.SETRANGE(Catchword,Text2006);
+        IF AccountingRule2.ISEMPTY THEN BEGIN
+          AccountingRule.INIT;
+          AccountingRule.VALIDATE("Field No.",PmtImportLine.FIELDNO("Business Case Code"));
+          AccountingRule."Check Only Account Type" := TRUE;
+          AccountingRule."Document Type" := AccountingRule."Document Type"::Payment;
+          AccountingRule."Account Type" := AccountingRule."Account Type"::Customer;
+          AccountingRule.Catchword := Text2006;
+          AccountingRule.INSERT(TRUE);
+        END;
+
+        CSVPortProcedures.RestoreStandardInterfaces(TRUE);
+
+        IF NOT NoSeries.GET(Text016) THEN BEGIN
+          NoSeries.Code := Text016;
+          NoSeries.Description := Text017;
+          NoSeries."Default Nos." := TRUE;
+          IF NoSeries.INSERT THEN;
+          NoSeriesLine."Series Code" := Text016;
+          NoSeriesLine."Line No." := 10000;
+          NoSeriesLine."Starting No." := Text021;
+          NoSeriesLine."Last No. Used" := Text021;
+          NoSeriesLine.Open := TRUE;
+          IF NoSeriesLine.INSERT THEN;
+        END;
+        IF NOT NoSeries.GET(Text018) THEN BEGIN
+          NoSeries.Code := Text018;
+          NoSeries.Description := Text019;
+          NoSeries."Default Nos." := TRUE;
+          IF NoSeries.INSERT THEN;
+          NoSeriesLine."Series Code" := Text018;
+          NoSeriesLine."Line No." := 10000;
+          NoSeriesLine."Starting No." := Text022;
+          NoSeriesLine."Last No. Used" := Text022;
+          NoSeriesLine.Open := TRUE;
+          IF NoSeriesLine.INSERT THEN;
+        END;
+
+
+        OPplusSetup."URL latest Rates":=Text014;
+        OPplusSetup."URL all previous Rates":=Text015;
+        OPplusSetup."URL Rates latest 90 Days" := Text024;
+        IF BankAccount.FIND('-') THEN
+          REPEAT
+            BlockBankAccount(BankAccount."Bank Branch No.",BankAccount."Bank Account No.",FALSE);
+          UNTIL BankAccount.NEXT = 0;
+
+        IF OPplusSetup."Color Applied Entry" = 0 THEN BEGIN
+
+            IF OPplusSetup."Text Pmt. Sum Posting" = '' THEN
+              OPplusSetup."Text Pmt. Sum Posting" := Text005;
+            IF OPplusSetup."Text Application Posting" = '' THEN
+              OPplusSetup."Text Application Posting" := Text006;
+            IF OPplusSetup."Text Pmt. Application Posting" = '' THEN
+              OPplusSetup."Text Pmt. Application Posting" := Text007;
+            IF OPplusSetup."Text Balance Posting" = '' THEN
+              OPplusSetup."Text Balance Posting" := Text008;
+            IF OPplusSetup."Text Rounding Posting" = '' THEN
+              OPplusSetup."Text Rounding Posting" := Text009;
+
+            OPplusSetup."Color Applied Entry" := 255;
+            OPplusSetup."Color Local Application" := 32768;
+            OPplusSetup."Color Partial Application" := 16711680;
+            OPplusSetup."Color Appl. Status Open" := 255;
+            OPplusSetup."Color Appl. Status Accounted" := 57855;
+            OPplusSetup."Color Appl. Status Finished" := 32768;
+            OPplusSetup."Color Appl. Status System" := 32768;
+            OPplusSetup."Post Pmt. Sum" := TRUE;
+            OPplusSetup."Close Ext. Apply with Enter" := TRUE;
+            OPplusSetup."Limit Apply Pmt. Discount" := 10;
+            OPplusSetup."Pmt. Discount Tolerance Days" := 3;
+            OPplusSetup."Min. Length Customer No." := 5;
+            OPplusSetup."Min. Length Vendor No." := 5;
+            OPplusSetup."Max. Length Customer No." := 5;
+            OPplusSetup."Max. Length Vendor No." := 5;
+            OPplusSetup."Poole Position Cust. Doc. No." := 2;
+            OPplusSetup."Poole Pos. Cust. Ext. Doc. No." := 1;
+            OPplusSetup."Valid Signs in Document" := '0123456789';
+            OPplusSetup."Pmt. Discount Tolerance Amount" := 5;
+            OPplusSetup."Skip Leading Zero" := FALSE;
+            OPplusSetup."Analyze Cust. Doc. No." := TRUE;
+            OPplusSetup."Analyze Cust. Ext. Doc. No." := FALSE;
+            OPplusSetup."Analyze Vend. Doc. No." := FALSE;
+            OPplusSetup."Analyze Vend. Ext. Doc. No." := TRUE;
+            OPplusSetup."Analyze Customer Bank Acc. No." := TRUE;
+            OPplusSetup."Analyze Vendor Bank Acc. No." := TRUE;
+            OPplusSetup."Analyze Cust. Ledger Amount" := TRUE;
+            OPplusSetup."Analyze Vendor Ledger Amount" := TRUE;
+            OPplusSetup."Insert Customer Bank Acc. No." := TRUE;
+            OPplusSetup."Insert Vendor Bank Acc. No." := TRUE;
+            OPplusSetup."MT940 File Extension" := Text023;
+            OPplusSetup."Pmt. Import Journal Nos." := Text016;
+            OPplusSetup."Pmt. Import Interface Nos." := Text018;
+          END;
+          OPplusSetup.MODIFY;
+          MESSAGE(Text10000);
+        END; // Mandant einrichten?
+    END;
+
+    PROCEDURE ApplicationSum@2(AccType@1000 : Integer;EntryNo@1001 : Integer;VAR Amt@1002 : Decimal;VAR PmtDisc@1003 : Decimal);
+    VAR
+      GenJnlLine@1004 : Record 81;
+      CurrExchRate@1005 : Record 330;
+    BEGIN
+      GenJnlLine.SETCURRENTKEY("Applied Account Type","ID Applied-Entry");
+      GenJnlLine.SETRANGE("Applied Account Type",AccType);
+      GenJnlLine.SETRANGE("ID Applied-Entry",EntryNo);
+
+      IF GenJnlLine.FIND('-') THEN
+        REPEAT
+          IF GenJnlLine."Currency Code" = '' THEN BEGIN
+            Amt := Amt + GenJnlLine.Amount;
+            PmtDisc := PmtDisc + GenJnlLine."Posting Payment Discount";
+          END ELSE BEGIN
+            Amt := Amt + CurrExchRate.ExchangeAmtFCYToLCY(GenJnlLine."Posting Date",GenJnlLine."Currency Code",
+            GenJnlLine.Amount,GenJnlLine."Currency Factor");
+            PmtDisc := PmtDisc + CurrExchRate.ExchangeAmtFCYToLCY(
+              GenJnlLine."Posting Date",
+              GenJnlLine."Currency Code",
+              GenJnlLine."Posting Payment Discount",
+              GenJnlLine."Currency Factor");
+          END;
+        UNTIL GenJnlLine.NEXT = 0;
+    END;
+
+    PROCEDURE SetApplicationStatus@1000000000(VAR REC@1000000000 : Record 81);
+    BEGIN
+      IF (REC."Applies-to Doc. No." <> '') OR (REC."ID Applied-Entry" <> 0) OR (REC."Applies-to ID" <> '') OR
+         ((REC."Pmt. Import Entry No." <> 0) AND
+          (REC."Account Type" IN [REC."Account Type"::"G/L Account",
+            REC."Account Type"::"Bank Account"]) AND (REC."Applied Account No." = '') AND
+           (REC."Account No." <> ''))
+      THEN
+        REC."Application Status" := REC."Application Status"::Finished
+      ELSE IF REC."Applied Account No." <> '' THEN
+        REC."Application Status" := REC."Application Status"::Accounted
+      ELSE
+        REC."Application Status" := REC."Application Status"::Open;
+    END;
+
+    PROCEDURE Ansi2Ascii@10(_String@1150001 : Text[1024]) @1150000 : Text[1024];
+    BEGIN
+      // Converts from ANSI to ASCII
+      EXIT(CONVERTSTR(_String,'«¸È‚‰‡ÂÁÍÎËÔÓÏƒ≈…Ê∆ÙˆÚ˚˘ˇ÷‹¯£ÿ◊É·ÌÛ˙Ò—™∫øÆ¡¬¿ À»ÕŒœÃ”ﬂ‘“⁄€Ÿ',
+                              'ÄÅÇÉÑÖÜáàâäãåçéèêëíìîïñóòôöõúùûü†°¢£§•¶ß®©µ∂∑“”‘÷◊ÿﬁ‡·‚„ÈÍÎ'));
+    END;
+
+    PROCEDURE Ascii2Ansi@1150001(_String@1150001 : Text[1024]) @1150000 : Text[1024];
+    BEGIN
+      // Converts from ASCII to ANSI
+      EXIT(CONVERTSTR(_String,'ÄÅÇÉÑÖÜáàâäãåçéèêëíìîïñóòôöõúùûü†°¢£§•¶ß®©µ∂∑“”‘÷◊ÿﬁ‡·‚„ÈÍÎ',
+                              '«¸È‚‰‡ÂÁÍÎËÔÓÏƒ≈…Ê∆ÙˆÚ˚˘ˇ÷‹¯£ÿ◊É·ÌÛ˙Ò—™∫øÆ¡¬¿ À»ÕŒœÃ”ﬂ‘“⁄€Ÿ'));
+    END;
+
+    PROCEDURE UpdatePmtImportLine@5157802(VAR GenJnlLine@5157803 : Record 81);
+    VAR
+      PmtImportLine@5157802 : Record 5157809;
+      BankStatement@5157804 : Record 275;
+      BankStatementLine@5157805 : Record 276;
+      InterfaceFound@5157806 : Boolean;
+      Company2@5157807 : Record 2000000006;
+    BEGIN
+      IF GenJnlLine."Pmt. Import Entry No." <> 0 THEN BEGIN
+        IF PmtImportLine.GET(GenJnlLine."Pmt. Import Entry No.") THEN BEGIN
+          IF PmtImportInterface.Code <> PmtImportLine."Pmt. Import Interface Code" THEN BEGIN
+            InterfaceFound := PmtImportInterface.GET(PmtImportLine."Pmt. Import Interface Code");
+            IF NOT InterfaceFound THEN BEGIN
+              IF Company2.FINDSET(FALSE,FALSE) THEN
+                REPEAT
+                  IF Company2.READPERMISSION THEN BEGIN
+                    PmtImportInterface.CHANGECOMPANY(Company2.Name);
+                    IF PmtImportInterface.READPERMISSION THEN
+                      InterfaceFound := PmtImportInterface.GET(PmtImportLine."Pmt. Import Interface Code");
+                  END;
+                UNTIL (Company2.NEXT = 0) OR InterfaceFound;
+            END;
+
+            IF NOT InterfaceFound THEN BEGIN
+              // create error
+              PmtImportInterface.CHANGECOMPANY(COMPANYNAME);
+              PmtImportInterface.GET(PmtImportLine."Pmt. Import Interface Code");
+            END;
+          END;
+          IF PmtImportRegister."No." <> PmtImportLine."Import Register No." THEN
+            IF NOT PmtImportRegister.GET(PmtImportLine."Import Register No.") THEN
+              PmtImportRegister.INIT;
+          IF PmtImportInterface."Delete Entries after Posting" OR PmtImportInterface."Treat as Bank Statement" THEN BEGIN
+            IF PmtImportInterface."Treat as Bank Statement" AND
+               (PmtImportInterface."Import to Account Type" = PmtImportInterface."Import to Account Type"::"Bank Account") AND
+               (PmtImportInterface."Import to Account No." <> '') AND
+               (PmtImportLine."Statement No." <> '') AND
+               ((GenJnlLine."Account Type" = GenJnlLine."Account Type"::"Bank Account") OR
+                (GenJnlLine."Bal. Account Type" = GenJnlLine."Bal. Account Type"::"Bank Account"))
+            THEN BEGIN
+              IF NOT BankStatement.GET(PmtImportInterface."Import to Account No.",PmtImportLine."Statement No.") THEN BEGIN
+                BankAccount.GET(PmtImportInterface."Import to Account No.");
+                BankStatement."Bank Account No." := PmtImportInterface."Import to Account No.";
+                BankStatement."Statement No." := PmtImportLine."Statement No.";
+                BankStatement."Statement Ending Balance" := PmtImportRegister."Statement Ending Balance";
+                BankStatement."Statement Date" := PmtImportLine."Posting Date";
+                BankStatement."Balance Last Statement" := PmtImportRegister."Balance Last Statement";
+                BankStatement."Currency Code" := BankAccount."Currency Code"; // CLR
+                BankStatement.INSERT;
+              END;
+              IF NOT BankStatementLine.GET(PmtImportInterface."Import to Account No.",
+                PmtImportLine."Statement No.",
+                PmtImportLine."Statement Line No.")
+              THEN BEGIN
+                BankStatementLine."Bank Account No." := PmtImportInterface."Import to Account No.";
+                BankStatementLine."Statement No." := PmtImportLine."Statement No.";
+                BankStatementLine."Statement Line No." := PmtImportLine."Statement Line No.";
+                BankStatementLine."Document No." := GenJnlLine."Document No.";
+                BankStatementLine."Transaction Date" := PmtImportLine."Posting Date";
+                BankStatementLine.Description := GenJnlLine.Description;
+                IF GenJnlLine."Account Type" = GenJnlLine."Account Type"::"Bank Account" THEN
+                  BankStatementLine."Statement Amount" := GenJnlLine.Amount
+                ELSE
+                  BankStatementLine."Statement Amount" := -GenJnlLine.Amount;
+                BankStatementLine.INSERT;
+              END;
+            END;
+            IF PmtImportInterface."Delete Entries after Posting" THEN BEGIN
+              GenJnlLine."Pmt. Import Entry No." := 0;
+              PmtImportLine.DELETE;
+              IF PmtImportRegister."No." <> '' THEN BEGIN
+                PmtImportRegister.CALCFIELDS("No. of Entries");
+                IF PmtImportRegister."No. of Entries" = 0 THEN
+                  PmtImportRegister.DELETE;
+              END;
+            END;
+          END;
+          IF NOT PmtImportInterface."Delete Entries after Posting" THEN BEGIN
+            PmtImportLine.Posted := TRUE;
+            PmtImportLine."Posted Document No." := GenJnlLine."Document No.";
+            PmtImportLine.MODIFY;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE UpdateVATEntry@5157809(VAR VATEntry@5157802 : Record 254;GenJnlLine@5157803 : Record 81);
+    BEGIN
+      VATEntry."Global Dimension 1 Code" := GenJnlLine."Shortcut Dimension 1 Code";
+      VATEntry."Global Dimension 2 Code" := GenJnlLine."Shortcut Dimension 2 Code";
+    END;
+
+    PROCEDURE UpdateNewVATEntry@5157811(VAR NewVATEntry@5157802 : Record 254;VATEntry@5157803 : Record 254);
+    BEGIN
+      NewVATEntry."Global Dimension 1 Code" := VATEntry."Global Dimension 1 Code";
+      NewVATEntry."Global Dimension 2 Code" := VATEntry."Global Dimension 2 Code";
+    END;
+
+    PROCEDURE UpdateGLEntry1@5157808(VAR GLEntry@5157802 : Record 17;GenJnlLine@5157803 : Record 81);
+    VAR
+      Text001@5157804 : TextConst 'DEU=liegt nicht innerhalb des zugelassenen Belegzeitraums.;ENU=is not within your range of allowed document dates';
+    BEGIN
+      GET_OPPSetup;
+      GLEntry."Pmt. Import Entry No." := GenJnlLine."Pmt. Import Entry No.";
+      GLEntry."Posted at" := TODAY;
+      IF (OPPSetup."Allow Document Date From" <> 0D) THEN
+        IF (GLEntry."Document Date" <> 0D) THEN
+          IF GLEntry."Document Date" < OPPSetup."Allow Document Date From" THEN
+            GLEntry.FIELDERROR("Document Date",Text001);
+      IF (OPPSetup."Allow Document Date To" <> 0D) THEN
+        IF (GLEntry."Document Date" <> 0D) THEN
+          IF GLEntry."Document Date" > OPPSetup."Allow Document Date To" THEN
+            GLEntry.FIELDERROR("Document Date",Text001);
+    END;
+
+    PROCEDURE UpdateGLEntry2@5157836(VAR GLEntry@5157802 : Record 17;GenJnlLine@5157803 : Record 81);
+    VAR
+      Text001@5157804 : TextConst 'DEU=liegt nicht innerhalb des zugelassenen Belegzeitraums.;ENU=is not within your range of allowed document dates';
+    BEGIN
+      GET_OPPSetup;
+      GLEntry."Orig. Currency Code" := GenJnlLine."Currency Code";
+      IF GenJnlLine."Currency Code" <> '' THEN
+        IF GenJnlLine."Currency Code" = GLSetup."Additional Reporting Currency" THEN
+          GLEntry."Original Amount (FCY)" := GLEntry."Additional-Currency Amount"
+        ELSE IF GLEntry.Amount = GenJnlLine."Amount (LCY)" THEN
+          GLEntry."Original Amount (FCY)" := GenJnlLine.Amount
+        ELSE IF GLEntry.Amount = -GenJnlLine."Amount (LCY)" THEN
+          GLEntry."Original Amount (FCY)" := -GenJnlLine.Amount
+        ELSE
+          GLEntry."Original Amount (FCY)" := ROUND(GLEntry.Amount * GenJnlLine."Currency Factor");
+    END;
+
+    PROCEDURE UpdateCLEntry@5157812(VAR CLEntry@5157802 : Record 21;GenJnlLine@5157803 : Record 81;Cust@5157804 : Record 18);
+    VAR
+      PmtImportLine@5157805 : Record 5157809;
+      CustBank@5157807 : Record 287;
+      CurrExchRate@5157809 : Record 330;
+      i@5157806 : Integer;
+      Text000@5157808 : TextConst 'DEU=Angelegt am %1.;ENU=Created at %1.';
+    BEGIN
+      GET_OPPSetup;
+      IF (GenJnlLine."Pmt. Import Entry No." <> 0) AND
+         NOT Cust."Skip Bank Acc. in Bank Import" AND
+         OPPSetup."Insert Customer Bank Acc. No."
+      THEN BEGIN
+        IF PmtImportLine.GET(GenJnlLine."Pmt. Import Entry No.") THEN BEGIN
+          IF (PmtImportLine."Account Orderer" <> '') THEN BEGIN
+            i := MAXSTRLEN(CustBank.Code);
+            IF NOT CustBank.GET(GenJnlLine."Account No.",DELCHR(COPYSTR(PmtImportLine."Account Orderer",1,i),'<>')) AND
+               NOT CustBank.GET('',DELCHR(COPYSTR(PmtImportLine."Account Orderer",1,i),'<>'))
+            THEN BEGIN
+              CustBank.LOCKTABLE;
+              CustBank.INIT;
+              CustBank.Name := PmtImportLine.Orderer;
+              CustBank."Name 2" := PmtImportLine."Orderer 2";
+              IF CheckIfBIC_IBAN(PmtImportLine."Bank Orderer",PmtImportLine."Account Orderer") THEN BEGIN
+                CustBank."SWIFT Code" := DELCHR(PmtImportLine."Bank Orderer",'<>');
+                CustBank.IBAN := DELCHR(PmtImportLine."Account Orderer",'<>');
+              END ELSE BEGIN
+                IF CheckIfBIC(PmtImportLine."Bank Orderer") THEN
+                  CustBank."SWIFT Code" := DELCHR(PmtImportLine."Bank Orderer",'<>')
+                ELSE
+                  CustBank."Bank Branch No." := DELCHR(PmtImportLine."Bank Orderer",'<>');
+                CustBank."Bank Account No." := DELCHR(PmtImportLine."Account Orderer",'<>');
+              END;
+              CustBank.Code := DELCHR(COPYSTR(PmtImportLine."Account Orderer",1,i),'<>');
+              CustBank."Customer No." := GenJnlLine."Account No.";
+              CustBank.Address := STRSUBSTNO(Text000,GenJnlLine."Posting Date");
+              CustBank."Address 2" :=
+                PmtImportLine."Pmt. Import Interface Code" +
+                '/' +
+                PmtImportLine."Statement No." +
+                '/' +
+                FORMAT(GenJnlLine."Pmt. Import Entry No.");
+              CustBank."Inserted by Bank Import" := TRUE;
+              //H4337 09.06.15 ARI +++++++++++++++++++++++++++++++++++
+              IF GenJnlLine."Payment Method Code" <> '' THEN BEGIN
+                CustBank."Inserted by Bank Import" := FALSE;
+                CustBank.VALIDATE("Payment Method Code",GenJnlLine."Payment Method Code");
+              END;
+              //H4337 09.06.15 ARI -----------------------------------
+              CustBank.INSERT;
+            END;
+          END;
+        END;
+      END;
+      CLEntry."Pmt. Import Entry No." := GenJnlLine."Pmt. Import Entry No.";
+      CLEntry."Original Pmt. Discount %" := GenJnlLine."Payment Discount %";
+      IF CLEntry."Currency Code" = '' THEN
+        CLEntry."Orig. Pmt. Disc.Possible (LCY)" := CLEntry."Original Pmt. Disc. Possible"
+      ELSE
+        CLEntry."Orig. Pmt. Disc.Possible (LCY)" :=
+          ROUND(
+            CurrExchRate.ExchangeAmtFCYToLCY(
+              CLEntry."Posting Date",CLEntry."Currency Code",CLEntry."Original Pmt. Disc. Possible",
+              CurrExchRate.ExchangeRate(CLEntry."Posting Date",CLEntry."Currency Code")));
+      CLEntry.Payback := GenJnlLine.Payback;
+      // gbedv EXT ------------------------------------------------- BEGIN
+      CLEntry."Association No." := Cust."Association No.";
+      // gbedv EXT ------------------------------------------------- END
+    END;
+
+    PROCEDURE UpdateVLEntry@5157813(VAR VLEntry@5157802 : Record 25;GenJnlLine@5157803 : Record 81;Vend@5157804 : Record 23);
+    VAR
+      PmtImportLine@5157807 : Record 5157809;
+      VendBank@5157806 : Record 288;
+      CurrExchRate@5157809 : Record 330;
+      i@5157805 : Integer;
+      Text000@5157808 : TextConst 'DEU=Angelegt am %1.;ENU=Created at %1.';
+    BEGIN
+      GET_OPPSetup;
+      IF (GenJnlLine."Pmt. Import Entry No." <> 0) AND
+         NOT Vend."Skip Bank Acc. in Bank Import" AND
+         OPPSetup."Insert Vendor Bank Acc. No."
+      THEN BEGIN
+        IF PmtImportLine.GET(GenJnlLine."Pmt. Import Entry No.") THEN BEGIN
+          IF (PmtImportLine."Account Orderer" <> '') THEN BEGIN
+            i := MAXSTRLEN(VendBank.Code);
+            IF NOT VendBank.GET(GenJnlLine."Account No.",DELCHR(COPYSTR(PmtImportLine."Account Orderer",1,i),'<>')) AND
+               NOT VendBank.GET('',DELCHR(COPYSTR(PmtImportLine."Account Orderer",1,i),'<>'))
+            THEN BEGIN
+              VendBank.LOCKTABLE;
+              VendBank.INIT;
+              VendBank.Name := PmtImportLine.Orderer;
+              IF CheckIfBIC_IBAN(PmtImportLine."Bank Orderer",PmtImportLine."Account Orderer") THEN BEGIN
+                VendBank."SWIFT Code" := DELCHR(PmtImportLine."Bank Orderer",'<>');
+                VendBank.IBAN := DELCHR(PmtImportLine."Account Orderer",'<>');
+              END ELSE BEGIN
+                IF CheckIfBIC(PmtImportLine."Bank Orderer") THEN
+                  VendBank."SWIFT Code" := DELCHR(PmtImportLine."Bank Orderer",'<>')
+                ELSE
+                  VendBank."Bank Branch No." := DELCHR(PmtImportLine."Bank Orderer",'<>');
+                VendBank."Bank Account No." := DELCHR(PmtImportLine."Account Orderer",'<>');
+              END;
+              VendBank."Name 2" := PmtImportLine."Orderer 2";
+              VendBank.Code := DELCHR(COPYSTR(PmtImportLine."Account Orderer",1,i),'<>');
+              VendBank."Vendor No." := GenJnlLine."Account No.";
+              VendBank.Address := STRSUBSTNO(Text000,GenJnlLine."Posting Date");
+              VendBank."Address 2" :=
+                PmtImportLine."Pmt. Import Interface Code" +
+                '/' +
+                PmtImportLine."Statement No." +
+                '/' +
+                FORMAT(GenJnlLine."Pmt. Import Entry No.");
+              VendBank."Inserted by Bank Import" := TRUE;
+              VendBank.INSERT;
+            END;
+          END;
+        END;
+      END;
+      VLEntry."Pmt. Import Entry No." := GenJnlLine."Pmt. Import Entry No.";
+      VLEntry."Original Pmt. Discount %" := GenJnlLine."Payment Discount %";
+      IF VLEntry."Currency Code" = '' THEN
+        VLEntry."Orig. Pmt. Disc.Possible (LCY)" := VLEntry."Original Pmt. Disc. Possible"
+      ELSE
+        VLEntry."Orig. Pmt. Disc.Possible (LCY)" :=
+          ROUND(
+            CurrExchRate.ExchangeAmtFCYToLCY(
+              VLEntry."Posting Date",VLEntry."Currency Code",VLEntry."Original Pmt. Disc. Possible",
+              CurrExchRate.ExchangeRate(VLEntry."Posting Date",VLEntry."Currency Code")));
+      // gbedv EXT ------------------------------------------------- BEGIN
+      VLEntry."Association No." := Vend."Association No.";
+      // gbedv EXT ------------------------------------------------- END
+    END;
+
+    PROCEDURE UpdateBankEntry@5157810(VAR BankEntry@5157802 : Record 271;GenJnlLine@5157803 : Record 81);
+    BEGIN
+      BankEntry."Pmt. Import Entry No." := GenJnlLine."Pmt. Import Entry No.";
+    END;
+
+    PROCEDURE UpdateDtldCVBuffer@5157803(VAR DtldCVLedgEntryBuf@5157802 : Record 383;VATEntry2@5157803 : Record 254);
+    BEGIN
+      DtldCVLedgEntryBuf."VAT Entry Global Dim. 1" := VATEntry2."Global Dimension 1 Code";
+      DtldCVLedgEntryBuf."VAT Entry Global Dim. 2" := VATEntry2."Global Dimension 2 Code";
+      DtldCVLedgEntryBuf."VAT Entry No." := VATEntry2."Entry No.";
+    END;
+
+    PROCEDURE UpdateNewDtldCustLedgEntry@5157806(VAR NewDtldCustLedgEntry@5157802 : Record 379;DtldCustLedgEntry2@5157803 : Record 379);
+    BEGIN
+      NewDtldCustLedgEntry."VAT Entry Global Dim. 1" := DtldCustLedgEntry2."VAT Entry Global Dim. 1";
+      NewDtldCustLedgEntry."VAT Entry Global Dim. 2" := DtldCustLedgEntry2."VAT Entry Global Dim. 2";
+      NewDtldCustLedgEntry."VAT Entry No." := DtldCustLedgEntry2."VAT Entry No.";
+    END;
+
+    PROCEDURE UpdateNewDtldVendLedgEntry@5157807(VAR NewDtldVendLedgEntry@5157802 : Record 380;DtldVendLedgEntry2@5157803 : Record 380);
+    BEGIN
+      NewDtldVendLedgEntry."VAT Entry Global Dim. 1" := DtldVendLedgEntry2."VAT Entry Global Dim. 1";
+      NewDtldVendLedgEntry."VAT Entry Global Dim. 2" := DtldVendLedgEntry2."VAT Entry Global Dim. 2";
+      NewDtldVendLedgEntry."VAT Entry No." := DtldVendLedgEntry2."VAT Entry No.";
+    END;
+
+    PROCEDURE BlockBankAccount@5157814(BankBranch@5157802 : Code[50];BankAccount@5157803 : Code[50];Ask@5157808 : Boolean);
+    VAR
+      CustBankAccount@5157804 : Record 287;
+      VendBankAccount@5157805 : Record 288;
+      Text000@5157807 : TextConst 'DEU=Soll das Bankkonto %1 %2, %3 %4 fÅr den Bankimport gesperrt werden?;ENU=Block Bank Account %1 %2, %3 %4 for Bank Import?';
+      Text001@5157806 : TextConst 'DEU=Gesperrt fÅr BI am;ENU=Blocked for BI per';
+      Text002@5157809 : TextConst 'DEU=Die Felder %1 und %2 dÅrfen nicht leer sein, wenn Sie ein Konto sperren wollen.;ENU=The Fields %1 and %2 must not be empty, when blocking a Bank Account.';
+    BEGIN
+      IF Ask THEN BEGIN
+        IF (BankBranch = '') OR (BankAccount = '') THEN
+          ERROR(Text002,
+            CustBankAccount.FIELDCAPTION("Bank Account No."),
+            CustBankAccount.FIELDCAPTION("Bank Branch No."));
+        IF NOT CONFIRM(Text000,FALSE,
+             CustBankAccount.FIELDCAPTION("Bank Account No."),BankAccount,
+             CustBankAccount.FIELDCAPTION("Bank Branch No."),BankBranch)
+        THEN
+          EXIT;
+      END ELSE IF (BankBranch = '') OR (BankAccount = '') THEN
+        EXIT;
+
+      CustBankAccount.INIT;
+      CustBankAccount."Customer No." := '';
+      CustBankAccount.Code := COPYSTR(BankAccount,1,10);
+      CustBankAccount."Bank Branch No." := BankBranch;
+      CustBankAccount."Bank Account No." := BankAccount;
+      CustBankAccount.Name := Text001 + ' ' + FORMAT(TODAY);
+      IF CustBankAccount.INSERT THEN;
+      VendBankAccount.INIT;
+      VendBankAccount."Vendor No." := '';
+      VendBankAccount.Code := COPYSTR(BankAccount,1,10);
+      VendBankAccount."Bank Branch No." := BankBranch;
+      VendBankAccount."Bank Account No." := BankAccount;
+      VendBankAccount.Name := Text001 + ' ' + FORMAT(TODAY);
+      IF VendBankAccount.INSERT THEN;
+    END;
+
+    PROCEDURE UpdateLedgEntryDimToJnlLineDim@66(VAR FromLedgEntryDim@1000 : Record 355;VAR ToJnlLineDim@1001 : Record 356;ToTableID@1002 : Integer;ToJnlTemplateName@1003 : Code[10];ToJnlBatchName@1004 : Code[10];ToJnlLineNo@1005 : Integer;ToAllocLineNo@1006 : Integer);
+    BEGIN
+      WITH FromLedgEntryDim DO
+        IF FINDSET THEN
+          REPEAT
+            ToJnlLineDim."Table ID" := ToTableID;
+            ToJnlLineDim."Journal Template Name" := ToJnlTemplateName;
+            ToJnlLineDim."Journal Batch Name" := ToJnlBatchName;
+            ToJnlLineDim."Journal Line No." := ToJnlLineNo;
+            ToJnlLineDim."Allocation Line No." := ToAllocLineNo;
+            ToJnlLineDim."Dimension Code" := "Dimension Code";
+            ToJnlLineDim."Dimension Value Code" := "Dimension Value Code";
+            IF NOT ToJnlLineDim.INSERT THEN
+              ToJnlLineDim.MODIFY;
+          UNTIL NEXT = 0;
+    END;
+
+    PROCEDURE Payback@5157822(VAR Rec@5157802 : Record 81);
+    BEGIN
+      GenJnlLine.COPY(Rec);
+      Dlg.OPEN(Text007,GenJnlLine."Document No.");
+      PaybackProcess;
+      Dlg.CLOSE;
+      Rec := GenJnlLine;
+    END;
+
+    PROCEDURE PaybackProcess@5157820();
+    BEGIN
+      WITH GenJnlLine DO BEGIN
+        SETRANGE("Journal Template Name","Journal Template Name");
+        SETRANGE("Journal Batch Name","Journal Batch Name");
+        SETRANGE(Payback,TRUE);
+        SETRANGE("Payback Processed",FALSE);
+        IF FIND('-') THEN
+        REPEAT
+          Dlg.UPDATE(1,"Document No.");
+
+          IF "Account Type" <> "Account Type"::Customer THEN
+            ERROR(Text001,"Document No.","Line No.");
+
+           Customer.GET("Account No.");
+           IF "Amount (LCY)" = 0 THEN BEGIN
+             Dlg.CLOSE;
+             ERROR(Text002,"Document No.","Line No.");
+           END;
+           // Ggf. Posten îffnen
+           IF "Reopen-to ID" <> '' THEN
+             ReopenEntry;
+
+           "Posting Payment Discount" := 0;
+           "ID Applied-Entry" := 0;
+           "Applies-to ID" := GenJnlLine."Document No.";
+           "Payback Processed" := TRUE;
+           MODIFY;
+         UNTIL NEXT = 0;
+       END;
+    END;
+
+    PROCEDURE ReopenEntry@5157819();
+    VAR
+      ApplicationEntryNo@1000000000 : Integer;
+    BEGIN
+      TestAmt := 0;
+
+      CustLedgEntry.SETCURRENTKEY("Customer No.","Reopen-to ID",Open);
+      CustLedgEntry.SETRANGE("Customer No.",GenJnlLine."Account No.");
+      CustLedgEntry.SETRANGE("Reopen-to ID",GenJnlLine."Reopen-to ID");
+      CustLedgEntry.SETRANGE("Document Type",CustLedgEntry."Document Type"::Payment);
+      CustLedgEntry.SETRANGE(Open,FALSE);
+      IF CustLedgEntry.FIND('-') THEN
+        REPEAT
+          CustLedgEntry.CALCFIELDS("Original Amt. (LCY)");
+          TestAmt := TestAmt + CustLedgEntry."Original Amt. (LCY)";
+        UNTIL CustLedgEntry.NEXT = 0;
+
+      IF TestAmt + GenJnlLine."Amount (LCY)" <> 0 THEN BEGIN
+        Dlg.CLOSE;
+        ERROR(Text003, GenJnlLine."Document No.",GenJnlLine."Line No.",GenJnlLine."Amount (LCY)",TestAmt);
+      END;
+
+      IF CustLedgEntry.FIND('-') THEN
+        REPEAT
+          IF CustLedgEntry.Reversed THEN BEGIN
+            Dlg.CLOSE;
+            ERROR(Text004,GenJnlLine."Document No.",GenJnlLine."Line No.",CustLedgEntry.TABLECAPTION,CustLedgEntry."Entry No.");
+          END;
+          ApplicationEntryNo := FindLastApplEntry(CustLedgEntry."Entry No.");
+          IF ApplicationEntryNo = 0 THEN BEGIN
+            Dlg.CLOSE;
+            ERROR(Text005,GenJnlLine."Document No.",GenJnlLine."Line No.",CustLedgEntry.TABLECAPTION,CustLedgEntry."Entry No.");
+          END;
+          IF NOT CustLedgEntry.Open THEN BEGIN
+            DtldCustLedgEntry2.GET(ApplicationEntryNo);
+            IF DtldCustLedgEntry2.Unapplied THEN BEGIN
+              Dlg.CLOSE;
+              ERROR(Text006,GenJnlLine."Document No.",GenJnlLine."Line No.",
+                DtldCustLedgEntry2.TABLECAPTION,DtldCustLedgEntry2."Entry No.");
+            END;
+            InsertEntries;
+            CEApp.PostUnApplyCustomerBatch(DtldCustLedgEntryBuf,DtldCustLedgEntry2,
+              DtldCustLedgEntry2."Document No.",GenJnlLine."Posting Date");
+
+          END;
+        UNTIL CustLedgEntry.NEXT = 0;
+
+      // Kennzeichen lîschen und Ausgleichs-ID setzen
+      CustLedgEntry.SETRANGE(Open);
+      CustLedgEntry.SETRANGE("Reopen-to ID",GenJnlLine."Reopen-to ID");
+      IF CustLedgEntry.FIND('-') THEN
+        REPEAT
+          CustLedgEntry.CALCFIELDS("Remaining Amount");
+          CustLedgEntry."Reopen-to ID" := '';
+          CustLedgEntry."Applies-to ID" := GenJnlLine."Document No.";
+          CustLedgEntry."Amount to Apply" := CustLedgEntry."Remaining Amount";
+          CEEdit.RUN(CustLedgEntry);
+        UNTIL CustLedgEntry.NEXT = 0;
+
+      GenJnlLine."Reopen-to ID" := '';
+      GenJnlLine."Applies-to ID" := GenJnlLine."Document No.";
+    END;
+
+    LOCAL PROCEDURE FindLastApplEntry@5157818(CustLedgEntryNo@1002 : Integer) : Integer;
+    VAR
+      DtldCustLedgEntry@1001 : Record 379;
+      ApplicationEntryNo@1000 : Integer;
+    BEGIN
+      DtldCustLedgEntry.SETCURRENTKEY("Cust. Ledger Entry No.","Entry Type");
+      DtldCustLedgEntry.SETRANGE("Cust. Ledger Entry No.",CustLedgEntryNo);
+      DtldCustLedgEntry.SETRANGE("Entry Type",DtldCustLedgEntry."Entry Type"::Application);
+      ApplicationEntryNo := 0;
+      IF DtldCustLedgEntry.FIND('-') THEN
+        REPEAT
+          IF (DtldCustLedgEntry."Entry No." > ApplicationEntryNo) AND NOT DtldCustLedgEntry.Unapplied THEN
+            ApplicationEntryNo := DtldCustLedgEntry."Entry No.";
+        UNTIL DtldCustLedgEntry.NEXT = 0;
+      EXIT(ApplicationEntryNo);
+    END;
+
+    PROCEDURE InsertEntries@5157817();
+    VAR
+      DtldCustLedgEntry@1005 : Record 379;
+    BEGIN
+      DtldCustLedgEntry.SETCURRENTKEY("Transaction No.","Customer No.","Entry Type");
+      DtldCustLedgEntry.SETRANGE("Transaction No.",DtldCustLedgEntry2."Transaction No.");
+      DtldCustLedgEntry.SETRANGE("Customer No.",DtldCustLedgEntry2."Customer No.");
+      DtldCustLedgEntryBuf.DELETEALL;
+      IF DtldCustLedgEntry.FIND('-') THEN
+        REPEAT
+          IF (DtldCustLedgEntry."Entry Type" <> DtldCustLedgEntry."Entry Type"::"Initial Entry") AND
+             NOT DtldCustLedgEntry.Unapplied
+          THEN BEGIN
+            DtldCustLedgEntryBuf := DtldCustLedgEntry;
+            DtldCustLedgEntryBuf.INSERT;
+          END;
+        UNTIL DtldCustLedgEntry.NEXT = 0;
+    END;
+
+    PROCEDURE SaveAccountingRuleDim@5157831(FieldNumber@1005 : Integer;ShortcutDimCode@1006 : Code[20];VAR AccountingRule@5157802 : Record 5157811);
+    BEGIN
+      IF ShortcutDimCode <> '' THEN BEGIN
+        CASE FieldNumber OF
+         13: AccountingRule."Shortcut Dimension 3 Code" := ShortcutDimCode;
+         14: AccountingRule."Shortcut Dimension 4 Code" := ShortcutDimCode;
+         15: AccountingRule."Shortcut Dimension 5 Code" := ShortcutDimCode;
+         16: AccountingRule."Shortcut Dimension 6 Code" := ShortcutDimCode;
+         17: AccountingRule."Shortcut Dimension 7 Code" := ShortcutDimCode;
+         18: AccountingRule."Shortcut Dimension 8 Code" := ShortcutDimCode;
+
+         23: AccountingRule."Shortcut Dim. 3 Code 2nd Line" := ShortcutDimCode;
+         24: AccountingRule."Shortcut Dim. 4 Code 2nd Line" := ShortcutDimCode;
+         25: AccountingRule."Shortcut Dim. 5 Code 2nd Line" := ShortcutDimCode;
+         26: AccountingRule."Shortcut Dim. 6 Code 2nd Line" := ShortcutDimCode;
+         27: AccountingRule."Shortcut Dim. 7 Code 2nd Line" := ShortcutDimCode;
+         28: AccountingRule."Shortcut Dim. 8 Code 2nd Line" := ShortcutDimCode;
+
+         33: AccountingRule."Shortcut Dim. 3 Code 3rd Line" := ShortcutDimCode;
+         34: AccountingRule."Shortcut Dim. 4 Code 3rd Line" := ShortcutDimCode;
+         35: AccountingRule."Shortcut Dim. 5 Code 3rd Line" := ShortcutDimCode;
+         36: AccountingRule."Shortcut Dim. 6 Code 3rd Line" := ShortcutDimCode;
+         37: AccountingRule."Shortcut Dim. 7 Code 3rd Line" := ShortcutDimCode;
+         38: AccountingRule."Shortcut Dim. 8 Code 3rd Line" := ShortcutDimCode;
+
+         43: AccountingRule."Shortcut Dim. 3 Code 4th Line" := ShortcutDimCode;
+         44: AccountingRule."Shortcut Dim. 4 Code 4th Line" := ShortcutDimCode;
+         45: AccountingRule."Shortcut Dim. 5 Code 4th Line" := ShortcutDimCode;
+         46: AccountingRule."Shortcut Dim. 6 Code 4th Line" := ShortcutDimCode;
+         47: AccountingRule."Shortcut Dim. 7 Code 4th Line" := ShortcutDimCode;
+         48: AccountingRule."Shortcut Dim. 8 Code 4th Line" := ShortcutDimCode;
+        END;
+      END;
+    END;
+
+    PROCEDURE GET_OPPSetup@5157815();
+    BEGIN
+      IF OPPSetupRead THEN
+        EXIT;
+      IF NOT OPPSetupRead THEN BEGIN
+        OPPSetup.GET;
+        GLSetup.GET;
+      END;
+      OPPSetupRead := TRUE;
+    END;
+
+    PROCEDURE ExtractFilename@5157816(Filename@5157802 : Text[1024]) : Text[254];
+    VAR
+      i@5157803 : Integer;
+    BEGIN
+      Filename := CONVERTSTR(Filename,'/','\'); // UNC safe
+      i := STRPOS(Filename,'\');
+      WHILE i > 0 DO BEGIN
+        Filename := COPYSTR(Filename,i+1);
+        i := STRPOS(Filename,'\');
+      END;
+      EXIT(Filename);
+    END;
+
+    PROCEDURE ExtractFilePath@5157824(Filename@5157802 : Text[1024]) Path : Text[1024];
+    VAR
+      i@5157803 : Integer;
+    BEGIN
+      CLEAR(Path);
+      IF STRPOS(Filename,'/') < 1 THEN BEGIN
+        i := STRPOS(Filename,'\');
+        WHILE STRPOS(Filename,'\') > 0 DO BEGIN
+          Path += COPYSTR(Filename,1,i);
+          Filename := COPYSTR(Filename,i+1);
+          i := STRPOS(Filename,'\');
+        END;
+      END ELSE BEGIN
+        i := STRPOS(Filename,'/');
+        WHILE STRPOS(Filename,'/') > 0 DO BEGIN
+          Path += COPYSTR(Filename,1,i);
+          Filename := COPYSTR(Filename,i+1);
+          i := STRPOS(Filename,'/');
+        END;
+      END;
+      EXIT(Path);
+    END;
+
+    PROCEDURE ExtractFileExtension@5157826(Filename@5157802 : Text[1024]) : Text[30];
+    VAR
+      i@5157803 : Integer;
+    BEGIN
+      i := STRPOS(Filename,'.');
+      WHILE i > 0 DO BEGIN
+        Filename := COPYSTR(Filename,i+1);
+        i := STRPOS(Filename,'.');
+      END;
+      EXIT(Filename);
+    END;
+
+    PROCEDURE ExtractFileBaseName@5157825(Filename@5157802 : Text[1024]) Basename : Text[255];
+    VAR
+      i@5157803 : Integer;
+    BEGIN
+      CLEAR(Basename);
+      Filename := ExtractFilename(Filename);
+      i := STRPOS(Filename,'.');
+      WHILE i > 0 DO BEGIN
+        Basename += COPYSTR(Filename,1,i);
+        Filename := COPYSTR(Filename,i+1);
+        i := STRPOS(Filename,'.');
+      END;
+      EXIT(DELCHR(Basename,'>','.'));
+    END;
+
+    PROCEDURE fsRename@5157821(Source@5157802 : Text[1024];Target@5157803 : Text[1024]) : Boolean;
+    BEGIN
+      // Patch 10.03.2011:
+      // IF NOT ISSERVICETIER THEN BEGIN
+      //  IF EXISTS(Source) THEN BEGIN
+      //    IF EXISTS(Target) THEN BEGIN
+      //      ERASE(Target);
+      //      EXIT(RENAME(Source,Target));
+      //    END;
+      //  END;
+      // END ELSE BEGIN
+      IF ISCLEAR(fso) THEN
+        CREATE(fso,FALSE,TRUE);
+      IF fso.FileExists(Source) THEN BEGIN
+        IF fso.FileExists(Target) THEN
+          fso.DeleteFile(Target);
+        fso.MoveFile(Source,Target);
+        IF fso.FileExists(Target) THEN
+          EXIT(TRUE);
+      END;
+      // END;
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE fsErase@5157823(Filename@5157802 : Text[1024]) : Boolean;
+    BEGIN
+      IF NOT ISSERVICETIER THEN
+        EXIT(ERASE(Filename))
+      ELSE BEGIN
+        IF ISCLEAR(fso) THEN
+          CREATE(fso,FALSE,TRUE);
+        IF fso.FileExists(Filename) THEN BEGIN
+          fso.DeleteFile(Filename);
+          EXIT(TRUE);
+        END ELSE
+          EXIT(FALSE);
+      END;
+    END;
+
+    PROCEDURE fsExists@5157827(Filename@5157802 : Text[1024]) : Boolean;
+    BEGIN
+      IF NOT ISSERVICETIER THEN
+        EXIT(EXISTS(Filename))
+      ELSE BEGIN
+        IF ISCLEAR(fso) THEN
+          CREATE(fso,FALSE,TRUE);
+        EXIT(fso.FileExists(Filename));
+      END;
+    END;
+
+    PROCEDURE StrPosR@5157832(Where@5157802 : Text[1024];What@5157803 : Text[30]) Result : Integer;
+    VAR
+      i@5157804 : Integer;
+    BEGIN
+      i := STRPOS(Where,What);
+      WHILE i > 0 DO BEGIN
+        i := STRPOS(Where,What);
+        IF i > 0 THEN BEGIN
+          Where := COPYSTR(Where,i+1);
+          Result += i;
+        END;
+      END;
+      EXIT(Result);
+    END;
+
+    PROCEDURE GetPmtImportFilename@5157833(VAR Importfilename@5157802 : Text[1024];WinCaption@5157806 : Text[80];FileMask@5157803 : Text[80]) : Boolean;
+    VAR
+      Text10000@5157804 : TextConst 'DEU=Datei îffnen;ENU=Open File';
+      CommonDlgMgt@5157805 : Codeunit 412;
+    BEGIN
+      IF WinCaption = '' THEN
+        WinCaption := Text10000;
+      IF FileMask = '' THEN
+        FileMask := '*.*';
+      Importfilename := CommonDlgMgt.OpenFile(WinCaption,Importfilename,4,FileMask,0);
+      IF (STRPOS(Importfilename,'*') > 0) OR (Importfilename = '') THEN
+        EXIT(FALSE)
+      ELSE
+        EXIT(TRUE);
+    END;
+
+    PROCEDURE PrepareWorkfile@5157834(ImportFilename@5157802 : Text[1024];VAR ServerFilename@5157803 : Text[1024];VAR MessageFilename@5157805 : Text[255]) : Boolean;
+    VAR
+      FileMgt@5157804 : Codeunit 419;
+    BEGIN
+      IF fsExists(ImportFilename) THEN BEGIN // client!
+        IF ISSERVICETIER THEN BEGIN
+          ServerFilename := FileMgt.ServerTempFileName('','tmp');
+          FileMgt.SilentUpload(ImportFilename,ServerFilename);
+        END ELSE
+          ServerFilename := ImportFilename;
+        MessageFilename := ExtractFilename(ImportFilename);
+        EXIT(EXISTS(ServerFilename)); // "server"!
+      END ELSE
+        EXIT(FALSE);
+    END;
+
+    PROCEDURE CheckBalAccount@1000000001(GenJournalLine@1000000000 : Record 81);
+    VAR
+      GenJournalLine2@5157802 : Record 81;
+    BEGIN
+      GenJournalLine2.SETRANGE("Journal Template Name",GenJournalLine."Journal Template Name");
+      GenJournalLine2.SETRANGE("Journal Batch Name",GenJournalLine."Journal Batch Name");
+      IF GenJournalLine2.FINDSET THEN
+        REPEAT
+          IF GenJournalLine2."Check No." <> '' THEN
+            IF GenJournalLine2."Bal. Account No." <> '' THEN
+              ERROR(Text008,
+                GenJournalLine2.FIELDCAPTION("Journal Batch Name"),
+                GenJournalLine2."Journal Batch Name",
+                GenJournalLine2.FIELDCAPTION("Line No."),
+                GenJournalLine2."Line No.",
+                GenJournalLine2.FIELDCAPTION("Check No."),
+                GenJournalLine2."Check No.");
+        UNTIL GenJournalLine2.NEXT = 0;
+    END;
+
+    PROCEDURE CheckIfBIC_IBAN@5157828(BankOrderer@5157802 : Text[30];AccountOrderer@5157803 : Text[30]) : Boolean;
+    VAR
+      StrBIC@5157804 : Text[6];
+      StrCountry@5157805 : Text[2];
+      StrIBAN@5157806 : Text[2];
+    BEGIN
+      IF STRLEN(DELCHR(BankOrderer,'=','01234567890')) > 0 THEN BEGIN
+        StrBIC := COPYSTR(BankOrderer,1,6);
+        IF STRLEN(DELCHR(StrBIC,'=','01234567890')) > 0 THEN
+          StrCountry := COPYSTR(StrBIC,5,2);
+      END ELSE
+        EXIT(FALSE);
+
+      IF STRLEN(DELCHR(AccountOrderer,'=','01234567890')) > 0 THEN
+        StrIBAN := COPYSTR(AccountOrderer,1,2)
+      ELSE
+        EXIT(FALSE);
+      IF StrIBAN = StrCountry THEN
+        EXIT(TRUE)
+      ELSE
+        EXIT(FALSE);
+    END;
+
+    PROCEDURE CheckIfBIC@5157830(BankOrderer@5157802 : Text[30]) : Boolean;
+    VAR
+      StrBIC@5157804 : Text[6];
+      StrCountry@5157805 : Text[2];
+    BEGIN
+      IF STRLEN(DELCHR(BankOrderer,'=','01234567890')) > 0 THEN BEGIN
+        StrBIC := COPYSTR(BankOrderer,1,6);
+        IF STRLEN(DELCHR(StrBIC,'=','01234567890')) > 0 THEN
+          StrCountry := COPYSTR(StrBIC,5,2);
+        IF StrCountry <> '' THEN
+          EXIT(TRUE)
+        ELSE
+          EXIT(FALSE);
+      END ELSE
+        EXIT(FALSE);
+    END;
+
+    PROCEDURE DimCheckSystemEntry@5157804(GLAcc@5157805 : Record 15;VAR GLEntry@5157802 : Record 17;GenJnlLine2@5157807 : Record 81;VAR TempGLEntryUpdate@5157808 : TEMPORARY Record 17);
+    VAR
+      DefDim@5157803 : Record 352;
+      JnlDim@5157804 : Record 356;
+    BEGIN
+      // gbedv DC -------------------------------------------------- BEGIN
+      GET_OPPSetup;
+      IF GLAcc."Dim. for System Entries" = GLAcc."Dim. for System Entries"::"Gen. Jnl. Line (Always)" THEN
+        EXIT;
+      IF GenJnlLine2."Line No." = 0 THEN
+        EXIT;
+      DefDim.RESET;
+      DefDim.SETCURRENTKEY("Table ID","No.","Dimension Code");
+      DefDim.SETRANGE("Table ID",DATABASE::"G/L Account");
+      DefDim.SETRANGE("No.",GLAcc."No.");
+      DefDim.SETFILTER("Dimension Value Code",'<>%1','');
+
+      IF DefDim.FINDSET(FALSE,FALSE) THEN
+        REPEAT
+          IF JnlDim.GET(
+            DATABASE::"Gen. Journal Line",
+            GenJnlLine2."Journal Template Name",
+            GenJnlLine2."Journal Batch Name",
+            GenJnlLine2."Line No.",
+            0,
+            DefDim."Dimension Code")
+          THEN BEGIN
+            IF GLAcc."Dim. for System Entries" = GLAcc."Dim. for System Entries"::"G/L Account (Always)"
+            THEN BEGIN
+              IF DefDim."Dimension Value Code" <> JnlDim."Dimension Value Code" THEN BEGIN
+                TempGLEntryUpdate := GLEntry;
+                TempGLEntryUpdate."Transaction No." := 0;
+                IF TempGLEntryUpdate.INSERT THEN
+                  EXIT;
+              END;
+            END;
+          END ELSE BEGIN
+            TempGLEntryUpdate := GLEntry;
+            TempGLEntryUpdate."Transaction No." := 0;
+            IF TempGLEntryUpdate.INSERT THEN
+              EXIT;
+          END;
+        UNTIL DefDim.NEXT = 0;
+      // gbedv DC -------------------------------------------------- END
+    END;
+
+    PROCEDURE DimCheckVATEntry@5157829(GLAccNo@5157805 : Code[20];GLEntryNo@5157802 : Integer;GenJnlLine2@5157807 : Record 81;VAR TempGLEntryUpdate@5157808 : TEMPORARY Record 17;VATEntryNo@5157809 : Integer);
+    VAR
+      DefDim@5157803 : Record 352;
+      JnlDim@5157804 : Record 356;
+      LedgerDim@5157810 : Record 355;
+      GLAcc@5157806 : Record 15;
+    BEGIN
+      // gbedv DC -------------------------------------------------- BEGIN
+      GET_OPPSetup;
+      IF GenJnlLine2."Line No." = 0 THEN
+        EXIT;
+
+      IF TempGLEntryUpdate.GET(GLEntryNo) THEN BEGIN
+        TempGLEntryUpdate."G/L Account No." := GLAccNo;
+        TempGLEntryUpdate."Transaction No." := VATEntryNo;
+        TempGLEntryUpdate.MODIFY;
+      END ELSE BEGIN
+        TempGLEntryUpdate.INIT;
+        TempGLEntryUpdate."Entry No." := GLEntryNo;
+        TempGLEntryUpdate."G/L Account No." := GLAccNo;
+        TempGLEntryUpdate."Transaction No." := VATEntryNo;
+        TempGLEntryUpdate.INSERT;
+      END;
+      // gbedv DC -------------------------------------------------- END
+    END;
+
+    PROCEDURE DimensionUpdate@5157805(VAR GLEntryJnlDim@5157803 : Record 17;VAR GLEntryPmtCorr@5157802 : Record 17;VAR GLEntry@5157805 : Record 17;GenJnlLine2@5157809 : Record 81);
+    VAR
+      GLAcc@5157810 : Record 15;
+      VatEntry2@5157816 : Record 254;
+      VatEntryDim@5157804 : Record 355;
+      LedgerEntryDim@5157806 : Record 355;
+      JnlLineDim@5157817 : Record 356;
+      TempJnlLineDim@5157813 : TEMPORARY Record 356;
+      DefDim@5157808 : Record 352;
+      JnlDim@5157807 : Record 356;
+      DimMgt@5157811 : Codeunit 408;
+      Text001@5157812 : TextConst 'DEU=Eine im %1 %2, %3, %4 verwendete Dimension hat einen Fehler bei Konto %6 hervorgerufen. %5;ENU=A dimension used in %1 %2, %3, %4 has caused an error for account no. %6. %5';
+      TableID@5157814 : ARRAY [10] OF Integer;
+      AccNo@5157815 : ARRAY [10] OF Code[20];
+    BEGIN
+      // gbedv DC -------------------------------------------------- BEGIN
+      GET_OPPSetup;
+
+      // Update all System Entries
+      IF (GLEntryPmtCorr."Transaction No." = 0) THEN BEGIN
+        GLAcc.GET(GLEntry."G/L Account No.");
+        DefDim.RESET;
+        DefDim.SETCURRENTKEY("Table ID","No.","Dimension Code");
+        DefDim.SETRANGE("Table ID",DATABASE::"G/L Account");
+        DefDim.SETRANGE("No.",GLEntry."G/L Account No.");
+        DefDim.SETFILTER("Dimension Value Code",'<>%1','');
+
+        IF DefDim.FINDSET(FALSE,FALSE) THEN
+          REPEAT
+            IF LedgerEntryDim.GET(DATABASE::"G/L Entry",GLEntry."Entry No.",DefDim."Dimension Code")
+            THEN BEGIN
+              IF GLAcc."Dim. for System Entries" = GLAcc."Dim. for System Entries"::"G/L Account (Always)"
+              THEN BEGIN
+                IF DefDim."Dimension Value Code" <> LedgerEntryDim."Dimension Value Code" THEN BEGIN
+                  LedgerEntryDim."Dimension Value Code" := DefDim."Dimension Value Code";
+                  LedgerEntryDim.MODIFY;
+                END;
+                IF DefDim."Dimension Code" = GLSetup."Global Dimension 1 Code" THEN BEGIN
+                  GLEntry."Global Dimension 1 Code" := DefDim."Dimension Value Code";
+                  GLEntry.MODIFY;
+                END;
+                IF DefDim."Dimension Code" = GLSetup."Global Dimension 2 Code" THEN BEGIN
+                  GLEntry."Global Dimension 2 Code" := DefDim."Dimension Value Code";
+                  GLEntry.MODIFY;
+                END;
+              END;
+            END ELSE BEGIN
+              LedgerEntryDim.INIT;
+              LedgerEntryDim."Table ID" := DATABASE::"G/L Entry";
+              LedgerEntryDim."Entry No." := GLEntry."Entry No.";
+              LedgerEntryDim."Dimension Code" := DefDim."Dimension Code";
+              LedgerEntryDim."Dimension Value Code" := DefDim."Dimension Value Code";
+              IF LedgerEntryDim.INSERT THEN;
+              IF DefDim."Dimension Code" = GLSetup."Global Dimension 1 Code" THEN BEGIN
+                GLEntry."Global Dimension 1 Code" := DefDim."Dimension Value Code";
+                GLEntry.MODIFY;
+              END;
+              IF DefDim."Dimension Code" = GLSetup."Global Dimension 2 Code" THEN BEGIN
+                GLEntry."Global Dimension 2 Code" := DefDim."Dimension Value Code";
+                GLEntry.MODIFY;
+              END;
+            END;
+          UNTIL DefDim.NEXT = 0;
+
+
+        TempJnlLineDim.RESET;
+        TempJnlLineDim.DELETEALL;
+        LedgerEntryDim.SETRANGE("Table ID",DATABASE::"G/L Entry");
+        LedgerEntryDim.SETRANGE("Entry No.",GLEntry."Entry No.");
+        DimMgt.CopyLedgEntryDimToJnlLineDim(LedgerEntryDim,TempJnlLineDim);
+        TableID[1] := DimMgt.TypeToTableID1(GenJnlLine2."Account Type"::"G/L Account");
+        AccNo[1] := GLAcc."No.";
+
+        IF NOT DimMgt.CheckJnlLineDimValuePosting(TempJnlLineDim,TableID,AccNo) THEN
+          ERROR(
+            Text001,
+            GenJnlLine2.TABLECAPTION,GenJnlLine2."Journal Template Name",
+            GenJnlLine2."Journal Batch Name",GenJnlLine2."Line No.",
+            DimMgt.GetDimValuePostingErr,GLAcc."No.");
+      END;
+
+      // Update Dimensions for VAT Entries from Pmt. Discount
+      IF (GLEntryPmtCorr."Transaction No." <> 0) THEN BEGIN
+        GLAcc.GET(GLEntryPmtCorr."G/L Account No.");
+        VatEntry2.GET(GLEntryPmtCorr."Transaction No.");
+        IF OPPSetup."Dim. for Pmt. Disc. Corr." IN [
+           OPPSetup."Dim. for Pmt. Disc. Corr."::"VAT Entries",
+           OPPSetup."Dim. for Pmt. Disc. Corr."::"G/L Account (if empty VAT Entry)",
+           OPPSetup."Dim. for Pmt. Disc. Corr."::"Not Empty Gen. Jnl. Line",
+           OPPSetup."Dim. for Pmt. Disc. Corr."::"Gen. Jnl. Line (if empty VAT Entry)"]
+        THEN BEGIN
+          IF OPPSetup."Dim. for Pmt. Disc. Corr." IN
+             [OPPSetup."Dim. for Pmt. Disc. Corr."::"VAT Entries",
+              OPPSetup."Dim. for Pmt. Disc. Corr."::"G/L Account (if empty VAT Entry)"]
+           THEN BEGIN
+            LedgerEntryDim.RESET;
+            LedgerEntryDim.SETRANGE("Table ID",DATABASE::"G/L Entry");
+            LedgerEntryDim.SETRANGE("Entry No.",GLEntry."Entry No.");
+            LedgerEntryDim.DELETEALL;
+            GLEntry."Global Dimension 1 Code" := VatEntry2."Global Dimension 1 Code";
+            GLEntry."Global Dimension 2 Code" := VatEntry2."Global Dimension 2 Code";
+            GLEntry.MODIFY;
+          END;
+
+          VatEntryDim.RESET;
+          VatEntryDim.SETRANGE("Table ID",DATABASE::"VAT Entry");
+          VatEntryDim.SETRANGE("Entry No.",GLEntryPmtCorr."Transaction No.");
+          VatEntryDim.SETFILTER("Dimension Value Code",'<>%1','');
+          IF VatEntryDim.FINDSET(FALSE,FALSE) THEN
+            REPEAT
+              IF LedgerEntryDim.GET(DATABASE::"G/L Entry",GLEntry."Entry No.",VatEntryDim."Dimension Code")
+              THEN BEGIN
+                IF VatEntryDim."Dimension Value Code" <> LedgerEntryDim."Dimension Value Code" THEN BEGIN
+                  LedgerEntryDim."Dimension Value Code" := VatEntryDim."Dimension Value Code";
+                  LedgerEntryDim.MODIFY;
+                  IF VatEntryDim."Dimension Code" = GLSetup."Global Dimension 1 Code" THEN BEGIN
+                    GLEntry."Global Dimension 1 Code" := VatEntryDim."Dimension Value Code";
+                    GLEntry.MODIFY;
+                  END;
+                  IF VatEntryDim."Dimension Code" = GLSetup."Global Dimension 2 Code" THEN BEGIN
+                    GLEntry."Global Dimension 2 Code" := VatEntryDim."Dimension Value Code";
+                    GLEntry.MODIFY;
+                  END;
+                END;
+              END ELSE BEGIN
+                LedgerEntryDim.INIT;
+                LedgerEntryDim."Table ID" := DATABASE::"G/L Entry";
+                LedgerEntryDim."Entry No." := GLEntry."Entry No.";
+                LedgerEntryDim."Dimension Code" := VatEntryDim."Dimension Code";
+                LedgerEntryDim."Dimension Value Code" := VatEntryDim."Dimension Value Code";
+                IF LedgerEntryDim.INSERT THEN;
+                IF VatEntryDim."Dimension Code" = GLSetup."Global Dimension 1 Code" THEN BEGIN
+                  GLEntry."Global Dimension 1 Code" := VatEntryDim."Dimension Value Code";
+                  GLEntry.MODIFY;
+                END;
+                IF VatEntryDim."Dimension Code" = GLSetup."Global Dimension 2 Code" THEN BEGIN
+                  GLEntry."Global Dimension 2 Code" := VatEntryDim."Dimension Value Code";
+                  GLEntry.MODIFY;
+                END;
+              END;
+            UNTIL VatEntryDim.NEXT = 0;
+        END;
+        IF OPPSetup."Dim. for Pmt. Disc. Corr." = OPPSetup."Dim. for Pmt. Disc. Corr."::"Gen. Jnl. Line (Always)"
+        THEN BEGIN
+          LedgerEntryDim.RESET;
+          LedgerEntryDim.SETRANGE("Table ID",DATABASE::"G/L Entry");
+          LedgerEntryDim.SETRANGE("Entry No.",GLEntry."Entry No.");
+          LedgerEntryDim.DELETEALL;
+          GLEntry."Global Dimension 1 Code" := GenJnlLine2."Shortcut Dimension 1 Code";
+          GLEntry."Global Dimension 2 Code" := GenJnlLine2."Shortcut Dimension 2 Code";
+          GLEntry.MODIFY;
+
+          JnlLineDim.RESET;
+          JnlLineDim.SETRANGE("Table ID",DATABASE::"Gen. Journal Line");
+          JnlLineDim.SETRANGE("Journal Template Name",GenJnlLine2."Journal Template Name");
+          JnlLineDim.SETRANGE("Journal Batch Name",GenJnlLine2."Journal Batch Name");
+          JnlLineDim.SETRANGE("Journal Line No.",GenJnlLine2."Line No.");
+          JnlLineDim.SETRANGE("Allocation Line No.",0);
+          JnlLineDim.SETFILTER("Dimension Value Code",'<>%1','');
+
+          IF JnlLineDim.FINDSET(FALSE,FALSE) THEN
+            REPEAT
+              LedgerEntryDim.INIT;
+              LedgerEntryDim."Table ID" := DATABASE::"G/L Entry";
+              LedgerEntryDim."Entry No." := GLEntry."Entry No.";
+              LedgerEntryDim."Dimension Code" := JnlLineDim."Dimension Code";
+              LedgerEntryDim."Dimension Value Code" := JnlLineDim."Dimension Value Code";
+              IF LedgerEntryDim.INSERT THEN;
+            UNTIL JnlLineDim.NEXT = 0;
+        END;
+
+        IF (OPPSetup."Dim. for Pmt. Disc. Corr." IN
+           [OPPSetup."Dim. for Pmt. Disc. Corr."::"G/L Account (Always)",
+            OPPSetup."Dim. for Pmt. Disc. Corr."::"G/L Account (if empty VAT Entry)"])
+        THEN BEGIN
+          IF OPPSetup."Dim. for Pmt. Disc. Corr." = OPPSetup."Dim. for Pmt. Disc. Corr."::"G/L Account (Always)" THEN BEGIN
+            LedgerEntryDim.RESET;
+            LedgerEntryDim.SETRANGE("Table ID",DATABASE::"G/L Entry");
+            LedgerEntryDim.SETRANGE("Entry No.",GLEntry."Entry No.");
+            LedgerEntryDim.DELETEALL;
+            GLEntry."Global Dimension 1 Code" := '';
+            GLEntry."Global Dimension 2 Code" := '';
+            GLEntry.MODIFY;
+          END;
+          DefDim.RESET;
+          DefDim.SETCURRENTKEY("Table ID","No.","Dimension Code");
+          DefDim.SETRANGE("Table ID",DATABASE::"G/L Account");
+          DefDim.SETRANGE("No.",GLEntryPmtCorr."G/L Account No.");
+          DefDim.SETFILTER("Dimension Value Code",'<>%1','');
+          IF DefDim.FINDSET(FALSE,FALSE) THEN
+            REPEAT
+              IF NOT LedgerEntryDim.GET(DATABASE::"G/L Entry",GLEntry."Entry No.",DefDim."Dimension Code") THEN BEGIN
+                LedgerEntryDim.INIT;
+                LedgerEntryDim."Table ID" := DATABASE::"G/L Entry";
+                LedgerEntryDim."Entry No." := GLEntry."Entry No.";
+                LedgerEntryDim."Dimension Code" := DefDim."Dimension Code";
+                LedgerEntryDim."Dimension Value Code" := DefDim."Dimension Value Code";
+                IF LedgerEntryDim.INSERT THEN;
+                IF DefDim."Dimension Code" = GLSetup."Global Dimension 1 Code" THEN BEGIN
+                  GLEntry."Global Dimension 1 Code" := DefDim."Dimension Value Code";
+                  GLEntry.MODIFY;
+                END;
+                IF DefDim."Dimension Code" = GLSetup."Global Dimension 2 Code" THEN BEGIN
+                  GLEntry."Global Dimension 2 Code" := DefDim."Dimension Value Code";
+                  GLEntry.MODIFY;
+                END;
+              END;
+            UNTIL DefDim.NEXT = 0;
+        END;
+
+        IF OPPSetup."Dim. for Pmt. Disc. Corr." IN [
+           OPPSetup."Dim. for Pmt. Disc. Corr."::"Not Empty Gen. Jnl. Line",
+           OPPSetup."Dim. for Pmt. Disc. Corr."::"Gen. Jnl. Line (if empty VAT Entry)"]
+        THEN BEGIN
+          JnlLineDim.RESET;
+          JnlLineDim.SETRANGE("Table ID",DATABASE::"Gen. Journal Line");
+          JnlLineDim.SETRANGE("Journal Template Name",GenJnlLine2."Journal Template Name");
+          JnlLineDim.SETRANGE("Journal Batch Name",GenJnlLine2."Journal Batch Name");
+          JnlLineDim.SETRANGE("Journal Line No.",GenJnlLine2."Line No.");
+          JnlLineDim.SETRANGE("Allocation Line No.",0);
+          JnlLineDim.SETFILTER("Dimension Value Code",'<>%1','');
+
+          IF JnlLineDim.FINDSET(FALSE,FALSE) THEN
+            REPEAT
+              IF NOT LedgerEntryDim.GET(DATABASE::"G/L Entry",GLEntry."Entry No.",JnlLineDim."Dimension Code") THEN BEGIN
+                LedgerEntryDim.INIT;
+                LedgerEntryDim."Table ID" := DATABASE::"G/L Entry";
+                LedgerEntryDim."Entry No." := GLEntry."Entry No.";
+                LedgerEntryDim."Dimension Code" := JnlLineDim."Dimension Code";
+                LedgerEntryDim."Dimension Value Code" := JnlLineDim."Dimension Value Code";
+                IF LedgerEntryDim.INSERT THEN;
+                IF JnlLineDim."Dimension Code" = GLSetup."Global Dimension 1 Code" THEN BEGIN
+                  GLEntry."Global Dimension 1 Code" := JnlLineDim."Dimension Value Code";
+                  GLEntry.MODIFY;
+                END;
+                IF JnlLineDim."Dimension Code" = GLSetup."Global Dimension 2 Code" THEN BEGIN
+                  GLEntry."Global Dimension 2 Code" := JnlLineDim."Dimension Value Code";
+                  GLEntry.MODIFY;
+                END;
+              END ELSE BEGIN
+                IF OPPSetup."Dim. for Pmt. Disc. Corr." = OPPSetup."Dim. for Pmt. Disc. Corr."::"Not Empty Gen. Jnl. Line"
+                THEN BEGIN
+                  LedgerEntryDim."Dimension Code" := JnlLineDim."Dimension Code";
+                  LedgerEntryDim."Dimension Value Code" := JnlLineDim."Dimension Value Code";
+                  LedgerEntryDim.MODIFY;
+                  IF JnlLineDim."Dimension Code" = GLSetup."Global Dimension 1 Code" THEN BEGIN
+                    GLEntry."Global Dimension 1 Code" := JnlLineDim."Dimension Value Code";
+                    GLEntry.MODIFY;
+                  END;
+                  IF JnlLineDim."Dimension Code" = GLSetup."Global Dimension 2 Code" THEN BEGIN
+                    GLEntry."Global Dimension 2 Code" := JnlLineDim."Dimension Value Code";
+                    GLEntry.MODIFY;
+                  END;
+                END;
+              END;
+            UNTIL JnlLineDim.NEXT = 0;
+        END;
+
+        TempJnlLineDim.RESET;
+        TempJnlLineDim.DELETEALL;
+        LedgerEntryDim.SETRANGE("Table ID",DATABASE::"G/L Entry");
+        LedgerEntryDim.SETRANGE("Entry No.",GLEntry."Entry No.");
+        DimMgt.CopyLedgEntryDimToJnlLineDim(LedgerEntryDim,TempJnlLineDim);
+        TableID[1] := DimMgt.TypeToTableID1(GenJnlLine2."Account Type"::"G/L Account");
+        AccNo[1] := GLAcc."No.";
+
+        IF NOT DimMgt.CheckJnlLineDimValuePosting(TempJnlLineDim,TableID,AccNo) THEN
+         ERROR(
+            Text001,
+            GenJnlLine2.TABLECAPTION,GenJnlLine2."Journal Template Name",
+            GenJnlLine2."Journal Batch Name",GenJnlLine2."Line No.",
+            DimMgt.GetDimValuePostingErr,GLAcc."No.");
+      END;
+      // gbedv DC -------------------------------------------------- END
+    END;
+
+    PROCEDURE VATDimensionUpdate@5157835(VAR GLEntryPmtCorr@5157803 : Record 17;VAR VATEntry@5157802 : Record 254;GenJnlLine2@5157809 : Record 81);
+    VAR
+      VatEntry2@5157807 : Record 254;
+      VatEntryDim@5157804 : Record 355;
+      JnlLineDim@5157808 : Record 356;
+      LedgerEntryDim@5157806 : Record 355;
+      DefDim@5157805 : Record 352;
+    BEGIN
+      // gbedv DC -------------------------------------------------- BEGIN
+      GET_OPPSetup;
+
+      // Update Dimensions for VAT Entries from Pmt. Discount
+      IF (GLEntryPmtCorr."Transaction No." <> 0) THEN BEGIN
+        VatEntry2.GET(GLEntryPmtCorr."Transaction No.");
+        IF OPPSetup."Dim. for Pmt. Disc. Corr." IN [
+           OPPSetup."Dim. for Pmt. Disc. Corr."::"VAT Entries",
+           OPPSetup."Dim. for Pmt. Disc. Corr."::"G/L Account (if empty VAT Entry)",
+           OPPSetup."Dim. for Pmt. Disc. Corr."::"Not Empty Gen. Jnl. Line",
+           OPPSetup."Dim. for Pmt. Disc. Corr."::"Gen. Jnl. Line (if empty VAT Entry)"]
+        THEN BEGIN
+          IF OPPSetup."Dim. for Pmt. Disc. Corr." = OPPSetup."Dim. for Pmt. Disc. Corr."::"VAT Entries" THEN BEGIN
+            LedgerEntryDim.RESET;
+            LedgerEntryDim.SETRANGE("Table ID",DATABASE::"VAT Entry");
+            LedgerEntryDim.SETRANGE("Entry No.",VATEntry."Entry No.");
+            LedgerEntryDim.DELETEALL;
+            VATEntry."Global Dimension 1 Code" := VatEntry2."Global Dimension 1 Code";
+            VATEntry."Global Dimension 2 Code" := VatEntry2."Global Dimension 2 Code";
+            VATEntry.MODIFY;
+          END;
+          VatEntryDim.RESET;
+          VatEntryDim.SETRANGE("Table ID",DATABASE::"VAT Entry");
+          VatEntryDim.SETRANGE("Entry No.",GLEntryPmtCorr."Transaction No.");
+          VatEntryDim.SETFILTER("Dimension Value Code",'<>%1','');
+          IF VatEntryDim.FINDSET(FALSE,FALSE) THEN
+            REPEAT
+              IF LedgerEntryDim.GET(DATABASE::"VAT Entry",VATEntry."Entry No.",VatEntryDim."Dimension Code")
+              THEN BEGIN
+                IF VatEntryDim."Dimension Value Code" <> LedgerEntryDim."Dimension Value Code" THEN BEGIN
+                  LedgerEntryDim."Dimension Value Code" := VatEntryDim."Dimension Value Code";
+                  LedgerEntryDim.MODIFY;
+                  IF VatEntryDim."Dimension Code" = GLSetup."Global Dimension 1 Code" THEN BEGIN
+                    VATEntry."Global Dimension 1 Code" := VatEntryDim."Dimension Value Code";
+                    VATEntry.MODIFY;
+                  END;
+                  IF VatEntryDim."Dimension Code" = GLSetup."Global Dimension 2 Code" THEN BEGIN
+                    VATEntry."Global Dimension 2 Code" := VatEntryDim."Dimension Value Code";
+                    VATEntry.MODIFY;
+                  END;
+                END;
+              END ELSE BEGIN
+                LedgerEntryDim.INIT;
+                LedgerEntryDim."Table ID" := DATABASE::"VAT Entry";
+                LedgerEntryDim."Entry No." := VATEntry."Entry No.";
+                LedgerEntryDim."Dimension Code" := VatEntryDim."Dimension Code";
+                LedgerEntryDim."Dimension Value Code" := VatEntryDim."Dimension Value Code";
+                IF LedgerEntryDim.INSERT THEN;
+                IF VatEntryDim."Dimension Code" = GLSetup."Global Dimension 1 Code" THEN BEGIN
+                  VATEntry."Global Dimension 1 Code" := VatEntryDim."Dimension Value Code";
+                  VATEntry.MODIFY;
+                END;
+                IF VatEntryDim."Dimension Code" = GLSetup."Global Dimension 2 Code" THEN BEGIN
+                  VATEntry."Global Dimension 2 Code" := VatEntryDim."Dimension Value Code";
+                  VATEntry.MODIFY;
+                END;
+              END;
+            UNTIL VatEntryDim.NEXT = 0;
+        END;
+        IF OPPSetup."Dim. for Pmt. Disc. Corr." = OPPSetup."Dim. for Pmt. Disc. Corr."::"Gen. Jnl. Line (Always)"
+        THEN BEGIN
+          LedgerEntryDim.RESET;
+          LedgerEntryDim.SETRANGE("Table ID",DATABASE::"VAT Entry");
+          LedgerEntryDim.SETRANGE("Entry No.",VATEntry."Entry No.");
+          LedgerEntryDim.DELETEALL;
+          VATEntry."Global Dimension 1 Code" := GenJnlLine2."Shortcut Dimension 1 Code";
+          VATEntry."Global Dimension 2 Code" := GenJnlLine2."Shortcut Dimension 2 Code";
+          VATEntry.MODIFY;
+
+          JnlLineDim.RESET;
+          JnlLineDim.SETRANGE("Table ID",DATABASE::"Gen. Journal Line");
+          JnlLineDim.SETRANGE("Journal Template Name",GenJnlLine2."Journal Template Name");
+          JnlLineDim.SETRANGE("Journal Batch Name",GenJnlLine2."Journal Batch Name");
+          JnlLineDim.SETRANGE("Journal Line No.",GenJnlLine2."Line No.");
+          JnlLineDim.SETRANGE("Allocation Line No.",0);
+          JnlLineDim.SETFILTER("Dimension Value Code",'<>%1','');
+
+          IF JnlLineDim.FINDSET(FALSE,FALSE) THEN
+            REPEAT
+              LedgerEntryDim.INIT;
+              LedgerEntryDim."Table ID" := DATABASE::"VAT Entry";
+              LedgerEntryDim."Entry No." := VATEntry."Entry No.";
+              LedgerEntryDim."Dimension Code" := JnlLineDim."Dimension Code";
+              LedgerEntryDim."Dimension Value Code" := JnlLineDim."Dimension Value Code";
+              IF LedgerEntryDim.INSERT THEN;
+            UNTIL JnlLineDim.NEXT = 0;
+        END;
+
+        IF (OPPSetup."Dim. for Pmt. Disc. Corr." IN
+           [OPPSetup."Dim. for Pmt. Disc. Corr."::"G/L Account (Always)",
+            OPPSetup."Dim. for Pmt. Disc. Corr."::"G/L Account (if empty VAT Entry)"])
+        THEN BEGIN
+          IF OPPSetup."Dim. for Pmt. Disc. Corr." = OPPSetup."Dim. for Pmt. Disc. Corr."::"G/L Account (Always)" THEN BEGIN
+            LedgerEntryDim.RESET;
+            LedgerEntryDim.SETRANGE("Table ID",DATABASE::"VAT Entry");
+            LedgerEntryDim.SETRANGE("Entry No.",VATEntry."Entry No.");
+            LedgerEntryDim.DELETEALL;
+            VATEntry."Global Dimension 1 Code" := '';
+            VATEntry."Global Dimension 2 Code" := '';
+            VATEntry.MODIFY;
+          END;
+          DefDim.RESET;
+          DefDim.SETCURRENTKEY("Table ID","No.","Dimension Code");
+          DefDim.SETRANGE("Table ID",DATABASE::"G/L Account");
+          DefDim.SETRANGE("No.",GLEntryPmtCorr."G/L Account No.");
+          DefDim.SETFILTER("Dimension Value Code",'<>%1','');
+          IF DefDim.FINDSET(FALSE,FALSE) THEN
+            REPEAT
+              IF NOT LedgerEntryDim.GET(DATABASE::"VAT Entry",VATEntry."Entry No.",DefDim."Dimension Code") THEN BEGIN
+                LedgerEntryDim.INIT;
+                LedgerEntryDim."Table ID" := DATABASE::"VAT Entry";
+                LedgerEntryDim."Entry No." := VATEntry."Entry No.";
+                LedgerEntryDim."Dimension Code" := DefDim."Dimension Code";
+                LedgerEntryDim."Dimension Value Code" := DefDim."Dimension Value Code";
+                IF LedgerEntryDim.INSERT THEN;
+                IF DefDim."Dimension Code" = GLSetup."Global Dimension 1 Code" THEN BEGIN
+                  VATEntry."Global Dimension 1 Code" := DefDim."Dimension Value Code";
+                  VATEntry.MODIFY;
+                END;
+                IF DefDim."Dimension Code" = GLSetup."Global Dimension 2 Code" THEN BEGIN
+                  VATEntry."Global Dimension 2 Code" := DefDim."Dimension Value Code";
+                  VATEntry.MODIFY;
+                END;
+              END;
+            UNTIL DefDim.NEXT = 0;
+        END;
+
+        IF OPPSetup."Dim. for Pmt. Disc. Corr." IN [
+           OPPSetup."Dim. for Pmt. Disc. Corr."::"Not Empty Gen. Jnl. Line",
+           OPPSetup."Dim. for Pmt. Disc. Corr."::"Gen. Jnl. Line (if empty VAT Entry)"]
+        THEN BEGIN
+          JnlLineDim.RESET;
+          JnlLineDim.SETRANGE("Table ID",DATABASE::"Gen. Journal Line");
+          JnlLineDim.SETRANGE("Journal Template Name",GenJnlLine2."Journal Template Name");
+          JnlLineDim.SETRANGE("Journal Batch Name",GenJnlLine2."Journal Batch Name");
+          JnlLineDim.SETRANGE("Journal Line No.",GenJnlLine2."Line No.");
+          JnlLineDim.SETRANGE("Allocation Line No.",0);
+          JnlLineDim.SETFILTER("Dimension Value Code",'<>%1','');
+
+          IF JnlLineDim.FINDSET(FALSE,FALSE) THEN
+            REPEAT
+              IF NOT LedgerEntryDim.GET(DATABASE::"VAT Entry",VATEntry."Entry No.",JnlLineDim."Dimension Code") THEN BEGIN
+                LedgerEntryDim.INIT;
+                LedgerEntryDim."Table ID" := DATABASE::"VAT Entry";
+                LedgerEntryDim."Entry No." := VATEntry."Entry No.";
+                LedgerEntryDim."Dimension Code" := JnlLineDim."Dimension Code";
+                LedgerEntryDim."Dimension Value Code" := JnlLineDim."Dimension Value Code";
+                IF LedgerEntryDim.INSERT THEN;
+                IF JnlLineDim."Dimension Code" = GLSetup."Global Dimension 1 Code" THEN BEGIN
+                  VATEntry."Global Dimension 1 Code" := JnlLineDim."Dimension Value Code";
+                  VATEntry.MODIFY;
+                END;
+                IF JnlLineDim."Dimension Code" = GLSetup."Global Dimension 2 Code" THEN BEGIN
+                  VATEntry."Global Dimension 2 Code" := JnlLineDim."Dimension Value Code";
+                  VATEntry.MODIFY;
+                END;
+              END ELSE BEGIN
+                IF OPPSetup."Dim. for Pmt. Disc. Corr." = OPPSetup."Dim. for Pmt. Disc. Corr."::"Not Empty Gen. Jnl. Line"
+                THEN BEGIN
+                  LedgerEntryDim."Dimension Code" := JnlLineDim."Dimension Code";
+                  LedgerEntryDim."Dimension Value Code" := JnlLineDim."Dimension Value Code";
+                  LedgerEntryDim.MODIFY;
+                  IF JnlLineDim."Dimension Code" = GLSetup."Global Dimension 1 Code" THEN BEGIN
+                    VATEntry."Global Dimension 1 Code" := JnlLineDim."Dimension Value Code";
+                    VATEntry.MODIFY;
+                  END;
+                  IF JnlLineDim."Dimension Code" = GLSetup."Global Dimension 2 Code" THEN BEGIN
+                    VATEntry."Global Dimension 2 Code" := JnlLineDim."Dimension Value Code";
+                    VATEntry.MODIFY;
+                  END;
+                END;
+              END;
+            UNTIL JnlLineDim.NEXT = 0;
+        END;
+      END;
+      // gbedv DC -------------------------------------------------- END
+    END;
+
+    BEGIN
+    {
+      -----------------------------------------------------
+      (c) gbedv, OPplus, All rights reserved
+
+      No.  Date       changed
+      -----------------------------------------------------
+      EA   01.11.08   Extended Application
+                      - Object created
+      CLR  01.11.08   German AddOn
+      -----------------------------------------------------
+
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+      H4337       09.06.15 ARI       Fill Payment Method when creating Customer Bank Accounts at import
+    }
+    END.
+  }
+}
+

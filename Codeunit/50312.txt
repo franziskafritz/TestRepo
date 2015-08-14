@@ -1,0 +1,388 @@
+OBJECT Codeunit 50312 OM - HME Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=21.05.15;
+    Time=14:34:27;
+    Modified=Yes;
+    Version List=HME1759;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+            ImExportProjectObjects(TransportNo,Mode);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      TransportPath@1000000000 : Text[1024];
+      HMEText001@1000000002 : TextConst 'DEU="The calculated file name is empty.\Please check the settings on the OM Setup card.\\Format: ''%1''=''%2''.";ENU="The calculated file name is empty.\Please check the settings on the OM Setup card.\\Format: ''%1''=''%2''.";ESP="The calculated file name is empty.\Please check the settings on the OM Setup card.\\Format: ''%1''=''%2''.";FRA="The calculated file name is empty.\Please check the settings on the OM Setup card.\\Format: ''%1''=''%2''.";NLD="The calculated file name is empty.\Please check the settings on the OM Setup card.\\Format: ''%1''=''%2''."';
+      TransportNo@1000000003 : Code[10];
+      Mode@1000000001 : 'Export,Import';
+      IsEmptyTransport@1000000004 : Boolean;
+      CurrentDatabaseCode@1000000005 : Code[20];
+      AutomatedInventoryBatch@1000000006 : Codeunit 50096;
+
+    PROCEDURE ImExportProjectObjects@1000000000(TransportNoV@1000000001 : Code[10];ModeV@1000000007 : 'Export,Import');
+    VAR
+      ProjectObjectL@1000000000 : Record 11102037;
+      SetupL@1000000003 : Record 11102035;
+      FileL@1000000004 : File;
+      FileNameL@1000000005 : Text[50];
+      PathFileL@1000000006 : Text[1024];
+      ReadTextL@1000000002 : Text[30];
+      TempProjectObjectL@1000000008 : TEMPORARY Record 11102037;
+      PosL@1000000009 : Integer;
+      LenL@1000000010 : Integer;
+      ProjectNoL@1000000011 : Text[30];
+      ObjectTypeL@1000000012 : Text[30];
+      ObjectNoL@1000000013 : Text[30];
+    BEGIN
+      // H1684       21.10.14  JM ++++++++++++++
+      SetupL.GET;
+      IF NOT SetupL."Backup Project Objects" THEN
+        EXIT;
+
+      SetupL.TESTFIELD("Database Code");
+      SetupL.TESTFIELD("File Name Backup File");
+      CurrentDatabaseCode := GetCurrentDatabase;
+
+      FileNameL := 'Transport' + TransportNoV  + 'ProjectObject.txt';
+      PathFileL := TransportPath + FileNameL;
+      FileL.TEXTMODE(TRUE);
+
+      TempProjectObjectL.DELETEALL;
+
+      // export internal infofile from source db
+      IF ModeV = ModeV::Export THEN BEGIN
+        IF EXISTS(PathFileL) THEN
+          ERASE(PathFileL);
+
+        FileL.CREATE(PathFileL);
+
+        ProjectObjectL.SETCURRENTKEY("Transport No.");
+        ProjectObjectL.SETRANGE("Transport No.",TransportNoV);
+        ProjectObjectL.SETRANGE("Include in Transport",TRUE);
+        IF ProjectObjectL.FINDSET THEN BEGIN
+
+          REPEAT
+            FileL.WRITE(ProjectObjectL."Project No." + ';' +
+                        FORMAT(ProjectObjectL."Object Type") + ';' +
+                        FORMAT(ProjectObjectL."Object No."));
+
+            TempProjectObjectL := ProjectObjectL;
+            TempProjectObjectL.INSERT;
+          UNTIL ProjectObjectL.NEXT = 0;
+
+        END ELSE BEGIN
+          IsEmptyTransport := TRUE;
+        END;
+      END;
+
+      // import internal infofile to target db
+      IF ModeV = ModeV::Import THEN BEGIN
+        IF NOT FileL.OPEN(PathFileL) THEN
+          IsEmptyTransport := TRUE
+
+        ELSE BEGIN
+
+          REPEAT
+
+            FileL.READ(ReadTextL); // Project No.,Object Type,Object No.
+            // field 1
+            PosL := STRPOS(ReadTextL,';');
+            ProjectNoL := COPYSTR(ReadTextL,1,PosL -1);
+            ReadTextL := DELSTR(ReadTextL,1,PosL);
+            // field 2
+            PosL := STRPOS(ReadTextL,';');
+            ObjectTypeL := COPYSTR(ReadTextL,1,PosL -1);
+            ReadTextL := DELSTR(ReadTextL,1,PosL);
+            // field 3
+            PosL := STRLEN(ReadTextL);
+            ObjectNoL := COPYSTR(ReadTextL,1,PosL);
+            ReadTextL := DELSTR(ReadTextL,1,PosL);
+
+            TempProjectObjectL."Project No." := ProjectNoL;
+            EVALUATE(TempProjectObjectL."Object Type",ObjectTypeL);
+            EVALUATE(TempProjectObjectL."Object No.",ObjectNoL);
+            TempProjectObjectL.INSERT;
+
+          UNTIL FileL.POS = FileL.LEN;
+
+        END;
+      END;
+
+      IF NOT IsEmptyTransport THEN
+        FileL.CLOSE;
+      CLEAR(FileL);
+
+      // obj backup
+      IF IsEmptyTransport THEN BEGIN // no Objects in Transport
+        IF EXISTS(PathFileL) THEN
+          ERASE(PathFileL);
+        EXIT;
+      END ELSE BEGIN
+        TempProjectObjectL.SETCURRENTKEY("Project No.");
+        PreparetOBJ(TempProjectObjectL,TransportNoV);
+      END;
+      // H1684       21.10.14  JM --------------
+    END;
+
+    PROCEDURE PreparetOBJ@1000000003(VAR TempProjectObjectR@1000000010 : TEMPORARY Record 11102037;TransportNoV@1000000018 : Code[10]);
+    VAR
+      ObjectL@1000000007 : Record 2000000001;
+      ctExportingObjects@1000000009 : TextConst 'DEU=Exporting objects...;ENU=Exporting objects...;ESP=Exporting objects...;FRA=Exporting objects...;NLD=Objecten exporteren...';
+      ctServiceTierFileName@1000000008 : TextConst 'DEU=objects.obj;ENU=objects.obj;ESP=objects.obj;FRA=objects.obj;NLD=objects.obj';
+      TempProjectL@1000000003 : TEMPORARY Record 11102036;
+    BEGIN
+      // H1684       21.10.14  JM ++++++++++++++
+      TempProjectL.DELETEALL;
+
+      IF TempProjectObjectR.ISEMPTY THEN
+        EXIT;
+
+      IF TempProjectObjectR.FINDSET THEN
+        REPEAT
+          TempProjectL."No." := TempProjectObjectR."Project No.";
+          IF TempProjectL.INSERT THEN ;
+        UNTIL (TempProjectObjectR.NEXT = 0)  ;
+
+      IF TempProjectL.FINDSET THEN
+        REPEAT
+          TempProjectObjectR.SETRANGE("Project No.",TempProjectL."No.");
+          IF TempProjectObjectR.FINDSET THEN
+            REPEAT
+              // for new Objects in target DB no backup is possible
+              IF ObjectL.GET(TempProjectObjectR."Object Type",'',TempProjectObjectR."Object No.") THEN
+                ObjectL.MARK(TRUE);
+
+            UNTIL TempProjectObjectR.NEXT = 0;
+
+            ObjectL.MARKEDONLY(TRUE);
+            CreateBackupFile(ObjectL,TransportNoV,TempProjectL."No.");
+            ObjectL.CLEARMARKS;
+            ObjectL.MARKEDONLY(FALSE);
+        UNTIL TempProjectL.NEXT = 0;
+
+      TempProjectObjectR.DELETEALL;
+      // H1684       21.10.14  JM ----------------
+    END;
+
+    PROCEDURE CreateBackupFile@1000000005(VAR ObjectR@1000000010 : TEMPORARY Record 2000000001;TransportNoV@1000000018 : Code[10];ProjectNoV@1000000003 : Code[10]);
+    VAR
+      ImExportMgtL@1000000005 : Codeunit 11102043;
+      ProgressbarL@1000000004 : Codeunit 11102044;
+      oFileL@1000000002 : File;
+      OutStrL@1000000001 : OutStream;
+      PathFileL@1000000000 : Text[1024];
+      ctExportingObjects@1000000009 : TextConst 'DEU=Exporting objects...;ENU=Exporting objects...;ESP=Exporting objects...;FRA=Exporting objects...;NLD=Objecten exporteren...';
+      ctServiceTierFileName@1000000008 : TextConst 'DEU=objects.obj;ENU=objects.obj;ESP=objects.obj;FRA=objects.obj;NLD=objects.obj';
+      SetupL@1000000013 : Record 11102035;
+      FileL@1000000012 : File;
+      FileNameL@1000000011 : Text[50];
+      TransportL@1000000014 : Record 11102043;
+      ProjectL@1000000015 : Record 11102036;
+    BEGIN
+      // H1684       21.10.14  JM ++++++++++++++
+      SetupL.GET;
+
+      TransportL.GET(TransportNoV);
+      ProjectL.GET(ProjectNoV);
+      PathFileL := CreateFileBackupDefinition(TransportL,ProjectL);
+
+      IF ObjectR.COUNT = 0 THEN
+        EXIT;
+
+      oFileL.WRITEMODE(TRUE);
+      ProgressbarL.Open(ctExportingObjects,0);
+
+      IF EXISTS(PathFileL)  THEN
+         PathFileL := INCSTR(PathFileL);
+
+      oFileL.CREATE(PathFileL);
+      oFileL.CREATEOUTSTREAM(OutStrL);
+      ImExportMgtL.FillOutstreamObj(OutStrL, ObjectR, ProgressbarL);
+
+      ProgressbarL.Close;
+      oFileL.CLOSE;
+      CLEAR(OutStrL);
+      // H1684       21.10.14  JM ----------------
+    END;
+
+    LOCAL PROCEDURE CreateFileBackupDefinition@1000000002(TransportV@1000000003 : Record 11102043;ProjectV@1000000002 : Record 11102036) FileNameO : Text[1024];
+    VAR
+      SetupL@1000000000 : Record 11102035;
+    BEGIN
+      // H1684       21.10.14  JM ++++++++++++++
+      SetupL.GET;
+      IF SetupL."Backup Project Objects" THEN BEGIN
+        FileNameO := TransportPath + CreateFileName(TransportV,ProjectV,CurrentDatabaseCode,
+            SetupL."File Name Backup File") + '_0.obj';
+      END;
+      // H1684       21.10.14  JM ---------------
+    END;
+
+    LOCAL PROCEDURE CreateFileName@1000000007(TransportV@1000 : Record 11102043;ProjectV@1000000000 : Record 11102036;DatabaseCodeV@1000000001 : Code[20];FileNameFormatV@1001 : Text[30]) ReturnValueO : Text[250];
+    VAR
+      CheckFileNameL@1002 : Text[1024];
+      i@1003 : Integer;
+    BEGIN
+      // H1684       21.10.14  JM ++++++++++++++
+      ReturnValueO :=
+        STRSUBSTNO(
+          FileNameFormatV, TransportV."No.",TransportV."Transport Type Code",DatabaseCodeV,
+              ProjectV."No.",ProjectV."Project Type Code");
+
+      ReturnValueO := FORMAT(CURRENTDATETIME, 0, ReturnValueO);
+
+      ReturnValueO := DELCHR(ReturnValueO, '<>');
+
+      WHILE STRPOS(ReturnValueO, ' .') > 0 DO
+        ReturnValueO := DELSTR(ReturnValueO, STRPOS(ReturnValueO, ' .'), 1);
+
+      WHILE STRPOS(ReturnValueO, '  ') > 0 DO
+        ReturnValueO := DELSTR(ReturnValueO, STRPOS(ReturnValueO, '  '), 1);
+
+      CheckFileNameL := ReturnValueO;
+
+      FOR i := 1 TO STRLEN(ReturnValueO) DO
+        IF ReturnValueO[i] = '.' THEN
+          CheckFileNameL := DELSTR(ReturnValueO, i);
+
+      IF CheckFileNameL = '' THEN
+        ERROR(HMEText001, FileNameFormatV, ReturnValueO);
+      // H1684       21.10.14  JM ---------------
+    END;
+
+    PROCEDURE SetProperties@1000000004(ImportPathfileV@1000000000 : Text[1024];ModeV@1000000002 : 'Export,Import');
+    BEGIN
+      // H1684       21.10.14  JM ++++++++++++++
+      TransportPath := ImportPathfileV;
+      Mode := ModeV;
+
+      IF Mode = Mode::Import THEN
+        TransportPath := GetPathFromPathFile(TransportPath)
+      // H1684       21.10.14  JM -------------
+    END;
+
+    PROCEDURE SetTransportNo@1000000006(TransportNoV@1000000000 : Code[10]);
+    BEGIN
+      // H1684       21.10.14  JM ++++++++++++++
+      TransportNo := TransportNoV;
+      // H1684       21.10.14  JM --------------
+    END;
+
+    PROCEDURE GetPathFromPathFile@1000000001(PathfileV@1000000000 : Text[1024]) PathO : Text[1024];
+    VAR
+      PosL@1000000001 : Integer;
+      PathL@1000000003 : Text[1024];
+      PosLastL@1000000004 : Integer;
+      LenL@1000000005 : Integer;
+    BEGIN
+      // H1684       21.10.14  JM ++++++++++++++
+      IF PathfileV = '' THEN
+        EXIT;
+      PathL := PathfileV;
+
+      REPEAT
+        PosLastL := PosL;
+        PosL := STRPOS(PathL,'\');
+        IF PosL > 0 THEN BEGIN
+          PathL := DELSTR(PathL,PosL,1);
+          PathL := INSSTR(PathL,'*',PosL);
+        END;
+      UNTIL PosL = 0;
+
+      LenL := STRLEN(PathfileV);
+      IF LenL > 0 THEN BEGIN
+        PathO := COPYSTR(PathfileV,1,PosLastL);
+        EXIT(PathO);
+      END;
+      // H1684       21.10.14  JM -------------
+    END;
+
+    PROCEDURE GetEmptyTransport@1000000008() : Boolean;
+    BEGIN
+      // H1684       21.10.14  JM ++++++++++++++
+      EXIT(IsEmptyTransport);
+      // H1684       21.10.14  JM --------------
+    END;
+
+    PROCEDURE GetCurrentDatabase@1000000009() : Code[20];
+    VAR
+      NAVDatabaseL@1000000000 : Record 11102099;
+    BEGIN
+      // H1684       21.10.14  JM ++++++++++++++
+      NAVDatabaseL.SETRANGE("Current Database",TRUE);
+      NAVDatabaseL.FINDFIRST;
+      EXIT(NAVDatabaseL.Code);
+      // H1684       21.10.14  JM --------------
+    END;
+
+    PROCEDURE ClearTransportNo@1000000010(VAR ProjectR@1000000002 : Record 11102036);
+    VAR
+      ProjectL@1000000000 : Record 11102036;
+    BEGIN
+      // H1759     03.11.14  JM ++++++++++++++
+      ProjectR."Transport No." := '';
+      ProjectR.MODIFY;
+      // H1759     03.11.14  JM --------------
+    END;
+
+    PROCEDURE SetTransportStatusCode@1000000011(VAR ProjectR@1000000003 : Record 11102036;ModeV@1000000002 : 'Export,Import');
+    VAR
+      FlowL@1000000000 : Record 11102040;
+      FlowStatusL@1000000001 : Record 11102041;
+    BEGIN
+      // H1759     03.11.14  JM ++++++++++++++
+      FlowStatusL.SETRANGE("Flow Code",ProjectR."Project Flow Code");
+      FlowStatusL.SETRANGE("Status Code",ProjectR."Status Code");
+      FlowStatusL.SETFILTER("Transport Status",'<>%1','');
+      IF FlowStatusL.FINDFIRST THEN BEGIN
+        IF ModeV = ModeV::Import THEN
+          ClearTransportNo(ProjectR);
+        ProjectR.VALIDATE("Status Code",FlowStatusL."Transport Status");
+        // modify in calling CU
+      END;
+      // H1759     03.11.14  JM --------------
+    END;
+
+    PROCEDURE SetTransportObject@1000000012(ProjectV@1000000000 : Record 11102036;DirectionV@1000000002 : 'Import, Export');
+    VAR
+      ProjectObjectsL@1000000001 : Record 11102037;
+    BEGIN
+      //H1702 07.11.14 ARI ++++++++++++++++++++++++++++++
+      ProjectObjectsL.SETRANGE("Project No.",ProjectV."No.");
+
+      IF DirectionV = DirectionV::Import THEN BEGIN
+        ProjectObjectsL.MODIFYALL("Include in Transport",TRUE);
+      END ELSE BEGIN
+        ProjectObjectsL.MODIFYALL("Include in Transport",FALSE);
+      END;
+      //H1702 07.11.14 ARI ------------------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+
+      H1684     21.10.14  JM          CU Created
+      H1684     21.10.14  JM          Backup ProjectObjects, New Functions: Im/ExportProjectObjects,PreparetOBJ,CreateBackupFile,
+                                      CreateFileBackupDefinition,CreateFileName
+      H1759     03.11.14  JM          Project Status Depending Tranpsort Code, new funcions: SetTransportStatusCode, ClearTransportNo
+      H1702     07.11.14  ARI         New Function added: SetTransportObject
+    }
+    END.
+  }
+}
+

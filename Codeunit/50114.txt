@@ -1,0 +1,189 @@
+OBJECT Codeunit 50114 TF Application Handling
+{
+  OBJECT-PROPERTIES
+  {
+    Date=16.01.15;
+    Time=16:58:14;
+    Modified=Yes;
+    Version List=HME1778;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=BEGIN
+            SpecifyVendLedgEntries;
+            PostGenJnl;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      PaymentSetup@1000000001 : Record 5001901;
+      GenJnlPost@1000000005 : Codeunit 12;
+      GenJnlLine1@1000000006 : Record 81;
+      JnlLineDim@1000000007 : Record 356;
+      "**HME*************************"@1000000008 : TextConst;
+      TextHME001@1000000009 : TextConst 'DEU=Das Buch.-Blatt konnte nicht gebucht werden.;ENU=Gen. Journal could not be posted';
+
+    PROCEDURE SpecifyVendLedgEntries@1000000003();
+    VAR
+      VendorL@1000000000 : Record 23;
+      VendLedgEntriesL@1000000001 : Record 25;
+      PaymentSetupL@1000000002 : Record 5001901;
+      GenJnlLineL@1000000003 : Record 81;
+      TransferVendorL@1000000004 : Record 23;
+    BEGIN
+      PaymentSetup.GET();
+      PaymentSetup.TESTFIELD("Transfer Factoring Account No.");
+
+      VendorL.RESET;
+      VendorL.SETFILTER("Trans. Fact. To Vendor No.", '<>%1', '');
+      IF VendorL.FIND('-') THEN
+        REPEAT
+          TransferVendorL.GET(VendorL."Trans. Fact. To Vendor No.");
+          TransferVendorL.TESTFIELD("Payment Terms Code",VendorL."Payment Terms Code");
+          TransferVendorL.TESTFIELD("Pmt. Term Purch. Inv.",VendorL."Pmt. Term Purch. Inv.");
+
+          VendLedgEntriesL.SETRANGE("Vendor No.", VendorL."No.");
+          VendLedgEntriesL.SETRANGE("Document Type", VendLedgEntriesL."Document Type"::Invoice);
+          VendLedgEntriesL.SETRANGE(Open,TRUE);
+          IF VendLedgEntriesL.FINDSET THEN
+            REPEAT
+              TransferFactorerEntriesNew(VendLedgEntriesL);
+            UNTIL VendLedgEntriesL.NEXT = 0;
+        UNTIL VendorL.NEXT = 0;
+    END;
+
+    PROCEDURE TransferFactorerEntriesNew@1000000006(VendLedgEntryV@1000000000 : Record 25);
+    VAR
+      GenJnlLineL@1000000001 : Record 81;
+      LineNoL@1000000003 : Integer;
+      VendLedgEntry1L@1000000005 : Record 25;
+      VendorL@1000000006 : Record 23;
+      GenJnlBatchL@1000000007 : Record 232;
+      Amount1L@1000000002 : Decimal;
+      Amount2L@1000000008 : Decimal;
+    BEGIN
+      //Transfer VendLedgEntries to Trans. Fact. To Vendor No.
+      IF NOT GenJnlBatchL.GET('STANDARD','TRA-FACT') THEN BEGIN
+        GenJnlBatchL.INIT;
+        GenJnlBatchL."Journal Template Name" := 'STANDARD';
+        GenJnlBatchL.Name := 'TRA-FACT';
+        GenJnlBatchL.Description := 'Transfer Factoring';
+        GenJnlBatchL.INSERT(TRUE);
+      END;
+
+      GenJnlLineL.SETRANGE("Journal Template Name",'STANDARD');
+      GenJnlLineL.SETRANGE("Journal Batch Name",'TRA-FACT');
+      IF GenJnlLineL.FINDLAST THEN
+        LineNoL := GenJnlLineL."Line No.";
+
+
+      VendorL.GET(VendLedgEntryV."Vendor No.");
+
+      // Apply initial entry
+      LineNoL += 10000;
+      GenJnlLineL.INIT;
+      GenJnlLineL."Journal Template Name" := 'STANDARD';
+      GenJnlLineL."Journal Batch Name" := 'TRA-FACT';
+      GenJnlLineL."Line No." := LineNoL;
+      GenJnlLineL.VALIDATE("Posting Date",VendLedgEntryV."Posting Date");
+      GenJnlLineL.VALIDATE("Document Date",VendLedgEntryV."Document Date");
+      GenJnlLineL."Account Type" := GenJnlLineL."Account Type"::Vendor;
+      GenJnlLineL.VALIDATE("Account No.",VendLedgEntryV."Vendor No.");
+      GenJnlLineL."Document Type" := GenJnlLineL."Document Type"::Payment;
+      GenJnlLineL."Document No." := VendLedgEntryV."Document No.";
+      GenJnlLineL."Bal. Account Type" := VendLedgEntryV."Bal. Account Type"::"G/L Account";
+      GenJnlLineL.VALIDATE("Bal. Account No.",PaymentSetup."Transfer Factoring Account No.");
+      GenJnlLineL."Applies-to Doc. Type" := VendLedgEntryV."Document Type";
+      GenJnlLineL."Applies-to Doc. No." := VendLedgEntryV."Document No.";
+      VendLedgEntryV.CALCFIELDS("Remaining Amount");
+      GenJnlLineL.VALIDATE(Amount, -((VendLedgEntryV."Remaining Amount" - VendLedgEntryV."Remaining Pmt. Disc. Possible")));
+         Amount1L := (VendLedgEntryV."Remaining Amount" - VendLedgEntryV."Remaining Pmt. Disc. Possible");
+      GenJnlLineL."Source Code" := 'FIBUBUCHBL';
+      GenJnlLineL.INSERT;
+
+      // If credit memo has been deducted apply credit memo
+      IF VendLedgEntryV."C/M No. for Deduction" <> 0 THEN BEGIN
+        VendLedgEntry1L.GET(VendLedgEntryV."C/M No. for Deduction");
+        LineNoL += 10000;
+        GenJnlLineL.INIT;
+        GenJnlLineL."Journal Template Name" := 'STANDARD';
+        GenJnlLineL."Journal Batch Name" := 'TRA-FACT';
+        GenJnlLineL."Line No." := LineNoL;
+        GenJnlLineL.VALIDATE("Posting Date",TODAY);
+        GenJnlLineL.VALIDATE("Document Date",VendLedgEntryV."Document Date");
+        GenJnlLineL."Account Type" := GenJnlLineL."Account Type"::Vendor;
+        GenJnlLineL.VALIDATE("Account No.",VendLedgEntry1L."Vendor No.");
+        GenJnlLineL."Document Type" := GenJnlLineL."Document Type"::Refund;
+        GenJnlLineL."Document No." := VendLedgEntry1L."Document No.";
+        GenJnlLineL."Bal. Account Type" := VendLedgEntry1L."Bal. Account Type"::"G/L Account";
+        GenJnlLineL.VALIDATE("Bal. Account No.",PaymentSetup."Transfer Factoring Account No.");
+        GenJnlLineL."Applies-to Doc. Type" := VendLedgEntry1L."Document Type";
+        GenJnlLineL."Applies-to Doc. No." := VendLedgEntry1L."Document No.";
+
+        VendLedgEntry1L.CALCFIELDS("Remaining Amount");
+        GenJnlLineL.VALIDATE(Amount, -(VendLedgEntry1L."Remaining Amount"- VendLedgEntry1L."Remaining Pmt. Disc. Possible"));
+        Amount2L :=  VendLedgEntry1L."Remaining Amount";
+        GenJnlLineL."Source Code" := 'FIBUBUCHBL';
+        GenJnlLineL.INSERT;
+      END;
+
+      // Create Entry on Transfer Vendor account
+
+      LineNoL += 10000;
+      GenJnlLineL.INIT;
+      GenJnlLineL."Journal Template Name" := 'STANDARD';
+      GenJnlLineL."Journal Batch Name" := 'TRA-FACT';
+      GenJnlLineL."Line No." := LineNoL;
+      GenJnlLineL.VALIDATE("Posting Date",TODAY);
+      GenJnlLineL.VALIDATE("Document Date",VendLedgEntryV."Posting Date");
+      GenJnlLineL."Account Type" := GenJnlLineL."Account Type"::Vendor;
+      GenJnlLineL.VALIDATE("Account No.",VendorL."Trans. Fact. To Vendor No.");
+      GenJnlLineL.Description := VendLedgEntryV.Description;
+      GenJnlLineL."External Document No." := COPYSTR(VendLedgEntryV."Vendor No." + '-' + VendLedgEntryV."External Document No.",1,20);
+      GenJnlLineL."Document Type" := GenJnlLineL."Document Type"::Invoice;
+      GenJnlLineL."Document No." := VendLedgEntryV."Document No." + '-TF';
+      GenJnlLineL."Bal. Account Type" := VendLedgEntryV."Bal. Account Type"::"G/L Account";
+      GenJnlLineL.VALIDATE("Bal. Account No.",PaymentSetup."Transfer Factoring Account No.");
+      VendLedgEntryV.CALCFIELDS("Remaining Amount");
+      GenJnlLineL.VALIDATE(Amount, Amount1L + Amount2L);
+      GenJnlLineL.VALIDATE("Payment Terms Code",VendorL."Payment Terms Code");
+      GenJnlLineL."Source Code" := 'FIBUBUCHBL';
+      GenJnlLineL."Orginial Vend. Ledger Entry No" := VendLedgEntryV."Entry No.";
+      GenJnlLineL.INSERT;
+
+      EXIT;
+    END;
+
+    PROCEDURE PostGenJnl@1000000000();
+    BEGIN
+      COMMIT;
+      GenJnlLine1.SETRANGE("Journal Template Name",'STANDARD');
+      GenJnlLine1.SETRANGE("Journal Batch Name",'TRA-FACT');
+      JnlLineDim.SETRANGE("Table ID",81);
+      JnlLineDim.SETRANGE("Journal Template Name",'STANDARD');
+      JnlLineDim.SETRANGE("Journal Batch Name",'TRA-FACT');
+      IF GenJnlLine1.FINDFIRST THEN
+        CODEUNIT.RUN(CODEUNIT::"Gen. Jnl.-Post",GenJnlLine1);
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+
+      H1778      26.11.14  MDO       Created
+    }
+    END.
+  }
+}
+

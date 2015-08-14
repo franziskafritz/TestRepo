@@ -1,0 +1,953 @@
+OBJECT Codeunit 5703 Nonstock Item Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=15.06.11;
+    Time=06:00:00;
+    Version List=NAVW16.00,eBay1.07.02;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst 'DEU=Artikel %1 ist bereits vorhanden.;ENU=Item %1 already exists.';
+      Text001@1001 : TextConst 'DEU=Artikel %1 wurde erstellt.;ENU=Item %1 is created.';
+      Text002@1002 : TextConst 'DEU=Sie kînnen fÅr die %1 keinen Katalogartikel eingeben.;ENU=You cannot enter a nonstock item on %1.';
+      Text003@1003 : TextConst 'DEU=Artikelkarte fÅr Katalogartikel wird erstellt\;ENU=Creating item card for nonstock item\';
+      Text004@1004 : TextConst 'DEU=Herstellercode        #1####\;ENU=Manufacturer Code    #1####\';
+      Text005@1005 : TextConst 'DEU=Kreditor              #2##################\;ENU=Vendor               #2##################\';
+      Text006@1006 : TextConst 'DEU=Kred.-Artikel         #3##################\;ENU=Vendor Item          #3##################\';
+      Text007@1007 : TextConst 'DEU=Artikelnr.            #4##################;ENU=Item No.             #4##################';
+      NewItem@1008 : Record 27;
+      ItemLedgEntry@1009 : Record 32;
+      NonStock@1010 : Record 5718;
+      ItemCategory@1011 : Record 5722;
+      PurchLine@1012 : Record 39;
+      NonstockItemSetup@1013 : Record 5719;
+      ItemVend@1014 : Record 99;
+      ItemUnitofMeasure@1015 : Record 5404;
+      UnitofMeasure@1016 : Record 204;
+      ServInvLine@1018 : Record 5902;
+      SalesLine@1019 : Record 37;
+      BOMComp@1024 : Record 90;
+      ProdBOMLine@1025 : Record 99000772;
+      ProdBOMHeader@1026 : Record 99000771;
+      ProgWindow@1020 : Dialog;
+      NewItemNo@1021 : Code[20];
+      MfrLength@1022 : Integer;
+      VenLength@1023 : Integer;
+      "*** from SITE-Variables ***"@1119455004 : Integer;
+      InvtSetup@1119455003 : Record 313;
+      NoSeriesMgt@1119455002 : Codeunit 396;
+      ItemNoSeries@1119455001 : Code[10];
+      InvtSetupRead@1119455000 : Boolean;
+
+    PROCEDURE NonstockAutoItem@2(NonStock2@1000 : Record 5718);
+    VAR
+      NASactive@1119455000 : Boolean;
+    BEGIN
+      IF NewItem.GET(NonStock2."Item No.") THEN
+        ERROR(Text000,NonStock2."Item No.");
+
+      MfrLength := STRLEN(NonStock2."Manufacturer Code");
+      VenLength := STRLEN(NonStock2."Vendor Item No.");
+
+      NonstockItemSetup.GET;
+      //eBay#001
+      NASactive := GUIALLOWED;
+
+      IF NASactive THEN BEGIN
+        IF NonStock2."Vendor No." = ''  THEN
+          IF NonstockItemSetup."ITscope Default Vendor No." = '' THEN
+            EXIT
+          ELSE
+             NewItem."Vendor No." := NonstockItemSetup."ITscope Default Vendor No.";
+
+        IF NonStock2."Unit of Measure" = ''  THEN
+          IF NonstockItemSetup."ITscope Def. Unit of Measure" = '' THEN
+            EXIT
+          ELSE
+             NonStock2."Unit of Measure" := NonstockItemSetup."ITscope Def. Unit of Measure";
+
+        IF NonstockItemSetup."ITscope Def. Reord. Policy" = NonstockItemSetup."ITscope Def. Reord. Policy"::" " THEN
+          EXIT
+        ELSE
+           NewItem.VALIDATE("Reordering Policy",NonstockItemSetup."ITscope Def. Reord. Policy");
+        END;
+
+        NonStock2."Purchasing Code" := NonstockItemSetup."Purchasing Code";
+      //eBay#001
+
+      CASE NonstockItemSetup."No. Format" OF
+        NonstockItemSetup."No. Format"::"Vendor Item No.":
+          NewItemNo := NonStock2."Vendor Item No.";
+
+        NonstockItemSetup."No. Format"::"Mfr. + Vendor Item No.":
+          BEGIN
+            IF NonstockItemSetup."No. Format Separator" = '' THEN BEGIN
+              IF MfrLength + VenLength <= 20 THEN
+                NewItemNo := NonStock2."Manufacturer Code" + NonStock2."Vendor Item No."
+              ELSE
+                NewItemNo := NonStock2."Manufacturer Code" + NonStock2."Entry No.";
+            END ELSE BEGIN
+              IF MfrLength  + VenLength < 20 THEN
+                NewItemNo :=
+                  NonStock2."Manufacturer Code" + NonstockItemSetup."No. Format Separator" +
+                  NonStock2."Vendor Item No."
+              ELSE
+                NewItemNo :=
+                  NonStock2."Manufacturer Code" + NonstockItemSetup."No. Format Separator" +
+                  NonStock2."Entry No.";
+            END;
+          END;
+
+        NonstockItemSetup."No. Format"::"Vendor Item No. + Mfr.":
+          BEGIN
+            IF NonstockItemSetup."No. Format Separator" = '' THEN BEGIN
+              IF VenLength + MfrLength <= 20 THEN
+                NewItemNo := NonStock2."Vendor Item No." + NonStock2."Manufacturer Code"
+              ELSE
+                NewItemNo := NonStock2."Entry No." + NonStock2."Manufacturer Code";
+            END ELSE BEGIN
+              IF VenLength + MfrLength < 20 THEN
+                NewItemNo :=
+                  NonStock2."Vendor Item No." + NonstockItemSetup."No. Format Separator" +
+                  NonStock2."Manufacturer Code"
+              ELSE
+                NewItemNo :=
+                  NonStock2."Entry No." + NonstockItemSetup."No. Format Separator" +
+                  NonStock2."Manufacturer Code";
+            END;
+          END;
+        NonstockItemSetup."No. Format"::"Entry No.":
+          NewItemNo := NonStock2."Entry No.";
+      //eBay#001
+        NonstockItemSetup."No. Format"::"4":
+          NewItemNo := NonStock2."ITscope Item ID";
+      //eBay#001
+      END;
+
+      NonStock2."Item No." := NewItemNo;
+      NonStock2.MODIFY;
+      IF NOT UnitofMeasure.GET(NonStock2."Unit of Measure") THEN BEGIN
+        UnitofMeasure.Code := NonStock2."Unit of Measure";
+        UnitofMeasure.INSERT;
+      END;
+      IF NOT ItemUnitofMeasure.GET(NonStock2."Item No.",NonStock2."Unit of Measure") THEN BEGIN
+        ItemUnitofMeasure."Item No." := NonStock2."Item No.";
+        ItemUnitofMeasure.Code := NonStock2."Unit of Measure";
+        ItemUnitofMeasure."Qty. per Unit of Measure" := 1;
+        ItemUnitofMeasure.INSERT;
+      END;
+
+      //eBay#001
+      IF NOT NASactive THEN BEGIN
+      //eBay#001
+        NonStock2.TESTFIELD(NonStock2."Vendor No.");
+        NonStock2.TESTFIELD(NonStock2."Vendor Item No.");
+        NonStock2.TESTFIELD("Item Category Code");
+      //eBay#001
+        END;
+      //eBay#001
+
+      IF NewItem.GET(NewItemNo) THEN
+        ERROR(Text000,NewItemNo);
+
+      //eBay#001
+      IF NASactive AND (NonStock2."Item Category Code" = '') THEN
+        NonStock2."Item Category Code" := NonstockItemSetup."ITscope Item Category";
+      //eBay#001
+      ItemCategory.GET(NonStock2."Item Category Code");
+      NewItem.INIT;
+      NewItem."Inventory Posting Group" := ItemCategory."Def. Inventory Posting Group";
+      NewItem."Costing Method" := ItemCategory."Def. Costing Method";
+      NewItem."Gen. Prod. Posting Group" := ItemCategory."Def. Gen. Prod. Posting Group";
+      NewItem."Tax Group Code" := ItemCategory."Def. Tax Group Code";
+      NewItem."VAT Prod. Posting Group" := ItemCategory."Def. VAT Prod. Posting Group";
+      NewItem."No." := NewItemNo;
+      //eBay#001
+      NewItem.Description :=  COPYSTR(NonStock2.Description,1,MAXSTRLEN(NewItem.Description));
+      //eBay#001
+      NewItem.VALIDATE(NewItem.Description,NewItem.Description);
+      NewItem.VALIDATE("Base Unit of Measure",NonStock2."Unit of Measure");
+      NewItem."Unit Price" := NonStock2."Unit Price";
+      NewItem."Unit Cost" := NonStock2."Negotiated Cost";
+      NewItem."Last Direct Cost" := NonStock2."Negotiated Cost";
+      IF NewItem."Costing Method" = NewItem."Costing Method" :: Standard THEN
+        NewItem."Standard Cost" := NonStock2."Negotiated Cost";
+      NewItem."Automatic Ext. Texts" := FALSE;
+      //eBay#001
+      IF NOT NASactive THEN
+      //eBay#001
+        NewItem."Vendor No." := NonStock2."Vendor No.";
+      NewItem."Vendor Item No." := NonStock2."Vendor Item No.";
+      NewItem."Net Weight" := NonStock2."Net Weight";
+      NewItem."Gross Weight" := NonStock2."Gross Weight";
+      NewItem."Manufacturer Code" := NonStock2."Manufacturer Code";
+      //eBay#001
+      NewItem."EAN-Code" := NonStock2."Bar Code";
+      NewItem."Manufacturer Item No." := NonStock2."Manufacturer Item No.";
+      //eBay#001
+
+      //eBay#001
+      // NewItem."Item Category Code" := NonStock2."Item Category Code";
+      NewItem."Item Category Code" := '';
+      NewItem."Purchasing Code" := NonStock2."Purchasing Code";
+      //eBay#001
+      NewItem."Product Group Code" := NonStock2."Product Group Code";
+      NewItem."Created From Nonstock Item" := TRUE;
+      NewItem.INSERT;
+      //eBay#001
+      NewItem.VALIDATE("Item Category Code",NonStock2."Item Category Code");
+      NewItem.MODIFY;
+      //eBay#001
+
+      MESSAGE(Text001,NewItemNo);
+      IF CheckLicensePermission(DATABASE::"Item Vendor") THEN
+        NonstockItemVend(NonStock2);
+      IF CheckLicensePermission(DATABASE::"Item Cross Reference") THEN
+        NonstockItemCrossRef(NonStock2);
+
+      //eBay#001
+      GetAddFieldsFromNonStockoS(NewItem,NonStock2);
+      //eBay#001
+    END;
+
+    PROCEDURE NonstockItemVend@5(NonStock2@1000 : Record 5718);
+    BEGIN
+      ItemVend.SETRANGE(ItemVend."Item No.",NonStock2."Item No.");
+      ItemVend.SETRANGE(ItemVend."Vendor No.",NonStock2."Vendor No.");
+      IF ItemVend.FIND('-') THEN
+        EXIT;
+
+      ItemVend."Item No." := NonStock2."Item No.";
+      ItemVend."Vendor No." := NonStock2."Vendor No.";
+      ItemVend."Vendor Item No." := NonStock2."Vendor Item No.";
+      ItemVend.INSERT(TRUE);
+    END;
+
+    PROCEDURE NonstockItemCrossRef@7(VAR NonStock2@1000 : Record 5718);
+    VAR
+      ItemCrossReference@1001 : Record 5717;
+    BEGIN
+      ItemCrossReference.SETRANGE("Item No.",NonStock2."Item No.");
+      ItemCrossReference.SETRANGE("Unit of Measure",NonStock2."Unit of Measure");
+      ItemCrossReference.SETRANGE("Cross-Reference Type",ItemCrossReference."Cross-Reference Type"::Vendor);
+      ItemCrossReference.SETRANGE("Cross-Reference Type No.",NonStock2."Vendor No.");
+      ItemCrossReference.SETRANGE("Cross-Reference No.",NonStock2."Vendor Item No.");
+      IF NOT ItemCrossReference.FIND('-') THEN BEGIN
+        ItemCrossReference.INIT;
+        ItemCrossReference.VALIDATE("Item No.",NonStock2."Item No.");
+        ItemCrossReference.VALIDATE("Unit of Measure",NonStock2."Unit of Measure");
+        ItemCrossReference.VALIDATE("Cross-Reference Type",ItemCrossReference."Cross-Reference Type"::Vendor);
+        ItemCrossReference.VALIDATE("Cross-Reference Type No.",NonStock2."Vendor No.");
+        ItemCrossReference.VALIDATE("Cross-Reference No.",NonStock2."Vendor Item No.");
+        ItemCrossReference.INSERT;
+      END;
+      IF NonStock2."Bar Code" <> '' THEN BEGIN
+        ItemCrossReference.RESET;
+        ItemCrossReference.SETRANGE("Item No.",NonStock2."Item No.");
+        ItemCrossReference.SETRANGE("Unit of Measure",NonStock2."Unit of Measure");
+        ItemCrossReference.SETRANGE("Cross-Reference Type",ItemCrossReference."Cross-Reference Type"::"Bar Code");
+        ItemCrossReference.SETRANGE("Cross-Reference No.",NonStock2."Bar Code");
+        IF NOT ItemCrossReference.FIND('-') THEN BEGIN
+          ItemCrossReference.INIT;
+          ItemCrossReference.VALIDATE("Item No.",NonStock2."Item No.");
+          ItemCrossReference.VALIDATE("Unit of Measure",NonStock2."Unit of Measure");
+          ItemCrossReference.VALIDATE("Cross-Reference Type",ItemCrossReference."Cross-Reference Type"::"Bar Code");
+          ItemCrossReference.VALIDATE("Cross-Reference No.",NonStock2."Bar Code");
+          ItemCrossReference.INSERT;
+        END;
+      END;
+    END;
+
+    PROCEDURE NonstockItemDel@8(VAR Item@1000 : Record 27);
+    VAR
+      ItemCrossReference@1001 : Record 5717;
+    BEGIN
+      ItemVend.SETRANGE(ItemVend."Item No.",Item."No.");
+      ItemVend.SETRANGE(ItemVend."Vendor No.",Item."Vendor No.");
+      ItemVend.DELETEALL;
+
+      ItemCrossReference.SETRANGE(ItemCrossReference."Item No.",Item."No.");
+      ItemCrossReference.SETRANGE(ItemCrossReference."Variant Code",Item."Variant Filter");
+      ItemCrossReference.DELETEALL;
+
+      NonStock.SETCURRENTKEY("Item No.");
+      NonStock.SETRANGE("Item No.",Item."No.");
+      IF NonStock.FIND('-') THEN
+        NonStock.MODIFYALL("Item No.",'');
+    END;
+
+    PROCEDURE NonStockSales@1(VAR SalesLine2@1000 : Record 37);
+    BEGIN
+      IF (SalesLine2."Document Type" IN
+          [SalesLine2."Document Type"::"Return Order",SalesLine2."Document Type"::"Credit Memo"])
+      THEN
+        ERROR(Text002,SalesLine2."Document Type");
+
+      NonStock.GET(SalesLine2."No.");
+      IF NonStock."Item No." <> '' THEN BEGIN
+        SalesLine2."No." := NonStock."Item No.";
+        EXIT;
+      END;
+
+      MfrLength := STRLEN(NonStock."Manufacturer Code");
+      VenLength := STRLEN(NonStock."Vendor Item No.");
+
+      NonstockItemSetup.GET;
+      CASE NonstockItemSetup."No. Format" OF
+        NonstockItemSetup."No. Format"::"Vendor Item No.":
+          SalesLine2."No." := NonStock."Vendor Item No.";
+        NonstockItemSetup."No. Format"::"Mfr. + Vendor Item No.":
+          BEGIN
+            IF NonstockItemSetup."No. Format Separator" = '' THEN BEGIN
+              IF MfrLength + VenLength <= 20 THEN
+                SalesLine2."No." := NonStock."Manufacturer Code" + NonStock."Vendor Item No."
+              ELSE
+                SalesLine2."No." := NonStock."Manufacturer Code" + NonStock."Entry No.";
+            END ELSE BEGIN
+              IF MfrLength + VenLength < 20 THEN
+                SalesLine2."No." :=
+                  NonStock."Manufacturer Code" + NonstockItemSetup."No. Format Separator" +
+                  NonStock."Vendor Item No."
+              ELSE
+                SalesLine2."No." :=
+                  NonStock."Manufacturer Code" + NonstockItemSetup."No. Format Separator" +
+                  NonStock."Entry No.";
+            END;
+          END;
+        NonstockItemSetup."No. Format"::"Vendor Item No. + Mfr.":
+          BEGIN
+            IF NonstockItemSetup."No. Format Separator" = '' THEN BEGIN
+              IF MfrLength + VenLength <= 20 THEN
+                SalesLine2."No." := NonStock."Vendor Item No." + NonStock."Manufacturer Code"
+              ELSE
+                SalesLine2."No." := NonStock."Entry No." + NonStock."Manufacturer Code";
+            END ELSE BEGIN
+              IF MfrLength + VenLength < 20 THEN
+                SalesLine2."No." :=
+                  NonStock."Vendor Item No." + NonstockItemSetup."No. Format Separator" +
+                  NonStock."Manufacturer Code"
+              ELSE
+                SalesLine2."No." :=
+                  NonStock."Entry No." + NonstockItemSetup."No. Format Separator" +
+                  NonStock."Manufacturer Code";
+            END;
+          END;
+        NonstockItemSetup."No. Format"::"Entry No.":
+          SalesLine2."No." := NonStock."Entry No.";
+      END;
+
+      NonStock."Item No." := SalesLine2."No.";
+      NonStock.MODIFY;
+      IF NOT UnitofMeasure.GET(NonStock."Unit of Measure") THEN BEGIN
+        UnitofMeasure.Code := NonStock."Unit of Measure";
+        UnitofMeasure.INSERT;
+      END;
+      IF NOT ItemUnitofMeasure.GET(SalesLine2."No.",NonStock."Unit of Measure") THEN BEGIN
+        ItemUnitofMeasure."Item No." := SalesLine2."No.";
+        ItemUnitofMeasure.Code := NonStock."Unit of Measure";
+        ItemUnitofMeasure."Qty. per Unit of Measure" := 1;
+        ItemUnitofMeasure.INSERT;
+      END;
+
+      NewItem.SETRANGE(NewItem."No.",SalesLine2."No.");
+      IF NewItem.FIND('-') THEN
+        EXIT;
+
+      ProgWindow.OPEN(Text003 +
+                      Text004 +
+                      Text005 +
+                      Text006 +
+                      Text007);
+      ProgWindow.UPDATE(1,NonStock."Manufacturer Code");
+      ProgWindow.UPDATE(2,NonStock."Vendor No.");
+      ProgWindow.UPDATE(3,NonStock."Vendor Item No.");
+      ProgWindow.UPDATE(4,SalesLine2."No.");
+
+      ItemCategory.GET(NonStock."Item Category Code");
+      NewItem."Inventory Posting Group" := ItemCategory."Def. Inventory Posting Group";
+      NewItem."Costing Method" := ItemCategory."Def. Costing Method";
+      NewItem."Gen. Prod. Posting Group" := ItemCategory."Def. Gen. Prod. Posting Group";
+      NewItem."Tax Group Code" := ItemCategory."Def. Tax Group Code";
+      NewItem."VAT Prod. Posting Group" := ItemCategory."Def. VAT Prod. Posting Group";
+
+      NewItem."No." := SalesLine2."No.";
+      NewItem.Description := NonStock.Description;
+      NewItem.VALIDATE(NewItem.Description,NewItem.Description);
+      NewItem.VALIDATE("Base Unit of Measure",NonStock."Unit of Measure");
+      NewItem."Unit Price" := NonStock."Unit Price";
+      NewItem."Unit Cost" := NonStock."Negotiated Cost";
+      NewItem."Last Direct Cost" := NonStock."Negotiated Cost";
+      NewItem."Automatic Ext. Texts" := FALSE;
+      IF NewItem."Costing Method" = NewItem."Costing Method" :: Standard THEN
+        NewItem."Standard Cost" := NonStock."Negotiated Cost";
+      NewItem."Vendor No." := NonStock."Vendor No.";
+      NewItem."Vendor Item No." := NonStock."Vendor Item No.";
+      NewItem."Net Weight" := NonStock."Net Weight";
+      NewItem."Gross Weight" := NonStock."Gross Weight";
+      NewItem."Manufacturer Code" := NonStock."Manufacturer Code";
+      NewItem."Item Category Code" := NonStock."Item Category Code";
+      NewItem."Product Group Code" := NonStock."Product Group Code";
+      NewItem."Created From Nonstock Item" := TRUE;
+      NewItem.INSERT;
+
+      IF CheckLicensePermission(DATABASE::"Item Vendor") THEN
+        NonstockItemVend(NonStock);
+      IF CheckLicensePermission(DATABASE::"Item Cross Reference") THEN
+        NonstockItemCrossRef(NonStock);
+
+      ProgWindow.CLOSE;
+    END;
+
+    PROCEDURE DelNonStockSales@28(VAR SalesLine2@1000 : Record 37);
+    BEGIN
+      IF SalesLine2.Nonstock = FALSE THEN
+        EXIT;
+
+      NewItem.GET(SalesLine2."No.");
+      SalesLine2."No." := '';
+      SalesLine2.MODIFY;
+
+      DelNonStockItem(NewItem);
+    END;
+
+    PROCEDURE DelNonStockPurch@4(VAR PurchLine2@1000 : Record 39);
+    BEGIN
+      IF PurchLine2.Nonstock = FALSE THEN
+        EXIT;
+
+      NewItem.GET(PurchLine2."No.");
+      PurchLine2."No." := '';
+      PurchLine2.MODIFY;
+
+      DelNonStockItem(NewItem);
+    END;
+
+    PROCEDURE DelNonStockFSM@9(VAR ServInvLine2@1000 : Record 5902);
+    BEGIN
+      IF ServInvLine2.Nonstock = FALSE THEN
+        EXIT;
+
+      NewItem.GET(ServInvLine2."No.");
+      ServInvLine2."No." := '';
+      ServInvLine2.MODIFY;
+
+      DelNonStockItem(NewItem);
+    END;
+
+    PROCEDURE DelNonStockSalesArch@11(VAR SalesLineArchive2@1000 : Record 5108);
+    BEGIN
+      IF NewItem.GET(SalesLineArchive2."No.") THEN BEGIN
+        SalesLineArchive2."No." := '';
+        SalesLineArchive2.MODIFY;
+
+        DelNonStockItem(NewItem);
+      END;
+    END;
+
+    PROCEDURE NonStockFSM@6(VAR ServInvLine2@1000 : Record 5902);
+    BEGIN
+      NonStock.GET(ServInvLine2."No.");
+      IF NonStock."Item No." <> '' THEN BEGIN
+        ServInvLine2."No." := NonStock."Item No.";
+        EXIT;
+      END;
+
+      MfrLength := STRLEN(NonStock."Manufacturer Code");
+      VenLength := STRLEN(NonStock."Vendor Item No.");
+
+      NonstockItemSetup.GET;
+      CASE NonstockItemSetup."No. Format" OF
+        NonstockItemSetup."No. Format"::"Vendor Item No.":
+          ServInvLine2."No." := NonStock."Vendor Item No.";
+        NonstockItemSetup."No. Format"::"Mfr. + Vendor Item No.":
+          BEGIN
+            IF NonstockItemSetup."No. Format Separator" = '' THEN BEGIN
+              IF MfrLength + VenLength <= 20 THEN
+                ServInvLine2."No." :=
+                  NonStock."Manufacturer Code" + NonStock."Vendor Item No."
+              ELSE
+                ServInvLine2."No." :=
+                  NonStock."Manufacturer Code" + NonStock."Entry No.";
+            END ELSE BEGIN
+              IF MfrLength + VenLength < 20 THEN
+                ServInvLine2."No." :=
+                  NonStock."Manufacturer Code" + NonstockItemSetup."No. Format Separator" +
+                  NonStock."Vendor Item No."
+              ELSE
+                ServInvLine2."No." :=
+                  NonStock."Manufacturer Code" + NonstockItemSetup."No. Format Separator" +
+                  NonStock."Entry No.";
+            END;
+          END;
+        NonstockItemSetup."No. Format"::"Vendor Item No. + Mfr.":
+          BEGIN
+            IF NonstockItemSetup."No. Format Separator" = '' THEN BEGIN
+              IF MfrLength + VenLength <= 20 THEN
+                ServInvLine2."No." := NonStock."Vendor Item No." + NonStock."Manufacturer Code"
+              ELSE
+                ServInvLine2."No." := NonStock."Entry No." + NonStock."Manufacturer Code";
+            END ELSE BEGIN
+              IF MfrLength + VenLength < 20 THEN
+                ServInvLine2."No." :=
+                  NonStock."Vendor Item No." + NonstockItemSetup."No. Format Separator" +
+                  NonStock."Manufacturer Code"
+              ELSE
+                ServInvLine2."No." :=
+                  NonStock."Entry No." + NonstockItemSetup."No. Format Separator" +
+                  NonStock."Manufacturer Code";
+            END;
+          END;
+        NonstockItemSetup."No. Format"::"Entry No.":
+          ServInvLine2."No." := NonStock."Entry No.";
+        END;
+
+      NonStock."Item No." := ServInvLine2."No.";
+      NonStock.MODIFY;
+      IF NOT UnitofMeasure.GET(NonStock."Unit of Measure") THEN BEGIN
+        UnitofMeasure.Code := NonStock."Unit of Measure";
+        UnitofMeasure.INSERT;
+      END;
+      IF NOT ItemUnitofMeasure.GET(ServInvLine2."No.",NonStock."Unit of Measure") THEN BEGIN
+        ItemUnitofMeasure."Item No." := ServInvLine2."No.";
+        ItemUnitofMeasure.Code := NonStock."Unit of Measure";
+        ItemUnitofMeasure."Qty. per Unit of Measure" := 1;
+        ItemUnitofMeasure.INSERT;
+      END;
+
+      NewItem.SETRANGE(NewItem."No.",ServInvLine2."No.");
+      IF NewItem.FIND('-') THEN
+        EXIT;
+
+      ProgWindow.OPEN(Text003 +
+                      Text004 +
+                      Text005 +
+                      Text006 +
+                      Text007);
+      ProgWindow.UPDATE(1,NonStock."Manufacturer Code");
+      ProgWindow.UPDATE(2,NonStock."Vendor No.");
+      ProgWindow.UPDATE(3,NonStock."Vendor Item No.");
+      ProgWindow.UPDATE(4,ServInvLine2."No.");
+
+      ItemCategory.GET(NonStock."Item Category Code");
+      NewItem."Inventory Posting Group" := ItemCategory."Def. Inventory Posting Group";
+      NewItem."Costing Method" := ItemCategory."Def. Costing Method";
+      NewItem."Gen. Prod. Posting Group" := ItemCategory."Def. Gen. Prod. Posting Group";
+      NewItem."Tax Group Code" := ItemCategory."Def. Tax Group Code";
+      NewItem."VAT Prod. Posting Group" := ItemCategory."Def. VAT Prod. Posting Group";
+
+      NewItem."No." := ServInvLine2."No.";
+      NewItem.Description := NonStock.Description;
+      NewItem.VALIDATE(NewItem.Description,NewItem.Description);
+      NewItem.VALIDATE("Base Unit of Measure",NonStock."Unit of Measure");
+      NewItem."Unit Price" := NonStock."Unit Price";
+      NewItem."Unit Cost" := NonStock."Negotiated Cost";
+      NewItem."Last Direct Cost" := NonStock."Negotiated Cost";
+      NewItem."Automatic Ext. Texts" := FALSE;
+      IF NewItem."Costing Method" = NewItem."Costing Method" :: Standard THEN
+        NewItem."Standard Cost" := NonStock."Negotiated Cost";
+      NewItem."Vendor No." := NonStock."Vendor No.";
+      NewItem."Vendor Item No." := NonStock."Vendor Item No.";
+      NewItem."Net Weight" := NonStock."Net Weight";
+      NewItem."Gross Weight" := NonStock."Gross Weight";
+      NewItem."Manufacturer Code" := NonStock."Manufacturer Code";
+      NewItem."Item Category Code" := NonStock."Item Category Code";
+      NewItem."Product Group Code" := NonStock."Product Group Code";
+      NewItem."Created From Nonstock Item" := TRUE;
+      NewItem.INSERT;
+
+      IF CheckLicensePermission(DATABASE::"Item Vendor") THEN
+        NonstockItemVend(NonStock);
+      IF CheckLicensePermission(DATABASE::"Item Cross Reference") THEN
+        NonstockItemCrossRef(NonStock);
+
+      ProgWindow.CLOSE;
+    END;
+
+    PROCEDURE CreateItemFromNonstock@3(Nonstock2@1000 : Record 5718);
+    BEGIN
+      IF NewItem.GET(Nonstock2."Item No.") THEN
+        ERROR(Text000,Nonstock2."Item No.");
+
+      MfrLength := STRLEN(Nonstock2."Manufacturer Code");
+      VenLength := STRLEN(Nonstock2."Vendor Item No.");
+
+      NonstockItemSetup.GET;
+      CASE NonstockItemSetup."No. Format" OF
+        NonstockItemSetup."No. Format"::"Vendor Item No.":
+          NewItemNo := Nonstock2."Vendor Item No.";
+
+        NonstockItemSetup."No. Format"::"Mfr. + Vendor Item No.":
+          BEGIN
+            IF NonstockItemSetup."No. Format Separator" = '' THEN BEGIN
+              IF MfrLength + VenLength <= 20 THEN
+                NewItemNo := Nonstock2."Manufacturer Code" + Nonstock2."Vendor Item No."
+              ELSE
+                NewItemNo := Nonstock2."Manufacturer Code" + Nonstock2."Entry No.";
+            END ELSE BEGIN
+              IF MfrLength  + VenLength < 20 THEN
+                NewItemNo :=
+                  Nonstock2."Manufacturer Code" + NonstockItemSetup."No. Format Separator" +
+                  Nonstock2."Vendor Item No."
+              ELSE
+                NewItemNo :=
+                  Nonstock2."Manufacturer Code" + NonstockItemSetup."No. Format Separator" +
+                  Nonstock2."Entry No.";
+            END;
+          END;
+
+        NonstockItemSetup."No. Format"::"Vendor Item No. + Mfr.":
+          BEGIN
+            IF NonstockItemSetup."No. Format Separator" = '' THEN BEGIN
+              IF VenLength + MfrLength <= 20 THEN
+                NewItemNo := Nonstock2."Vendor Item No." + Nonstock2."Manufacturer Code"
+              ELSE
+                NewItemNo := Nonstock2."Entry No." + Nonstock2."Manufacturer Code";
+            END ELSE BEGIN
+              IF VenLength + MfrLength < 20 THEN
+                NewItemNo :=
+                  Nonstock2."Vendor Item No." + NonstockItemSetup."No. Format Separator" +
+                  Nonstock2."Manufacturer Code"
+              ELSE
+                NewItemNo :=
+                  Nonstock2."Entry No." + NonstockItemSetup."No. Format Separator" +
+                  Nonstock2."Manufacturer Code";
+            END;
+          END;
+        NonstockItemSetup."No. Format"::"Entry No.":
+          NewItemNo := Nonstock2."Entry No.";
+      END;
+
+      Nonstock2."Item No." := NewItemNo;
+      Nonstock2.MODIFY;
+      IF NOT UnitofMeasure.GET(Nonstock2."Unit of Measure") THEN BEGIN
+        UnitofMeasure.Code := Nonstock2."Unit of Measure";
+        UnitofMeasure.INSERT;
+      END;
+      IF NOT ItemUnitofMeasure.GET(Nonstock2."Item No.",Nonstock2."Unit of Measure") THEN BEGIN
+        ItemUnitofMeasure."Item No." := Nonstock2."Item No.";
+        ItemUnitofMeasure.Code := Nonstock2."Unit of Measure";
+        ItemUnitofMeasure."Qty. per Unit of Measure" := 1;
+        ItemUnitofMeasure.INSERT;
+      END;
+
+
+      Nonstock2.TESTFIELD(Nonstock2."Vendor No.");
+      Nonstock2.TESTFIELD(Nonstock2."Vendor Item No.");
+      Nonstock2.TESTFIELD("Item Category Code");
+
+      IF NewItem.GET(NewItemNo) THEN
+        ERROR(Text000,NewItemNo);
+
+      ItemCategory.GET(Nonstock2."Item Category Code");
+      NewItem."Inventory Posting Group" := ItemCategory."Def. Inventory Posting Group";
+      NewItem."Costing Method" := ItemCategory."Def. Costing Method";
+      NewItem."Gen. Prod. Posting Group" := ItemCategory."Def. Gen. Prod. Posting Group";
+      NewItem."Tax Group Code" := ItemCategory."Def. Tax Group Code";
+      NewItem."VAT Prod. Posting Group" := ItemCategory."Def. VAT Prod. Posting Group";
+      NewItem."No." := NewItemNo;
+      NewItem.Description := Nonstock2.Description;
+      NewItem.VALIDATE(NewItem.Description,NewItem.Description);
+      NewItem.VALIDATE("Base Unit of Measure",Nonstock2."Unit of Measure");
+      NewItem."Unit Price" := Nonstock2."Unit Price";
+      NewItem."Unit Cost" := Nonstock2."Negotiated Cost";
+      NewItem."Last Direct Cost" := Nonstock2."Negotiated Cost";
+      IF NewItem."Costing Method" = NewItem."Costing Method" :: Standard THEN
+        NewItem."Standard Cost" := Nonstock2."Negotiated Cost";
+      NewItem."Automatic Ext. Texts" := FALSE;
+      NewItem."Vendor No." := Nonstock2."Vendor No.";
+      NewItem."Vendor Item No." := Nonstock2."Vendor Item No.";
+      NewItem."Net Weight" := Nonstock2."Net Weight";
+      NewItem."Gross Weight" := Nonstock2."Gross Weight";
+      NewItem."Manufacturer Code" := Nonstock2."Manufacturer Code";
+      NewItem."Item Category Code" := Nonstock2."Item Category Code";
+      NewItem."Product Group Code" := Nonstock2."Product Group Code";
+      NewItem."Created From Nonstock Item" := TRUE;
+      NewItem.INSERT;
+
+      IF CheckLicensePermission(DATABASE::"Item Vendor") THEN
+        NonstockItemVend(Nonstock2);
+      IF CheckLicensePermission(DATABASE::"Item Cross Reference") THEN
+        NonstockItemCrossRef(Nonstock2);
+    END;
+
+    PROCEDURE CheckLicensePermission@15(TableID@1000 : Integer) : Boolean;
+    VAR
+      LicensePermission@1001 : Record 2000000043;
+    BEGIN
+      LicensePermission.SETRANGE("Object Type",LicensePermission."Object Type"::TableData);
+      LicensePermission.SETRANGE("Object Number",TableID);
+      LicensePermission.SETFILTER("Insert Permission",'<>%1',LicensePermission."Insert Permission"::" ");
+      EXIT(LicensePermission.FIND('-'));
+    END;
+
+    PROCEDURE DelNonStockItem@10(VAR Item@1000 : Record 27);
+    VAR
+      SalesLineArch@1002 : Record 5108;
+    BEGIN
+      ItemLedgEntry.SETCURRENTKEY("Item No.");
+      ItemLedgEntry.SETRANGE("Item No.",Item."No.");
+      IF ItemLedgEntry.FIND('-') THEN
+        EXIT;
+
+      SalesLine.SETCURRENTKEY(Type,"No.");
+      SalesLine.SETRANGE(Type,SalesLine.Type::Item);
+      SalesLine.SETRANGE("No.",Item."No.");
+      IF SalesLine.FIND('-') THEN
+        EXIT;
+
+      PurchLine.SETCURRENTKEY(Type,"No.");
+      PurchLine.SETRANGE(Type,PurchLine.Type::Item);
+      PurchLine.SETRANGE("No.",Item."No.");
+      IF PurchLine.FIND('-') THEN
+        EXIT;
+
+      ServInvLine.SETCURRENTKEY(Type,"No.");
+      ServInvLine.SETRANGE(Type,ServInvLine.Type::Item);
+      ServInvLine.SETRANGE("No.",Item."No.");
+      IF ServInvLine.FIND('-') THEN
+        EXIT;
+
+      BOMComp.SETCURRENTKEY(Type,"No.");
+      BOMComp.SETRANGE(Type,BOMComp.Type::Item);
+      BOMComp.SETRANGE("No.",Item."No.");
+      IF BOMComp.FIND('-') THEN
+        EXIT;
+
+      SalesLineArch.SETCURRENTKEY(Type,"No.");
+      SalesLineArch.SETRANGE(Type,SalesLineArch.Type::Item);
+      SalesLineArch.SETRANGE("No.",Item."No.");
+      IF NOT SalesLineArch.ISEMPTY THEN
+        EXIT;
+
+      ProdBOMLine.RESET;
+      ProdBOMLine.SETCURRENTKEY(Type,"No.");
+      ProdBOMLine.SETRANGE(Type,ProdBOMLine.Type::Item);
+      ProdBOMLine.SETRANGE("No.",Item."No.");
+      IF ProdBOMLine.FIND('-') THEN
+        REPEAT
+          IF ProdBOMHeader.GET(ProdBOMLine."Production BOM No.") AND
+             (ProdBOMHeader.Status = ProdBOMHeader.Status::Certified)
+          THEN
+            EXIT;
+        UNTIL ProdBOMLine.NEXT = 0;
+
+      NewItem.GET(Item."No.");
+      IF NewItem.DELETE(TRUE) THEN BEGIN
+        NonStock.SETRANGE("Item No.",Item."No.");
+        IF NonStock.FIND('-') THEN BEGIN
+          REPEAT
+            NonStock."Item No." := '';
+            NonStock.MODIFY;
+          UNTIL NonStock.NEXT = 0;
+        END;
+      END;
+    END;
+
+    PROCEDURE "--eBay"@5095800();
+    BEGIN
+    END;
+
+    PROCEDURE GetAddFieldsFromNonStockoS@5095801(VAR NewItem2@1105500020 : Record 27;NonItem@1105500021 : Record 5718);
+    VAR
+      InvSetup@1105500040 : Record 313;
+      ItemVend@1105500046 : Record 99;
+      NonItemPrice@1105500047 : Record 5251521;
+      PurchPrice@1140000 : Record 7012;
+    BEGIN
+      InvSetup.GET;
+
+      NewItem2.VALIDATE(Description,COPYSTR(NonItem.Description,1,MAXSTRLEN(NewItem2.Description)));
+      NewItem2."Description 2":= COPYSTR(NonItem."Description 2",1,MAXSTRLEN(NewItem2."Description 2"));
+      TransferExtTextoS(NonItem."Entry No.",NewItem2."No.");
+      NewItem2."Item Category Code" := NonItem."Item Category Code";
+      NewItem2."Product Group Code" := NonItem."Product Group Code";
+      NewItem2."Product Group Code 2" := NonItem."Product Group Code 2";
+      NewItem2."Gross Weight" := NonItem."Gross Weight";
+      NewItem2."Net Weight" := NonItem."Net Weight";
+      NewItem2."Unit Price" := NonItem."Unit Price";
+      NewItem2.MODIFY(TRUE);
+
+      NonItemPrice.SETRANGE("Nonstock Item Entry No.",NonItem."Entry No.");
+      NonItemPrice.SETFILTER("Vendor No.",'<>%1','');
+      IF NonItemPrice.FIND('-') THEN
+        REPEAT
+          IF NonItemPrice.Favorite <> NonItemPrice.Favorite::" " THEN BEGIN
+            NewItem2."Vendor No." := NonItemPrice."Vendor No.";
+            NewItem2."Vendor Item No." := NonItemPrice."Vendor Item No.";
+            IF NonItemPrice."Unit Price" <> 0 THEN
+              NewItem2.VALIDATE("Unit Price",NonItemPrice."Unit Price");
+            IF NonItemPrice."Negotiated Cost" <> 0 THEN BEGIN
+              NewItem2.VALIDATE("Standard Cost",NonItemPrice."Negotiated Cost");
+            END;
+            NewItem2.MODIFY(TRUE);
+          END;
+          PurchPrice.SETRANGE("Vendor No.",NonItemPrice."Vendor No.");
+          PurchPrice.SETRANGE("Item No.",NewItem2."No.");
+          PurchPrice.SETRANGE("Starting Date",0D);
+          IF PurchPrice.FIND('-') THEN BEGIN
+            PurchPrice."Direct Unit Cost" := NonItemPrice."Negotiated Cost";
+            PurchPrice.MODIFY;
+          END ELSE BEGIN
+            PurchPrice.INIT;
+            PurchPrice."Item No." := NewItem2."No.";
+            PurchPrice."Vendor No." := NonItemPrice."Vendor No.";
+            PurchPrice."Unit of Measure Code" := NewItem2."Purch. Unit of Measure";
+            PurchPrice."Direct Unit Cost" := NonItemPrice."Negotiated Cost";
+            IF NOT PurchPrice.INSERT THEN
+              PurchPrice.MODIFY;
+          END;
+          IF ItemVend.READPERMISSION THEN BEGIN
+            ItemVend.SETRANGE("Item No.",NewItem2."No.");
+            ItemVend.SETRANGE("Vendor No.",NonItemPrice."Vendor No.");
+            IF ItemVend.FIND('-') THEN BEGIN
+              IF ItemVend."Vendor Item No." <> NonItemPrice."Vendor Item No." THEN BEGIN
+                ItemVend."Vendor Item No." := NonItemPrice."Vendor Item No.";
+                ItemVend.MODIFY;
+              END;
+            END ELSE BEGIN
+              ItemVend.INIT;
+              ItemVend."Item No." := NewItem2."No.";
+              ItemVend."Vendor No." := NonItemPrice."Vendor No.";
+              ItemVend."Vendor Item No." := NonItemPrice."Vendor Item No.";
+              ItemVend.INSERT(TRUE);
+            END;
+          END;
+        UNTIL NonItemPrice.NEXT = 0;
+    END;
+
+    PROCEDURE TransferExtTextoS@5095802(EntryNo@1000000000 : Code[20];ItemNo@1000000001 : Code[20]);
+    VAR
+      ExtTextHeader@1000000002 : Record 279;
+      ExtTextLine@1000000003 : Record 280;
+      ExtTextHeader2@1000000005 : Record 279;
+      ExtTextLine2@1000000004 : Record 280;
+    BEGIN
+      ExtTextHeader.RESET;
+      ExtTextHeader.SETRANGE("Table Name", ExtTextHeader."Table Name"::"10");
+      ExtTextHeader.SETRANGE("No.",EntryNo);
+      IF ExtTextHeader.FIND('-') THEN BEGIN
+        ExtTextHeader2.RESET;
+        ExtTextHeader2.SETRANGE("Table Name",ExtTextHeader."Table Name"::Item);
+        ExtTextHeader2.SETRANGE("No.",ItemNo);
+        ExtTextHeader2.SETRANGE("Language Code",ExtTextHeader."Language Code");
+        ExtTextHeader2.DELETEALL(TRUE);
+        ExtTextHeader2 := ExtTextHeader;
+        ExtTextHeader2."Table Name" := ExtTextHeader2."Table Name"::Item;
+        ExtTextHeader2."No." := ItemNo;
+        ExtTextHeader2.INSERT;
+        ExtTextLine.SETRANGE("Table Name", ExtTextLine."Table Name"::"Nonstock Item");
+        ExtTextLine.SETRANGE("No.",EntryNo);
+        IF ExtTextLine.FIND('-') THEN
+          REPEAT
+            ExtTextLine2 := ExtTextLine;
+            ExtTextLine2."Table Name" := ExtTextHeader2."Table Name";
+            ExtTextLine2."No." := ExtTextHeader2."No.";
+            ExtTextLine2.INSERT;
+          UNTIL ExtTextLine.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE CheckItemCatoS@5095803(Descript2@1105500053 : Text[30]) : Code[10];
+    VAR
+      ItemCat@1105500054 : Record 5722;
+    BEGIN
+      ItemCat.RESET;
+      ItemCat.SETCURRENTKEY(Description);
+      ItemCat.SETRANGE(Description,Descript2);
+      IF NOT ItemCat.FIND('-') THEN BEGIN
+        GetInvSetupoS;
+        ItemCat.INIT;
+        ItemCat.Code := GetNextNooS(InvtSetup."Item Category Nos.");
+        ItemCat.Description := Descript2;
+        ItemCat.INSERT;
+      END;
+      EXIT(ItemCat.Code);
+    END;
+
+    PROCEDURE CheckProdGroS@5095804(ItemCatCode@1105500055 : Code[10];Descript2@1105500056 : Text[30]) : Code[10];
+    VAR
+      ProdGr@1105500057 : Record 5723;
+    BEGIN
+      ProdGr.RESET;
+      ProdGr.SETCURRENTKEY(Description);
+      ProdGr.SETRANGE(Description,Descript2);
+      ProdGr.SETRANGE("Item Category Code",ItemCatCode);
+      IF NOT ProdGr.FIND('-') THEN BEGIN
+        GetInvSetupoS;
+        ProdGr.INIT;
+        ProdGr."Item Category Code" := ItemCatCode;
+        ProdGr.Code := GetNextNooS(InvtSetup."Product Group Nos.");
+        ProdGr.Description := Descript2;
+        ProdGr.INSERT;
+      END;
+      EXIT(ProdGr.Code);
+    END;
+
+    PROCEDURE CheckProdGr2oS@5095805(ItemCat@1105500017 : Code[10];ProdGroup@1105500058 : Code[10];Descript2@1105500059 : Text[30]) : Code[10];
+    VAR
+      ProdGr2@1105500016 : Record 5251523;
+    BEGIN
+      ProdGr2.RESET;
+      ProdGr2.SETCURRENTKEY(Description);
+      ProdGr2.SETRANGE(Description,Descript2);
+      ProdGr2.SETRANGE("Product Group Code",ProdGroup);
+      ProdGr2.SETRANGE("Item Category Code",ItemCat);
+      IF NOT ProdGr2.FIND('-') THEN BEGIN
+        GetInvSetupoS;
+        ProdGr2.INIT;
+        ProdGr2."Item Category Code" := ItemCat;
+        ProdGr2."Product Group Code" := ProdGroup;
+        ProdGr2.Code := GetNextNooS(InvtSetup."Product Group 2 Nos.");
+        ProdGr2.Description := Descript2;
+        ProdGr2.INSERT;
+      END;
+      EXIT(ProdGr2.Code);
+    END;
+
+    PROCEDURE GetNextNooS@5095806(NoSerie@1105500000 : Code[20]) : Code[20];
+    BEGIN
+      EXIT(NoSeriesMgt.GetNextNo(NoSerie,TODAY,TRUE));
+    END;
+
+    PROCEDURE GetInvSetupoS@5095807();
+    BEGIN
+      IF NOT InvtSetupRead THEN
+        InvtSetup.GET;
+      InvtSetupRead := TRUE;
+    END;
+
+    PROCEDURE CheckManufactureroS@5095808(Name2@1105500001 : Text[50]) : Code[10];
+    VAR
+      Manufacturer@1105500002 : Record 5720;
+    BEGIN
+      Manufacturer.RESET;
+      Manufacturer.SETCURRENTKEY(Name);
+      Manufacturer.SETRANGE(Name,Name2);
+      IF NOT Manufacturer.FINDFIRST THEN BEGIN
+        GetInvSetupoS;
+        Manufacturer.INIT;
+        Manufacturer.Code := NoSeriesMgt.GetNextNo(InvtSetup."Manufacturer Nos.",TODAY,TRUE);
+        Manufacturer.Name := Name2;
+        Manufacturer.INSERT;
+      END;
+      EXIT(Manufacturer.Code);
+    END;
+
+    BEGIN
+    {
+      eBay1.06.26
+
+      eBay#001 IT-Scope
+    }
+    END.
+  }
+}
+

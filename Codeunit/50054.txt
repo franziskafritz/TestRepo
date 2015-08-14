@@ -1,0 +1,800 @@
+OBJECT Codeunit 50054 DD Shipping
+{
+  OBJECT-PROPERTIES
+  {
+    Date=24.06.14;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=DD1.00,HME1178;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    SingleInstance=No;
+    OnRun=BEGIN
+            LMSetup.GET;
+            IF UPPERCASE("Parameter String") = 'SALES' THEN
+              PostSales;
+            IF UPPERCASE("Parameter String") = 'PURCHASE' THEN
+              PostPurchase;
+            // A/P1026
+            IF UPPERCASE("Parameter String") = 'TRANSFER' THEN
+              PostTransfer;
+            // E/P1026
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text001@1000000010 : TextConst 'DEU=Codeunit "MARC Company Post" started.;ENU=Codeunit MARC Company Post started';
+      Text002@1108200001 : TextConst 'DEU="""CYCC MARC""  started."';
+      Text003@1000000016 : TextConst 'DEU=Company Post Timer';
+      Text004@1000000015 : TextConst 'DEU=CYCC Timer';
+      Text005@1000000018 : TextConst 'DEU=Zu liefernde Menge ist weicht von der Menge im Auftrag ab;ENU="Quantity to ship is different to quantity "';
+      LMSetup@1000000020 : Record 50060;
+      TmpStatus@1000000000 : 'Open,Released';
+      Errorbool@1000000001 : Boolean;
+      DDLog@1000000002 : Record 50066;
+      Window@1000000003 : Dialog;
+      "** HME ***********************"@1000000004 : TextConst;
+      HMEText001@1000000005 : TextConst 'ENU=No items are currently in transit.';
+      "* HME ************************"@1000000006 : Integer;
+      LASTERRORTEXT@1000000007 : Text[80];
+
+    PROCEDURE PostSales@1000000000();
+    VAR
+      SalesSetup@1000000002 : Record 311;
+      AktTimeStr4@1000000001 : Text[4];
+      AktTime@1000000000 : Time;
+      DDHeader@1000000018 : Record 50061;
+      VerkKopf@1000000017 : Record 36;
+      VerkBuchen@1000000016 : Codeunit 80;
+      VerkBuchenDrucken@1000000015 : Codeunit 82;
+      i@1000000014 : Integer;
+      ReportSelection@1000000009 : Record 77;
+      SalesSetup2@1000000004 : Record 311;
+    BEGIN
+
+
+      AktTimeStr4 := FORMAT(TIME,0,'<Hours24,2><Filler Character,0><Minutes,2>');
+      AktTime := TIME;
+      //MESSAGE(AktTimeStr4);
+      //MESSAGE(COPYSTR(AktTimeStr4,3,2));
+      //IF ( COPYSTR(AktTimeStr4,1,2) IN[
+      //           '00','01','02','03','04','05','06','07','08', '09','10','11','12','13','14','15','16','17','18']   )  THEN
+      //EXIT;
+
+      DDHeader.RESET;
+      DDHeader.SETCURRENTKEY("Shipping Status", Kommissionierstatus, Company, "Entry No.");
+      DDHeader.SETRANGE("Record ID", '51');
+      //DDHeader.SETRANGE("Shipping Status", DDHeader."Shipping Status"::" "); //Status = leer   //P0202
+      DDHeader.SETFILTER("Shipping Status",'%1|%2',
+        DDHeader."Shipping Status"::" ",DDHeader."Shipping Status"::Partial); //Status = leer   //P0202
+      DDHeader.SETRANGE("DD Status",DDHeader."DD Status"::manifest);
+
+      //DDHeader.SETRANGE("No.",'20106000067476');
+
+      DDHeader.LOCKTABLE(TRUE); //a/P0610/gob-sfe/27.11.12
+      IF DDHeader.FIND('-') THEN BEGIN
+        IF NOT GUIALLOWED THEN
+          MESSAGE('%1 : Shipping process started', DDHeader."No.");
+
+        //A,gob-dst,25.09.2012,P0361
+        //IF VerkKopf.GET(DDHeader."Document Type", DDHeader."No.") THEN BEGIN
+        IF VerkKopf.GET(DDHeader."Document Type", DDHeader."Order No. Navision") THEN BEGIN
+        //E,gob-dst,25.09.2012,P0361
+          //IF  DDHeader."Shipping Status" = DDHeader."Shipping Status"::" " THEN BEGIN  //Buchungsstatus = leer, oder neu Teilweise
+          IF DDHeader."Shipping Status" IN [DDHeader."Shipping Status"::" ",DDHeader."Shipping Status"::Partial] THEN BEGIN
+
+            SalesSetup.GET;
+            IF UpdateSalesline(VerkKopf)THEN BEGIN
+              COMMIT;
+              VerkKopf.Ship := TRUE;
+              VerkKopf.Invoice := FALSE;
+
+              //A,P0202
+
+              //E,P0202
+
+              IF CheckConfirmationQtyIsOK(VerkKopf) THEN BEGIN
+                IF VerkBuchen.RUN(VerkKopf) THEN BEGIN
+                  IF NOT GUIALLOWED THEN
+                    MESSAGE('%1 : Shipping succesfully done', VerkKopf."No.");
+                  CLEAR(VerkBuchen);
+                  CLEAR(VerkBuchenDrucken);
+                  //A,P0202
+                  VerkKopf.CALCFIELDS("DD Completely Shipped");
+                  IF NOT VerkKopf."DD Completely Shipped" THEN BEGIN
+                    DDHeader."Shipping Status" := DDHeader."Shipping Status"::Partial;
+                    //DDHeader.State := DDHeader.State::Partial;
+                    IF DDHeader.MODIFY THEN
+                      COMMIT;
+                  END ELSE BEGIN
+                  //E,P0202
+                    DDHeader."Shipping Status" := DDHeader."Shipping Status"::Done;
+                    DDHeader.State := DDHeader.State::closed;
+                    IF DDHeader.MODIFY THEN
+                      COMMIT;
+                  END;   //P0202
+                END ELSE BEGIN
+                  DDHeader."Shipping Status" := DDHeader."Shipping Status"::Error;
+                  DDHeader."Error Code":='3000';
+                  DDHeader."Error Description":=COPYSTR(GETLASTERRORTEXT,1,100);
+                  IF DDHeader.MODIFY THEN COMMIT;
+                  IF NOT GUIALLOWED THEN MESSAGE('%1 : Shipping NOT successfull: %2', VerkKopf."No.",GETLASTERRORTEXT);
+                  CLEARLASTERROR;
+                END;
+              END ELSE BEGIN
+                DDHeader."Shipping Status" := DDHeader."Shipping Status"::Error;
+                DDHeader."Error Description":='Confirmation QTY check was not OK!';
+                IF DDHeader.MODIFY THEN COMMIT;
+              END;
+            END ELSE BEGIN
+              DDHeader."Shipping Status" := DDHeader."Shipping Status"::Error;
+              DDHeader."Error Description":=Text005;
+              IF DDHeader.MODIFY THEN COMMIT;
+              MESSAGE('Sales Header %1' + Text005,VerkKopf."No.")
+            END;
+          END;
+        END ELSE BEGIN
+          DDHeader."Shipping Status" := DDHeader."Shipping Status"::Error;
+          IF DDHeader.MODIFY THEN COMMIT;
+          MESSAGE('Sales Header %1 not found!', VerkKopf."No.")
+        END;
+      END;
+    END;
+
+    PROCEDURE UpdateSalesline@1000000007(VAR SalesHeader@1000000000 : Record 36) : Boolean;
+    VAR
+      SalesLine@1000000001 : Record 37;
+      dDelDate@1000000002 : Date;
+    BEGIN
+      WITH SalesLine DO BEGIN
+        SETRANGE("Document Type",SalesHeader."Document Type");
+        SETRANGE("Document No.",SalesHeader."No.");
+        SETRANGE(Type,SalesLine.Type::Item);
+        IF FIND('-') THEN BEGIN
+          REPEAT
+            //A,P0202
+            CALCFIELDS("DD Shipment Date");
+            IF "DD Shipment Date" <> 0D THEN BEGIN
+              IF (dDelDate = 0D) OR ("DD Shipment Date" = dDelDate) THEN BEGIN
+            //E,P0202
+                SalesLine.SuspendStatusCheck(TRUE);
+                IF SalesLine."Quantity Shipped" = 0 THEN BEGIN
+                  CALCFIELDS("DD Qty. Confirmed");
+                  IF "DD Qty. Confirmed" <> Quantity THEN BEGIN //Achtung: Teillieferungen?
+                    EXIT(FALSE);
+                  END;
+                  VALIDATE("Qty. to Ship","DD Qty. Confirmed");
+                  IF "Qty. to Ship" > Quantity THEN BEGIN
+                    EXIT(FALSE);
+                  END;
+                //A,P0202
+                  IF dDelDate = 0D THEN BEGIN
+                    dDelDate := "DD Shipment Date";
+                    SalesHeader."Posting Date" := dDelDate;
+                  END;
+                  MODIFY;
+                END ELSE BEGIN
+                  VALIDATE("Qty. to Ship",0);
+                  MODIFY;
+                //E,P0202
+                END;
+            //A,P0202
+              END ELSE BEGIN
+                VALIDATE("Qty. to Ship",0);
+                MODIFY;
+              END;
+            END ELSE BEGIN
+              VALIDATE("Qty. to Ship",0);
+              MODIFY;
+            END;
+            //E,P0202
+            //IF NOT CONFIRM('%1',FALSE,"Qty. to Ship") THEN ERROR('test');
+          UNTIL NEXT = 0;
+        //A,P0202
+        END ELSE BEGIN
+          EXIT(FALSE);
+        //E,P0202
+        END;
+      END;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE PostPurchase@1000000003();
+    VAR
+      AktTimeStr4@1000000001 : Text[4];
+      AktTime@1000000000 : Time;
+      MoveLine@1000000002 : Record 50063;
+      PurchPost@1000000003 : Codeunit 90;
+      PurchHeader@1000000004 : Record 38;
+      DDLine2@1000000005 : Record 50062;
+      DDLine@1000000006 : Record 50062;
+      DDLine3@1000000007 : Record 50062;
+      i@1000000008 : Integer;
+      DDHeader@1000000009 : Record 50061;
+      PurchLine@1000000010 : Record 39;
+    BEGIN
+
+      IF GUIALLOWED THEN
+        Window.OPEN('#1####### / #2#######');
+
+      WITH DDLine DO BEGIN
+        RESET;
+        SETCURRENTKEY("DD Status","Record ID","Document Type",Direction,"Shipping Status","Shipment Date");
+        SETRANGE("DD Status","DD Status"::shipment);
+        //SETFILTER("Document No.",'PO12011425|PO12011426');
+        //SETFILTER("Document No.",'PO12011598');
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("Record ID",'20');
+        SETRANGE(Direction,Direction::"in");
+        SETRANGE("Shipping Status","Shipping Status"::" ");
+        LOCKTABLE(TRUE); //a/P0610/gob-sfe/27.11.12
+        IF FIND('-') THEN BEGIN
+          IF GUIALLOWED THEN
+            Window.UPDATE(2,FORMAT(DDLine.COUNT));
+          i:=0;
+          REPEAT
+            i:=i+1;
+            IF GUIALLOWED THEN
+              Window.UPDATE(1,FORMAT(i));
+
+            SETRANGE("Document No.","Document No.");  //alle WE zu einer PO zusammen validieren
+            SETRANGE("Shipment Date","Shipment Date");
+            CLEAR(DDLine2);
+            DDLine2.COPY(DDLine);
+            //MESSAGE('%1',DDLine2.COUNT);
+            IF PurchHeader.GET(PurchHeader."Document Type"::Order,"Document No.") THEN BEGIN
+              IF UpdatePurchline(PurchHeader,DDLine2) THEN BEGIN
+                COMMIT;
+                PurchHeader.Receive:=TRUE;
+                PurchHeader.Invoice:=FALSE;
+                PurchHeader."Posting Date":=DDLine."Shipment Date";
+                //H1178 20.05.2014 DMA +++++++++++++++++++++++++++++++++++++++
+                //H0924 20140403 DMA ++++++++++++++++++++++++++++++++++++
+                //LocTransferHeader.VALIDATE("Posting Date", LocDDLine."Shipment Date");
+                PurchHeader."Posting Date" := DDLine."Shipment Date";
+                //H0924 20140403 DMA ------------------------------------
+                //H1178 20.05.2014 DMA ---------------------------------------
+
+                CLEAR(PurchPost);
+                //PurchPost.RUN(PurchHeader);
+
+                IF PurchPost.RUN(PurchHeader) THEN BEGIN
+                  //IF GUIALLOWED THEN MESSAGE('%1 : Shipping succesfully done', PurchHeader."No.");
+
+                  IF DDLine2.FIND('-') THEN BEGIN
+                    REPEAT
+                      DDLine3.GET(DDLine2."Entry No.");
+                      DDLine3."Shipping Status":=DDLine3."Shipping Status"::Done;
+                      DDLine3.MODIFY;
+                    UNTIL DDLine2.NEXT=0;
+                  END;
+                  DDHeader.GET(PurchHeader."DD Entry No.");
+                  PurchLine.SETRANGE("Document Type",PurchHeader."Document Type");
+                  PurchLine.SETRANGE("Document No.",PurchHeader."No.");
+                  PurchLine.SETFILTER("Outstanding Quantity",'<>0');
+                  IF PurchLine.ISEMPTY THEN
+                    DDHeader."Shipping Status":=DDHeader."Shipping Status"::Done
+                  ELSE
+                    DDHeader."Shipping Status":=DDHeader."Shipping Status"::Partial;
+                  DDHeader.MODIFY;
+                  DDLog.InsertLog(1,0,DDLine2."Header Entry No.",'xx','Goods receipt done');
+
+                END ELSE BEGIN
+
+                  IF DDLine2.FIND('-') THEN BEGIN
+                    REPEAT
+                      DDLine3.GET(DDLine2."Entry No.");
+                      DDLine3."Shipping Status":=DDLine3."Shipping Status"::Error;
+                      DDLine3."Error Code":='3001';
+                      DDLine3."Error Description":=COPYSTR(STRSUBSTNO('%1',GETLASTERRORTEXT),1,100);
+                      DDLine3.MODIFY;
+                    UNTIL DDLine2.NEXT=0;
+                    DDHeader.GET(PurchHeader."DD Entry No.");
+                    DDHeader."Shipping Status":=DDHeader."Shipping Status"::Error;
+                    DDHeader.MODIFY;
+                    DDLog.InsertLog(0,1,DDLine2."Header Entry No.",'xx',COPYSTR(STRSUBSTNO('%1',GETLASTERRORTEXT),1,40));//P0727/gob-sfe
+                  END;
+
+                END;
+
+              END;
+            END ELSE BEGIN
+              IF DDLine2.FIND('-') THEN BEGIN
+                REPEAT
+                  DDLine3.GET(DDLine2."Entry No.");
+                  DDLine3."Shipping Status":=DDLine3."Shipping Status"::Error;
+                  DDLine3."Error Code":='3002';
+                  DDLine3."Error Description":='No Purchase Header found';
+                  DDLine3.MODIFY;
+                UNTIL DDLine2.NEXT=0;
+
+              DDLog.InsertLog(1,1,DDLine2."Header Entry No.",'xx',COPYSTR(STRSUBSTNO('%1',GETLASTERRORTEXT),1,40));//P0727/gob-sfe
+              END;
+            END;
+            //P0465/gob-sfe/24.10.12
+            //Filter auf n„chste PO setzen
+            IF FIND('+') THEN;
+            SETRANGE("Document No.");
+            SETRANGE("Shipment Date");
+            //IF FIND('+')THEN;
+          UNTIL NEXT=0;
+        END;
+      END;
+
+      IF GUIALLOWED THEN
+        Window.CLOSE;
+    END;
+
+    PROCEDURE UpdatePurchline@1000000006(VAR PurchHeader@1000000000 : Record 38;VAR DDLineLoc@1000000002 : Record 50062) OK : Boolean;
+    VAR
+      PurchLine@1000000001 : Record 39;
+      DDLine2Loc@1000000003 : Record 50062;
+      Qty@1000000004 : Decimal;
+    BEGIN
+
+      WITH PurchLine DO BEGIN
+        SETRANGE("Document Type",PurchHeader."Document Type");
+        SETRANGE("Document No.",PurchHeader."No.");
+        SETRANGE(Type,Type::Item);
+        IF PurchLine.FIND('-') THEN
+          REPEAT
+            Qty:=0;
+            //**** Suche alle WE zu den einzelnen PO Zeilen
+            DDLineLoc.SETRANGE("No.","No.");
+            IF DDLineLoc.FIND('-') THEN
+                REPEAT
+                  //DDLine2Loc.COPY(DDLineLoc);
+                  Qty:=Qty+DDLineLoc."Quantity Good";
+                  //DDLine2Loc."Shipping Status":=DDLine2Loc."Shipping Status"::Done;
+                  //DDLine2Loc.MODIFY;
+                UNTIL DDLineLoc.NEXT=0;
+            IF Qty<=PurchLine."Outstanding Quantity" THEN BEGIN
+              //MESSAGE('%1 - %2',"Line No.",Qty);
+              VALIDATE("Qty. to Receive",Qty);
+            END ELSE BEGIN
+              VALIDATE("Qty. to Receive",0);
+            END;
+            PurchLine.MODIFY;
+        UNTIL NEXT = 0;
+        DDLineLoc.SETRANGE("No.");
+      END;
+
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE UpdateLMLine@1000000005(paSalesLine@1000000000 : Record 37);
+    VAR
+      LMLine@1000000001 : Record 50062;
+    BEGIN
+      {
+      //A/25.05.2004/gob-ko
+      IF paSalesLine."LM Entry No." = 0 THEN
+        EXIT;
+
+      IF NOT LMLine.GET(paSalesLine."LM Entry No.") THEN
+        EXIT;
+
+      IF IdenticalOrders(
+        paSalesLine,LMLine)
+      THEN BEGIN
+        LMLine."Quantity Shipped" += paSalesLine."Qty. to Ship";
+        LMLine.MODIFY;
+      END;
+      //E/25.05.2004/gob-ko
+      }
+    END;
+
+    PROCEDURE IdenticalOrders@1000000004(paSalesLine@1000000001 : Record 37;paLMLine@1000000000 : Record 50062) : Boolean;
+    BEGIN
+      {
+      //A/25.05.2004/gob-ko
+      EXIT(
+           (paSalesLine."LM Entry No." = paLMLine."Entry No.")           AND
+           (paSalesLine."Document No."   = paLMLine."Order No. Navision")  AND
+           (paSalesLine."Line No."       = paLMLine."Line No.")            AND
+           (paSalesLine."LM Pos. No."  = paLMLine."LM Pos. No.")
+          );
+      //E/25.05.2004/gob-ko
+      }
+    END;
+
+    PROCEDURE CheckConfirmationQtyIsOK@1000000002(SalesHeader@1000000000 : Record 36) Difference : Boolean;
+    VAR
+      SalesLine@1000000001 : Record 37;
+    BEGIN
+
+      {
+      WITH SalesLine DO BEGIN
+
+        SETRANGE("Document Type",SalesHeader."Document Type");
+        SETRANGE("Document No.",SalesHeader."No.");
+        SETRANGE(Type,SalesLine.Type::Item);
+
+        IF FIND('-') THEN BEGIN
+          REPEAT
+            CALCFIELDS("LM conf. Quantity");
+            CALCFIELDS("LM Picking Quantity");
+            Difference:= "LM conf. Quantity"<>"LM Picking Quantity";
+          UNTIL (NEXT = 0) OR (Difference);
+        END;
+      END;
+      //MESSAGE('Difference: '+FORMAT(NOT Difference));
+      //EXIT(NOT Difference);
+      }
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE UpdatePurchlines@1000000009(VAR PurchHeader@1000000000 : Record 38) OK : Boolean;
+    VAR
+      PurchLine@1000000001 : Record 39;
+      MoveLineLoc@1000000003 : Record 50063;
+    BEGIN
+      {
+      WITH PurchLine DO BEGIN
+        SETRANGE("Document Type",PurchHeader."Document Type");
+        SETRANGE("Document No.",PurchHeader."No.");
+        SETRANGE(Type,Type::Item);
+        IF PurchLine.FIND('-') THEN
+          REPEAT
+            CALCFIELDS("DD Pos No.");
+
+            IF "DD Pos No."<=PurchLine."Outstanding Quantity" THEN BEGIN
+              VALIDATE("Qty. to Receive","DD Pos No.");
+              MoveLineLoc.RESET;
+              MoveLineLoc.SETRANGE("Movement Type",12);
+              MoveLineLoc.SETRANGE("Item No.","No.");
+              MoveLineLoc.SETRANGE("Document No.","Document No.");
+              MoveLineLoc.SETRANGE(Position,"LM Pos. No.");
+              IF MoveLineLoc.FIND('-') THEN
+                "DD Entry No.":=MoveLineLoc."Trans. No."
+              ELSE
+                "DD Entry No.":='';
+              MODIFY;
+            END ELSE BEGIN
+              VALIDATE("Qty. to Receive",0);
+              "DD Entry No.":='';
+            END;
+          UNTIL NEXT = 0;
+
+      END;
+      EXIT(TRUE);
+       }
+    END;
+
+    PROCEDURE ErrorHandler@1000000010(VAR LMMovement@1000000001 : Record 50063;ErrorCode@1000000000 : Integer);
+    BEGIN
+
+      Errorbool:=TRUE;
+      IF LMMovement."Error Description"<>'' THEN
+        LMMovement."Error Description":=LMMovement."Error Description"+','+FORMAT(ErrorCode)
+      ELSE
+        LMMovement."Error Description":=FORMAT(ErrorCode);
+    END;
+
+    PROCEDURE PostMoveJnl@1000000001();
+    VAR
+      Item@1000000000 : Record 27;
+      ItemJnlLine@1000000001 : Record 83;
+      LineNo@1000000002 : Integer;
+      InboundMoveLine@1000000003 : Record 50063;
+      InboundMoveLine2@1000000005 : Record 50063;
+      ItemReg@1000000006 : Record 46;
+      ItemJnlPostBatch@1000000008 : Codeunit 23;
+      DocPrint@1000000007 : Codeunit 229;
+    BEGIN
+      {
+      ItemJnlLine.RESET;
+      ItemJnlLine.SETRANGE("Journal Template Name",'UMLAGERUNG');
+      ItemJnlLine.SETRANGE("Journal Batch Name",'Block');
+      IF ItemJnlLine.FIND('-') THEN
+        ItemJnlLine.DELETEALL;
+      ItemJnlLine.RESET;
+
+      Errorbool:=FALSE;
+
+      InboundMoveLine.RESET;
+      InboundMoveLine.SETCURRENTKEY(Status);
+      InboundMoveLine.SETRANGE(Status,InboundMoveLine.Status::"1");
+      InboundMoveLine.SETRANGE("Movement Type",50);
+      InboundMoveLine.LOCKTABLE;
+      IF InboundMoveLine.FIND('-') THEN
+        REPEAT
+        InboundMoveLine2.TRANSFERFIELDS(InboundMoveLine);
+        IF NOT Item.GET(InboundMoveLine."Item No.")  THEN
+          ErrorHandler(InboundMoveLine,1000);
+
+        Item.CALCFIELDS(Inventory);
+        IF (Item.Inventory=0) THEN
+          ErrorHandler(InboundMoveLine,1001);
+
+        IF Item."Gen. Prod. Posting Group"='' THEN
+          ErrorHandler(InboundMoveLine,1002);
+
+
+
+        IF NOT Errorbool THEN BEGIN
+          ItemJnlLine.INIT;
+          ItemJnlLine.VALIDATE("Journal Template Name",'UMLAGERUNG');
+          ItemJnlLine."Journal Batch Name":='Block';
+          IF LineNo<>0 THEN
+            LineNo:=LineNo+10000
+          ELSE LineNo:=10000;
+          ItemJnlLine."Line No.":=LineNo;
+          ItemJnlLine.VALIDATE("Item No.",Item."No.");
+          ItemJnlLine.VALIDATE("Posting Date",InboundMoveLine2."Posting Date");
+          ItemJnlLine."Reason Code":=FORMAT(InboundMoveLine2."Movement Type");
+          ItemJnlLine.VALIDATE("Entry Type",ItemJnlLine."Entry Type"::Transfer);
+          ItemJnlLine."Document No.":=InboundMoveLine2."Document No.";
+          IF COMPANYNAME='KHQ' THEN BEGIN
+            ItemJnlLine.VALIDATE("Location Code",'KHQ');
+            ItemJnlLine.VALIDATE("New Location Code",'KHQ_DAM')
+          END ELSE BEGIN
+            ItemJnlLine.VALIDATE("Location Code",'KCE');
+            ItemJnlLine.VALIDATE("New Location Code",'KCE DAMAGE');
+          END;
+            ItemJnlLine.VALIDATE(Quantity,InboundMoveLine2.Quantity);
+
+          IF NOT ItemJnlLine.INSERT(TRUE) THEN
+            ErrorHandler(InboundMoveLine,1003);
+        END;
+
+        IF Errorbool THEN
+          InboundMoveLine2.Status:=InboundMoveLine2.Status::"3"
+        ELSE
+          InboundMoveLine2.Status:=InboundMoveLine2.Status::"2";
+        InboundMoveLine2.MODIFY;
+
+      UNTIL InboundMoveLine.NEXT=0;
+
+      { //noch kein BUCHEN!!! Erst testen...
+      ItemJnlPostBatch.RUN(ItemJnlLine);
+      InboundMoveLine2."Item Register Entry No.":=ItemJnlLine."Line No.";
+      IF ItemReg.GET(ItemJnlLine."Line No.") THEN BEGIN
+        ItemReg.SETRECFILTER;
+        DocPrint.PrintItemRegister(ItemReg);
+      END;
+      }
+       }
+    END;
+
+    PROCEDURE PostTransfer@1000000011();
+    VAR
+      LocDDLine@1000000000 : Record 50062;
+      i@1000000001 : Integer;
+      LocDDLine2@1000000002 : Record 50062;
+      LocTransferHeader@1000000003 : Record 5740;
+      PostTransferReceipt@1000000004 : Codeunit 5705;
+      LocTransferLine@1000000005 : Record 5741;
+      LocDDLine3@1000000006 : Record 50062;
+      LocDDHeader@1000000007 : Record 50061;
+      qtyoverdel@1000000008 : Decimal;
+      overdel@1000000009 : Boolean;
+      "*** HME **********************"@1000000010 : Integer;
+      DDLineL@1000000011 : Record 50062;
+    BEGIN
+      // S/P0603
+
+      IF GUIALLOWED THEN
+        Window.OPEN('#1####### / #2#######');
+
+      LocDDLine.RESET;
+      LocDDLine.SETCURRENTKEY("DD Status","Record ID","Document Type",Direction,"Shipping Status","Shipment Date");
+      LocDDLine.SETRANGE("DD Status",LocDDLine."DD Status" :: shipment);
+      //in DD Inbound noch Zuweisung von Umlagerungsnr.(Order No. Navision) und Document Type
+      LocDDLine.SETRANGE("Document Type",LocDDLine."Document Type" :: Transfer);
+      LocDDLine.SETRANGE("Record ID",'20');
+      LocDDLine.SETRANGE(Direction,LocDDLine.Direction :: "in");
+      LocDDLine.SETRANGE("Shipping Status",LocDDLine."Shipping Status" :: " ");
+      IF LocDDLine.FIND('-') THEN BEGIN
+        IF GUIALLOWED THEN
+          Window.UPDATE(2,FORMAT(LocDDLine.COUNT));
+        i:=0;
+        REPEAT
+          i:=i+1;
+          IF GUIALLOWED THEN
+            Window.UPDATE(1,FORMAT(i));
+
+          LocDDLine.SETRANGE("Document No.",LocDDLine."Document No.");  //alle WE zu einer PO zusammen validieren
+          LocDDLine.SETRANGE("Shipment Date",LocDDLine."Shipment Date");
+          CLEAR(LocDDLine2);
+          LocDDLine2.COPY(LocDDLine);
+          IF LocTransferHeader.GET(LocDDLine."Order No. Navision") THEN BEGIN
+            //S/P1049/new Parameters overdelivery
+            //IF UpdateTransferLine(LocTransferHeader,LocDDLine2) THEN BEGIN
+            IF UpdateTransferLine(LocTransferHeader,LocDDLine2,overdel,qtyoverdel) THEN BEGIN
+            //E/P1049
+              COMMIT;
+              //Verbuchung Umlagerungseingang
+              LocTransferHeader."Receipt Date" := LocDDLine."Shipment Date";
+              //H1178 20.05.2014 DMA +++++++++++++++++++++++++++++++++++++++
+              //H0924 20140403 DMA ++++++++++++++++++++++++++++++++++++
+              //LocTransferHeader.VALIDATE("Posting Date", LocDDLine."Shipment Date");
+              LocTransferHeader."Posting Date" := LocDDLine."Shipment Date";
+              //H0924 20140403 DMA ------------------------------------
+              //H1178 20.05.2014 DMA ---------------------------------------
+              CLEAR(PostTransferReceipt);
+
+              IF PostTransferReceipt.RUN(LocTransferHeader) THEN BEGIN
+                IF LocDDLine2.FIND('-') THEN BEGIN
+                  REPEAT
+                    LocDDLine3.GET(LocDDLine2."Entry No.");
+                    LocDDLine3."Shipping Status" := LocDDLine3."Shipping Status" :: Done;
+                    LocDDLine3.MODIFY;
+                  UNTIL LocDDLine2.NEXT = 0;
+                END;
+                LocDDHeader.GET(LocTransferHeader."DD Entry No.");
+                //noch Restmengen?....
+                LocTransferLine.RESET;
+                LocTransferLine.SETRANGE("Document No.",LocTransferHeader."No.");
+                //LocTransferLine.SETFILTER("Outstanding Quantity",'<>0');
+                IF LocTransferLine.ISEMPTY THEN
+                  LocDDHeader."Shipping Status" := LocDDHeader."Shipping Status" :: Done
+                ELSE
+                  LocDDHeader."Shipping Status" := LocDDHeader."Shipping Status" :: Partial;
+                LocDDHeader.MODIFY;
+                //A/P1049
+                IF NOT overdel THEN
+                //E/P1049
+                  DDLog.InsertLog(1,0,LocDDLine2."Header Entry No.",'xx','Goods receipt done')
+                //A/P1049/overdelivery...
+                ELSE
+                  DDLog.InsertLog(1,0,LocDDLine2."Header Entry No.",'xx',FORMAT('OVERDELIVERY: %1 | Goods receipt done for ordered Qty.'
+                                  ,qtyoverdel));
+                //E/P1049
+              END ELSE BEGIN
+
+                IF LocDDLine2.FIND('-') THEN BEGIN
+                  REPEAT
+                    LocDDLine3.GET(LocDDLine2."Entry No.");
+                    LocDDLine3."Shipping Status" := LocDDLine3."Shipping Status" :: Error;
+                    LocDDLine3."Error Code" := '3001';
+                    LocDDLine3."Error Description" := COPYSTR(GETLASTERRORTEXT,1,100);
+                    LocDDLine3.MODIFY;
+                  UNTIL LocDDLine2.NEXT = 0;
+                  LocDDHeader.GET(LocTransferHeader."DD Entry No.");
+                  LocDDHeader."Shipping Status" := LocDDHeader."Shipping Status" :: Error;
+                  LocDDHeader.MODIFY;
+                  DDLog.InsertLog(1,1,LocDDLine2."Header Entry No.",'xx',COPYSTR(STRSUBSTNO('%1',GETLASTERRORTEXT),1,250));
+                END;
+
+              END;
+
+            //H1035 26.05.14 DMA +++++++++++++++++++++++++
+            END ELSE BEGIN
+              IF DDLineL.GET(LocDDLine2."Entry No.") AND (LASTERRORTEXT <> '') THEN BEGIN
+                DDLineL."Shipping Status" := DDLineL."Shipping Status" :: Error;
+                DDLineL."Error Code" := '5000';
+                DDLineL."Error Description" := LASTERRORTEXT;
+                DDLineL.MODIFY;
+                LASTERRORTEXT := '';
+              END;
+            //H1035 26.05.14 DMA -------------------------
+
+            END;
+          END ELSE BEGIN
+            IF LocDDLine2.FIND('-') THEN BEGIN
+              REPEAT
+                LocDDLine3.GET(LocDDLine2."Entry No.");
+                LocDDLine3."Shipping Status":=LocDDLine3."Shipping Status"::Error;
+                LocDDLine3."Error Code":='3002';
+                LocDDLine3."Error Description":='No Transfer Header found';
+                LocDDLine3.MODIFY;
+              UNTIL LocDDLine2.NEXT=0;
+
+            DDLog.InsertLog(1,1,LocDDLine2."Header Entry No.",'xx',COPYSTR(STRSUBSTNO('%1',GETLASTERRORTEXT),1,250));
+            END;
+          END;
+          IF LocDDLine.FIND('+') THEN;
+          LocDDLine.SETRANGE("Document No.");
+          LocDDLine.SETRANGE("Shipment Date");
+        UNTIL LocDDLine.NEXT=0;
+      END;
+
+      IF GUIALLOWED THEN
+        Window.CLOSE;
+
+      // E/P0603
+    END;
+
+    PROCEDURE UpdateTransferLine@1000000014(ParTransferHeader@1000000000 : Record 5740;VAR ParDDLine@1000000001 : Record 50062;overdel@1000000004 : Boolean;qtyover@1000000005 : Decimal) : Boolean;
+    VAR
+      Qty@1000000002 : Decimal;
+      TransLineLoc@1000000003 : Record 5741;
+      PurchHeader2@1000000006 : Record 38;
+    BEGIN
+      //A/P1049
+      overdel := FALSE;
+      qtyover := 0;
+      //E/P1049
+
+      // S/P0603
+      TransLineLoc.RESET;
+      TransLineLoc.SETRANGE("Document No.",ParTransferHeader."No.");
+      // A/P1026
+      TransLineLoc.SETRANGE("Transfer-from Code",ParTransferHeader."Transfer-from Code");
+      // E/P1026
+      IF TransLineLoc.FIND('-') THEN BEGIN
+        REPEAT
+          Qty := 0;
+          ParDDLine.SETRANGE("No.",TransLineLoc."Item No.");
+          IF ParDDLine.FIND('-') THEN BEGIN
+              REPEAT
+                Qty := Qty + ParDDLine."Quantity Good";
+              UNTIL ParDDLine.NEXT=0;
+          END;
+
+          //H1035 26.05.14 DMA ++++++++++++++++++++++++++++++++
+          IF (TransLineLoc."Qty. in Transit" = 0) THEN BEGIN
+            LASTERRORTEXT := HMEText001;
+            EXIT(FALSE);
+          END;
+          //H1035 26.05.14 DMA --------------------------------
+
+
+          IF Qty <= TransLineLoc."Quantity Shipped" THEN BEGIN
+            TransLineLoc.VALIDATE("Qty. to Receive",Qty);
+          END ELSE BEGIN
+            //A/P1049
+            overdel := TRUE;
+            qtyover := Qty - TransLineLoc."Quantity Shipped";
+            IF PurchHeader2.GET(PurchHeader2."Document Type"::Order,TransLineLoc."Purchase Order No.") THEN BEGIN
+              PurchHeader2.Overdelivery := TRUE;
+              PurchHeader2.MODIFY;
+            END;
+
+            //E/P1049
+            TransLineLoc.VALIDATE("Qty. to Receive",TransLineLoc."Quantity Shipped");
+          END;
+          TransLineLoc.MODIFY;
+        UNTIL TransLineLoc.NEXT = 0;
+        ParDDLine.SETRANGE("No.");
+        EXIT(TRUE);
+      END;
+      EXIT(FALSE);
+      // E/P0603
+    END;
+
+    BEGIN
+    {
+      +----------------------------------------------+
+      | Copyright GOB Software & Systeme             |
+      +----------------------------------------------+
+      | Anpassung                                    |
+      +----------------------------------------------+
+
+      Vers    Datum        Berater   Kommentar
+      _____________________________________________________________________________________________________________________________
+      1.01    26.07.11     gob-sfe   Getlasterror
+      1.02    16.08.2012   gob-dst   P0202   Test Lieferung buchen
+      1.03    25.09.2012   gob-dst   P0361   Versionierung bei DD
+      1.04    18.10.2012   gob-sfe   P0465   Shipping bugfixing
+      1.05    21.11.2012   gob-mab   P0603   new Function: PostTransfer
+      1.06    27.11.2012   gob-sfe   P0610   Locktable(true)
+      1.08    03.12.2012   gob-sfe   P0635   Job Queue
+      1.09    08.01.2013   gob-sfe   P0727   Subject Length
+      1.10    11.07.2013   gob-ael   P1026   Buchen der Umlagerung von Containern, Funktion UpdateTransferLine als Referenz
+      1.11    29.07.2013   gob-mab   P1049   Overdelivery Transfer Orders
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+
+      H0924   03.04.2014   DMA       Control Posting dates
+      H1178   20.05.2014   DMA       Hotfix: No 60-File (WEA) is created and send, CODEEDIT
+      H1035   26.05.2014   DMA       create Job queue entry for DD-15-files to post incoming qtys from Transfer, fix codechange
+    }
+    END.
+  }
+}
+

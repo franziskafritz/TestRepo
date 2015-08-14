@@ -1,0 +1,1187 @@
+OBJECT Codeunit 50310 SII Incoming Request Functions
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09.01.15;
+    Time=17:39:49;
+    Modified=Yes;
+    Version List=T0052,HME1893,T0082;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+            IF ParamSet THEN BEGIN
+              // These functions are currently only created for the Webservice needed in Phase 8 (customer reclamation)
+              // If further webservices will be added, you should rename the functions (e.g. ProcessXML = ProcessXMLReclamation)
+              // and parameter values
+              // Processing 'order.item.reclamation.requested' >>
+              CASE ProcessType OF
+                ProcessType::SaveXML :
+                  BEGIN
+                    SaveXML(SIIRequestXMLLog, RequestText);
+                    SIIRequestXMLLog."Last Successful Step" := SIIRequestXMLLog."Last Successful Step"::Unprocessed;
+                    SIIRequestXMLLog.MODIFY;
+                  END;
+                ProcessType::ProcessXML :
+                  BEGIN
+                    ProcessXML(SIIRequestXMLLog);
+                    SIIRequestXMLLog."Last Successful Step" := SIIRequestXMLLog."Last Successful Step"::"XML Processed";
+                    SIIRequestXMLLog.MODIFY;
+                  END;
+                ProcessType::ProcessData :
+                  BEGIN
+                    ProcessData(SIIRequestXMLLog);
+                    SIIRequestXMLLog."Last Successful Step" := SIIRequestXMLLog."Last Successful Step"::"Data Processed";
+                    SIIRequestXMLLog.MODIFY;
+                  END;
+                // T0051 22.10.14 tec-cs ++++++++++++++++++++++++++
+                ProcessType::AddToBatchPost :
+                  BEGIN
+                    AddToBatchPost(SIIRequestXMLLog);
+                    SIIRequestXMLLog."Last Successful Step" := SIIRequestXMLLog."Last Successful Step"::"Added To Batch-Post";
+                    SIIRequestXMLLog.MODIFY;
+                  END;
+                // T0051 22.10.14 tec-cs --------------------------
+              END;
+              // << end processing 'order.item.reclamation.requested'
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text001@1100409001 : TextConst 'ENU=Error while processing / loading the XML data.';
+      Text002@1100409000 : TextConst 'ENU=Couldn''t find order %1. Processing cancelled.';
+      SIIRequestFunctions@1100409007 : Codeunit 50310;
+      SIIRequestXMLLog@1100409006 : Record 50324;
+      RequestText@1100409005 : BigText;
+      ParamSet@1100409004 : Boolean;
+      ProcessType@1100409002 : 'SaveXML,ProcessXML,ProcessData,AddToBatchPost';
+
+    PROCEDURE "---HandleCustomerRequest"@1100409026();
+    BEGIN
+    END;
+
+    PROCEDURE ProcessCustomerRequest@1100409025(VAR SIIRequestXMLLogV@1100409000 : Record 50324) : Boolean;
+    VAR
+      requestText@1100409002 : BigText;
+      SIIRequestHeaderL@1100409004 : Record 50325;
+      SIIRequestLineL@1100409003 : Record 50326;
+    BEGIN
+      // T0051 24.11.14 tec-cs ++++++++++++++++++++++++++
+      SIIRequestXMLLogV.TESTFIELD(Status, SIIRequestXMLLogV.Status::Unprocessed);
+
+      CLEAR(requestText);
+
+      // Process the received data (split it to the different tables, etc.)
+      SIIRequestFunctions.SetParam(ProcessType::ProcessXML, SIIRequestXMLLogV, requestText);
+      IF NOT SIIRequestFunctions.RUN THEN BEGIN
+        AddError(SIIRequestXMLLogV);
+        EXIT(FALSE);
+      END;
+      COMMIT;
+
+      // Get the updated entry
+      SIIRequestFunctions.GetEntry(SIIRequestXMLLogV);
+
+      // Process the now splitted data
+      // Process the received data (split it to the different tables, etc.)
+      SIIRequestFunctions.SetParam(ProcessType::ProcessData, SIIRequestXMLLogV, requestText);
+      IF NOT SIIRequestFunctions.RUN THEN BEGIN
+        AddError(SIIRequestXMLLogV);
+        EXIT;
+        EXIT(FALSE);
+      END;
+      COMMIT;
+
+      // Get the updated entry
+      SIIRequestFunctions.GetEntry(SIIRequestXMLLogV);
+
+      SIIRequestFunctions.SetParam(ProcessType::AddToBatchPost, SIIRequestXMLLogV, requestText);
+      IF NOT SIIRequestFunctions.RUN THEN BEGIN
+        AddError(SIIRequestXMLLogV);
+        EXIT(FALSE);
+      END;
+      COMMIT;
+
+      SIIRequestFunctions.GetEntry(SIIRequestXMLLogV);
+
+      SIIRequestXMLLogV.Status := SIIRequestXMLLogV.Status::Completed;
+      SIIRequestXMLLogV.MODIFY;
+
+      EXIT(TRUE);
+      // T0051 24.11.14 tec-cs --------------------------
+    END;
+
+    PROCEDURE SaveXML@1000000002(VAR SIIRequestXMLLogR@1100409001 : Record 50324;VAR requestTextR@1100409000 : BigText);
+    VAR
+      OutStreamL@1100409002 : OutStream;
+    BEGIN
+      // This function saves the inital "requestText" to a Blob-Field in a Log-Table
+      //H1876  02.12.14  tec-cs  ++++++++++++++++++++++++++++++++++
+      XML_UTF8toANSI(requestTextR);
+      //H1876  02.12.14  tec-cs  ----------------------------------
+
+      SIIRequestXMLLogR."XML File (Request)".CREATEOUTSTREAM(OutStreamL);
+      requestTextR.WRITE(OutStreamL);
+      SIIRequestXMLLogR.Status := SIIRequestXMLLogR.Status::Unprocessed;
+      SIIRequestXMLLogR.MODIFY;
+    END;
+
+    PROCEDURE ProcessXML@1000000003(VAR SIIRequestXMLLogR@1100409008 : Record 50324);
+    VAR
+      DOMDocumentL@1100409007 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v6.0'.DOMDocument";
+      DOMNodeL@1100409006 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";
+      DOMNodeList1L@1100409005 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF82-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNodeList";
+      DOMNodeList2L@1100409004 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF82-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNodeList";
+      DOMNodeList3L@1100409003 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF82-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNodeList";
+      DOMNodeList4L@1100409001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF82-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNodeList";
+      SIIRequestHeaderL@1000000005 : Record 50325;
+      SIIRequestLineL@1000000004 : Record 50326;
+      TempSIIRequestLineL@1000000000 : TEMPORARY Record 50326;
+      outStreamL@1000000001 : OutStream;
+      DOMNodeBigTextL@1000000002 : BigText;
+      DOMNodeTextL@1000000003 : Text[1024];
+      OrderNoL@1000000008 : Code[20];
+      ReferenceIDL@1000000007 : Code[10];
+      i@1100409009 : Integer;
+      i2@1100409017 : Integer;
+      i3@1100409019 : Integer;
+      LineNoL@1000000006 : Integer;
+    BEGIN
+      // This function processes the received XML
+      // Load XML-Data from Stream
+      LoadDOMDocument(SIIRequestXMLLogR, DOMDocumentL);
+
+      SIIRequestXMLLogR."Message Type" := GetTypeFromMessage(DOMDocumentL);
+      OrderNoL := GetAttributeFromMessage(DOMDocumentL, 'order', 'order_number');
+      ReferenceIDL := GetAttributeFromMessage(DOMDocumentL, 'order', 'reference-id');
+
+      SIIRequestHeaderL."Entry No." := SIIRequestXMLLogR."Entry No.";
+      SIIRequestHeaderL."Document No." := OrderNoL;
+      SIIRequestHeaderL."Document Type" := SIIRequestHeaderL."Document Type"::Order;
+      EVALUATE(SIIRequestHeaderL."Reference ID", ReferenceIDL);
+      SIIRequestHeaderL."Created At" := SIIRequestXMLLogR."Date / Time inserted";
+      SIIRequestHeaderL.INSERT(TRUE);
+
+      GetRefIDItemIDCombination(TempSIIRequestLineL, DOMDocumentL);
+
+      // process actions
+      // Get the entries from the loaded Data
+      DOMNodeList1L := DOMDocumentL.getElementsByTagName('actions');
+
+      IF DOMNodeList1L.length() > 0 THEN BEGIN
+
+        DOMNodeL := DOMNodeList1L.item(0);          // This is the node 'actions'
+        DOMNodeList2L := DOMNodeL.childNodes();     // This NodeList contains all action-elements
+
+        LineNoL := 0;
+        // Iterate trough all actions
+        FOR i := 0 TO DOMNodeList2L.length() - 1 DO BEGIN
+          DOMNodeL := DOMNodeList2L.item(i);        // This is 1 of the 'action' nodes
+          ReferenceIDL := GetAttributeFromMessageNode(DOMDocumentL, DOMNodeL, 'for');
+
+          DOMNodeList3L := DOMNodeL.childNodes();
+          LineNoL := LineNoL + 10000;
+
+          SIIRequestLineL.RESET;
+          SIIRequestLineL.INIT;
+          SIIRequestLineL."Entry No."    := SIIRequestHeaderL."Entry No.";
+          SIIRequestLineL."Document Type" := SIIRequestHeaderL."Document Type";
+          SIIRequestLineL."Document No." := SIIRequestHeaderL."Document No.";
+          EVALUATE(SIIRequestLineL."Reference ID", ReferenceIDL);
+          SIIRequestLineL."DateTime 1" := GetTimestampFromMessage(DOMDocumentL);
+          SIIRequestLineL."Line No."     := LineNoL;
+          SIIRequestLineL.INSERT(TRUE);
+
+          TempSIIRequestLineL.RESET;
+          TempSIIRequestLineL.SETRANGE("Reference ID", SIIRequestLineL."Reference ID");
+          IF TempSIIRequestLineL.FINDFIRST THEN
+            SIIRequestLineL."Item ID" := TempSIIRequestLineL."Item ID"
+          ELSE
+            SIIRequestLineL."Item ID" := '0';
+          // Process each action
+          FOR i2 := 0 TO DOMNodeList3L.length - 1 DO BEGIN
+            DOMNodeL := DOMNodeList3L.item(i2);
+            CASE DOMNodeL.nodeName OF
+              'code' :
+                BEGIN
+                  SIIRequestLineL."Action Code Shop" := DOMNodeL.text;
+                END;
+              'data' :
+                BEGIN
+                  DOMNodeList4L := DOMNodeL.childNodes();
+                  FOR i3 := 0 TO DOMNodeList4L.length - 1 DO BEGIN
+                    DOMNodeL := DOMNodeList4L.item(i3);
+                    //H1893 15.12.14 tec-cs +++++++++++++++++++++++
+                    CASE DOMNodeL.nodeName OF
+                      'reclamation_type':
+                        BEGIN
+                          SIIRequestLineL."Text 30_1"  := COPYSTR(DOMNodeL.text, 1, MAXSTRLEN(SIIRequestLineL."Text 30_1"));
+                        END;
+                      'reclamation_reason':
+                        BEGIN
+                          SIIRequestLineL."Text 100_1" := COPYSTR(DOMNodeL.text, 1, MAXSTRLEN(SIIRequestLineL."Text 100_1"));
+                        END;
+
+                      'sparepart':
+                        BEGIN
+                          CLEAR(DOMNodeBigTextL);
+                          DOMNodeTextL := GetNodeBigtext(DOMNodeL, DOMNodeBigTextL);
+                          SIIRequestLineL."Text 250_1" := COPYSTR(DOMNodeTextL, 1, MAXSTRLEN(SIIRequestLineL."Text 250_1"));
+                          SIIRequestLineL."Sparepart Bigtext".CREATEOUTSTREAM(outStreamL);
+                          DOMNodeBigTextL.WRITE(outStreamL);
+                        END;
+                      'comment':
+                        BEGIN
+                          CLEAR(DOMNodeBigTextL);
+                          DOMNodeTextL := GetNodeBigtext(DOMNodeL, DOMNodeBigTextL);
+                          SIIRequestLineL."Comment Bigtext".CREATEOUTSTREAM(outStreamL);
+                          DOMNodeBigTextL.WRITE(outStreamL);
+                        END;
+                    END;
+                    //H1893 15.12.14 tec-cs -----------------------
+                  END;
+                END;
+            END;
+          END;
+          SIIRequestLineL.MODIFY;
+        END;
+      END;
+
+      SIIRequestXMLLogR.Status := SIIRequestXMLLogR.Status::Completed;
+      SIIRequestXMLLogR.MODIFY;
+      SIIRequestHeaderL."XML Processed At" := CURRENTDATETIME;
+      SIIRequestHeaderL.MODIFY;
+    END;
+
+    PROCEDURE ProcessData@1100409024(VAR SIIRequestXMLLogR@1100409000 : Record 50324);
+    VAR
+      inStreamL@1000000003 : InStream;
+      SalesHeaderL@1100409003 : Record 36;
+      SalesHeaderArchiveL@1100409006 : Record 5107;
+      SalesLineL@1100409001 : Record 37;
+      SalesLineArchiveL@1100409002 : Record 5108;
+      SIIRequestHeaderL@1100409005 : Record 50325;
+      SIIRequestLineL@1100409004 : Record 50326;
+      TempSalesCommentLineAttachL@1000000009 : TEMPORARY Record 44;
+      TempSalesCommentLineL@1000000004 : TEMPORARY Record 44;
+      CommentBigtextL@1000000002 : BigText;
+      sparepartBigtextL@1000000001 : BigText;
+      commentLineNoL@1000000000 : Integer;
+      evalIntL@1100409013 : Integer;
+      UseArchiveL@1000000005 : Boolean;
+    BEGIN
+      // This function processes the extracted data
+      // Add information to sales order (like Return Reason, Comments, etc.)
+      UseArchiveL := FALSE;
+      SIIRequestHeaderL.RESET;
+      SIIRequestHeaderL.SETRANGE("Entry No.", SIIRequestXMLLogR."Entry No.");
+      SIIRequestHeaderL.FINDFIRST;
+
+      SalesHeaderL.RESET;
+      SalesHeaderL.SETRANGE("Document Type", SalesHeaderL."Document Type"::Order);
+      SalesHeaderL.SETRANGE("No.", SIIRequestHeaderL."Document No.");
+      IF NOT SalesHeaderL.FINDFIRST THEN BEGIN
+        SalesHeaderArchiveL.RESET;
+        SalesHeaderArchiveL.SETRANGE("Document Type", SalesHeaderArchiveL."Document Type"::Order);
+        SalesHeaderArchiveL.SETRANGE("No.", SIIRequestHeaderL."Document No.");
+        IF NOT SalesHeaderArchiveL.FINDFIRST THEN BEGIN
+          ERROR(Text002, SIIRequestHeaderL."Document No.");
+        END;
+        UseArchiveL := TRUE;
+      END;
+
+      // Add Attachments >>
+      // Attachments will be added to comments, too
+      TempSalesCommentLineAttachL.RESET;
+      TempSalesCommentLineAttachL.DELETEALL;
+      GetAttachmentsFromDocument(SIIRequestXMLLogR, TempSalesCommentLineAttachL);
+
+      IF NOT UseArchiveL THEN BEGIN
+        AddComment(SalesHeaderL."Document Type", SalesHeaderL."No.", 0, TempSalesCommentLineAttachL, SIIRequestHeaderL."Reference ID");
+
+        SIIRequestLineL.RESET;
+        SIIRequestLineL.SETRANGE("Entry No.", SIIRequestXMLLogR."Entry No.");
+        IF SIIRequestLineL.FINDSET THEN BEGIN
+          REPEAT
+            commentLineNoL := 0;
+            IF SIIRequestLineL."Item ID" <> '0' THEN BEGIN
+              SalesLineL.RESET;
+              SalesLineL.SETRANGE("Document Type", SalesHeaderL."Document Type");
+              SalesLineL.SETRANGE("Document No.", SalesHeaderL."No.");
+              EVALUATE(evalIntL, SIIRequestLineL."Item ID");
+              SalesLineL.SETRANGE(ID, evalIntL);
+              SalesLineL.FINDFIRST;
+
+              AddComment(SalesHeaderL."Document Type", SalesHeaderL."No.", SalesLineL."Line No.", TempSalesCommentLineAttachL,
+                        SIIRequestLineL."Reference ID");
+
+              SalesLineL.VALIDATE("Return Type",SIIRequestLineL.GetReturnType);
+              SalesLineL."Return Reason Code" := GetReturnReasonFromMapping(SIIRequestLineL."Text 100_1");
+              IF SalesLineL."Return Type" IN [SalesLineL."Return Type"::Return,
+                                              SalesLineL."Return Type"::Change,
+                                              SalesLineL."Return Type"::"Spare Part"] THEN BEGIN
+                IF (SalesLineL."Quantity Shipped" = 0) THEN BEGIN
+                  IF SalesLineL."Actual Delivery Date" = 0DT THEN BEGIN
+                    SalesLineL.VALIDATE("Actual Delivery Date",SIIRequestLineL."DateTime 1");
+                  END;
+                END;
+              END;
+              SalesLineL.MODIFY;
+              commentLineNoL := SalesLineL."Line No.";
+            END;
+
+            // update comments (including header)
+            SIIRequestLineL.CALCFIELDS("Comment Bigtext", "Sparepart Bigtext");
+
+            TempSalesCommentLineL.RESET;
+            TempSalesCommentLineL.DELETEALL;
+            CLEAR(TempSalesCommentLineL);
+
+            CLEAR(CommentBigtextL);
+            IF SIIRequestLineL."Comment Bigtext".HASVALUE THEN BEGIN
+              SIIRequestLineL."Comment Bigtext".CREATEINSTREAM(inStreamL);
+              CommentBigtextL.READ(inStreamL);
+              Bigtext2CommentLines(CommentBigtextL, TempSalesCommentLineL);
+            END;
+
+            CLEAR(sparepartBigtextL);
+            IF SIIRequestLineL."Sparepart Bigtext".HASVALUE THEN BEGIN
+              SIIRequestLineL."Sparepart Bigtext".CREATEINSTREAM(inStreamL);
+              sparepartBigtextL.READ(inStreamL);
+              Bigtext2CommentLines(sparepartBigtextL, TempSalesCommentLineL);
+            END;
+
+            AddComment(SalesHeaderL."Document Type", SalesHeaderL."No.", commentLineNoL,
+                       TempSalesCommentLineL, 0);
+
+          UNTIL SIIRequestLineL.NEXT = 0;
+        END;
+      END ELSE BEGIN
+        AddCommentArchive(SalesHeaderArchiveL."Document Type", SalesHeaderArchiveL."No.",
+                          SalesHeaderArchiveL."Doc. No. Occurrence", SalesHeaderArchiveL."Version No.",
+                          0, TempSalesCommentLineAttachL, SIIRequestHeaderL."Reference ID");
+        SIIRequestLineL.RESET;
+        SIIRequestLineL.SETRANGE("Entry No.", SIIRequestXMLLogR."Entry No.");
+        IF SIIRequestLineL.FINDSET THEN BEGIN
+          REPEAT
+            commentLineNoL := 0;
+            IF SIIRequestLineL."Item ID" <> '0' THEN BEGIN
+              SalesLineArchiveL.RESET;
+              SalesLineArchiveL.SETRANGE("Document Type", SalesHeaderArchiveL."Document Type");
+              SalesLineArchiveL.SETRANGE("Document No.", SalesHeaderArchiveL."No.");
+              SalesLineArchiveL.SETRANGE("Doc. No. Occurrence",SalesHeaderArchiveL."Doc. No. Occurrence");
+              SalesLineArchiveL.SETRANGE("Version No.", SalesHeaderArchiveL."Version No.");
+              EVALUATE(evalIntL, SIIRequestLineL."Item ID");
+              SalesLineArchiveL.SETRANGE(ID, evalIntL);
+              SalesLineArchiveL.FINDFIRST;
+
+              AddComment(SalesHeaderArchiveL."Document Type", SalesHeaderArchiveL."No.", SalesLineArchiveL."Line No.",
+                         TempSalesCommentLineAttachL, SIIRequestLineL."Reference ID");
+
+              SalesLineArchiveL.VALIDATE("Return Type", SIIRequestLineL.GetReturnType());
+              SalesLineArchiveL."Return Reason Code" := GetReturnReasonFromMapping(SIIRequestLineL."Text 100_1");
+              SalesLineArchiveL.MODIFY;
+              commentLineNoL := SalesLineArchiveL."Line No.";
+            END;
+
+            SIIRequestLineL.CALCFIELDS("Comment Bigtext", "Sparepart Bigtext");
+
+            TempSalesCommentLineL.RESET;
+            TempSalesCommentLineL.DELETEALL;
+            CLEAR(TempSalesCommentLineL);
+
+            CLEAR(CommentBigtextL);
+            IF SIIRequestLineL."Comment Bigtext".HASVALUE THEN BEGIN
+              SIIRequestLineL."Comment Bigtext".CREATEINSTREAM(inStreamL);
+              CommentBigtextL.READ(inStreamL);
+              Bigtext2CommentLines(CommentBigtextL, TempSalesCommentLineL);
+            END;
+
+            CLEAR(sparepartBigtextL);
+            IF SIIRequestLineL."Sparepart Bigtext".HASVALUE THEN BEGIN
+              SIIRequestLineL."Sparepart Bigtext".CREATEINSTREAM(inStreamL);
+              sparepartBigtextL.READ(inStreamL);
+              Bigtext2CommentLines(sparepartBigtextL, TempSalesCommentLineL);
+            END;
+
+            AddCommentArchive(
+              SalesHeaderArchiveL."Document Type",
+              SalesHeaderArchiveL."No.",
+              SalesHeaderArchiveL."Doc. No. Occurrence",
+              SalesHeaderArchiveL."Version No.",
+              commentLineNoL,
+              TempSalesCommentLineL, 0);
+          UNTIL SIIRequestLineL.NEXT = 0;
+        END;
+      END;
+      // <<
+
+      // End of processing...
+      SIIRequestXMLLogR.Status := SIIRequestXMLLogR.Status::Error;
+      SIIRequestXMLLogR.MODIFY;
+
+      SIIRequestHeaderL."Processed At" := CURRENTDATETIME;
+      SIIRequestHeaderL.MODIFY;
+    END;
+
+    PROCEDURE AddToBatchPost@1100409027(VAR SIIRequestXMLLogR@1100409000 : Record 50324);
+    VAR
+      SalesHeaderL@1000000000 : Record 36;
+      SIIIncomingRequestLineL@1000000001 : Record 50326;
+      SIIRequestBatchProcessL@1000000003 : Record 50330;
+      returnTypeL@1000000002 : Option;
+      callCalcPreventionDiscountL@1000000008 : Boolean;
+      callProcessComplaintRequestL@1000000009 : Boolean;
+      DoCalcPreventionDiscountL@1000000011 : Boolean;
+      DoProcessComplaintRequestL@1000000010 : Boolean;
+    BEGIN
+      //T0051 22.10.14 tec-cs ++++++++++++++++++++++++++
+      //
+      // insert batch-entry for shipment-posting (if neccessary)
+      //
+      IF GetSalesHeader(SIIRequestXMLLogR, SalesHeaderL) THEN BEGIN
+        // if salesheader is found, the order is not yet posted - so, post the shipping
+        AddShipmToBatchPostDoc(SIIRequestXMLLogR."Entry No.", SalesHeaderL);
+      END;
+
+      // T0052 05.11.14 tec-cs ++++++++++++++
+      DoCalcPreventionDiscountL := FALSE;
+      DoProcessComplaintRequestL := FALSE;
+
+      SIIIncomingRequestLineL.RESET;
+      SIIIncomingRequestLineL.SETRANGE("Entry No.", SIIRequestXMLLogR."Entry No.");
+      SIIIncomingRequestLineL.SETFILTER("Item ID", '<>0');
+      IF SIIIncomingRequestLineL.FINDSET THEN BEGIN
+        REPEAT
+          returnTypeL := SIIIncomingRequestLineL.GetReturnType();
+
+          callCalcPreventionDiscountL := FALSE;
+          callProcessComplaintRequestL := FALSE;
+
+          GetActionsForReturnType(
+            returnTypeL,
+            callCalcPreventionDiscountL,
+            callProcessComplaintRequestL);
+
+          DoCalcPreventionDiscountL := DoCalcPreventionDiscountL OR callCalcPreventionDiscountL;
+          DoProcessComplaintRequestL := DoProcessComplaintRequestL OR callProcessComplaintRequestL;
+
+        UNTIL SIIIncomingRequestLineL.NEXT = 0;
+      END;
+
+      // insert batch process for "complaint request"
+      IF DoCalcPreventionDiscountL THEN BEGIN
+        AddActionToIncReqProcList(SIIRequestXMLLogR, SIIRequestBatchProcessL."Process Type"::"Calc. Prevention Discount");
+      END;
+
+      // insert batch process for "complaint request"
+      IF DoProcessComplaintRequestL THEN BEGIN
+        AddActionToIncReqProcList(SIIRequestXMLLogR, SIIRequestBatchProcessL."Process Type"::"Process Complaint Request");
+      END;
+      //T0052 05.11.14 tec-cs -----------------------
+      //T0051 22.10.14 tec-cs -----------------------
+    END;
+
+    PROCEDURE "---END HandleCustomerRequest"@1100409028();
+    BEGIN
+    END;
+
+    LOCAL PROCEDURE "--- Misc"@1100409023();
+    BEGIN
+    END;
+
+    PROCEDURE AddComment@1100409022(DocTypeV@1100409000 : Option;DocNoV@1100409001 : Code[20];DocLineNoV@1100409002 : Integer;VAR TempSalesCommentLineR@1100409006 : TEMPORARY Record 44;RefIDV@1100409005 : Integer);
+    VAR
+      SalesCommentLineL@1100409004 : Record 44;
+      LastLineNoL@1100409003 : Integer;
+    BEGIN
+      SalesCommentLineL.RESET;
+      SalesCommentLineL.SETRANGE("Document Type", DocTypeV);
+      SalesCommentLineL.SETRANGE("No.", DocNoV);
+      SalesCommentLineL.SETRANGE("Document Line No.", DocLineNoV);
+      IF SalesCommentLineL.FINDLAST THEN
+        LastLineNoL := SalesCommentLineL."Line No.";
+      SalesCommentLineL.RESET;
+
+      TempSalesCommentLineR.RESET;
+      TempSalesCommentLineR.SETRANGE("Document Line No.", RefIDV);
+      IF TempSalesCommentLineR.FINDSET THEN BEGIN
+        REPEAT
+          LastLineNoL += 10000;
+          SalesCommentLineL.INIT;
+          SalesCommentLineL."Document Type" := DocTypeV;
+          SalesCommentLineL."No." := DocNoV;
+          SalesCommentLineL."Document Line No." := DocLineNoV;
+          SalesCommentLineL."Line No." := LastLineNoL;
+          SalesCommentLineL.Comment := TempSalesCommentLineR.Comment;
+          SalesCommentLineL.Date := WORKDATE;
+          SalesCommentLineL.INSERT;
+        UNTIL TempSalesCommentLineR.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE AddCommentArchive@1100409021(DocTypeV@1100409000 : Option;DocNoV@1100409001 : Code[20];DocNoOccV@1100409007 : Integer;VersionNoV@1100409008 : Integer;DocLineNoV@1100409002 : Integer;VAR TempSalesCommentLineR@1100409006 : TEMPORARY Record 44;RefIDV@1100409005 : Integer);
+    VAR
+      SalesCommentLineL@1100409004 : Record 5126;
+      LastLineNoL@1100409003 : Integer;
+    BEGIN
+      SalesCommentLineL.RESET;
+      SalesCommentLineL.SETRANGE("Document Type", DocTypeV);
+      SalesCommentLineL.SETRANGE("No.", DocNoV);
+      SalesCommentLineL.SETRANGE("Document Line No.", DocLineNoV);
+      IF SalesCommentLineL.FINDLAST THEN
+        LastLineNoL := SalesCommentLineL."Line No.";
+      SalesCommentLineL.RESET;
+
+      TempSalesCommentLineR.RESET;
+      TempSalesCommentLineR.SETRANGE("Document Line No.", RefIDV);
+      IF TempSalesCommentLineR.FINDSET THEN BEGIN
+        REPEAT
+          LastLineNoL += 10000;
+          SalesCommentLineL.INIT;
+          SalesCommentLineL."Document Type" := DocTypeV;
+          SalesCommentLineL."No." := DocNoV;
+          SalesCommentLineL."Document Line No." := DocLineNoV;
+          SalesCommentLineL."Line No." := LastLineNoL;
+          SalesCommentLineL.Comment := TempSalesCommentLineR.Comment;
+          SalesCommentLineL.Date := WORKDATE;
+          SalesCommentLineL.INSERT;
+        UNTIL TempSalesCommentLineR.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE "--- Param"@1100409014();
+    BEGIN
+    END;
+
+    PROCEDURE SetParam@1100409009(ProcessTypeV@1100409002 : Option;VAR SIIRequestXMLLogV@1100409000 : Record 50324;VAR requestTextV@1100409001 : BigText);
+    BEGIN
+      SIIRequestXMLLog := SIIRequestXMLLogV;
+      RequestText := requestTextV;
+      ProcessType := ProcessTypeV;
+      ParamSet := TRUE;
+    END;
+
+    PROCEDURE GetEntry@1100409005(VAR SIIRequestXMLLogV@1100409000 : Record 50324);
+    BEGIN
+      SIIRequestXMLLogV := SIIRequestXMLLog;
+    END;
+
+    PROCEDURE "--- Reclamation Request"@1100409002();
+    BEGIN
+    END;
+
+    PROCEDURE AddShipmToBatchPostDoc@1100409004(SIIRequestEntryNoV@1000000002 : Integer;SalesHeaderV@1100409000 : Record 36) : Integer;
+    VAR
+      SalesBatchPostHeaderL@1000000000 : Record 50225;
+      SalesLineL@1000000001 : Record 37;
+      BatchSalesPostLineL@1000000005 : Record 50226;
+      SIIIncomingRequestLineL@1000000003 : Record 50326;
+      itemIDL@1000000006 : Integer;
+      linesPostedL@1000000004 : Integer;
+    BEGIN
+      //T0051 22.10.14 tec-cs ++++++++++++++++++++++++++
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type", SalesHeaderV."Document Type");
+      SalesLineL.SETRANGE("Document No.", SalesHeaderV."No.");
+      SalesLineL.SETRANGE(Type, SalesLineL.Type::Item);
+      SalesLineL.SETFILTER("Return Type", '<>%1&<>%2', SalesLineL."Return Type"::Cancelation, SalesLineL."Return Type"::" ");
+      SalesLineL.SETFILTER(Quantity, '>0');
+      SalesLineL.SETRANGE("Quantity Shipped", 0);
+
+      SIIIncomingRequestLineL.RESET;
+      SIIIncomingRequestLineL.SETRANGE("Entry No.", SIIRequestEntryNoV);
+      SIIIncomingRequestLineL.SETFILTER("Item ID", '<>%1', '');
+      IF SIIIncomingRequestLineL.FINDSET THEN BEGIN
+        REPEAT
+          // post only shipment for lines within the above filter
+          IF EVALUATE(itemIDL, SIIIncomingRequestLineL."Item ID") THEN BEGIN
+            SalesLineL.SETRANGE(ID, itemIDL);
+            IF SalesLineL.FINDFIRST THEN BEGIN
+              SalesBatchPostHeaderL.InsertNewRecord(SalesLineL,
+                                                    DT2DATE(SalesLineL."Actual Delivery Date"),
+                                                    SalesBatchPostHeaderL."Posting Type"::Ship,
+                                                    BatchSalesPostLineL."Triggered By"::"Incoming SII Request",
+                                                    '',
+          //T0082 25.11.14 tec-sh    +++++++++++++++++++++++++++++++++++
+          //                                        '');
+                                                    '',FALSE);
+          //T0082 12.11.14 TEC-SH    -----------------------------------
+              linesPostedL += 1;
+            END;
+          END;
+        UNTIL SIIIncomingRequestLineL.NEXT = 0;
+      END;
+
+      EXIT(linesPostedL);
+      //T0051 22.10.14 tec-cs --------------------------
+    END;
+
+    PROCEDURE AddActionToIncReqProcList@1000000001(VAR SIIRequestXMLLogR@1000000000 : Record 50324;processTypeV@1000000001 : Option);
+    VAR
+      SIIRequestBatchProcessL@1000000003 : Record 50330;
+      SIIIncomingRequestHeaderL@1000000005 : Record 50325;
+      SIIIncomingRequestLineL@1000000004 : Record 50326;
+      SalesHeaderL@1000000007 : Record 36;
+      SalesHeaderArchiveL@1000000008 : Record 5107;
+      SalesLineL@1000000002 : Record 37;
+      SalesLineArchiveL@1000000009 : Record 5108;
+      TableIDL@1000000006 : Integer;
+      itemIDL@1000000010 : Integer;
+    BEGIN
+      //T0052 05.11.14 tec-cs ++++++++++++++++++++++++++
+      SIIIncomingRequestHeaderL.RESET;
+      SIIIncomingRequestHeaderL.SETRANGE("Entry No.", SIIRequestXMLLogR."Entry No.");
+      SIIIncomingRequestHeaderL.FINDFIRST;
+
+      IF SalesHeaderL.GET(SIIIncomingRequestHeaderL."Document Type",SIIIncomingRequestHeaderL."Document No.") THEN BEGIN
+        TableIDL := DATABASE::"Sales Header";
+      END ELSE BEGIN
+        SalesHeaderArchiveL.RESET;
+        SalesHeaderArchiveL.SETRANGE("Document Type",SIIIncomingRequestHeaderL."Document Type");
+        SalesHeaderArchiveL.SETRANGE("No.",SIIIncomingRequestHeaderL."Document No.");
+        SalesHeaderArchiveL.FINDFIRST;
+        TableIDL := DATABASE::"Sales Header Archive";
+      END;
+
+      SIIRequestBatchProcessL.InsertNewRecord(
+        TableIDL,
+        SIIIncomingRequestHeaderL."Document Type",
+        SIIIncomingRequestHeaderL."Document No.",
+        processTypeV,
+        SIIIncomingRequestHeaderL."Entry No.");
+
+      SIIRequestBatchProcessL."SII Incoming Request Entry No." := SIIRequestXMLLogR."Entry No.";
+      SIIRequestBatchProcessL.MODIFY;
+
+      // insert lines
+      SIIIncomingRequestLineL.RESET;
+      SIIIncomingRequestLineL.SETRANGE("Entry No.", SIIRequestXMLLogR."Entry No.");
+      SIIIncomingRequestLineL.SETFILTER("Item ID", '<>%1', '');
+      IF SIIIncomingRequestLineL.FINDSET THEN BEGIN
+        REPEAT
+          SalesLineL.RESET;
+          SalesLineL.SETRANGE("Document Type", SIIIncomingRequestHeaderL."Document Type");
+          SalesLineL.SETRANGE("Document No.", SIIIncomingRequestHeaderL."Document No.");
+          IF EVALUATE(itemIDL, SIIIncomingRequestLineL."Item ID") THEN BEGIN
+            SalesLineL.RESET;
+            SalesLineL.SETRANGE("Document Type", SIIIncomingRequestHeaderL."Document Type");
+            SalesLineL.SETRANGE("Document No.", SIIIncomingRequestHeaderL."Document No.");
+            SalesLineL.SETRANGE(ID, itemIDL);
+            IF SalesLineL.FINDFIRST THEN
+              SIIRequestBatchProcessL.InsertLine(SalesLineL."Document Type",SalesLineL."Document No.",SalesLineL."Line No.");
+          END;
+        UNTIL SIIIncomingRequestLineL.NEXT = 0;
+      END;
+      //T0052 05.11.14 tec-cs --------------------------
+    END;
+
+    LOCAL PROCEDURE "--- Misc Functions"@1100409000();
+    BEGIN
+    END;
+
+    LOCAL PROCEDURE AddError@1100409003(VAR SIIRequestXMLLogV@1100409000 : Record 50324);
+    BEGIN
+      SIIRequestXMLLogV.Status := SIIRequestXMLLogV.Status::Error;
+
+      SIIRequestXMLLogV."Last Error Text 1" := COPYSTR(GETLASTERRORTEXT, 1, 250);
+      SIIRequestXMLLogV."Last Error Text 2" := COPYSTR(GETLASTERRORTEXT, 251, 250);
+      SIIRequestXMLLogV."Last Error Text 3" := COPYSTR(GETLASTERRORTEXT, 501, 250);
+      SIIRequestXMLLogV."Last Error Text 4" := COPYSTR(GETLASTERRORTEXT, 751);
+      SIIRequestXMLLogV.MODIFY;
+    END;
+
+    PROCEDURE LoadDOMDocument@1100409006(VAR SIIRequestXMLLogR@1100409000 : Record 50324;VAR DOMDocumentR@1100409001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v6.0'.DOMDocument");
+    VAR
+      TempInStreamL@1100409002 : InStream;
+    BEGIN
+      // Load XML-Data from Stream >>
+      IF ISCLEAR(DOMDocumentR) THEN
+        CREATE(DOMDocumentR);
+
+      SIIRequestXMLLogR.CALCFIELDS("XML File (Request)");
+      SIIRequestXMLLogR."XML File (Request)".CREATEINSTREAM(TempInStreamL);
+
+      DOMDocumentR.async(FALSE);
+      IF NOT DOMDocumentR.load(TempInStreamL) THEN
+        ERROR(Text001);
+      // <<
+    END;
+
+    PROCEDURE GetTypeFromMessage@1100409001(VAR DOMDocumentR@1100409000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v6.0'.DOMDocument") : Text[50];
+    VAR
+      DOMNodeL@1100409008 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";
+      DOMNodeList1L@1100409007 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF82-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNodeList";
+      DOMAttrib1L@1100409002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF85-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMAttribute";
+      DOMNamedNodeMapL@1100409001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF83-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNamedNodeMap";
+    BEGIN
+      // Returns the type of a message
+      // e.g.: order.item.reclamation.requested >>
+      IF ISCLEAR(DOMDocumentR) THEN
+        EXIT('');
+
+      DOMNodeList1L := DOMDocumentR.getElementsByTagName('message');
+      DOMNodeL := DOMNodeList1L.item(0);
+
+      DOMNamedNodeMapL := DOMNodeL.attributes();
+      DOMNodeL := DOMNamedNodeMapL.getNamedItem('type');
+      EXIT(DOMNodeL.nodeValue);
+      // <<
+    END;
+
+    PROCEDURE GetTimestampFromMessage@1000000000(VAR DOMDocumentR@1100409000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v6.0'.DOMDocument") : DateTime;
+    VAR
+      DOMNodeL@1100409008 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";
+      DOMNodeList1L@1100409007 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF82-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNodeList";
+      DOMAttrib1L@1100409002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF85-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMAttribute";
+      DOMNamedNodeMapL@1100409001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF83-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNamedNodeMap";
+    BEGIN
+      // Returns the type of a message
+      // e.g.: order.item.reclamation.requested >>
+      IF ISCLEAR(DOMDocumentR) THEN
+        EXIT(0DT);
+
+      DOMNodeList1L := DOMDocumentR.getElementsByTagName('message');
+      DOMNodeL := DOMNodeList1L.item(0);
+
+      DOMNamedNodeMapL := DOMNodeL.attributes();
+      DOMNodeL := DOMNamedNodeMapL.getNamedItem('Created');
+      EXIT(InterpretTimestamp(DOMNodeL.nodeValue));
+      // <<
+    END;
+
+    PROCEDURE GetAttributeFromMessage@1100409015(VAR DOMDocumentR@1100409000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v6.0'.DOMDocument";NodeNameV@1100409001 : Text[250];AttributeNameV@1100409002 : Text[250]) : Text[250];
+    VAR
+      DOMNodeL@1100409010 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";
+      DOMNodeList1L@1100409009 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF82-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNodeList";
+      DOMNamedNodeMapL@1100409003 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF83-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNamedNodeMap";
+    BEGIN
+      // Returns an attribute from a node
+      // To get the attribute "order_number" from the node "order" call
+      // GetAttributeFromMessage(DOMDocument, 'order', 'order_number');
+      // e.g.: <order order_number="90105000382815" reference-id="1">
+      // >>
+      IF ISCLEAR(DOMDocumentR) THEN
+        EXIT('');
+      IF (NodeNameV = '') OR (AttributeNameV = '') THEN
+        EXIT('');
+
+      DOMNodeList1L := DOMDocumentR.getElementsByTagName(NodeNameV);
+      DOMNodeL := DOMNodeList1L.item(0);
+      EXIT(GetAttributeFromMessageNode(DOMDocumentR, DOMNodeL, AttributeNameV));
+      // <<
+    END;
+
+    PROCEDURE GetAttributeFromMessageNode@1100409008(VAR DOMDocumentR@1100409000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v6.0'.DOMDocument";DOMNodeV@1100409004 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";AttributeNameV@1100409002 : Text[250]) : Text[250];
+    VAR
+      DOMNodeList1L@1100409009 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF82-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNodeList";
+      DOMNamedNodeMapL@1100409003 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF83-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNamedNodeMap";
+    BEGIN
+      // See GetAttributeFromMessage
+      IF ISCLEAR(DOMDocumentR) THEN
+        EXIT('');
+      IF ISCLEAR(DOMNodeV) THEN
+        EXIT('');
+      IF (AttributeNameV = '') THEN
+        EXIT('');
+
+      DOMNamedNodeMapL := DOMNodeV.attributes();
+      DOMNodeV := DOMNamedNodeMapL.getNamedItem(AttributeNameV);
+      EXIT(DOMNodeV.nodeValue);
+    END;
+
+    PROCEDURE GetAttachmentsFromDocument@1100409018(VAR SIIRequestXMLLogR@1100409001 : Record 50324;VAR TempSalesCommentLineR@1100409002 : TEMPORARY Record 44);
+    VAR
+      DOMDocumentL@1100409000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v6.0'.DOMDocument";
+      DOMNodeL@1100409008 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";
+      DOMNodeList1L@1100409007 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF82-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNodeList";
+      DOMNodeList2L@1100409006 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF82-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNodeList";
+      DOMNodeList3L@1100409005 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF82-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNodeList";
+      DOMNodeList4L@1100409004 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF82-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNodeList";
+      DOMNodeList5L@1100409014 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF82-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNodeList";
+      DOMNodeList6L@1100409016 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF82-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNodeList";
+      DOMNamedNodeMapL@1100409003 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF83-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNamedNodeMap";
+      ReferenceIDL@1100409011 : Code[20];
+      tempTextL@1100409013 : Text[1000];
+      attachmentTextL@1100409018 : Text[1000];
+      strlenL@1000000000 : Integer;
+      i@1000000005 : Integer;
+      i2@1000000004 : Integer;
+      i3@1000000003 : Integer;
+      i4@1000000002 : Integer;
+      i5@1000000001 : Integer;
+    BEGIN
+      TempSalesCommentLineR.RESET;
+      TempSalesCommentLineR.DELETEALL;
+
+      LoadDOMDocument(SIIRequestXMLLogR, DOMDocumentL);
+
+      DOMNodeList1L := DOMDocumentL.getElementsByTagName('actions');
+      DOMNodeL := DOMNodeList1L.item(0);
+      DOMNodeList2L := DOMNodeL.childNodes();
+
+      FOR i := 0 TO DOMNodeList2L.length() - 1 DO BEGIN
+        DOMNodeL := DOMNodeList2L.item(i);
+
+        ReferenceIDL := GetAttributeFromMessageNode(DOMDocumentL, DOMNodeL, 'for');
+        TempSalesCommentLineR."Document Type" := TempSalesCommentLineR."Document Type"::Order;
+        TempSalesCommentLineR."No." := 'TEMP';
+        EVALUATE(TempSalesCommentLineR."Document Line No.", ReferenceIDL);
+
+        DOMNodeList3L := DOMNodeL.childNodes();
+        FOR i2 := 0 TO DOMNodeList3L.length - 1 DO BEGIN
+          DOMNodeL := DOMNodeList3L.item(i2);
+          CASE DOMNodeL.nodeName OF
+            'data' :
+              BEGIN
+                DOMNodeList4L := DOMNodeL.childNodes();
+                FOR i3 := 0 TO DOMNodeList4L.length - 1 DO BEGIN
+                  DOMNodeL := DOMNodeList4L.item(i3);
+                  CASE DOMNodeL.nodeName OF
+                    'attachments' :
+                      BEGIN
+                        DOMNodeList5L := DOMNodeL.childNodes(); //child-nodes of attachments
+                        FOR i4 := 0 TO DOMNodeList5L.length - 1 DO BEGIN
+                          DOMNodeL := DOMNodeList5L.item(i4);   // 1 <attachment>
+                          attachmentTextL := GetAttachmentStringFromNode(DOMNodeL);
+                          strlenL := MAXSTRLEN(TempSalesCommentLineR.Comment);
+                          WHILE (attachmentTextL <> '') DO BEGIN
+                            TempSalesCommentLineR."Line No." += 10000;
+                            TempSalesCommentLineR.Comment := COPYSTR(attachmentTextL, 1, strlenL);
+                            attachmentTextL := COPYSTR(attachmentTextL, strlenL+1,strlenL);
+                            TempSalesCommentLineR.INSERT();
+                          END;
+                        END;
+                      END;
+                    'image_folder_link' :
+                      BEGIN
+                        attachmentTextL := 'Image folder link: ' +  DOMNodeL.text;
+                        strlenL := MAXSTRLEN(TempSalesCommentLineR.Comment);
+                        WHILE (attachmentTextL <> '') DO BEGIN
+                          TempSalesCommentLineR."Line No." += 10000;
+                          TempSalesCommentLineR.Comment := COPYSTR(attachmentTextL, 1, strlenL);
+                          attachmentTextL := COPYSTR(attachmentTextL, strlenL+1,strlenL);
+                          TempSalesCommentLineR.INSERT();
+                        END;
+                      END;
+                  END;
+                END;
+              END;
+          END;
+        END;
+      END;
+      // <<
+    END;
+
+    PROCEDURE GetAttachmentStringFromNode@1100409029(DOMNodeV@1100409000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode") : Text[1000];
+    VAR
+      DOMNodeL@1100409002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";
+      DOMNodeList1L@1100409001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF82-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNodeList";
+      tempTextL@1100409003 : Text[1000];
+      i@1100409004 : Integer;
+    BEGIN
+      DOMNodeList1L := DOMNodeV.childNodes();
+      tempTextL := 'Attachment (type: ';
+      FOR i := 0 TO DOMNodeList1L.length - 1 DO BEGIN
+        DOMNodeL := DOMNodeList1L.item(i);
+        CASE DOMNodeL.nodeName OF
+          'type' :
+            BEGIN
+              tempTextL += DOMNodeL.text + '): ';
+            END;
+          'link' :
+            BEGIN
+              tempTextL += DOMNodeL.text;
+            END;
+        END;
+      END;
+      EXIT(tempTextL);
+    END;
+
+    PROCEDURE GetRefIDItemIDCombination@1100409013(VAR TempSIIRequestLineR@1100409000 : TEMPORARY Record 50326;VAR DOMDocumentR@1100409001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v6.0'.DOMDocument");
+    VAR
+      DOMNodeL@1100409004 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";
+      DOMNodeList1L@1100409003 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF82-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNodeList";
+      DOMNodeList2L@1100409005 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF82-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNodeList";
+      DOMNamedNodeMapL@1100409002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF83-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNamedNodeMap";
+      ReferenceIDL@1100409007 : Code[20];
+      i@1000000000 : Integer;
+    BEGIN
+      TempSIIRequestLineR.RESET;
+      TempSIIRequestLineR.DELETEALL;
+
+      DOMNodeList1L := DOMDocumentR.getElementsByTagName('order_items');
+      DOMNodeL := DOMNodeList1L.item(0);          // This is the node 'order_items'
+      DOMNodeList2L := DOMNodeL.childNodes();     // This NodeList contains all order_item-elements
+
+      // Iterate trough all order_items
+      // Remember the item_id / reference-id combination in temp. set >>
+      FOR i := 0 TO DOMNodeList2L.length() - 1 DO BEGIN
+        DOMNodeL := DOMNodeList2L.item(i);
+        ReferenceIDL := GetAttributeFromMessageNode(DOMDocumentR, DOMNodeL, 'reference-id');
+        EVALUATE(TempSIIRequestLineR."Reference ID", ReferenceIDL);
+        TempSIIRequestLineR."Item ID" := GetAttributeFromMessageNode(DOMDocumentR, DOMNodeL, 'item_id');
+        TempSIIRequestLineR.INSERT;
+      END;
+      // <<
+    END;
+
+    PROCEDURE InterpretTimestamp@1100409011(dtStringV@1100409000 : Text[100]) : DateTime;
+    VAR
+      dateStrL@1100409003 : Text[30];
+      timeStrL@1100409004 : Text[30];
+      dateL@1100409001 : Date;
+      timeL@1100409002 : Time;
+      YearL@1100409005 : Integer;
+      MonthL@1100409006 : Integer;
+      DayL@1100409007 : Integer;
+      tempStrL@1100409008 : Text[30];
+      timeZoneStrL@1100409009 : Text[30];
+    BEGIN
+      // dtString looks like this: 2014-04-29T20:48:58+02:00
+
+      IF dtStringV = '' THEN
+        EXIT(0DT);
+
+      //T0050 22.10.14 tec-cs ++++++++++++++++++++++++++
+      // for debugging-reasons, translate invalid timestamp (2014-04-29 20:48:58) into the required format
+      IF STRPOS(dtStringV, 'T') = 0 THEN BEGIN
+        IF dtStringV[11] = ' ' THEN dtStringV[11] := 'T';
+      END;
+      //T0050 22.10.14 tec-cs --------------------------
+
+      IF STRPOS(dtStringV, '+') > 0 THEN BEGIN
+        timeZoneStrL := COPYSTR(dtStringV, STRPOS(dtStringV, '+'));
+        dtStringV := COPYSTR(dtStringV, 1, STRPOS(dtStringV, '+') - 1);
+      END;
+
+      dateStrL := COPYSTR(dtStringV, 1, STRPOS(dtStringV, 'T') - 1);
+      timeStrL := COPYSTR(dtStringV, STRPOS(dtStringV, 'T') + 1);
+
+      tempStrL := COPYSTR(dateStrL, 1, STRPOS(dateStrL, '-') - 1);
+      dateStrL := COPYSTR(dateStrL, STRPOS(dateStrL, '-') + 1);
+      EVALUATE(YearL, tempStrL);
+      tempStrL := COPYSTR(dateStrL, 1, STRPOS(dateStrL, '-') - 1);
+      dateStrL := COPYSTR(dateStrL, STRPOS(dateStrL, '-') + 1);
+      EVALUATE(MonthL, tempStrL);
+      EVALUATE(DayL, dateStrL);
+
+      dateL := DMY2DATE(DayL, MonthL, YearL);
+      EVALUATE(timeL, timeStrL);
+      EXIT(CREATEDATETIME(dateL,timeL));
+    END;
+
+    PROCEDURE GetReturnReasonFromMapping@1100409017(ShopCodeV@1100409000 : Text[100]) : Code[20];
+    VAR
+      ReturnReasonMappingL@1100409001 : Record 50327;
+      posL@1000000000 : Integer;
+    BEGIN
+      ReturnReasonMappingL.RESET;
+      ReturnReasonMappingL.SETRANGE("Shop Code", ShopCodeV);
+      IF ReturnReasonMappingL.FINDFIRST THEN
+        EXIT(ReturnReasonMappingL."NAV Code");
+
+      //T0050 11.09.14 tec-cs ++++++++++++++++++++++++++
+      // fallback: try only the suffix from ShopCodeV:
+      //   recla.return.order_process_issue.ordered_by_mistake -> ordered_by_mistake
+      posL := STRPOS(ShopCodeV, '.');
+      WHILE posL > 0 DO BEGIN
+        ShopCodeV := COPYSTR(ShopCodeV, posL + 1);
+        posL := STRPOS(ShopCodeV, '.');
+      END;
+
+      ReturnReasonMappingL.RESET;
+      ReturnReasonMappingL.SETRANGE("Shop Code", ShopCodeV);
+      IF ReturnReasonMappingL.FINDFIRST THEN
+        EXIT(ReturnReasonMappingL."NAV Code");
+      //T0050 11.09.14 tec-cs --------------------------
+
+      EXIT('');
+    END;
+
+    PROCEDURE GetSalesHeader@1000000005(SIIRequestXMLLogV@1100409000 : Record 50324;VAR SalesHeaderR@1000000000 : Record 36) : Boolean;
+    VAR
+      SIIRequestHeaderL@1100409002 : Record 50325;
+    BEGIN
+      //T0051 22.10.14 tec-cs ++++++++++++++++++++++++++
+      // returns true, if a batch-post-entry has been inserted
+      SIIRequestHeaderL.RESET;
+      SIIRequestHeaderL.SETRANGE("Entry No.", SIIRequestXMLLogV."Entry No.");
+      IF NOT SIIRequestHeaderL.FINDFIRST THEN
+        EXIT(FALSE);
+
+      SalesHeaderR.RESET;
+      SalesHeaderR.SETRANGE("Document Type", SalesHeaderR."Document Type"::Order);
+      SalesHeaderR.SETRANGE("No.", SIIRequestHeaderL."Document No.");
+
+      EXIT(SalesHeaderR.FINDFIRST);
+      //T0051 22.10.14 tec-cs --------------------------
+    END;
+
+    PROCEDURE GetActionsForReturnType@1000000004(returnTypeV@1000000000 : Option;VAR calcPreventionDiscountR@1000000003 : Boolean;VAR processComplaintRequestR@1000000004 : Boolean);
+    VAR
+      SIISetupL@1000000001 : Record 50140;
+      salesLineL@1000000002 : Record 37;
+      actionsL@1000000005 : Option;
+    BEGIN
+      //T0052 05.11.14 tec-cs ++++++++++++++++++++++++++
+      SIISetupL.GET;
+
+      CASE returnTypeV OF
+
+        salesLineL."Return Type"::Change:
+          actionsL := SIISetupL."Actions for Change";
+
+        salesLineL."Return Type"::Return:
+          actionsL := SIISetupL."Actions for Return";
+
+        salesLineL."Return Type"::"Spare Part":
+          actionsL := SIISetupL."Actions for Sparepart";
+
+        salesLineL."Return Type"::Cancelation:
+          actionsL := SIISetupL."Actions for Cancel";
+
+      END;
+
+      IF actionsL IN [SIISetupL."Actions for Return"::"Process Complaint Request",
+                      SIISetupL."Actions for Return"::"Calc. Prevention Discount+Complaint Req."] THEN
+      BEGIN
+        processComplaintRequestR := TRUE;
+      END;
+
+      IF actionsL IN [SIISetupL."Actions for Return"::"Calc. Prevention Discount+Complaint Req."] THEN
+      BEGIN
+        calcPreventionDiscountR := TRUE;
+      END;
+      // T0052 05.11.14 tec-cs --------------------------
+    END;
+
+    PROCEDURE XML_UTF8toANSI@1000000006(VAR requestTextR@1000000000 : BigText) : Boolean;
+    VAR
+      GeneralMgtL@1000000007 : Codeunit 11501;
+      xmlBigTextL@1000000006 : BigText;
+      tempTextL@1000000004 : Text[1024];
+      PositionL@1000000001 : Integer;
+      ActLenL@1000000002 : Integer;
+      CounterL@1000000003 : Integer;
+      isUTF8L@1000000005 : Boolean;
+    BEGIN
+      //H1876  02.12.14  tec-cs  ++++++++++++++++++++++++++++++++++
+      PositionL := 1;
+      ActLenL := 1;
+      CounterL := 1;
+
+      isUTF8L := FALSE;
+
+      WHILE ActLenL <> 0 DO BEGIN
+        ActLenL := requestTextR.GETSUBTEXT(tempTextL,PositionL, 250);
+        IF tempTextL <> '' THEN BEGIN
+          IF isUTF8L THEN BEGIN
+            tempTextL := GeneralMgtL.Ascii2Ansi(tempTextL);
+            tempTextL := GeneralMgtL.ConvertSpecialCharacters(tempTextL);
+          END;
+          IF CounterL = 1 THEN BEGIN
+            CounterL := STRPOS(LOWERCASE(tempTextL),'"utf-8"');
+            IF CounterL <> 0 THEN BEGIN
+              isUTF8L := TRUE;
+              tempTextL := COPYSTR(tempTextL,1,CounterL) + 'windows-1250' + COPYSTR(tempTextL,CounterL + 6);
+              CounterL := 2;
+            END;
+          END;
+          xmlBigTextL.ADDTEXT(tempTextL);
+          CLEAR(tempTextL);
+        END;
+        PositionL += 250;
+      END;
+
+      requestTextR := xmlBigTextL;
+
+      EXIT(isUTF8L);
+
+      //H1876  02.12.14  tec-cs  ----------------------------------
+    END;
+
+    PROCEDURE GetNodeBigtext@1000000010(VAR DOMNodeR@1000000001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";VAR bigTextR@1000000000 : BigText) : Text[1024];
+    VAR
+      tempTextL@1000000007 : Text[1024];
+      commentBigTextL@1000000006 : BigText;
+      posL@1000000005 : Integer;
+      chunkSizeL@1000000004 : Integer;
+      textNodeL@1000000003 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF87-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMText";
+      currNodeL@1000000002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";
+    BEGIN
+      // H1893  15.12.14  tec-cs  ++++++++++++++++++++++++++++++++++
+      tempTextL := DOMNodeR.nodeName;
+      tempTextL := DOMNodeR.nodeTypeString;
+
+      textNodeL := DOMNodeR.firstChild();
+      IF NOT ISCLEAR(textNodeL) THEN BEGIN
+
+        chunkSizeL := 1024;
+        posL := 0;
+
+        WHILE posL < textNodeL.length DO BEGIN
+          tempTextL := textNodeL.substringData(posL, chunkSizeL);
+          posL += chunkSizeL;
+
+          bigTextR.ADDTEXT(tempTextL);
+        END;
+
+      END;
+
+      bigTextR.GETSUBTEXT(tempTextL, 1, 1024);
+      EXIT(tempTextL);
+      // H1893  15.12.14  tec-cs  ----------------------------------
+    END;
+
+    PROCEDURE Bigtext2CommentLines@1000000007(VAR bigTextR@1000000000 : BigText;VAR TempSalesCommentLineR@1000000001 : TEMPORARY Record 44);
+    VAR
+      posL@1000000003 : Integer;
+      lenL@1000000004 : Integer;
+    BEGIN
+      // H1893  15.12.14  tec-cs  ++++++++++++++++++++++++++++++++++
+      TempSalesCommentLineR.RESET;
+      IF NOT TempSalesCommentLineR.FINDLAST THEN TempSalesCommentLineR.INIT;
+
+      lenL := bigTextR.LENGTH;
+      posL := 1;
+
+      WHILE (posL <= lenL) DO BEGIN
+        TempSalesCommentLineR.INIT;
+        TempSalesCommentLineR."Line No." += 10000;
+        bigTextR.GETSUBTEXT(TempSalesCommentLineR.Comment, posL, MAXSTRLEN(TempSalesCommentLineR.Comment));
+        TempSalesCommentLineR.INSERT;
+
+        posL += MAXSTRLEN(TempSalesCommentLineR.Comment);
+      END;
+      // H1893  15.12.14  tec-cs  ----------------------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation Tectura & Home24 NAV Team  |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      T0050       11.09.14  tec-sf    Created
+      T0051       22.10.14  tec-cs    Incoming SII Request
+      T0052       05.11.14  tec-cs    SII Setup defines, which actions to trigger later based on the Incoming Requests Type
+                                      function ReprocessCustomerRequest removed
+                                      function GetReturnType removed
+      H1876       02.12.14  tec-cs    FTTC3 - Phase 8 - Correction of special Characters, +handle comments with >1024 chars
+      H1893       15.12.14  tec-cs    handle strings that exceed the length of the target-fields,function GetCommentsFromDocument removed
+      T0082       25.11.14 tec-sh     added parameter in function T50225.InsertNewRecord
+                                      "ManualPostingV"  (Boolean to mark manual postings)
+    }
+    END.
+  }
+}
+

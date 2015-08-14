@@ -1,0 +1,463 @@
+OBJECT Codeunit 90110 Index Compare Tool
+{
+  OBJECT-PROPERTIES
+  {
+    Date=27.11.12;
+    Time=12:00:00;
+    Version List=SSI/PTB#IXC1.13;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      IdxIndex@1000000001 : Record 90111;
+      IdxColumns@1000000000 : Record 90112;
+      Keys@1000000002 : Record 2000000063;
+      TableInfo@1000000011 : Record 2000000028;
+      IdxCompare@1000000003 : Record 90113;
+      IdxCompareTmp@1000000004 : TEMPORARY Record 90113;
+      TabName@1000000008 : Text[128];
+      KeyText@1000000009 : Text[1024];
+      LanguageID@1000000010 : Integer;
+      Window@1000000005 : Dialog;
+      c@1000000006 : Integer;
+      i@1000000007 : Integer;
+
+    PROCEDURE LoadKeys@1000000000();
+    BEGIN
+      IdxCompare.RESET;
+      IdxCompare.DELETEALL;
+      COMMIT;
+
+      LanguageID := GLOBALLANGUAGE();
+      GLOBALLANGUAGE(1033);  // ENU
+
+      IF Keys.FINDSET THEN BEGIN
+        Window.OPEN('Loading NAV Keys ...\' +
+                    '@1@@@@@@@@@@@@@@@@@@');
+        c := Keys.COUNT;
+        i := 0;
+
+        REPEAT
+          IdxCompare.INIT;
+          IdxCompare."Entry No." := 0;
+          IdxCompare."Table ID" := Keys.TableNo;
+          IdxCompare."Table Name" := Keys.TableName;
+          IdxCompare."Data Per Company" := TableInfo.GET(COMPANYNAME, Keys.TableNo);
+          IdxCompare."Key ID" := Keys."No.";
+          IdxCompare.Enabled := Keys.Enabled;
+          IdxCompare."Maintain SQL Index" := Keys.MaintainSQLIndex;
+          IdxCompare."Maintain SIFT Index" := Keys.MaintainSIFTIndex;
+          IdxCompare."Key Fields" := CONVERTSTR(Keys.Key, '."\/''', '_____');
+          IdxCompare."SQL Index" := CONVERTSTR(Keys.SQLIndex, '."\/''', '_____');
+          IdxCompare."Sum Index Fields" := CONVERTSTR(Keys.SumIndexFields, '."\/''', '_____');
+          IdxCompare.Clustered := Keys.Clustered;
+          IdxCompare.INSERT;
+
+          i := i + 1;
+          Window.UPDATE(1, ROUND(10000 / c * i, 1))
+        UNTIL Keys.NEXT = 0;
+        Window.CLOSE;
+      END;
+
+      GLOBALLANGUAGE(LanguageID);
+    END;
+
+    PROCEDURE MakeIdxSnapshot@1000000005();
+    VAR
+      ExecADO@1000000001 : Codeunit 90100;
+      Statement@1000000000 : Text[1024];
+    BEGIN
+      Statement := 'EXEC ssi_snapidx ''Index Compare Tool'', 0';
+      ExecADO.ExecuteStatement(Statement);
+      YIELD;
+    END;
+
+    PROCEDURE CompareIndex@1000000001(Snapshot@1000000000 : Text[30]);
+    BEGIN
+      IdxCompare.RESET;
+      IF NOT IdxCompare.FINDSET THEN
+        EXIT;
+
+      LanguageID := GLOBALLANGUAGE();
+      GLOBALLANGUAGE(1033);  // ENU
+
+      IdxCompareTmp.RESET;
+      IdxCompareTmp.DELETEALL;
+      CLEAR(IdxCompareTmp);
+
+      IdxIndex.SETRANGE(SnapDateTime, Snapshot);
+      IF IdxIndex.FINDSET THEN BEGIN
+        Window.OPEN('Loading SQL Indexes ...\' +
+                    '@1@@@@@@@@@@@@@@@@@@');
+        c := IdxIndex.COUNT;
+        i := 0;
+
+        REPEAT
+
+          IdxCompareTmp.INIT;
+          IdxCompareTmp."Entry No." := i;
+          IdxCompareTmp."Object ID" := IdxIndex.object_id;
+          IdxCompareTmp."Object Name" := IdxIndex.object_name;
+          IdxCompareTmp."Index ID" := IdxIndex.index_id;
+          IdxCompareTmp."Index Name" := COPYSTR(IdxIndex.index_name, 1, 116);
+          IdxCompareTmp."Index Columns" := GetColumns();
+          IdxCompareTmp."Is Clustered" := (IdxIndex.type = 1);
+          IdxCompareTmp.INSERT;
+
+          i := i + 1;
+          Window.UPDATE(1, ROUND(10000 / c * i, 1))
+
+        UNTIL IdxIndex.NEXT = 0;
+        Window.CLOSE;
+      END;
+
+      IF IdxCompare.FINDSET(TRUE) THEN BEGIN
+        Window.OPEN('Comparing Keys and Indexes ...\' +
+                    '@1@@@@@@@@@@@@@@@@@@');
+        i := 0;
+
+        REPEAT
+
+          // Reset Fields
+          IdxCompare."Object ID" := 0;
+          IdxCompare."Object Name" := '';
+          IdxCompare."Index ID" := 0;
+          IdxCompare."Index Name" := '';
+          IdxCompare."Index Columns" := '';
+          IdxCompare."Is Clustered" := FALSE;
+          IdxCompare."SQL Index Modified" := FALSE;
+          IdxCompare."SQL Index Missing" := FALSE;
+          IdxCompare."Add. SQL Index" := FALSE;
+
+          // Assign Tablenames
+          IF IdxCompare."Data Per Company" THEN
+            TabName := CONVERTSTR(STRSUBSTNO('%1$%2', COMPANYNAME, IdxCompare."Table Name"), '."\/''', '_____')
+          ELSE
+            TabName := CONVERTSTR(STRSUBSTNO('%1', IdxCompare."Table Name"), '."\/''', '_____');
+
+          // Find Indexes
+          IdxCompareTmp.SETRANGE("Object Name", TabName);
+          IF IdxCompareTmp.FINDSET THEN BEGIN
+            IF IdxCompare."SQL Index" <> '' THEN
+              KeyText := IdxCompare."SQL Index"
+            ELSE
+              KeyText := GetUniqueIndex();
+          END;
+          IdxCompareTmp.SETRANGE("Index Columns", KeyText);
+          IF IdxCompareTmp.FINDFIRST THEN BEGIN
+            IdxCompare."Object ID" := IdxCompareTmp."Object ID";
+            IdxCompare."Object Name" := IdxCompareTmp."Object Name";
+            IdxCompare."Index ID" := IdxCompareTmp."Index ID";
+            IdxCompare."Index Name" := IdxCompareTmp."Index Name";
+            IdxCompare."Index Columns" := IdxCompareTmp."Index Columns";
+            IdxCompare."Is Clustered" := IdxCompareTmp."Is Clustered";
+          END ELSE BEGIN
+            // Find pre-modifed Index
+            IdxCompareTmp.SETRANGE("Index Columns", IdxCompare."Key Fields");
+            IF IdxCompareTmp.FINDFIRST THEN BEGIN
+              IdxCompare."Object ID" := IdxCompareTmp."Object ID";
+              IdxCompare."Object Name" := IdxCompareTmp."Object Name";
+              IdxCompare."Index ID" := IdxCompareTmp."Index ID";
+              IdxCompare."Index Name" := IdxCompareTmp."Index Name";
+              IdxCompare."Index Columns" := IdxCompareTmp."Index Columns";
+              IdxCompare."Is Clustered" := IdxCompareTmp."Is Clustered";
+              IdxCompare."SQL Index Modified" := TRUE;
+            END;
+          END;
+
+          IdxCompareTmp.SETRANGE("Index Columns");
+
+          IF (IdxCompare."Index Name" = '') AND IdxCompare.Enabled AND IdxCompare."Maintain SQL Index" THEN
+            IdxCompare."SQL Index Missing" := TRUE;
+          IdxCompare."Add. SQL Index" := FALSE;
+          IdxCompare.MODIFY;
+
+          i := i + 1;
+          Window.UPDATE(1, ROUND(10000 / c * i, 1))
+
+        UNTIL IdxCompare.NEXT = 0;
+        Window.CLOSE;
+      END;
+
+      COMMIT;
+
+      IdxIndex.SETRANGE(SnapDateTime, Snapshot);
+      IF IdxIndex.FINDSET THEN BEGIN
+        Window.OPEN('Searching add. SQL Indexes ...\' +
+                    '@1@@@@@@@@@@@@@@@@@@');
+        c := IdxIndex.COUNT;
+        i := 0;
+
+        IdxCompare.RESET;
+        REPEAT
+          IdxCompare.SETRANGE("Object ID", IdxIndex.object_id);
+          IdxCompare.SETRANGE("Index ID", IdxIndex.index_id);
+          IF IdxCompare.ISEMPTY THEN BEGIN
+            IdxCompare.INIT;
+            IdxCompare."Entry No." := 0;
+            IdxCompare."Object ID" := IdxIndex.object_id;
+            IdxCompare."Object Name" := IdxIndex.object_name;
+            IdxCompare."Index ID" := IdxIndex.index_id;
+            IdxCompare."Index Name" := COPYSTR(IdxIndex.index_name, 1, 116);
+            IdxCompare."Index Columns" := GetColumns();
+            IdxCompare."Is Clustered" := (IdxIndex.type = 1);
+            IdxCompare."Add. SQL Index" := TRUE;
+            IdxCompare.INSERT;
+          END;
+
+          i := i + 1;
+          Window.UPDATE(1, ROUND(10000 / c * i, 1))
+
+        UNTIL IdxIndex.NEXT = 0;
+        Window.CLOSE;
+      END;
+
+      GLOBALLANGUAGE(LanguageID);
+    END;
+
+    PROCEDURE UpdateUsage@1000000006();
+    VAR
+      ExecADO@1000000000 : Codeunit 90100;
+      Statement@1000000001 : Text[1024];
+    BEGIN
+      Statement := 'EXECUTE ssi_indexusage @mode=''save''';
+      ExecADO.ExecuteStatement(Statement);
+      YIELD;
+    END;
+
+    PROCEDURE Execute@1000000002(VAR InIdxCompareExec@1000000002 : Record 90113);
+    VAR
+      ExecADO@1000000000 : Codeunit 90100;
+      Statement@1000000001 : Text[1024];
+    BEGIN
+      IdxCompare.COPYFILTERS(InIdxCompareExec);
+      IF NOT IdxCompare.FINDSET THEN
+        EXIT;
+
+      Window.OPEN('Executing Action ...\' +
+                  '@1@@@@@@@@@@@@@@@@@@');
+      c := IdxCompare.COUNT;
+      i := 0;
+
+      REPEAT
+        CASE IdxCompare.Action OF
+          IdxCompare.Action::"1 Maintain SQL Index TRUE": BEGIN
+            IF Keys.GET(IdxCompare."Table ID", IdxCompare."Key ID") THEN BEGIN
+              // Activate Index
+              Keys.VALIDATE(MaintainSQLIndex, TRUE);
+              Keys.MODIFY;
+              COMMIT;
+              YIELD;
+            END;
+          END;
+
+          IdxCompare.Action::"2 Maintain SQL Index FALSE": BEGIN
+            IF Keys.GET(IdxCompare."Table ID", IdxCompare."Key ID") THEN BEGIN
+              IF IdxCompare."Index Name" = '' THEN BEGIN   // Index already deleted on SQL Server site
+                // Create Dummy-Index
+                Statement := 'CREATE INDEX [$' + FORMAT(IdxCompare."Key ID" - 1) + '] ON [';
+                IF IdxCompare."Data Per Company" THEN
+                  Statement := Statement + CONVERTSTR(COMPANYNAME, '."\/''', '_____') + '$';
+                Statement := Statement + CONVERTSTR(IdxCompare."Table Name", '."\/''', '_____') + '] ([timestamp])';
+                ExecADO.ExecuteStatement(Statement);
+                YIELD;
+              END;
+              // Deactivate Index
+              Keys.VALIDATE(MaintainSQLIndex, FALSE);
+              Keys.MODIFY;
+              COMMIT;
+              YIELD;
+            END;
+          END;
+
+          IdxCompare.Action::"3 Create SQL Index": BEGIN
+            IF Keys.GET(IdxCompare."Table ID", IdxCompare."Key ID") THEN BEGIN
+              IF IdxCompare."SQL Index" <> '' THEN
+                KeyText := IdxCompare."SQL Index"
+              ELSE
+                KeyText := GetUniqueIndex();
+              Statement := 'CREATE';
+              IF IdxCompare."SQL Index" = '' THEN
+                Statement := Statement + ' UNIQUE';
+              Statement := Statement + ' INDEX [$' + FORMAT(IdxCompare."Key ID" - 1) + '] ON [';
+              IF IdxCompare."Data Per Company" THEN
+                Statement := Statement + CONVERTSTR(COMPANYNAME, '."\/''', '_____') + '$';
+              Statement := Statement + CONVERTSTR(IdxCompare."Table Name", '."\/''', '_____') +
+                           '] (' + FormatIndexField(KeyText) + ')';
+              ExecADO.ExecuteStatement(Statement);
+              YIELD;
+            END;
+          END;
+
+          IdxCompare.Action::"4 Drop SQL Index": BEGIN
+            IF (IdxCompare."Object Name" <> '') AND
+               (IdxCompare."Index Name" <> '')
+            THEN BEGIN
+              Statement := 'DROP INDEX [' + IdxCompare."Object Name" + '].[' + IdxCompare."Index Name" + ']';
+              ExecADO.ExecuteStatement(Statement);
+              YIELD;
+            END;
+          END;
+
+          IdxCompare.Action::"5 Maintain SIFT Index TRUE": BEGIN
+            IF Keys.GET(IdxCompare."Table ID", IdxCompare."Key ID") THEN BEGIN
+              // Activate SIFT
+              Keys.VALIDATE(MaintainSIFTIndex, TRUE);
+              Keys.MODIFY;
+              COMMIT;
+              YIELD;
+            END;
+          END;
+
+          IdxCompare.Action::"6 Maintain SIFT Index FALSE": BEGIN
+            IF Keys.GET(IdxCompare."Table ID", IdxCompare."Key ID") THEN BEGIN
+              // Deactivate SIFT
+              Keys.VALIDATE(MaintainSIFTIndex, FALSE);
+              Keys.MODIFY;
+              COMMIT;
+              YIELD;
+            END;
+          END;
+
+
+        END;
+        i := i + 1;
+        Window.UPDATE(1, ROUND(10000 / c * i, 1))
+      UNTIL IdxCompare.NEXT = 0;
+      Window.CLOSE;
+    END;
+
+    LOCAL PROCEDURE GetColumns@1000000003() Columns : Text[1024];
+    BEGIN
+      IdxColumns.SETCURRENTKEY(SnapDateTime, object_id, index_id, key_ordinal, is_included_column);
+      IdxColumns.SETRANGE(SnapDateTime, IdxIndex.SnapDateTime);
+      IdxColumns.SETRANGE(object_id, IdxIndex.object_id);
+      IdxColumns.SETRANGE(index_id, IdxIndex.index_id);
+      IdxColumns.SETRANGE(is_included_column, 0);
+
+      IF NOT IdxColumns.FINDSET THEN
+        EXIT('');
+
+      Columns := '';
+      REPEAT
+        Columns := Columns + IdxColumns.column_name  + ',';
+      UNTIL IdxColumns.NEXT = 0;
+
+      Columns := COPYSTR(Columns, 1, STRLEN(Columns) - 1);
+      IF STRLEN(Columns) <= 250 THEN
+        EXIT(Columns)
+      ELSE
+        EXIT('');
+    END;
+
+    LOCAL PROCEDURE GetUniqueIndex@1000000004() UniqueIndex : Text[1024];
+    VAR
+      Keys2@1000000000 : Record 2000000063;
+      PKFields@1000000001 : Text[1024];
+      PKField@1000000002 : Text[30];
+      UniqueIndex2@1000000004 : Text[1024];
+      AddField@1000000003 : Boolean;
+    BEGIN
+      IF  IdxCompare."Key Fields" = '' THEN
+        EXIT('');
+      UniqueIndex := IdxCompare."Key Fields";
+
+      // Get Primary Key
+      Keys2.GET(IdxCompare."Table ID", 1);
+      PKFields := CONVERTSTR(Keys2.Key, '."\/''', '_____') + ',';
+
+      WHILE (STRPOS(PKFields, ',') <> 0) DO BEGIN
+        UniqueIndex2 := UniqueIndex + ',';
+        PKField := SELECTSTR(1, PKFields);
+        AddField := TRUE;
+        WHILE (STRPOS(UniqueIndex2, ',') <> 0) AND AddField DO BEGIN
+          IF SELECTSTR(1, UniqueIndex2) = PKField THEN
+            AddField := FALSE;
+          UniqueIndex2 := DELSTR(UniqueIndex2, 1, STRPOS(UniqueIndex2, ','));
+        END;
+        IF AddField THEN
+          UniqueIndex := UniqueIndex + ',' + PKField;
+
+        PKFields := DELSTR(PKFields, 1, STRPOS(PKFields, ','));
+      END;
+
+      IF STRLEN(UniqueIndex) <= 250 THEN
+        EXIT(UniqueIndex)
+      ELSE
+        EXIT('');
+    END;
+
+    PROCEDURE FormatIndexField@1000000007(KeyList@1000000000 : Text[1024]) KeyListFormat : Text[1024];
+    BEGIN
+      IF KeyList = '' THEN
+        EXIT('');
+
+      KeyList := KeyList + ',';
+
+      WHILE (STRPOS(KeyList, ',') <> 0) DO BEGIN
+        KeyListFormat := KeyListFormat + '[' + CONVERTSTR(SELECTSTR(1, KeyList), '."\/''', '_____') + '],';
+        KeyList := DELSTR(KeyList, 1, STRPOS(KeyList, ','));
+      END;
+
+      KeyListFormat := COPYSTR(KeyListFormat, 1, STRLEN(KeyListFormat) - 1);
+      EXIT(KeyListFormat);
+    END;
+
+    PROCEDURE CheckSelectivity@1000000008(TableName@1000000000 : Text[128];IndexName@1000000001 : Text[128]);
+    VAR
+      ExecSQLCMD@1000000003 : Codeunit 90101;
+      Statement@1000000002 : Text[1024];
+      Outputfile@1000000004 : Text[1024];
+    BEGIN
+      IF TableName = '' THEN
+        EXIT;
+
+      Outputfile := ENVIRON('TEMP') + '\~idx_selectivity.tmp';
+      IF EXISTS(Outputfile) THEN BEGIN
+        ERASE(Outputfile);
+        YIELD;
+      END;
+
+      Statement := 'EXEC ssi_selectivity @tab_name=''' + TableName + '''';
+      IF IndexName <> '' THEN
+        Statement := Statement + ', @idx_name=''' + IndexName + '''';
+      ExecSQLCMD.ExecuteStatement(Statement, Outputfile);
+      YIELD;
+    END;
+
+    PROCEDURE MissingIdxProposal@1000000009();
+    VAR
+      ExecSQLCMD@1000000003 : Codeunit 90101;
+      Statement@1000000002 : Text[1024];
+      Outputfile@1000000004 : Text[1024];
+    BEGIN
+      Outputfile := ENVIRON('TEMP') + '\~idx_missiin.tmp';
+      IF EXISTS(Outputfile) THEN BEGIN
+        ERASE(Outputfile);
+        YIELD;
+      END;
+
+      Statement := 'EXEC ssi_missingidx @display=0';
+      ExecSQLCMD.ExecuteStatement(Statement, Outputfile);
+      YIELD;
+    END;
+
+    BEGIN
+    {
+      *********************************************************
+      ***              STRYK System Improvement             ***
+      ***    Performance Optimization & Troubleshooting     ***
+      ***  (c) 2008, STRYK System Improvement, J”rg Stryk   ***
+      ***               Contact: www.stryk.info             ***
+      *********************************************************
+    }
+    END.
+  }
+}
+

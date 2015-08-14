@@ -1,0 +1,177 @@
+OBJECT Codeunit 50251 Container Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=27.11.14;
+    Time=12:07:55;
+    Version List=#HME1166;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      CopyDocMgt@1000000000 : Codeunit 6620;
+      UserSetup@1000000002 : Record 91;
+      ApprovalMgt@1000000004 : Codeunit 439;
+      PurchPost@1000000005 : Codeunit 90;
+      TextHME001@1000000006 : TextConst 'DEU=Menge geliefert muss gr”áer als 0 sein;ENU="Quantity Received of Item No. %1 must be greate then 0  "';
+      TextHME002@1000000007 : TextConst 'DEU=Menge zu fakturieren muss gr”áer als 0 sein;ENU="Qty. to Invoice of Item No. %1 must be %2  "';
+      TextHME003@1000000009 : TextConst 'DEU=Es gibt nichts zu buchen.;ENU=There is nothing to post.';
+      PurchSetup@1000000008 : Record 312;
+
+    PROCEDURE InvoiceContainer@1000000022(VAR Rec@1000000006 : Record 39);
+    VAR
+      PurchPOHeaderL@1000000001 : Record 38;
+      PurchPOLineL@1000000002 : Record 39;
+      ContCMHeaderL@1000000003 : Record 38;
+      CopyDocMgt@1000000004 : Codeunit 6620;
+      ContCMLineL@1000000005 : Record 39;
+      PurchInvLineL@1000000007 : Record 123;
+      PurchInvHeaderL@1000000010 : Record 122;
+      LinesNotCopiedL@1000000008 : Integer;
+      MissingExCostRevLinkL@1000000009 : Boolean;
+      PurchPostL@1000000011 : Codeunit 90;
+      ContPurchLineL@1000000000 : Record 39;
+      ContPurchHeaderL@1000000012 : Record 38;
+    BEGIN
+      UserSetup.GET(USERID);
+      UserSetup.TESTFIELD("Allow Container Invoicing", TRUE);
+
+      PurchSetup.GET;
+      PurchSetup.TESTFIELD("Cont. Vend. Invoice No. Format");
+      PurchSetup.TESTFIELD("Cont. Vend. C. M. No. Format");
+
+      ContPurchLineL.COPY(Rec);
+      ContPurchHeaderL.GET(ContPurchLineL."Document Type",ContPurchLineL."Document No.");
+
+      CheckContainer(ContPurchLineL, ContPurchHeaderL);
+      CreateCMofContainer(ContCMHeaderL, ContPurchLineL);
+
+      PostCMofContainer(ContCMHeaderL);
+      PostPOofContainer(ContPurchHeaderL);
+
+      Rec := ContPurchLineL;
+    END;
+
+    PROCEDURE CreateCMofContainer@1000000002(VAR ContCMHeaderR@1000000001 : Record 38;ContPurchLineV@1000000003 : Record 39);
+    VAR
+      PurchInvLineL@1000000000 : Record 123;
+      PurchInvHeaderL@1000000002 : Record 122;
+      LinesNotCopiedL@1000000004 : Integer;
+      MissingExCostRevLinkL@1000000005 : Boolean;
+    BEGIN
+      PurchInvLineL.RESET;
+      PurchInvLineL.SETCURRENTKEY("Order No.","Order Line No.","Posting Date");
+      PurchInvLineL.SETRANGE("Order No.", ContPurchLineV."Document No.");
+      PurchInvLineL.SETRANGE("Order Line No.", ContPurchLineV."Line No.");
+      IF NOT PurchInvLineL.FINDFIRST THEN
+        EXIT;
+
+      PurchInvHeaderL.GET(PurchInvLineL."Document No.");
+
+      ContCMHeaderR.RESET;
+      ContCMHeaderR.INIT;
+      ContCMHeaderR."Document Type" := ContCMHeaderR."Document Type"::"Credit Memo";
+      ContCMHeaderR.VALIDATE("Posting Date", GetLastPostingDate(ContPurchLineV));
+      ContCMHeaderR.INSERT(TRUE);
+
+      ContCMHeaderR.VALIDATE("Buy-from Vendor No.", PurchInvHeaderL."Buy-from Vendor No.");
+      ContCMHeaderR.VALIDATE("Currency Code", PurchInvHeaderL."Currency Code");
+      ContCMHeaderR.VALIDATE("Currency Factor", PurchInvHeaderL."Currency Factor");
+      ContCMHeaderR.VALIDATE("Vendor Cr. Memo No.", STRSUBSTNO(PurchSetup."Cont. Vend. C. M. No. Format",
+                                                                            ContPurchLineV."Document No.",
+                                                                            ContPurchLineV."Cont. Reference"));
+      ContCMHeaderR."REB Gross Invoice Amount" := PurchInvLineL."Amount Including VAT";
+      ContCMHeaderR.MODIFY(TRUE);
+
+      CopyDocMgt.SetProperties(FALSE,FALSE,FALSE,FALSE,TRUE,TRUE,FALSE);
+      CopyDocMgt.CopyPurchInvLinesToDoc(ContCMHeaderR,PurchInvLineL,LinesNotCopiedL,MissingExCostRevLinkL);
+      CLEAR(CopyDocMgt);
+    END;
+
+    PROCEDURE PostCMofContainer@1000000003(VAR ContCMHeaderR@1000000000 : Record 38);
+    VAR
+      SalesHeaderL@1000000001 : Record 36;
+    BEGIN
+      IF ApprovalMgt.PrePostApprovalCheck(SalesHeaderL,ContCMHeaderR) THEN
+        CODEUNIT.RUN(CODEUNIT::"Purch.-Post (Yes/No)",ContCMHeaderR);
+    END;
+
+    PROCEDURE PostPOofContainer@1000000004(VAR ContPurchHeaderR@1000000000 : Record 38);
+    BEGIN
+      CLEAR(PurchPost);
+      ContPurchHeaderR.Invoice := TRUE;
+      PurchPost.RUN(ContPurchHeaderR);
+    END;
+
+    PROCEDURE GetLastPostingDate@1000000023(parContPOLineV@1000000001 : Record 39) : Date;
+    VAR
+      PurchRcptHeaderL@1000000000 : Record 120;
+      PurchRcptLineL@1000000002 : Record 121;
+    BEGIN
+      PurchRcptLineL.RESET;
+      PurchRcptLineL.SETRANGE("Order No.",  parContPOLineV."Document No.");
+      PurchRcptLineL.SETRANGE("Cont. Reference",  parContPOLineV."Cont. Reference");
+      IF PurchRcptLineL.FINDLAST THEN BEGIN
+        PurchRcptHeaderL.GET(PurchRcptLineL."Document No.");
+        EXIT(PurchRcptHeaderL."Posting Date");
+      END;
+    END;
+
+    PROCEDURE CheckContainer@1000000024(ContPurchLineV@1000000000 : Record 39;VAR ContPurchHeaderR@1000000002 : Record 38);
+    VAR
+      PurchLineL@1000000001 : Record 39;
+    BEGIN
+      ContPurchLineV.TESTFIELD(Carrier, TRUE);
+
+      PurchLineL.RESET;
+      PurchLineL.SETRANGE("Document Type", ContPurchLineV."Document Type");
+      PurchLineL.SETRANGE("Document No.", ContPurchLineV."Document No.");
+      PurchLineL.SETRANGE("Cont. Reference", ContPurchLineV."Cont. Reference");
+      PurchLineL.SETRANGE(Carrier, FALSE);
+      IF PurchLineL.FINDFIRST THEN REPEAT
+        IF PurchLineL."Quantity Received" = 0 THEN
+          ERROR(TextHME001, PurchLineL."No.");
+
+        IF PurchLineL."Qty. to Invoice" = 0 THEN BEGIN
+          PurchLineL.VALIDATE("Qty. to Invoice", PurchLineL."Quantity Received");
+          PurchLineL.MODIFY;
+        END ELSE BEGIN
+          IF PurchLineL."Qty. to Invoice" <> PurchLineL."Quantity Received" THEN
+            ERROR(TextHME002, PurchLineL."No.", PurchLineL."Quantity Received"  );
+        END;
+
+      UNTIL PurchLineL.NEXT = 0;
+
+      IF ContPurchLineV."Quantity Invoiced" = 0 THEN
+        ERROR(TextHME003);
+
+      ContPurchHeaderR.VALIDATE("Vendor Invoice No.", STRSUBSTNO(PurchSetup."Cont. Vend. Invoice No. Format",
+                                                                            ContPurchLineV."Document No.",
+                                                                            ContPurchLineV."Cont. Reference"));
+      ContPurchHeaderR.MODIFY;
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+
+      H1166       01.10.14  MDO       Created for Container Invoice functionality
+    }
+    END.
+  }
+}
+

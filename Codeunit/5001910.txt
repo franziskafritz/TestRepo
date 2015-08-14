@@ -1,0 +1,292 @@
+OBJECT Codeunit 5001910 Payment Gen. Jnl.-Post Line
+{
+  OBJECT-PROPERTIES
+  {
+    Date=13.09.13;
+    Time=16:04:45;
+    Modified=Yes;
+    Version List=AR5.00,eBay1.07.02,DN(1),GOB1.00;
+  }
+  PROPERTIES
+  {
+    TableNo=273;
+    Permissions=TableData 271=imd;
+    OnRun=BEGIN
+            BankAccRecon := Rec;
+            Code;
+            Rec := BankAccRecon;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      GLSetup@1105400000 : Record 98;
+      SourceCodeSetup@1105400011 : Record 242;
+      BankAccRecon@1105400006 : Record 273;
+      GenJnlLine@1105400002 : TEMPORARY Record 81;
+      BankAccLedgEntry@1105400001 : Record 271;
+      TempJnlLineDim@1105400012 : TEMPORARY Record 356;
+      BankAccReconLine@1105400003 : Record 274;
+      BankAccReconLine2@1105400013 : Record 274;
+      DocDim@1105400007 : Record 357;
+      GenJnlPostLine@1105400004 : Codeunit 12;
+      Text1105400000@1105400015 : TextConst 'DEU=Zeilen buchen              #2######;ENU=Posting lines              #2######';
+      Text1105400001@1105400014 : TextConst 'DEU=%1 stimmt nicht mit dem Totalsaldo Åberein;ENU=%1 is not equal to Total Balance';
+      Window@1105400016 : Dialog;
+      "------------------------------"@1000000001 : Integer;
+      CustLedgEntry@1000000000 : Record 21;
+      "***gob***"@1108200000 : Integer;
+      JnlLineDim@1108200001 : Record 356;
+      BankACC@1000000002 : Record 270;
+      GOBText001@1000000003 : TextConst 'DEU=Die Debitorenbuchungsgruppe in der Bankkontokarte entspricht nicht der Debitorenbuchunggruppe in den Ausgleichsposten in der Zeile %1;ENU=The customer posting group of the bank account differs to the applied customer ledger entry in line no. %1';
+
+    PROCEDURE Code@1105400000();
+    VAR
+      TempJnlLineDim@1105400000 : TEMPORARY Record 356;
+      TempDimBuf@1105400001 : TEMPORARY Record 357;
+      EntryNo@1105400002 : Integer;
+    BEGIN
+      BankAccRecon.TESTFIELD("Statement Date");
+      BankAccReconLine2.RESET;
+      BankAccReconLine2.SETRANGE("Bank Account No.",BankAccRecon."Bank Account No.");
+      BankAccReconLine2.SETRANGE("Statement No.",BankAccRecon."Statement No.");
+      BankAccReconLine2.CALCSUMS("Statement Amount",Difference);
+      IF BankAccReconLine2."Statement Amount" <> BankAccRecon."Statement Ending Balance" - BankAccRecon."Balance Last Statement" THEN
+        ERROR(Text1105400001,BankAccRecon.FIELDCAPTION("Statement Ending Balance"));
+
+      Window.OPEN(
+        '#1#################################\\' +
+        Text1105400000);
+
+      BankAccReconLine.SETRANGE("Bank Account No.",BankAccRecon."Bank Account No.");
+      BankAccReconLine.SETRANGE("Statement No.",BankAccRecon."Statement No.");
+      IF BankAccReconLine.FINDFIRST THEN REPEAT
+        Window.UPDATE(1,STRSUBSTNO('%1 %2',BankAccRecon."Bank Account No.",BankAccRecon."Statement No."));
+        PostGLAcc(BankAccReconLine);
+      UNTIL BankAccReconLine.NEXT = 0;
+    END;
+
+    PROCEDURE PostGLAcc@1105400002(VAR BankAccRecLine@1105400000 : Record 274) : Boolean;
+    VAR
+      L_PaymMethod@1000000000 : Code[10];
+      OffSetL@1000000001 : Integer;
+    BEGIN
+      IF (BankAccRecLine.Difference = 0) OR (BankAccRecLine.Type > BankAccRecLine.Type::"Bank Account Ledger Entry") THEN
+        EXIT(FALSE);
+
+      SourceCodeSetup.GET;
+      SourceCodeSetup.TESTFIELD("Bank Acc. Reconciliation");
+      //A/gob-ko/120913/P1105
+      BankACC.GET(BankAccRecLine."Bank Account No.");
+      //E/gob-ko/120913/P1105
+
+      IF BankAccRecLine.Difference <> 0 THEN
+        BankAccRecLine.TESTFIELD("Bal. Account No.");
+      GenJnlLine.INIT;
+      GenJnlLine.VALIDATE("Posting Date",BankAccRecLine."Transaction Date");
+      GenJnlLine."Document Type" := BankAccRecLine."Document Type";
+      GenJnlLine."Account Type" := BankAccRecLine."Bal. Account Type";
+      GenJnlLine.VALIDATE("Account No.",BankAccRecLine."Bal. Account No.");
+      GenJnlLine."Document No." := BankAccRecLine."Document No.";
+      GenJnlLine."Bal. Account Type" := GenJnlLine."Account Type"::"Bank Account";
+      GenJnlLine.VALIDATE("Bal. Account No.",BankAccRecLine."Bank Account No.");
+      GenJnlLine.Description := BankAccRecLine.Description;
+      //A/gob-ko/120513/P1105
+      IF (GenJnlLine."Account Type" = GenJnlLine."Account Type"::Customer) THEN BEGIN
+         GenJnlLine."Posting Group" := BankACC."Customer Posting Group";
+      END;
+      //E/gob-ko/120513/P1105
+      GenJnlLine.VALIDATE("Currency Code",BankAccRecLine."Currency Code");
+      GenJnlLine.VALIDATE("Currency Factor",BankAccRecLine."Currency Factor");
+      GenJnlLine.VALIDATE(Amount,-BankAccRecLine.Difference);
+      GenJnlLine.VALIDATE("Gen. Bus. Posting Group",BankAccRecLine."Bal. Gen. Bus. Posting Group");
+      GenJnlLine.VALIDATE("Gen. Prod. Posting Group",BankAccRecLine."Bal. Gen. Prod. Posting Group");
+      GenJnlLine.VALIDATE("VAT Bus. Posting Group",BankAccRecLine."Bal. VAT Bus. Posting Group");
+      GenJnlLine.VALIDATE("VAT Prod. Posting Group",BankAccRecLine."Bal. VAT Prod. Posting Group");
+      GenJnlLine.VALIDATE("Gen. Posting Type",BankAccRecLine."Bal. Gen. Posting Type");
+      GenJnlLine."VAT Calculation Type" := BankAccRecLine."Bal. VAT Calculation Type";
+      GenJnlLine.VALIDATE("VAT %",BankAccRecLine."Bal. VAT %");
+      GenJnlLine."Applies-to Doc. Type" := BankAccRecLine."Applies-to Doc. Type";
+      GenJnlLine."Applies-to Doc. No." := BankAccRecLine."Applies-to Doc. No.";
+      GenJnlLine."Applies-to ID" := BankAccRecLine."Applies-to ID";
+      GenJnlLine."External Document No." := BankAccRecLine."Statement No.";
+      GenJnlLine."Source Code" := SourceCodeSetup."Bank Acc. Reconciliation";
+      GenJnlLine."Shortcut Dimension 1 Code" := BankAccRecLine."Global Dimension 1 Code";
+      GenJnlLine."Shortcut Dimension 2 Code" := BankAccRecLine."Global Dimension 2 Code";
+      //eBay#001
+      GenJnlLine.PayPal := BankAccRecLine."PayPal Import";
+      GenJnlLine."Bank Account No. 2" := BankAccRecLine."Bank Account No.";
+      GenJnlLine."Statement No." := BankAccRecLine."Statement No.";
+      GenJnlLine."Statement Line No." := BankAccRecLine."Statement Line No.";
+      //eBay#001
+
+      // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+      IF GenJnlLine."Account Type" = GenJnlLine."Account Type"::Customer THEN
+        IF (GenJnlLine."Applies-to Doc. Type" <> GenJnlLine."Applies-to Doc. Type"::Order) AND
+           (GenJnlLine."Applies-to Doc. No." <> '') THEN BEGIN
+          CustLedgEntry.RESET;
+          CustLedgEntry.SETCURRENTKEY("Document No.","Document Type","Customer No.");
+          CustLedgEntry.SETRANGE("Document No.",GenJnlLine."Applies-to Doc. No.");
+          CustLedgEntry.SETRANGE("Document Type",GenJnlLine."Applies-to Doc. Type");
+          CustLedgEntry.SETRANGE("Customer No.",GenJnlLine."Account No.");
+          IF CustLedgEntry.FINDFIRST AND (CustLedgEntry."Payment Method Code" <> '') THEN BEGIN
+            //A/gob-ko/120913/P1105
+            //GenJnlLine."Posting Group" := '';
+            IF CustLedgEntry."Customer Posting Group" <> GenJnlLine."Posting Group" THEN
+               //ERROR(GOBText001,BankAccRecLine."Statement Line No.");
+               GenJnlLine."Posting Group" := CustLedgEntry."Customer Posting Group";
+            //E/gob-ko/120913/P1105
+            GenJnlLine."Payment Method Code" := CustLedgEntry."Payment Method Code";
+          END;
+        END ELSE
+          IF GenJnlLine."Applies-to ID" <> '' THEN BEGIN
+            CustLedgEntry.RESET;
+            CustLedgEntry.SETCURRENTKEY("Customer No.","Applies-to ID",Open,Positive,"Due Date");
+            CustLedgEntry.SETRANGE("Customer No.",GenJnlLine."Account No.");
+            CustLedgEntry.SETRANGE("Applies-to ID",GenJnlLine."Applies-to Doc. No.");
+            IF CustLedgEntry.FINDSET THEN BEGIN
+              L_PaymMethod := CustLedgEntry."Payment Method Code";
+              REPEAT
+              //A/gob-ko/120913/P1105
+              //  CustLedgEntry.TESTFIELD("Payment Method Code",L_PaymMethod);
+              IF CustLedgEntry."Customer Posting Group" <> GenJnlLine."Posting Group" THEN
+                 ERROR(GOBText001,BankAccRecLine."Statement Line No.");
+              //e/gob-ko/120913/P1105
+              UNTIL CustLedgEntry.NEXT = 0;
+              //A/gob-ko/120913/P1105
+              //GenJnlLine."Posting Group" := '';
+              //E/gob-ko/120913/P1105
+              GenJnlLine."Payment Method Code" := L_PaymMethod;
+            END;
+          END;
+      // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+      GenJnlLine.UpdateLineBalance();
+      //PostingDimtoGenJnlLine;
+      //A/gob-ko/P1105/13092013/StandardNAV2009 eingefÅgt
+      {
+
+      TempJnlLineDim.DELETEALL;
+      //A/gob-jvi/10.05.2012 Bugfix
+      {***
+      DocDim.SETRANGE("Table ID",DATABASE::"Bank Acc. Reconciliation Line");
+      DocDim.SETRANGE("Document Type",0);
+      DocDim.SETRANGE("Document No.",BankAccRecLine."Statement No.");
+      DocDim.SETRANGE("Line No.",BankAccRecLine."Statement Line No.");
+      IF DocDim.FINDFIRST THEN REPEAT
+        TempJnlLineDim."Table ID" := DATABASE::"Gen. Journal Line";
+        TempJnlLineDim."Dimension Code" := DocDim."Dimension Code";
+        TempJnlLineDim."Dimension Value Code" := DocDim."Dimension Value Code";
+        TempJnlLineDim.INSERT(TRUE);   // khf
+      UNTIL DocDim.NEXT=0;
+      ***}
+      JnlLineDim.SETRANGE("Table ID",DATABASE::"Bank Acc. Reconciliation Line");
+      JnlLineDim.SETRANGE("Journal Template Name",BankAccRecLine."Bank Account No.");
+      JnlLineDim.SETRANGE("Journal Batch Name",BankAccRecLine."Statement No.");
+      JnlLineDim.SETRANGE("Journal Line No.",BankAccRecLine."Statement Line No.");
+      IF JnlLineDim.FINDFIRST THEN REPEAT
+        TempJnlLineDim."Table ID" := DATABASE::"Gen. Journal Line";
+        TempJnlLineDim."Dimension Code" := JnlLineDim."Dimension Code";
+        TempJnlLineDim."Dimension Value Code" := JnlLineDim."Dimension Value Code";
+        IF NOT TempJnlLineDim.INSERT(TRUE) THEN TempJnlLineDim.MODIFY(TRUE);   // khf
+      //A/gob-ko/070912/P0300
+      //UNTIL DocDim.NEXT=0;
+      UNTIL JnlLineDim.NEXT = 0;
+      //E/gob-ko/070912/P0300
+      //E/gob-jvi/10.05.2012
+      GLSetup.GET;
+      IF BankAccRecLine."Global Dimension 1 Code" <> '' THEN BEGIN
+        TempJnlLineDim."Table ID" := DATABASE::"Gen. Journal Line";
+        TempJnlLineDim."Dimension Code" := GLSetup."Global Dimension 1 Code";
+        TempJnlLineDim."Dimension Value Code" := BankAccRecLine."Global Dimension 1 Code";
+        IF NOT TempJnlLineDim.INSERT THEN
+          TempJnlLineDim.MODIFY;
+      END;
+      IF BankAccRecLine."Global Dimension 2 Code" <> '' THEN BEGIN
+        TempJnlLineDim."Table ID" := DATABASE::"Gen. Journal Line";
+        TempJnlLineDim."Dimension Code" := GLSetup."Global Dimension 2 Code";
+        TempJnlLineDim."Dimension Value Code" := BankAccRecLine."Global Dimension 2 Code";
+        IF NOT TempJnlLineDim.INSERT THEN
+          TempJnlLineDim.MODIFY;
+      END;
+      }
+      //Beginn neuer Standard
+      TempJnlLineDim.RESET;
+      TempJnlLineDim.DELETEALL;
+
+      GLSetup.GET;
+      IF BankAccRecLine."Global Dimension 1 Code" <> '' THEN BEGIN
+        TempJnlLineDim."Table ID" := DATABASE::"Gen. Journal Line";
+        TempJnlLineDim."Dimension Code" := GLSetup."Global Dimension 1 Code";
+        TempJnlLineDim."Dimension Value Code" := BankAccRecLine."Global Dimension 1 Code";
+        IF NOT TempJnlLineDim.INSERT THEN
+          TempJnlLineDim.MODIFY;
+      END;
+      IF BankAccRecLine."Global Dimension 2 Code" <> '' THEN BEGIN
+        TempJnlLineDim."Table ID" := DATABASE::"Gen. Journal Line";
+        TempJnlLineDim."Dimension Code" := GLSetup."Global Dimension 2 Code";
+        TempJnlLineDim."Dimension Value Code" := BankAccRecLine."Global Dimension 2 Code";
+        IF NOT TempJnlLineDim.INSERT THEN
+          TempJnlLineDim.MODIFY;
+      END;
+
+      OffSetL := STRLEN(BankAccRecLine."Statement No.")-9;
+      IF OffSetL < 1 THEN
+        OffSetL := 1;
+
+      JnlLineDim.RESET;
+      JnlLineDim.SETRANGE("Table ID",DATABASE::"Bank Acc. Reconciliation Line");
+      JnlLineDim.SETRANGE("Journal Template Name",COPYSTR(BankAccRecLine."Bank Account No.",1,10));
+      JnlLineDim.SETRANGE("Journal Batch Name",COPYSTR(BankAccRecLine."Statement No.",OffSetL,10));
+      JnlLineDim.SETRANGE("Journal Line No.",BankAccRecLine."Statement Line No.");
+      JnlLineDim.SETRANGE("Allocation Line No.",0);
+      IF JnlLineDim.FINDFIRST THEN REPEAT
+        TempJnlLineDim."Table ID" := DATABASE::"Gen. Journal Line";
+        TempJnlLineDim."Dimension Code" := JnlLineDim."Dimension Code";
+        TempJnlLineDim."Dimension Value Code" := JnlLineDim."Dimension Value Code";
+        IF NOT TempJnlLineDim.INSERT THEN
+          TempJnlLineDim.MODIFY;
+      UNTIL JnlLineDim.NEXT = 0;
+
+      //E/Ende neuer Standard
+      //E/gob-ko/13092013/P1105
+
+      GenJnlPostLine.RunWithCheck(GenJnlLine,TempJnlLineDim);
+      IF GenJnlLine."Payment Order No." <> 0 THEN BEGIN
+        BankAccLedgEntry.GET(GenJnlLine."Payment Order No.");
+        BankAccLedgEntry."Statement Status" := BankAccLedgEntry."Statement Status"::"Bank Acc. Entry Applied";
+        BankAccLedgEntry."Statement No." := BankAccRecLine."Statement No.";
+        BankAccLedgEntry."Statement Line No." := BankAccRecLine."Statement Line No.";
+        BankAccLedgEntry.MODIFY;
+        BankAccRecLine."Applied Amount" := BankAccLedgEntry.Amount;
+        BankAccRecLine.Difference := BankAccRecLine."Statement Amount" - BankAccLedgEntry.Amount;
+        BankAccRecLine."Ready for Application" := TRUE;
+        BankAccRecLine.MODIFY;
+      END;
+      EXIT(TRUE);
+    END;
+
+    BEGIN
+    {
+      eBay1.06.13 eBay#001
+
+      eBay#001 öbernahme PayPal & Auszugsinformationen in die Fibu-Buch.-Blattzeile
+
+      +----------------------------------------------+
+      | Copyright GOB Software & Systeme             |
+      +----------------------------------------------+
+      | FP Commerce                                  |
+      |                                              |
+      +----------------------------------------------+
+
+      Version    Datum       Berater    PSP-Code   Bemerkung
+      ---------------------------------------------------------------------------
+      V1.00      24.04.12    gob-jvi               Bugfix (Zugriff auf falsche Dimensionstabelle)
+      V1.01      07.09.12    gob-ko     P0300      Bugfix
+      V.102      12.09.13    gob-ko     P1105      Fill customer Posting group from Bank account
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,1308 @@
+OBJECT Codeunit 50800 Warehouse Transfer Mgmt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=30.07.15;
+    Time=17:12:05;
+    Modified=Yes;
+    Version List=HME4292,T0060;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      TextHME001@1000000001 : TextConst 'ENU=#1########################\@2@@@@@@@@@@@@@@@@@@@@@@@@';
+      TextHME002@1000000000 : TextConst 'ENU=Analyzing data ... please wait...';
+      TextHME003@1000000002 : TextConst 'ENU=Insufficient Inventory at Location %1:\n Item No. %2\n Inventory %3\n Qty to Transfer %4.';
+      TextHME004@1000000003 : TextConst 'ENU=Transfer route between %1 and %2 does not exist.';
+      TextHME005@1000000004 : TextConst 'ENU=There is no available inventory at Location %1.';
+      TextHME006@1000000005 : TextConst 'ENU=must be greater than 0.';
+      TextHME007@1000000006 : TextConst 'ENU=Sales return order ''%1'' cannot be found.';
+      TextHME008@1000000007 : TextConst 'ENU="Quantity does not match for sales return order line: %1= ''%2'', %3 =''%4''."';
+      TextHME009@1000000008 : TextConst 'ENU="Sales return order line cannot be found: %1= ''%2'', %3 =''%4''."';
+      NewPostingDate@1000000010 : Date;
+      UpdateCurrFactor@1000000011 : Boolean;
+      TextHME011@1000000012 : TextConst 'ENU="Quantity does not match for archive sales return order line: %1= ''%2'', %3 =''%4''."';
+      TextHME012@1000000013 : TextConst 'ENU="Archive sales return order line cannot be found: %1= ''%2'', %3 =''%4''."';
+      TextHME013@1000000014 : TextConst 'ENU=Insufficient Qty. for Item %1 in Transfer Order %2.';
+      TextHME014@1000000017 : TextConst 'ENU="%1 record, where %2 = ''%3'',%4 = ''%5'', is imported already."';
+      TextHME015@1000000018 : TextConst 'ENU="Sales line, where %1 = ''%2'' and %3 = ''%4'', does not have corresponding transfer line or transfer line has insufficient quantity."';
+      TextHME016@1000000019 : TextConst 'ENU="Archive sales line, where %1 = ''%2'' and %3 = ''%4'', does not have corresponding transfer line or transfer line has insufficient quantity."';
+      TextCC001@1000000015 : TextConst 'ENU=Archived sales return order is not posted.';
+      TextCC002@1000000016 : TextConst 'ENU=%1 %2 is not posted.';
+
+    PROCEDURE SuggestWorkSheetLine@1000000004(TemplateNameV@1000000000 : Code[20]);
+    VAR
+      WhseTransferTemplateL@1000000001 : Record 50800;
+      WhseTransferLineL@1000000002 : Record 50801;
+      ItemLocationInventoryL@1000000003 : Record 50194;
+      TransferRouteL@1000000005 : Record 5742;
+      QtyToTransferL@1000000004 : Integer;
+      WindowL@1000000010 : Dialog;
+      FactorL@1000000009 : Decimal;
+      CounterL@1000000008 : Integer;
+      TimePointL@1000000007 : Time;
+      TotalItemsCountL@1000000006 : Integer;
+      NextLineNoL@1000000011 : Integer;
+      HMEText001@1000000012 : TextConst 'ENU=All worksheet lines will be deleted and re-populated. Are you sure you want to continue?';
+    BEGIN
+      IF NOT WhseTransferTemplateL.GET(TemplateNameV) THEN
+        EXIT;
+      CheckTemplate(WhseTransferTemplateL);
+
+      WindowL.OPEN(TextHME001);
+      WindowL.UPDATE(1,TextHME002);
+      CounterL := 0;
+      TimePointL := TIME;
+
+      ItemLocationInventoryL.RESET;
+      ItemLocationInventoryL.SETRANGE("Location Code",WhseTransferTemplateL."From-Location");
+      ItemLocationInventoryL.SETFILTER(Inventory,'>0');
+      TotalItemsCountL := ItemLocationInventoryL.COUNT;
+      IF TotalItemsCountL > 0 THEN
+        FactorL := 9999 / TotalItemsCountL
+      ELSE
+        ERROR(STRSUBSTNO(TextHME005,WhseTransferTemplateL."From-Location"));
+
+      IF NOT CONFIRM(HMEText001) THEN
+        EXIT;
+
+      WhseTransferLineL.RESET;
+      WhseTransferLineL.SETRANGE("Template Name",WhseTransferTemplateL."Template Code");
+      WhseTransferLineL.DELETEALL;
+
+      IF ItemLocationInventoryL.FINDSET THEN
+        REPEAT
+          IF (TIME-TimePointL) > 1000 THEN BEGIN
+            WindowL.UPDATE(2,(CounterL * FactorL) DIV 1);
+            TimePointL := TIME;
+          END;
+          CounterL += 1;
+          IF WhseTransferTemplateL."Exclude Outst. Transfer Qty." THEN
+            QtyToTransferL := ItemLocationInventoryL.Inventory
+          ELSE
+            QtyToTransferL := ItemLocationInventoryL.Inventory - ItemLocationInventoryL."Transfer Qty.";
+          IF QtyToTransferL > 0 THEN BEGIN
+            NextLineNoL := 0;
+            WhseTransferLineL.RESET;
+            WhseTransferLineL.SETRANGE("Template Name",WhseTransferTemplateL."Template Code");
+            WhseTransferLineL.LOCKTABLE; //Locking
+            IF WhseTransferLineL.FINDLAST THEN
+              NextLineNoL := WhseTransferLineL."Line No." + 1
+            ELSE
+              NextLineNoL := 1;
+            WhseTransferLineL.INIT;
+            WhseTransferLineL."Template Name" := WhseTransferTemplateL."Template Code";
+            WhseTransferLineL."Line No." := NextLineNoL;
+            WhseTransferLineL.INSERT(TRUE);
+
+            WhseTransferLineL.VALIDATE("Item No.", ItemLocationInventoryL."No.");
+            WhseTransferLineL.Description := ItemLocationInventoryL.Description;
+            WhseTransferLineL."From-Location" := WhseTransferTemplateL."From-Location";
+            WhseTransferLineL.VALIDATE("To-Location",WhseTransferTemplateL."To-Location");
+            WhseTransferLineL.Quantity := QtyToTransferL;
+            IF WhseTransferLineL."To-Location" <> '' THEN
+              IF TransferRouteL.GET(WhseTransferLineL."From-Location",WhseTransferLineL."To-Location") THEN
+                WhseTransferLineL."In-Transit Location" := TransferRouteL."In-Transit Code";
+            WhseTransferLineL."Action Type" := WhseTransferTemplateL."Action Type";
+            CASE WhseTransferLineL."Action Type" OF
+              WhseTransferLineL."Action Type"::"Create Transfer Order":
+                BEGIN
+                  WhseTransferLineL."Transfer Order No. Series" := WhseTransferTemplateL."Transfer Order No. Series";
+                  WhseTransferLineL."Container No. Mandatory" := WhseTransferTemplateL."Container No. Mandatory";
+                END;
+              WhseTransferLineL."Action Type"::"Insert Journal Line":
+                BEGIN
+                  WhseTransferLineL."Item Journal Template" := WhseTransferTemplateL."Item Journal Template";
+                  WhseTransferLineL."Item Journal Batch" := WhseTransferTemplateL."Item Journal Batch";
+                  WhseTransferLineL."Transfer Item Journal Nos." := WhseTransferTemplateL."Transfer Item Journal Nos.";
+                END;
+            END;
+            //H4078 17.04.2015 TST +++++++++++++++++++++++++++++++
+            IF NewPostingDate <> 0D THEN
+              WhseTransferLineL."Posting Date" := NewPostingDate
+            ELSE
+            //H4078 17.04.2015 TST -------------------------------
+            //H1994 14.01.15 EHN ++++++++++++++++++++++
+              WhseTransferLineL."Posting Date" := WORKDATE;
+            //H1994 14.01.15 EHN ----------------------
+            WhseTransferLineL."User ID" := USERID;
+            WhseTransferLineL.MODIFY(TRUE);
+          END;
+        UNTIL ItemLocationInventoryL.NEXT = 0;
+
+      WindowL.CLOSE;
+    END;
+
+    PROCEDURE CheckTemplate@1000000003(WhseTransferTemplateV@1000000000 : Record 50800);
+    VAR
+      TransferRouteL@1000000001 : Record 5742;
+    BEGIN
+      WITH WhseTransferTemplateV DO BEGIN
+        TESTFIELD("From-Location");
+        CASE "Action Type" OF
+          "Action Type"::"Create Transfer Order":
+            BEGIN
+              TESTFIELD("Transfer Order No. Series");
+            END;
+          "Action Type"::"Insert Journal Line":
+            BEGIN
+              TESTFIELD("Item Journal Template");
+              TESTFIELD("Item Journal Batch");
+              TESTFIELD("Transfer Item Journal Nos.");
+            END;
+        END;
+        IF "To-Location" <> '' THEN
+          IF NOT TransferRouteL.GET("From-Location","To-Location") THEN
+            ERROR(STRSUBSTNO(TextHME004,"From-Location","To-Location"));
+      END;
+    END;
+
+    PROCEDURE CheckLine@1000000002(WhseTransferLineV@1000000001 : Record 50801);
+    VAR
+      WhseTransferTemplateL@1000000000 : Record 50800;
+      TransferRouteL@1000000002 : Record 5742;
+    BEGIN
+      WITH WhseTransferLineV DO BEGIN
+        WhseTransferTemplateL.GET(WhseTransferLineV."Template Name"); //error if not found
+        TESTFIELD("Item No.");
+        TESTFIELD("From-Location");
+        TESTFIELD("To-Location");
+        IF NOT TransferRouteL.GET("From-Location","To-Location") THEN
+          ERROR(STRSUBSTNO(TextHME004,"From-Location","To-Location"));
+        IF Quantity <= 0 THEN
+          FIELDERROR(Quantity,TextHME006);
+        CALCFIELDS(Inventory);
+        IF Quantity > Inventory THEN
+          ERROR(STRSUBSTNO(TextHME003,"From-Location","Item No.",Inventory,Quantity));
+        IF WhseTransferLineV."Container No. Mandatory" THEN
+          TESTFIELD("Container No.");
+        CASE "Action Type" OF
+          "Action Type"::"Create Transfer Order":
+            BEGIN
+              TESTFIELD("Transfer Order No. Series");
+            END;
+          "Action Type"::"Insert Journal Line":
+            BEGIN
+              TESTFIELD("Item Journal Template");
+              TESTFIELD("Item Journal Batch");
+              TESTFIELD("Transfer Item Journal Nos.");
+            END;
+        END;
+        //H1994 14.01.15 EHN ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        IF WhseTransferTemplateL."Auto-post Transfer Shipment" OR WhseTransferTemplateL."Auto-post Item Journal" THEN
+          TESTFIELD("Posting Date");
+        //H1994 14.01.15 EHN ------------------------------------------------------
+      END;
+    END;
+
+    PROCEDURE PostBatch@1000000001(TemplateNameV@1000000000 : Code[20]);
+    VAR
+      WhseTransferTemplateL@1000000003 : Record 50800;
+      WhseTransferWkshLineL@1000000001 : Record 50801;
+      ActionTypeL@1000000002 : 'Create Transfer Order,Insert Journal Line';
+    BEGIN
+      IF NOT WhseTransferTemplateL.GET(TemplateNameV) THEN
+        EXIT;
+
+      WhseTransferWkshLineL.RESET;
+      WhseTransferWkshLineL.SETRANGE("Template Name",WhseTransferTemplateL."Template Code");
+      PostWorkSheetLine(
+        WhseTransferWkshLineL,WhseTransferTemplateL."Action Type",
+        WhseTransferTemplateL."Auto-post Transfer Shipment",
+        WhseTransferTemplateL."Auto-post Item Journal",
+        WhseTransferTemplateL."Exclude Outst. Transfer Qty.");
+    END;
+
+    PROCEDURE PostWorkSheetLine@1000000000(VAR WhseTransferWkshLineR@1000000000 : Record 50801;ActionTypeV@1000000001 : 'Create Transfer Order,Insert Journal Line';AutoPostShipmentV@1000000002 : Boolean;AutoPostJournalV@1000000003 : Boolean;ExcludeOutstTransferQtyV@1000000004 : Boolean);
+    BEGIN
+      WhseTransferWkshLineR.SETFILTER(Quantity,'>0');
+      IF WhseTransferWkshLineR.FINDSET THEN
+        REPEAT
+          CheckLine(WhseTransferWkshLineR);
+        UNTIL WhseTransferWkshLineR.NEXT = 0;
+
+      CASE ActionTypeV OF
+        ActionTypeV::"Create Transfer Order":
+          BEGIN
+            CreateTransferOrder(WhseTransferWkshLineR,AutoPostShipmentV,ExcludeOutstTransferQtyV);
+          END;
+        ActionTypeV::"Insert Journal Line":
+          BEGIN
+            CreateItemJournalLine(WhseTransferWkshLineR,AutoPostJournalV,ExcludeOutstTransferQtyV);
+          END;
+      END;
+    END;
+
+    PROCEDURE CreateTransferOrder@1000000005(VAR WhseTransferWkshLineR@1000000000 : Record 50801;AutoPostShipmentV@1000000001 : Boolean;ExcludeOutstTransferQtyV@1000000010 : Boolean);
+    VAR
+      TransferHeaderL@1000000006 : Record 5740;
+      TransferLineL@1000000005 : Record 5741;
+      WhseTransferLineL@1000000008 : Record 50801;
+      ArchivedWhseTransferLineL@1000000009 : Record 50802;
+      NoSeriesMngtL@1000000007 : Codeunit 396;
+      TransferOrderPostShipmentL@1000000004 : Codeunit 5704;
+      LineNoL@1000000002 : Integer;
+      NextEntryNoL@1000000003 : Integer;
+      QtyLimitL@1000000011 : Integer;
+    BEGIN
+      IF WhseTransferWkshLineR.FINDSET THEN BEGIN
+        TransferHeaderL.RESET;
+        TransferHeaderL.INIT;
+        TransferHeaderL.VALIDATE("No. Series",WhseTransferWkshLineR."Transfer Order No. Series");
+        //H4078 17.04.2015 TST +++++++++++++++++++++++++++++++
+        IF NewPostingDate <> 0D THEN
+          TransferHeaderL.VALIDATE("No.",NoSeriesMngtL.GetNextNo(WhseTransferWkshLineR."Transfer Order No. Series",NewPostingDate,TRUE))
+        ELSE
+        //H4078 17.04.2015 TST -------------------------------
+          TransferHeaderL.VALIDATE("No.",NoSeriesMngtL.GetNextNo(WhseTransferWkshLineR."Transfer Order No. Series",WORKDATE,TRUE));
+        TransferHeaderL.INSERT(TRUE);
+        TransferHeaderL.VALIDATE("Transfer-from Code", WhseTransferWkshLineR."From-Location");
+        TransferHeaderL.VALIDATE("Transfer-to Code", WhseTransferWkshLineR."To-Location");
+        TransferHeaderL.VALIDATE("In-Transit Code", WhseTransferWkshLineR."In-Transit Location");
+        //H1994 14.01.15 EHN ++++++++++++++++++++++++++++++++++++++
+        TransferHeaderL.VALIDATE("Posting Date",WhseTransferWkshLineR."Posting Date");
+        TransferHeaderL.VALIDATE("Shipment Date",WhseTransferWkshLineR."Posting Date");
+        //H1994 14.01.15 EHN --------------------------------------
+        TransferHeaderL.MODIFY(TRUE);
+        LineNoL := 0;
+        REPEAT
+          LineNoL += 10000;
+          TransferLineL.INIT;
+          TransferLineL.VALIDATE("Document No.", TransferHeaderL."No.");
+          TransferLineL.VALIDATE("Line No.", LineNoL);
+          TransferLineL.VALIDATE("Item No.", WhseTransferWkshLineR."Item No.");
+          TransferLineL.VALIDATE(Quantity, WhseTransferWkshLineR.Quantity);
+          TransferLineL.VALIDATE("Qty. to Ship", WhseTransferWkshLineR.Quantity);
+          TransferLineL."Skip Container No. Check" := NOT WhseTransferWkshLineR."Container No. Mandatory";
+          TransferLineL.INSERT(TRUE);
+
+          NextEntryNoL := 0;
+          ArchivedWhseTransferLineL.RESET;
+          ArchivedWhseTransferLineL.LOCKTABLE; //Locking
+          IF ArchivedWhseTransferLineL.FINDLAST THEN
+            NextEntryNoL := ArchivedWhseTransferLineL."Entry No." + 1
+          ELSE
+            NextEntryNoL := 1;
+
+          ArchivedWhseTransferLineL.INIT;
+          ArchivedWhseTransferLineL."Entry No." := NextEntryNoL;
+          ArchivedWhseTransferLineL.INSERT(TRUE);
+          ArchivedWhseTransferLineL."Template Name" := WhseTransferWkshLineR."Template Name";
+          ArchivedWhseTransferLineL."Item No." := WhseTransferWkshLineR."Item No.";
+          ArchivedWhseTransferLineL.Description := WhseTransferWkshLineR.Description;
+          ArchivedWhseTransferLineL."From-Location" := WhseTransferWkshLineR."From-Location";
+          ArchivedWhseTransferLineL."To-Location" := WhseTransferWkshLineR."To-Location";
+          ArchivedWhseTransferLineL.Quantity := WhseTransferWkshLineR.Quantity;
+          ArchivedWhseTransferLineL."In-Transit Location" := WhseTransferWkshLineR."In-Transit Location";
+          ArchivedWhseTransferLineL."Cointainer No." := WhseTransferWkshLineR."Container No.";
+          ArchivedWhseTransferLineL."Action Type" := WhseTransferWkshLineR."Action Type";
+          ArchivedWhseTransferLineL."Transfer Order No." := TransferHeaderL."No.";
+          ArchivedWhseTransferLineL."Transfer Order Line No." := TransferLineL."Line No.";
+          //H1994 14.01.15 EHN ++++++++++++++++++++++++++++++++++++++++
+          ArchivedWhseTransferLineL."Posting Date" := WhseTransferWkshLineR."Posting Date";
+          //H1994 14.01.15 EHN ----------------------------------------
+          ArchivedWhseTransferLineL."User ID" := USERID;
+          ArchivedWhseTransferLineL."Insert Timestamp" := CURRENTDATETIME;
+          WhseTransferWkshLineR.CALCFIELDS(Inventory);
+          ArchivedWhseTransferLineL.Inventory := WhseTransferWkshLineR.Inventory;
+          ArchivedWhseTransferLineL.MODIFY(TRUE);
+
+          WhseTransferLineL.GET(WhseTransferWkshLineR."Template Name",WhseTransferWkshLineR."Line No.");
+          WhseTransferWkshLineR.CALCFIELDS(Inventory,"Outstanding Transfer Qty.");
+          IF ExcludeOutstTransferQtyV THEN
+            QtyLimitL := 0
+          ELSE
+            QtyLimitL := WhseTransferWkshLineR."Outstanding Transfer Qty.";
+          IF (WhseTransferWkshLineR.Inventory <= QtyLimitL) THEN BEGIN
+            WhseTransferLineL.DELETE(TRUE);
+          END ELSE BEGIN
+            WhseTransferLineL.Quantity := 0;
+            WhseTransferLineL.MODIFY(TRUE);
+          END;
+
+        UNTIL WhseTransferWkshLineR.NEXT = 0;
+      END;
+
+      IF AutoPostShipmentV THEN BEGIN
+        TransferOrderPostShipmentL.RUN(TransferHeaderL);
+      END;
+    END;
+
+    PROCEDURE CreateItemJournalLine@1000000007(VAR WhseTransferWkshLineR@1000000001 : Record 50801;AutoPostJournalV@1000000000 : Boolean;ExcludeOutstTransferQtyV@1000000011 : Boolean);
+    VAR
+      ItemJnlLineL@1000000003 : Record 83;
+      ItemJnlLine2L@1000000010 : Record 83;
+      WhseTransferLineL@1000000008 : Record 50801;
+      ArchivedWhseTransferLineL@1000000002 : Record 50802;
+      NoSeriesManagementL@1000000004 : Codeunit 396;
+      LibraryUtilityL@1000000005 : Codeunit 50206;
+      ItemJournalDocumentNoL@1000000006 : Code[20];
+      NextLineNoL@1000000007 : Integer;
+      NextEntryNoL@1000000009 : Integer;
+      QtyLimitL@1000000012 : Integer;
+    BEGIN
+      ItemJnlLine2L.RESET;
+      ItemJnlLine2L.CLEARMARKS;
+
+      IF WhseTransferWkshLineR.FINDSET THEN
+        REPEAT
+          ItemJnlLineL.RESET;
+          ItemJnlLineL.SETRANGE("Journal Template Name",WhseTransferWkshLineR."Item Journal Template");
+          ItemJnlLineL.SETRANGE("Journal Batch Name",WhseTransferWkshLineR."Item Journal Batch");
+          NextLineNoL := 0;
+          ItemJnlLineL.LOCKTABLE; //Locking
+          IF ItemJnlLineL.FINDLAST THEN
+            NextLineNoL := ItemJnlLineL."Line No." + 10000
+          ELSE
+            NextLineNoL := 10000;
+
+          ItemJnlLineL.INIT;
+          ItemJnlLineL.VALIDATE("Journal Template Name",WhseTransferWkshLineR."Item Journal Template");
+          ItemJnlLineL.VALIDATE("Journal Batch Name",WhseTransferWkshLineR."Item Journal Batch");
+          ItemJnlLineL.VALIDATE("Line No.",NextLineNoL);
+          ItemJnlLineL.INSERT(TRUE);
+          ItemJnlLineL.VALIDATE("Entry Type",ItemJnlLineL."Entry Type"::Transfer);
+          //H1994 14.01.15 EHN ++++++++++++++++++++++++++++++++++++++
+          ItemJnlLineL.VALIDATE("Posting Date",WhseTransferWkshLineR."Posting Date");
+          //H1994 14.01.15 EHN --------------------------------------
+          ItemJournalDocumentNoL := NoSeriesManagementL.GetNextNo(WhseTransferWkshLineR."Transfer Item Journal Nos.",WORKDATE,FALSE);
+          ItemJnlLineL."Document No." := ItemJournalDocumentNoL;
+          ItemJnlLineL.VALIDATE("Item No.",WhseTransferWkshLineR."Item No.");
+          ItemJnlLineL."Shortcut Dimension 2 Code" := WhseTransferWkshLineR."Item No.";
+          ItemJnlLineL.VALIDATE("Variant Code");
+          ItemJnlLineL.VALIDATE("Unit of Measure Code");
+          ItemJnlLineL.VALIDATE("Location Code",WhseTransferWkshLineR."From-Location");
+          ItemJnlLineL.VALIDATE("New Location Code",WhseTransferWkshLineR."To-Location");
+          ItemJnlLineL.VALIDATE(Quantity,WhseTransferWkshLineR.Quantity);
+          ItemJnlLineL.MODIFY(TRUE);
+          ItemJnlLine2L.GET(ItemJnlLineL."Journal Template Name",ItemJnlLineL."Journal Batch Name",ItemJnlLineL."Line No.");
+          ItemJnlLine2L.MARK(TRUE);
+
+          NextEntryNoL := 0;
+          ArchivedWhseTransferLineL.RESET;
+          ArchivedWhseTransferLineL.LOCKTABLE; //Locking
+          IF ArchivedWhseTransferLineL.FINDLAST THEN
+            NextEntryNoL := ArchivedWhseTransferLineL."Entry No." + 1
+          ELSE
+            NextEntryNoL := 1;
+
+          ArchivedWhseTransferLineL.INIT;
+          ArchivedWhseTransferLineL."Entry No." := NextEntryNoL;
+          ArchivedWhseTransferLineL.INSERT(TRUE);
+          ArchivedWhseTransferLineL."Template Name" := WhseTransferWkshLineR."Template Name";
+          ArchivedWhseTransferLineL."Item No." := WhseTransferWkshLineR."Item No.";
+          ArchivedWhseTransferLineL.Description := WhseTransferWkshLineR.Description;
+          ArchivedWhseTransferLineL."From-Location" := WhseTransferWkshLineR."From-Location";
+          ArchivedWhseTransferLineL."To-Location" := WhseTransferWkshLineR."To-Location";
+          ArchivedWhseTransferLineL.Quantity := WhseTransferWkshLineR.Quantity;
+          ArchivedWhseTransferLineL."In-Transit Location" := WhseTransferWkshLineR."In-Transit Location";
+          ArchivedWhseTransferLineL."Action Type" := WhseTransferWkshLineR."Action Type";
+          ArchivedWhseTransferLineL."Item Journal Template" := ItemJnlLineL."Journal Template Name";
+          ArchivedWhseTransferLineL."Item Journal Batch" := ItemJnlLineL."Journal Batch Name";
+          ArchivedWhseTransferLineL."Item Journal Line No." := ItemJnlLineL."Line No.";
+          //H1994 14.01.15 EHN ++++++++++++++++++++++++++++++++++++++++
+          ArchivedWhseTransferLineL."Posting Date" := WhseTransferWkshLineR."Posting Date";
+          //H1994 14.01.15 EHN ----------------------------------------
+          ArchivedWhseTransferLineL."User ID" := USERID;
+          ArchivedWhseTransferLineL."Insert Timestamp" := CURRENTDATETIME;
+          WhseTransferWkshLineR.CALCFIELDS(Inventory);
+          ArchivedWhseTransferLineL.Inventory := WhseTransferWkshLineR.Inventory;
+          ArchivedWhseTransferLineL.MODIFY(TRUE);
+
+          WhseTransferLineL.GET(WhseTransferWkshLineR."Template Name",WhseTransferWkshLineR."Line No.");
+          WhseTransferWkshLineR.CALCFIELDS(Inventory,"Outstanding Transfer Qty.");
+          IF ExcludeOutstTransferQtyV THEN
+            QtyLimitL := 0
+          ELSE
+            QtyLimitL := WhseTransferWkshLineR."Outstanding Transfer Qty." + WhseTransferWkshLineR.Quantity;
+          IF (WhseTransferWkshLineR.Inventory <= QtyLimitL) THEN BEGIN
+            WhseTransferLineL.DELETE(TRUE);
+          END ELSE BEGIN
+            WhseTransferLineL.Quantity := 0;
+            WhseTransferLineL.MODIFY(TRUE);
+          END;
+
+        UNTIL WhseTransferWkshLineR.NEXT = 0;
+
+      IF AutoPostJournalV THEN BEGIN
+        ItemJnlLine2L.MARKEDONLY(TRUE);
+        CODEUNIT.RUN(CODEUNIT::"Item Jnl.-Post",ItemJnlLine2L);
+      END;
+    END;
+
+    PROCEDURE DeleteZeroQtyLine@1000000006(VAR WhseTransferWkshLineR@1000000002 : Record 50801);
+    VAR
+      WhseTransferWkshLineL@1000000001 : Record 50801;
+    BEGIN
+      IF WhseTransferWkshLineR.FINDSET THEN
+        REPEAT
+          IF WhseTransferWkshLineR.Quantity = 0 THEN BEGIN
+            WhseTransferWkshLineL.GET(WhseTransferWkshLineR."Template Name",WhseTransferWkshLineR."Line No.");
+            WhseTransferWkshLineL.DELETE(TRUE);
+          END;
+        UNTIL WhseTransferWkshLineR.NEXT = 0;
+    END;
+
+    PROCEDURE ResetQuantity@1000000008(VAR WhseTransferWkshLineR@1000000000 : Record 50801);
+    BEGIN
+      IF WhseTransferWkshLineR.FINDSET THEN
+        REPEAT
+          WhseTransferWkshLineR.Quantity := 0;
+          WhseTransferWkshLineR.MODIFY(TRUE);
+        UNTIL WhseTransferWkshLineR.NEXT = 0;
+    END;
+
+    PROCEDURE ImportLineForBatchPosting@1000000009();
+    VAR
+      ImportXMLDocL@1000000008 : Record 50844;
+      ImportXMLDoc2L@1000000009 : Record 50844;
+      TempBlobL@1000000002 : Record 99008535;
+      BatchPostSROLineL@1000000004 : Record 50803;
+      CU3TierAutomationMgtL@1000000001 : Codeunit 419;
+      TextL@1000000000 : Text[1024];
+      SRONoL@1000000005 : Code[20];
+      ItemNoL@1000000006 : Code[20];
+      QtyL@1000000007 : Integer;
+      InstreamL@1000000003 : InStream;
+    BEGIN
+      //H4292 02.06.15 DMO +++++++++++++++++++++++
+      //H1200 01.10.2014 EHN +++++++++++++++++++++++++++++++
+      //CLEAR(TempBlobL);
+      //TempBlobL.Blob.CREATEINSTREAM(InstreamL);
+      //CU3TierAutomationMgtL.BLOBImport(TempBlobL,'',TRUE);
+      //WHILE NOT (InstreamL.EOS) DO BEGIN
+      //  InstreamL.READTEXT(TextL);
+      //  TextL := CONVERTSTR(TextL,';',',');
+      //  SRONoL := SELECTSTR(1,TextL);
+      //  ItemNoL := SELECTSTR(2,TextL);
+      //  EVALUATE(QtyL,SELECTSTR(3,TextL));
+      //  BatchPostSROLineL.INIT;
+      //  BatchPostSROLineL."Sales Return Order No." := SRONoL;
+      //  BatchPostSROLineL."Item No." := ItemNoL;
+      //  BatchPostSROLineL.VALIDATE(Quantity,QtyL);
+      //  BatchPostSROLineL.INSERT(TRUE);
+      //END;
+      ImportXMLDocL.RESET;
+      ImportXMLDocL.SETCURRENTKEY("Import Status");
+      ImportXMLDocL.SETRANGE("Import Status",ImportXMLDocL."Import Status"::Unprocessed);
+      IF ImportXMLDocL.FINDSET THEN
+        REPEAT
+          BatchPostSROLineL.INIT;
+          BatchPostSROLineL."Sales Return Order No." := ImportXMLDocL."Document No.";
+          BatchPostSROLineL."Sales Return Line No." := ImportXMLDocL."Document Line No.";
+          BatchPostSROLineL."Item No." := ImportXMLDocL."Item No.";
+          BatchPostSROLineL.VALIDATE(Quantity,ImportXMLDocL.Quantity);
+          BatchPostSROLineL."Import XML Doc. Entry No." := ImportXMLDocL."Entry No.";
+          BatchPostSROLineL.INSERT(TRUE);
+
+          ImportXMLDoc2L.GET(ImportXMLDocL."Entry No.");
+          ImportXMLDoc2L."Import Status" := ImportXMLDoc2L."Import Status"::"In Progress";
+          ImportXMLDoc2L.MODIFY;
+        UNTIL ImportXMLDocL.NEXT = 0;
+      //H4292 02.06.15 DMO -----------------------
+      CheckBatchPostLine;
+      //H1200 01.10.2014 EHN -------------------------------
+    END;
+
+    PROCEDURE CheckBatchPostLine@1000000018();
+    VAR
+      BatchPostLineL@1000000010 : Record 50803;
+      ExistingBatchPostLineL@1000000009 : Record 50803;
+      TransferLineL@1000000003 : Record 5741;
+      SalesReturnOrderL@1000000002 : Record 36;
+      SalesLineL@1000000001 : Record 37;
+      LineFoundL@1000000000 : Boolean;
+      SalesHeaderAL@1000000004 : Record 5107;
+      SalesLineAL@1000000005 : Record 5108;
+      TransferHeaderL@1000000006 : Record 5740;
+      LastNotPostedSalesLineArchL@1000000007 : Record 5108;
+      NotPostedSalesLineArchExistL@1000000008 : Boolean;
+      UniqueBatchLineExistsL@1000000011 : Boolean;
+      TransferLineFoundL@1000000012 : Boolean;
+    BEGIN
+      //H4292 02.06.15 DMO +++++++++++++++++++++++
+      BatchPostLineL.RESET;
+      BatchPostLineL.MODIFYALL("Transfer Order No.",'');
+      BatchPostLineL.MODIFYALL("Transfer Order Line No.",0);
+      BatchPostLineL.MODIFYALL(Status,BatchPostLineL.Status::Unprocessed);
+      BatchPostLineL.MODIFYALL("Error Text",'');
+      BatchPostLineL.MODIFYALL("Action Type",BatchPostLineL."Action Type"::" ");
+      BatchPostLineL.MODIFYALL(Marketplace,FALSE);
+      BatchPostLineL.MODIFYALL("Marketplace Partner Code",'');
+      IF BatchPostLineL.FINDSET THEN
+        REPEAT
+          LineFoundL := FALSE;
+          UniqueBatchLineExistsL := FALSE;
+          TransferLineFoundL := FALSE;
+          IF SalesReturnOrderL.GET(SalesReturnOrderL."Document Type"::"Return Order",BatchPostLineL."Sales Return Order No.") THEN BEGIN
+            // Hxxxx  30.07.15  MKR ++++++++++++++++++++++++++++++++++
+            IF SalesLineL.GET(SalesReturnOrderL."Document Type",SalesReturnOrderL."No.",BatchPostLineL."Sales Return Line No.") THEN BEGIN
+            // Hxxxx  30.07.15  MKR ----------------------------------
+              IF SalesLineL.Quantity = BatchPostLineL.Quantity THEN BEGIN
+                ExistingBatchPostLineL.RESET;
+                ExistingBatchPostLineL.SETRANGE("Sales Return Order No.",SalesLineL."Document No.");
+                ExistingBatchPostLineL.SETRANGE("Sales Return Line No.",SalesLineL."Line No.");
+                ExistingBatchPostLineL.SETFILTER("Line No.",'<>%1',BatchPostLineL."Line No.");
+                IF ExistingBatchPostLineL.ISEMPTY THEN BEGIN
+                  UniqueBatchLineExistsL := TRUE;
+                  TransferLineL.RESET;
+                  TransferLineL.SETRANGE("Linked Sales Doc. Type",TransferLineL."Linked Sales Doc. Type"::"Return Order");
+                  TransferLineL.SETRANGE("Linked Sales Doc. No.",SalesLineL."Document No.");
+                  TransferLineL.SETRANGE("Linked Sales Line No.",SalesLineL."Line No.");
+                  TransferLineL.SETRANGE("Item No.",BatchPostLineL."Item No.");
+                  TransferLineL.SETFILTER(Quantity,'>=%1',BatchPostLineL.Quantity);
+                  TransferLineL.SETFILTER("Outstanding Quantity",'>=%1',BatchPostLineL.Quantity);
+                  IF TransferLineL.FINDFIRST THEN BEGIN
+                    TransferLineFoundL := TRUE;
+                    IF NewPostingDate <> 0D THEN BEGIN
+                      TransferHeaderL.GET(TransferLineL."Document No.");
+                      IF TransferHeaderL."Posting Date" <> NewPostingDate THEN BEGIN
+                        TransferHeaderL.VALIDATE("Posting Date",NewPostingDate);
+                        TransferHeaderL.MODIFY;
+                      END;
+                      UpdateFollowUpTO(TransferLineL."Document No.",NewPostingDate);
+                      TransferLineL.VALIDATE("Shipment Date",NewPostingDate);
+                      TransferLineL.MODIFY;
+                    END;
+                    TransferLineL.CALCFIELDS("Qty Available");
+                    IF TransferLineL."Qty Available" < BatchPostLineL.Quantity THEN BEGIN
+                      TransferLineL.VALIDATE("Qty. to Ship",0);
+                      BatchPostLineL.SetError(STRSUBSTNO(TextHME013,BatchPostLineL."Item No.",TransferLineL."Document No."));
+                      TransferLineL.MODIFY;
+                    END;
+                    BatchPostLineL."Transfer Order No." := TransferLineL."Document No.";
+                    BatchPostLineL."Transfer Order Line No." := TransferLineL."Line No.";
+                    BatchPostLineL."Action Type" := BatchPostLineL."Action Type"::"Post Transfer Order";
+                    BatchPostLineL.Location := TransferLineL."Transfer-to Code";
+                    BatchPostLineL.Marketplace := SalesLineL."Market Place";
+                    IF SalesLineL."Market Place" THEN BEGIN
+                      BatchPostLineL."Marketplace Partner Code" := SalesLineL."Vendor No.";
+                      BatchPostLineL."Repurchase Price" := SalesLineL."Repurchase Price";
+                    END ELSE BEGIN
+                      BatchPostLineL."Marketplace Partner Code" := '';
+                      BatchPostLineL."Repurchase Price" := 0;
+                    END;
+                    BatchPostLineL.MODIFY(TRUE);
+                    LineFoundL := TRUE;
+                  END ELSE
+                    IF SalesLineL."Outstanding Quantity" <> 0 THEN BEGIN
+                      BatchPostLineL."Action Type" := BatchPostLineL."Action Type"::"Post Sales Return Order";
+                      BatchPostLineL.Location := SalesLineL."Location Code";
+                      BatchPostLineL.Marketplace := SalesLineL."Market Place";
+                      IF SalesLineL."Market Place" THEN BEGIN
+                        BatchPostLineL."Marketplace Partner Code" := SalesLineL."Vendor No.";
+                        BatchPostLineL."Repurchase Price" := SalesLineL."Repurchase Price";
+                      END ELSE BEGIN
+                        BatchPostLineL."Marketplace Partner Code" := '';
+                        BatchPostLineL."Repurchase Price" := 0;
+                      END;
+                      BatchPostLineL.MODIFY(TRUE);
+                      LineFoundL := TRUE;
+                    END;
+                END;
+                IF NOT LineFoundL THEN
+                  IF NOT UniqueBatchLineExistsL THEN
+                    BatchPostLineL.SetError(
+                      STRSUBSTNO(
+                        TextHME014,BatchPostLineL.TABLECAPTION,
+                        BatchPostLineL.FIELDCAPTION("Sales Return Order No."),BatchPostLineL."Sales Return Order No.",
+                        BatchPostLineL.FIELDCAPTION("Sales Return Line No."),BatchPostLineL."Sales Return Line No."))
+                  ELSE
+                    IF NOT TransferLineFoundL THEN
+                      BatchPostLineL.SetError(
+                        STRSUBSTNO(
+                          TextHME015,
+                          SalesLineL.FIELDCAPTION("Document No."),SalesLineL."Document No.",
+                          SalesLineL.FIELDCAPTION("Line No."),SalesLineL."Line No."))
+
+                    ELSE
+                      BatchPostLineL.SetError(
+                        STRSUBSTNO(
+                          TextHME008,SalesLineL.FIELDCAPTION("Document No."),SalesLineL."Document No.",
+                          SalesLineL.FIELDCAPTION("Line No."),SalesLineL."Line No."));
+              END ELSE
+                BatchPostLineL.SetError(
+                  STRSUBSTNO(
+                    TextHME008,SalesLineL.FIELDCAPTION("Document No."),BatchPostLineL."Sales Return Order No.",
+                    SalesLineL.FIELDCAPTION("Line No."),BatchPostLineL."Sales Return Line No."));
+            // Hxxxx  30.07.15  MKR +++++++++++++++++++++++++++++++++++
+            END ELSE
+              // Sales Line not found
+              BatchPostLineL.SetError(
+                STRSUBSTNO(
+                  TextHME009,SalesLineL.FIELDCAPTION("Document No."),BatchPostLineL."Sales Return Order No.",
+                  SalesLineL.FIELDCAPTION("Line No."),BatchPostLineL."Sales Return Line No."));
+            // Hxxxx  30.07.15  MKR -----------------------------------
+          END ELSE BEGIN
+            SalesHeaderAL.SETRANGE("Document Type",SalesHeaderAL."Document Type"::"Return Order");
+            SalesHeaderAL.SETRANGE("No.",BatchPostLineL."Sales Return Order No.");
+            IF SalesHeaderAL.FINDLAST THEN BEGIN
+              // Hxxxx  30.07.15  MKR ++++++++++++++++++++++++++++++++++++
+              IF SalesLineAL.GET(
+                   SalesHeaderAL."Document Type",
+                   SalesHeaderAL."No.",
+                   SalesHeaderAL."Doc. No. Occurrence",
+                   SalesHeaderAL."Version No.",
+                   BatchPostLineL."Sales Return Line No.")
+              THEN BEGIN
+              // Hxxxx  30.07.15  MKR ------------------------------------
+                IF SalesLineAL.Quantity = BatchPostLineL.Quantity THEN BEGIN
+                  NotPostedSalesLineArchExistL := FALSE;
+                  ExistingBatchPostLineL.RESET;
+                  ExistingBatchPostLineL.SETRANGE(ExistingBatchPostLineL."Sales Return Order No.",SalesLineAL."Document No.");
+                  ExistingBatchPostLineL.SETRANGE(ExistingBatchPostLineL."Sales Return Line No.",SalesLineAL."Line No.");
+                  ExistingBatchPostLineL.SETFILTER("Line No.",'<>%1',BatchPostLineL."Line No.");
+
+                  IF ExistingBatchPostLineL.ISEMPTY THEN BEGIN
+                    UniqueBatchLineExistsL := TRUE;
+                    TransferLineL.RESET;
+                    TransferLineL.SETRANGE("Linked Sales Doc. Type",TransferLineL."Linked Sales Doc. Type"::"Return Order");
+                    TransferLineL.SETRANGE("Linked Sales Doc. No.",SalesLineAL."Document No.");
+                    TransferLineL.SETRANGE("Linked Sales Line No.",SalesLineAL."Line No.");
+                    TransferLineL.SETRANGE("Item No.",BatchPostLineL."Item No.");
+                    TransferLineL.SETFILTER(Quantity,'>=%1',BatchPostLineL.Quantity);
+                    TransferLineL.SETFILTER("Outstanding Quantity",'>=%1',BatchPostLineL.Quantity);
+                    IF TransferLineL.FINDFIRST THEN BEGIN
+                      TransferLineFoundL := TRUE;
+                      TransferLineL.CALCFIELDS("Qty Available");
+                      IF TransferLineL."Qty Available" < BatchPostLineL.Quantity THEN BEGIN
+                        TransferLineL.VALIDATE("Qty. to Ship",0);
+                        BatchPostLineL.SetError(STRSUBSTNO(TextHME013,BatchPostLineL."Item No.",TransferLineL."Document No."));
+                        TransferLineL.MODIFY;
+                      END;
+                      IF NewPostingDate <> 0D THEN BEGIN
+                        TransferHeaderL.GET(TransferLineL."Document No.");
+                        IF TransferHeaderL."Posting Date" <> NewPostingDate THEN BEGIN
+                          TransferHeaderL.VALIDATE("Posting Date",NewPostingDate);
+                          TransferHeaderL.MODIFY;
+                        END;
+                        UpdateFollowUpTO(TransferLineL."Document No.",NewPostingDate);
+                        TransferLineL.VALIDATE("Shipment Date",NewPostingDate);
+                        TransferLineL.MODIFY;
+                      END;
+                      BatchPostLineL."Transfer Order No." := TransferLineL."Document No.";
+                      BatchPostLineL."Transfer Order Line No." := TransferLineL."Line No.";
+                      BatchPostLineL."Action Type" := BatchPostLineL."Action Type"::"Post Transfer Order";
+                      BatchPostLineL.Location := TransferLineL."Transfer-to Code";
+                      BatchPostLineL.Marketplace := SalesLineAL."Market Place";
+                      IF SalesLineAL."Market Place" THEN BEGIN
+                        BatchPostLineL."Marketplace Partner Code" := SalesLineAL."Vendor No.";
+                        BatchPostLineL."Repurchase Price" := SalesLineAL."Repurchase Price";
+                      END ELSE BEGIN
+                        BatchPostLineL."Marketplace Partner Code" := '';
+                        BatchPostLineL."Repurchase Price" := 0;
+                      END;
+                      BatchPostLineL.MODIFY(TRUE);
+                      LineFoundL := TRUE;
+                    END ELSE IF SalesLineAL."Outstanding Quantity" <> 0 THEN BEGIN
+                      LastNotPostedSalesLineArchL := SalesLineAL;
+                      NotPostedSalesLineArchExistL := TRUE;
+                    END;
+                  END;
+                  IF NOT LineFoundL AND NotPostedSalesLineArchExistL THEN BEGIN
+                    SalesLineAL := LastNotPostedSalesLineArchL;
+                    BatchPostLineL."Action Type" := BatchPostLineL."Action Type"::"Post Sales Return Order";
+                    BatchPostLineL.Location := SalesLineAL."Location Code";
+                    BatchPostLineL.Marketplace := SalesLineAL."Market Place";
+                    IF SalesLineL."Market Place" THEN BEGIN
+                      BatchPostLineL."Marketplace Partner Code" := SalesLineAL."Vendor No.";
+                      BatchPostLineL."Repurchase Price" := SalesLineAL."Repurchase Price";
+                    END ELSE BEGIN
+                      BatchPostLineL."Marketplace Partner Code" := '';
+                      BatchPostLineL."Repurchase Price" := 0;
+                    END;
+                    BatchPostLineL.SetError(TextCC001);
+                    LineFoundL := TRUE;
+                  END;
+                  IF NOT LineFoundL THEN
+                    IF NOT UniqueBatchLineExistsL THEN
+                      BatchPostLineL.SetError(
+                        STRSUBSTNO(
+                          TextHME014,BatchPostLineL.TABLECAPTION,
+                          BatchPostLineL.FIELDCAPTION("Sales Return Order No."),BatchPostLineL."Sales Return Order No.",
+                          BatchPostLineL.FIELDCAPTION("Sales Return Line No."),BatchPostLineL."Sales Return Line No."))
+                    ELSE
+                      IF NOT TransferLineFoundL THEN
+                        BatchPostLineL.SetError(
+                          STRSUBSTNO(
+                            TextHME016,
+                            SalesLineAL.FIELDCAPTION("Document No."),SalesLineAL."Document No.",
+                            SalesLineAL.FIELDCAPTION("Line No."),SalesLineAL."Line No."))
+
+                      ELSE
+                        BatchPostLineL.SetError(
+                          STRSUBSTNO(
+                            TextHME011,SalesLineAL.FIELDCAPTION("Document No."),SalesLineAL."Document No.",
+                            SalesLineAL.FIELDCAPTION("Line No."),SalesLineAL."Line No."));
+                END ELSE
+                  BatchPostLineL.SetError(
+                    STRSUBSTNO(
+                      TextHME011,SalesLineAL.FIELDCAPTION("Document No."),BatchPostLineL."Sales Return Order No.",
+                      SalesLineAL.FIELDCAPTION("Line No."),BatchPostLineL."Sales Return Line No."));
+              // Hxxxx  30.07.15  MKR +++++++++++++++++++++++++
+              END ELSE
+                BatchPostLineL.SetError(
+                  STRSUBSTNO(
+                    TextHME012,SalesLineAL.FIELDCAPTION("Document No."),BatchPostLineL."Sales Return Order No.",
+                    SalesLineAL.FIELDCAPTION("Line No."),BatchPostLineL."Sales Return Line No."));
+              // Hxxxx  30.07.15  MKR -------------------------
+            END ELSE
+              BatchPostLineL.SetError(STRSUBSTNO(TextHME007,BatchPostLineL."Sales Return Order No."));
+          END;
+        UNTIL BatchPostLineL.NEXT = 0;
+      //H4292 02.06.15 DMO -----------------------
+    END;
+
+    PROCEDURE ProcessBatchPostLine@1000000010(VAR BatchPostLineR@1000000001 : Record 50803);
+    VAR
+      TransferHeaderTmpL@1000000000 : TEMPORARY Record 5740;
+      TransferHeaderL@1000000008 : Record 5740;
+      ForwardedTransferHeaderL@1000000016 : Record 5740;
+      TransferLineL@1000000002 : Record 5741;
+      BatchPostLineTmpL@1000000003 : TEMPORARY Record 50803;
+      BatchPostLineL@1000000006 : Record 50803;
+      ArchivedBatchPostLineL@1000000007 : Record 50804;
+      TransferOrderPostShipmentL@1000000005 : Codeunit 5704;
+      TransferOrderPostReceiptL@1000000004 : Codeunit 5705;
+      WarehouseSetupL@1000000013 : Record 5769;
+      SalesHeaderTmpL@1000000009 : TEMPORARY Record 36;
+      SalesHeaderL@1000000010 : Record 36;
+      SalesLineL@1000000011 : Record 37;
+      SalesPostL@1000000012 : Codeunit 80;
+      LinePostedL@1000000014 : Boolean;
+      TransferToRetIntL@1000000015 : Boolean;
+      IntlTransferOrderNoL@1000000017 : Code[20];
+      "****CC************************"@1000000018 : Integer;
+      MPPostingBuffTmpL@1000000020 : TEMPORARY Record 50504;
+      MPDocMgtL@1000000019 : Codeunit 50500;
+    BEGIN
+      //H1200 01.10.2014 EHN +++++++++++++++++++++++++++++++
+      CheckBatchPostLine;
+      //Post Transfer Orders
+      TransferHeaderTmpL.RESET;
+      TransferHeaderTmpL.DELETEALL;
+      BatchPostLineTmpL.RESET;
+      BatchPostLineTmpL.DELETEALL;
+
+      BatchPostLineR.SETRANGE(Status,BatchPostLineR.Status::Unprocessed);
+      BatchPostLineR.SETRANGE("Action Type",BatchPostLineR."Action Type"::"Post Transfer Order");
+      BatchPostLineR.SETFILTER("Transfer Order No.",'<>%1','');
+      BatchPostLineR.SETFILTER("Transfer Order Line No.",'<>%1',0);
+      IF BatchPostLineR.FINDSET THEN
+        REPEAT
+          IF NOT TransferHeaderTmpL.GET(BatchPostLineR."Transfer Order No.") THEN BEGIN
+            TransferHeaderTmpL.INIT;
+            TransferHeaderTmpL."No." := BatchPostLineR."Transfer Order No.";
+            TransferHeaderTmpL.INSERT;
+          END;
+        UNTIL BatchPostLineR.NEXT = 0;
+
+      //Iterate through each distinct TO
+      TransferHeaderTmpL.RESET;
+      IF TransferHeaderTmpL.FINDSET THEN
+        REPEAT
+          BatchPostLineTmpL.RESET;
+          BatchPostLineTmpL.DELETEALL;
+          TransferLineL.RESET;
+          TransferLineL.SETRANGE("Document No.",TransferHeaderTmpL."No.");
+          TransferLineL.SETRANGE("Derived From Line No.",0);
+          IF TransferLineL.FINDSET THEN BEGIN
+            REPEAT
+              BatchPostLineR.RESET;
+              BatchPostLineR.SETRANGE("Transfer Order No.",TransferLineL."Document No.");
+              BatchPostLineR.SETRANGE("Transfer Order Line No.",TransferLineL."Line No.");
+              IF BatchPostLineR.FINDFIRST THEN BEGIN
+                //H4121 27.04.15 TST +++++++++++++++++++++++++++++
+                TransferLineL.CALCFIELDS("Qty Available");
+                IF TransferLineL."Qty Available" < BatchPostLineR.Quantity THEN BEGIN
+                  TransferLineL.VALIDATE("Qty. to Ship",0);
+                  BatchPostLineR."Error Text" := STRSUBSTNO(TextHME013,BatchPostLineR."Item No.",TransferLineL."Document No.");
+                  BatchPostLineR.Status := BatchPostLineR.Status::Error;
+                END ELSE
+                //H4121 27.04.15 TST -----------------------------
+                  TransferLineL.VALIDATE("Qty. to Ship",BatchPostLineR.Quantity);
+                TransferLineL.MODIFY(TRUE);
+                CLEAR(BatchPostLineTmpL);
+                BatchPostLineTmpL := BatchPostLineR;
+                BatchPostLineTmpL.INSERT;
+              END ELSE BEGIN
+                TransferLineL.VALIDATE("Qty. to Ship",0);
+                TransferLineL.MODIFY(TRUE);
+              END;
+            UNTIL TransferLineL.NEXT = 0;
+
+            //Post TO
+            TransferHeaderL.GET(TransferHeaderTmpL."No.");
+            CLEAR(TransferOrderPostShipmentL);
+            CLEAR(TransferOrderPostReceiptL);
+            COMMIT;
+            TransferToRetIntL := FALSE;
+            WarehouseSetupL.GET;
+            IntlTransferOrderNoL := TransferHeaderL."No.";
+            IF (TransferHeaderL."Transfer-to Code" = WarehouseSetupL."Int. Return Location Code") THEN
+              TransferToRetIntL := TRUE;
+            IF NOT TransferOrderPostShipmentL.RUN(TransferHeaderL) THEN BEGIN
+              BatchPostLineTmpL.RESET;
+              BatchPostLineTmpL.SETRANGE("Transfer Order No.",TransferHeaderL."No.");
+              //H4110, H1200 22.04.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+              BatchPostLineTmpL.SetTmpErrorAll(GETLASTERRORTEXT);
+              //H4110, H1200 22.04.15 CC-GH ---------------------------------------------------
+            END;
+            IF NOT TransferOrderPostReceiptL.RUN(TransferHeaderL) THEN BEGIN
+              BatchPostLineTmpL.RESET;
+              BatchPostLineTmpL.SETRANGE("Transfer Order No.",TransferHeaderL."No.");
+              //H4110, H1200 22.04.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+              BatchPostLineTmpL.SetTmpErrorAll(GETLASTERRORTEXT);
+              //H4110, H1200 22.04.15 CC-GH ---------------------------------------------------
+            END;
+            IF TransferToRetIntL THEN BEGIN
+              ForwardedTransferHeaderL.RESET;
+              ForwardedTransferHeaderL.SETRANGE("Created from Transfer Hdr. No.",IntlTransferOrderNoL);
+              IF ForwardedTransferHeaderL.FINDFIRST THEN BEGIN
+                //Update Batch Post Line
+                BatchPostLineTmpL.RESET;
+                BatchPostLineTmpL.SETRANGE("Transfer Order No.",TransferHeaderL."No.");
+                BatchPostLineTmpL.MODIFYALL("Forwarded Transfer Order No.",ForwardedTransferHeaderL."No.");
+                BatchPostLineTmpL.MODIFYALL("Forwarded Transfer Location",ForwardedTransferHeaderL."Transfer-to Code");
+                CLEAR(TransferOrderPostShipmentL);
+                CLEAR(TransferOrderPostReceiptL);
+                COMMIT;
+                //Post the forwarded TO
+                IF NOT TransferOrderPostShipmentL.RUN(ForwardedTransferHeaderL) THEN BEGIN
+                  BatchPostLineTmpL.RESET;
+                  BatchPostLineTmpL.SETRANGE("Transfer Order No.",TransferHeaderL."No.");
+                  //H4110, H1200 22.04.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+                  BatchPostLineTmpL.SetTmpErrorAll(GETLASTERRORTEXT);
+                  //H4110, H1200 22.04.15 CC-GH ---------------------------------------------------
+                END;
+                IF NOT TransferOrderPostReceiptL.RUN(ForwardedTransferHeaderL) THEN BEGIN
+                  BatchPostLineTmpL.RESET;
+                  BatchPostLineTmpL.SETRANGE("Transfer Order No.",TransferHeaderL."No.");
+                  //H4110, T0060, H1200 22.04.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+                  BatchPostLineTmpL.SetTmpErrorAll(GETLASTERRORTEXT);
+                  //H4110, T0060, H1200 22.04.15 CC-GH ---------------------------------------------------
+                END;
+              END;
+            END;
+
+            //H3823 10.03.15 CC_RST ++++++++++++++++++++++++++++++++++++++++++++++
+            MPDocMgtL.CreateTransferOrderFromTRO(BatchPostLineTmpL);
+            //H3823 10.03.15 CC_RST ----------------------------------------------
+
+            //Archive batch-post line
+            BatchPostLineTmpL.RESET;
+            BatchPostLineTmpL.SETFILTER(Status,'<>%1',BatchPostLineTmpL.Status::Error);
+            IF BatchPostLineTmpL.FINDSET THEN
+              REPEAT
+                IF BatchPostLineL.GET(BatchPostLineTmpL."Line No.") THEN BEGIN
+                  //H3823 10.03.15 CC_RST ++++++++++++++++++++++++++++++++++++++++++++++
+                  //MPDocMgtL.CreateTransferOrderFromTRO(BatchPostLineL);
+                  //IF BatchPostLineL.Status <> BatchPostLineL.Status::Error THEN BEGIN
+                  //H3823 10.03.15 CC_RST ----------------------------------------------
+                    ArchivedBatchPostLineL.INIT;
+                    ArchivedBatchPostLineL."Sales Return Order No." := BatchPostLineL."Sales Return Order No.";
+                    ArchivedBatchPostLineL."Sales Return Line No." := BatchPostLineL."Sales Return Line No.";
+                    ArchivedBatchPostLineL."Item No." := BatchPostLineL."Item No.";
+                    ArchivedBatchPostLineL."Transfer Order No." := BatchPostLineL."Transfer Order No.";
+                    ArchivedBatchPostLineL."Transfer Order Line No." := BatchPostLineL."Transfer Order Line No.";
+                    ArchivedBatchPostLineL.Quantity := BatchPostLineL.Quantity;
+                    ArchivedBatchPostLineL.Location := BatchPostLineL.Location;
+                    ArchivedBatchPostLineL."Action Type" := BatchPostLineL."Action Type";
+                    ArchivedBatchPostLineL."Forwarded Transfer Order No." := BatchPostLineTmpL."Forwarded Transfer Order No.";
+                    ArchivedBatchPostLineL."Forwarded Transfer Location" := BatchPostLineTmpL."Forwarded Transfer Location";
+                    ArchivedBatchPostLineL."Insert Timestamp" := CURRENTDATETIME;
+                    ArchivedBatchPostLineL."User ID" := USERID;
+                    ArchivedBatchPostLineL.INSERT(TRUE);
+                    BatchPostLineL.DELETE(TRUE);
+                  //H3823 10.03.15 CC_RST ++++++++++++++++++++++++++++++++++++++++++++++
+                  //END;
+                  //H3823 10.03.15 CC_RST ----------------------------------------------
+                END;
+              UNTIL BatchPostLineTmpL.NEXT = 0;
+
+            //Update erroneous batch-post line
+            BatchPostLineTmpL.RESET;
+            BatchPostLineTmpL.SETRANGE(Status,BatchPostLineTmpL.Status::Error);
+            IF BatchPostLineTmpL.FINDSET THEN
+              REPEAT
+                IF BatchPostLineL.GET(BatchPostLineTmpL."Line No.") THEN BEGIN
+                  //H4110, H1200 22.04.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+                  BatchPostLineL.SetError(BatchPostLineTmpL."Error Text");
+                  //H4110, H1200 22.04.15 CC-GH ---------------------------------------------------
+                END;
+              UNTIL BatchPostLineTmpL.NEXT = 0;
+          END;
+          //H4212 22.05.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+          // Check not Processed Lines for Transfer Ordes
+          BatchPostLineR.RESET;
+          BatchPostLineR.SETRANGE(Status,BatchPostLineR.Status::Unprocessed);
+          BatchPostLineR.SETRANGE("Action Type",BatchPostLineR."Action Type"::"Post Transfer Order");
+          BatchPostLineR.SETRANGE("Transfer Order No.",TransferHeaderTmpL."No.");
+          IF BatchPostLineR.FINDSET THEN BEGIN
+            REPEAT
+              BatchPostLineR.SetError(STRSUBSTNO(TextCC002, TransferHeaderTmpL.TABLECAPTION, TransferHeaderTmpL."No."));
+            UNTIL BatchPostLineR.NEXT = 0;
+          END;
+          //H4212 22.05.15 CC-GH ---------------------------------------------------
+        UNTIL TransferHeaderTmpL.NEXT = 0;
+
+      COMMIT;
+
+      //Post Sales Orders
+      SalesHeaderTmpL.RESET;
+      SalesHeaderTmpL.DELETEALL;
+      BatchPostLineTmpL.RESET;
+      BatchPostLineTmpL.DELETEALL;
+      //T0060 26.02.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      MPPostingBuffTmpL.RESET;
+      MPPostingBuffTmpL.DELETEALL;
+      //T0060 26.02.15 CC-GH ---------------------------------------------------
+
+      BatchPostLineR.SETRANGE(Status,BatchPostLineR.Status::Unprocessed);
+      BatchPostLineR.SETRANGE("Action Type",BatchPostLineR."Action Type"::"Post Sales Return Order");
+      BatchPostLineR.SETRANGE("Transfer Order No.",'');
+      BatchPostLineR.SETRANGE("Transfer Order Line No.",0);
+      IF BatchPostLineR.FINDSET THEN
+        REPEAT
+          IF NOT SalesHeaderTmpL.GET(SalesHeaderTmpL."Document Type"::"Return Order",BatchPostLineR."Sales Return Order No.") THEN BEGIN
+            SalesHeaderTmpL.INIT;
+            SalesHeaderTmpL."Document Type" := SalesHeaderTmpL."Document Type"::"Return Order";
+            SalesHeaderTmpL."No." := BatchPostLineR."Sales Return Order No.";
+            SalesHeaderTmpL.INSERT;
+          //T0060 26.02.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+            MPPostingBuffTmpL.INIT;
+            MPPostingBuffTmpL."Document Type" := SalesHeaderTmpL."Document Type";
+            MPPostingBuffTmpL."No." := SalesHeaderTmpL."No.";
+            MPPostingBuffTmpL."Market Partner No." := BatchPostLineR."Marketplace Partner Code";
+            MPPostingBuffTmpL.INSERT;
+          END ELSE BEGIN
+            IF NOT
+              MPPostingBuffTmpL.GET(
+                SalesHeaderTmpL."Document Type",
+                SalesHeaderTmpL."No.",
+                BatchPostLineR."Marketplace Partner Code")
+            THEN BEGIN
+              MPPostingBuffTmpL.INIT;
+              MPPostingBuffTmpL."Document Type" := SalesHeaderTmpL."Document Type";
+              MPPostingBuffTmpL."No." := SalesHeaderTmpL."No.";
+              MPPostingBuffTmpL."Market Partner No." := BatchPostLineR."Marketplace Partner Code";
+              MPPostingBuffTmpL.INSERT;
+            END;
+          //T0060 26.02.15 CC-GH ---------------------------------------------------
+          END;
+        UNTIL BatchPostLineR.NEXT = 0;
+
+      //Iterate through each distinct SRO
+      SalesHeaderTmpL.RESET;
+      WarehouseSetupL.GET;
+      WarehouseSetupL.TESTFIELD("Return Warehouse Location Code");
+      IF SalesHeaderTmpL.FINDSET THEN
+        REPEAT
+          //T0060,H4065  15.04.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+          MPPostingBuffTmpL.RESET;
+          MPPostingBuffTmpL.SETRANGE("Document Type",SalesHeaderTmpL."Document Type");
+          MPPostingBuffTmpL.SETRANGE("No.",SalesHeaderTmpL."No.");
+          IF MPPostingBuffTmpL.FINDSET THEN
+            REPEAT
+          //T0060, H4065 15.04.15 CC-GH ---------------------------------------------------
+              BatchPostLineTmpL.RESET;
+              BatchPostLineTmpL.DELETEALL;
+              SalesLineL.RESET;
+              SalesLineL.SETRANGE("Document No.",SalesHeaderTmpL."No.");
+              IF SalesLineL.FINDSET THEN BEGIN
+                REPEAT
+                  BatchPostLineR.RESET;
+                  BatchPostLineR.SETRANGE("Sales Return Order No.",SalesLineL."Document No.");
+                  BatchPostLineR.SETRANGE("Sales Return Line No.",SalesLineL."Line No.");
+                  BatchPostLineR.SETRANGE(Quantity,SalesLineL.Quantity);
+                  //T0060 26.02.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+                  IF MPPostingBuffTmpL."Market Partner No." <> '' THEN BEGIN
+                    BatchPostLineR.SETRANGE(Marketplace,TRUE);
+                    BatchPostLineR.SETRANGE("Marketplace Partner Code",MPPostingBuffTmpL."Market Partner No.");
+                  END ELSE BEGIN
+                    BatchPostLineR.SETRANGE(Marketplace,FALSE);
+                    BatchPostLineR.SETRANGE("Marketplace Partner Code",'');
+                  END;
+                  //T0060 26.02.15 CC-GH ---------------------------------------------------
+                  IF BatchPostLineR.FINDFIRST THEN BEGIN
+                    SalesLineL."Location Code" := WarehouseSetupL."Return Warehouse Location Code";
+                    //T0060 24.02.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+                    MPDocMgtL.HandelMPWhseLocationCode(SalesLineL);
+                    //T0060 24.02.15 CC-GH ---------------------------------------------------
+                    SalesLineL.VALIDATE("Return Qty. to Receive",BatchPostLineR.Quantity);
+                    SalesLineL.VALIDATE("Qty. to Invoice",BatchPostLineR.Quantity);
+                    SalesLineL.MODIFY(TRUE);
+                    CLEAR(BatchPostLineTmpL);
+                    BatchPostLineTmpL := BatchPostLineR;
+                    BatchPostLineTmpL.INSERT;
+                  END ELSE BEGIN
+                    SalesLineL.VALIDATE("Return Qty. to Receive",0);
+                    SalesLineL.VALIDATE("Qty. to Invoice",0);
+                    SalesLineL.MODIFY(TRUE);
+                  END;
+                UNTIL SalesLineL.NEXT = 0;
+
+                //Post and Archived
+                SalesHeaderL.GET(SalesHeaderTmpL."Document Type",SalesHeaderTmpL."No.");
+                //H2091 10.02.15 DMO +++++++++++++++++++++++++++++++++++
+                IF NewPostingDate <> 0D THEN BEGIN
+                  SalesHeaderL.SetHideValidationDialog(UpdateCurrFactor);
+                  SalesHeaderL.VALIDATE("Posting Date",NewPostingDate);
+                  SalesHeaderL.SetHideValidationDialog(FALSE);
+                END;
+                //H2091 10.02.15 DMO -----------------------------------
+                CLEAR(SalesPostL);
+                COMMIT;
+                SalesHeaderL.VALIDATE(Receive, TRUE);
+                SalesHeaderL.VALIDATE(Invoice, TRUE);
+                //H3950 31.03.2015 TST +++++++++++++++++++++++++++++++
+                SalesHeaderL.SetHideValidationDialog(TRUE);
+                //H3950 31.03.2015 TST -------------------------------
+                IF NOT SalesPostL.RUN(SalesHeaderL) THEN BEGIN
+                  BatchPostLineTmpL.RESET;
+                  BatchPostLineTmpL.SETRANGE("Sales Return Order No.",SalesHeaderL."No.");
+                  //H4110, T0060, H1200 22.04.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+                  BatchPostLineTmpL.SetTmpErrorAll(GETLASTERRORTEXT);
+                  //H4110, T0060, H1200 22.04.15 CC-GH ---------------------------------------------------
+                END;
+
+                //H3823 10.03.15 CC_RST ++++++++++++++++++++++++++++++++++++++++++++++
+                MPDocMgtL.CreateTransferOrderFromSRO(BatchPostLineTmpL);
+                //H3823 10.03.15 CC_RST ----------------------------------------------
+                //H3950 31.03.2015 TST +++++++++++++++++++++++++++++++
+                SalesHeaderL.SetHideValidationDialog(FALSE);
+                //H3950 31.03.2015 TST -------------------------------
+
+                //Archive batch-post line
+                BatchPostLineTmpL.RESET;
+                BatchPostLineTmpL.SETFILTER(Status,'<>%1',BatchPostLineTmpL.Status::Error);
+                IF BatchPostLineTmpL.FINDSET THEN
+                  REPEAT
+                    IF BatchPostLineL.GET(BatchPostLineTmpL."Line No.") THEN BEGIN
+                      ArchivedBatchPostLineL.INIT;
+                      ArchivedBatchPostLineL."Sales Return Order No." := BatchPostLineL."Sales Return Order No.";
+                      ArchivedBatchPostLineL."Sales Return Line No." := BatchPostLineL."Sales Return Line No.";
+                      ArchivedBatchPostLineL."Item No." := BatchPostLineL."Item No.";
+                      ArchivedBatchPostLineL."Transfer Order No." := BatchPostLineL."Transfer Order No.";
+                      ArchivedBatchPostLineL."Transfer Order Line No." := BatchPostLineL."Transfer Order Line No.";
+                      ArchivedBatchPostLineL.Quantity := BatchPostLineL.Quantity;
+                      ArchivedBatchPostLineL.Location := BatchPostLineL.Location;
+                      ArchivedBatchPostLineL."Action Type" := BatchPostLineL."Action Type";
+                      ArchivedBatchPostLineL."Insert Timestamp" := CURRENTDATETIME;
+                      ArchivedBatchPostLineL."User ID" := USERID;
+                      ArchivedBatchPostLineL.INSERT(TRUE);
+                      //H4292 02.06.15 DMO +++++++++++++++++++++++
+                      BatchPostLineL.SetXMLDocStatusProcessed(TRUE);
+                      //H4292 02.06.15 DMO -----------------------
+                      BatchPostLineL.DELETE(TRUE);
+                    END;
+                  UNTIL BatchPostLineTmpL.NEXT = 0;
+
+                //Update erroneous batch-post line
+                BatchPostLineTmpL.RESET;
+                BatchPostLineTmpL.SETRANGE(Status,BatchPostLineTmpL.Status::Error);
+                IF BatchPostLineTmpL.FINDSET THEN
+                  REPEAT
+                    IF BatchPostLineL.GET(BatchPostLineTmpL."Line No.") THEN BEGIN
+                      //H4110, H1200 22.04.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+                      BatchPostLineL.SetError(BatchPostLineTmpL."Error Text");
+                      //H4110, H1200 22.04.15 CC-GH ---------------------------------------------------
+                    END;
+                  UNTIL BatchPostLineTmpL.NEXT = 0;
+              END;
+          //T0060 26.02.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+            UNTIL MPPostingBuffTmpL.NEXT =0;
+          //T0060 26.02.15 CC-GH ---------------------------------------------------
+          //H4212 22.05.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+          // Check not Processed Lines for Sales Order
+            BatchPostLineR.RESET;
+            BatchPostLineR.SETRANGE(Status,BatchPostLineR.Status::Unprocessed);
+            BatchPostLineR.SETRANGE("Action Type",BatchPostLineR."Action Type"::"Post Sales Return Order");
+            BatchPostLineR.SETRANGE("Sales Return Order No.", SalesHeaderTmpL."No.");
+            IF BatchPostLineR.FINDSET THEN BEGIN
+              REPEAT
+                BatchPostLineR.SetError(STRSUBSTNO(TextCC002, SalesHeaderTmpL."Document Type", SalesHeaderTmpL."No."));
+              UNTIL BatchPostLineR.NEXT = 0;
+            END;
+          //H4212 22.05.15 CC-GH ---------------------------------------------------
+        UNTIL SalesHeaderTmpL.NEXT = 0;
+      //H1200 01.10.2014 EHN -------------------------------
+    END;
+
+    PROCEDURE ReleaseSOLinkedTransferOrder@1000000013(SalesHdrV@1000000000 : Record 36);
+    VAR
+      TransferHeaderTmpL@1000000003 : TEMPORARY Record 5740;
+      TransferHeaderL@1000000002 : Record 5740;
+      TransferLineL@1000000001 : Record 5741;
+      ReleaseTransferL@1000000004 : Codeunit 5708;
+    BEGIN
+      //H1200 27.10.2014 EHN +++++++++++++++++++++++++++++++
+      IF SalesHdrV."Document Type" <> SalesHdrV."Document Type"::"Return Order" THEN
+        EXIT;
+
+      TransferLineL.RESET;
+      TransferLineL.SETRANGE("Linked Sales Doc. Type",TransferLineL."Linked Sales Doc. Type"::"Return Order");
+      TransferLineL.SETRANGE("Linked Sales Doc. No.",SalesHdrV."No.");
+      IF TransferLineL.FINDSET THEN BEGIN
+        TransferHeaderTmpL.RESET;
+        TransferHeaderTmpL.DELETEALL;
+        REPEAT
+          IF NOT TransferHeaderTmpL.GET(TransferLineL."Document No.") THEN BEGIN
+            TransferHeaderTmpL.INIT;
+            TransferHeaderTmpL."No." := TransferLineL."Document No.";
+            TransferHeaderTmpL.INSERT;
+          END;
+        UNTIL TransferLineL.NEXT = 0;
+        TransferHeaderTmpL.RESET;
+        IF TransferHeaderTmpL.FINDSET THEN
+          REPEAT
+            TransferHeaderL.GET(TransferHeaderTmpL."No.");
+            CLEAR(ReleaseTransferL);
+            ReleaseTransferL.RUN(TransferHeaderL);
+          UNTIL TransferHeaderTmpL.NEXT = 0;
+      END;
+      //H1200 27.10.2014 EHN -------------------------------
+    END;
+
+    PROCEDURE ImportFileToWorksheet@1000000011(TemplateNameV@1000000001 : Code[20]);
+    VAR
+      InstreamL@1000000010 : InStream;
+      TempBlobL@1000000009 : Record 99008535;
+      WhseTransferTemplateL@1000000002 : Record 50800;
+      WhseTransferLineL@1000000000 : Record 50801;
+      ItemL@1000000006 : Record 27;
+      TransferRouteL@1000000011 : Record 5742;
+      CU3TierMgmtL@1000000008 : Codeunit 419;
+      TextL@1000000007 : Text[1024];
+      ItemNoL@1000000004 : Code[20];
+      QtyL@1000000003 : Integer;
+      NextLineNoL@1000000005 : Integer;
+      PostingDateL@1000000012 : Date;
+    BEGIN
+      //H1994, H1423 19.01.15 EHN +++++++++++++++++++++++++++++++
+      IF NOT WhseTransferTemplateL.GET(TemplateNameV) THEN
+        EXIT;
+      CheckTemplate(WhseTransferTemplateL);
+
+      CLEAR(TempBlobL);
+      TempBlobL.Blob.CREATEINSTREAM(InstreamL);
+      CU3TierMgmtL.BLOBImport(TempBlobL,'',TRUE);
+      WHILE NOT InstreamL.EOS DO BEGIN
+        InstreamL.READTEXT(TextL);
+        ItemNoL := SELECTSTR(1,TextL);
+        ItemL.GET(ItemNoL);
+        EVALUATE(QtyL,SELECTSTR(2,TextL));
+        IF WhseTransferTemplateL."Auto-post Transfer Shipment" OR WhseTransferTemplateL."Auto-post Item Journal" THEN
+          EVALUATE(PostingDateL,SELECTSTR(3,TextL));
+
+        NextLineNoL := 0;
+        WhseTransferLineL.RESET;
+        WhseTransferLineL.SETRANGE("Template Name",WhseTransferTemplateL."Template Code");
+        WhseTransferLineL.LOCKTABLE; //Locking
+        IF WhseTransferLineL.FINDLAST THEN
+          NextLineNoL := WhseTransferLineL."Line No." + 1
+        ELSE
+          NextLineNoL := 1;
+        WhseTransferLineL.INIT;
+        WhseTransferLineL."Template Name" := WhseTransferTemplateL."Template Code";
+        WhseTransferLineL."Line No." := NextLineNoL;
+        WhseTransferLineL.INSERT(TRUE);
+
+        WhseTransferLineL.VALIDATE("Item No.", ItemL."No.");
+        WhseTransferLineL.Description := ItemL.Description;
+        WhseTransferLineL."From-Location" := WhseTransferTemplateL."From-Location";
+        WhseTransferLineL.VALIDATE("To-Location",WhseTransferTemplateL."To-Location");
+        WhseTransferLineL.Quantity := QtyL;
+        IF WhseTransferLineL."To-Location" <> '' THEN
+          IF TransferRouteL.GET(WhseTransferLineL."From-Location",WhseTransferLineL."To-Location") THEN
+            WhseTransferLineL."In-Transit Location" := TransferRouteL."In-Transit Code";
+        WhseTransferLineL."Action Type" := WhseTransferTemplateL."Action Type";
+        CASE WhseTransferLineL."Action Type" OF
+          WhseTransferLineL."Action Type"::"Create Transfer Order":
+            BEGIN
+              WhseTransferLineL."Transfer Order No. Series" := WhseTransferTemplateL."Transfer Order No. Series";
+              WhseTransferLineL."Container No. Mandatory" := WhseTransferTemplateL."Container No. Mandatory";
+            END;
+          WhseTransferLineL."Action Type"::"Insert Journal Line":
+            BEGIN
+              WhseTransferLineL."Item Journal Template" := WhseTransferTemplateL."Item Journal Template";
+              WhseTransferLineL."Item Journal Batch" := WhseTransferTemplateL."Item Journal Batch";
+              WhseTransferLineL."Transfer Item Journal Nos." := WhseTransferTemplateL."Transfer Item Journal Nos.";
+            END;
+        END;
+        WhseTransferLineL."Posting Date" := PostingDateL;
+        WhseTransferLineL."User ID" := USERID;
+        WhseTransferLineL.MODIFY(TRUE);
+      END;
+      //H1994, H1423 14.01.15 EHN -------------------------------
+    END;
+
+    PROCEDURE SetPostingDate@1000000012(NewPostingDateV@1000000000 : Date;UpdateCurrFactorV@1000000001 : Boolean);
+    BEGIN
+      //H2091 10.02.15 DMO +++++++++++++++++++++++++++++++++++
+      NewPostingDate := NewPostingDateV;
+      UpdateCurrFactor := UpdateCurrFactorV;
+      //H2091 10.02.15 DMO -----------------------------------
+    END;
+
+    PROCEDURE UpdateFollowUpTO@1000000015(FromTransferHeaderNoV@1000000000 : Code[20];PostingDateV@1000000001 : Date);
+    VAR
+      TransferHeaderL@1000000002 : Record 5740;
+    BEGIN
+      //H4115 23.04.2015 TST +++++++++++++++++++++++++++++++
+      TransferHeaderL.SETRANGE("Created from Transfer Hdr. No.",FromTransferHeaderNoV);
+      IF NOT TransferHeaderL.ISEMPTY THEN
+        TransferHeaderL.MODIFYALL("Posting Date",PostingDateV,TRUE);
+      //H4115 23.04.2015 TST -------------------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+      H1718     25.09.14    EHN     Implementation based on Concept "Warehouse Transfer Worksheet" - new object
+      H1200     30.09.14    EHN     Ship Sales Returns via Return Transit location
+      H1423     23.10.14    EHN     Creating new Poland warehouse WHPO
+      H1994     14.01.15    EHN     BUG - Inventory has been posted to wrong month Transfer worksheet
+      H2091     10.02.15    DMO     New function SetPostingDate is added
+      H3868     16.03.15    TST     Respect posted return orders
+      H4078     17.04.15    TST     Update Posting Date in Transfer Order
+      H3950     31.03.15    TST     Avoid messages
+      H4115     23.04.15    TST     New Function UpdateFollowUpTO
+      H4121     27.04.15    TST     Check Availability in TOL
+      H4292     02.06.15    DMO     Return WH: Return Orders import - CheckBatchPostLine is reviewed
+      Hxxxx     30.07.15    MKR     Return WH: Error handling in case Sales Return Order Line could not be found
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation Tectura & Home24 NAV Team  |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      T0060       19.02.15  CC-GH     Special Return Locations for Marketplace
+      H3823       10.03.15  CC_RST    Set Repurchase Price for Marketplace
+                                      Create and Post Transferorders from Sales Return Order or Transfer Order (after Posting)
+      H4065       15.04.15  CC-GH     Filter on actual Prcess only
+      H4110       22.04.15  CC-GH     Extend Error Msg
+      H4212       22.05.15  CC-GH     Impove Error Msg if Archived SRO is not Posted
+    }
+    END.
+  }
+}
+

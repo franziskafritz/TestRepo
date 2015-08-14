@@ -1,0 +1,1879 @@
+OBJECT Codeunit 50500 MP Document Mgt
+{
+  OBJECT-PROPERTIES
+  {
+    Date=30.03.15;
+    Time=16:21:56;
+    Modified=Yes;
+    Version List=T0100,HME3967;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      MPGenSetupG@1100409000 : Record 50500;
+      MarketPlacePartnerG@1000000007 : Record 50502;
+      MPGenSetupGotG@1100409001 : Boolean;
+      TextTEC001@1000000000 : TextConst 'ENU=The allowed Difference between Shop Amount %1 and NAV Order %2 can not be arragend after handling Markte Partner Lines.';
+      MarketPlacePartnerGotG@1000000008 : Boolean;
+      LastIDG@1000000001 : Integer;
+      LastIDDocTyp@1000000002 : Integer;
+      LastIDDocNo@1000000003 : Code[20];
+      TextTEC002@1000000004 : TextConst 'DEU=FÅr %1 %2 muss das Feld %2 den gleichen Wert haben in den Lagerorten %4 %5, %6 %7 and %8 %9.;ENU=For %1 %2 the Field %3 must have the same Value in Locations %4 %5, %6 %7 and %8 %9.';
+      TextTEC003@1000000005 : TextConst 'DEU=FÅr Umlagerungszeile %1 %2 muss das Feld %2 den gleichen Wert haben in den Lagerorten %4 %5, %6 %7 and %8 %9.;ENU=For Transfer Line %1 %2 the Field %3 must have the same Value in Locations %4 %5, %6 %7 and %8 %9.';
+      TextTEC004@1100409002 : TextConst 'DEU=FÅr %1 muss das Feld %2 den gleichen Wert haben in den Lagerorten %4 %5, %6 %7 and %8 %9.;ENU=For %1 the Field %3 must have the same Value in Locations %4 %5, %6 %7 and %8 %9.';
+      TextTEC005@1000000006 : TextConst 'ENU=Sorry, prevention rebates are not allowed for market place articles. (%1 %2 Line %3 %4 %5 %6)';
+      TextTEC006@1000000009 : TextConst 'ENU=Unknow SourceType Option';
+      TextTEC007@1000000010 : TextConst 'ENU=Vendor %1 is use more that one time as Vendor for Marketpalace Partner';
+      TextTEC008@1000000011 : TextConst 'ENU=Sorry, you can not give a prevention rebate higher than %1%% (%2 %3 Line %4 %5 %6 %7)';
+      TextTEC009@1000000012 : TextConst 'ENU=Default location code for Sales Return Order is %1 as defined in %2.\Are you sure you want to use location %3 instead of %4 on line %5 ?';
+      TextCC010@1000000013 : TextConst 'ENU=Can''t find Transferorder %1';
+
+    PROCEDURE IsMPSalesLine@1000000000(SalesLineV@1000000000 : Record 37) : Boolean;
+    VAR
+      PurchasingL@1100409000 : Record 5721;
+    BEGIN
+      //T0056 17.09.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Return true if sales Lines is Market Place Partner Line
+      IF SalesLineV."Purchasing Code" = '' THEN
+        EXIT(FALSE);
+
+      IF NOT PurchasingL.GET(SalesLineV."Purchasing Code") THEN
+        EXIT(FALSE);
+
+      IF NOT PurchasingL."Market Place" THEN
+        EXIT(FALSE);
+
+      IF SalesLineV."Drop Shipment" THEN
+        EXIT(TRUE);
+
+      IF SalesLineV."Special Order" THEN
+        EXIT(TRUE);
+
+      EXIT(FALSE);
+      //T0056 17.09.14 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE CheckAndHandlMPLines@1100409000(SalesHeaderV@1100409000 : Record 36);
+    VAR
+      SalesLineL@1100409001 : Record 37;
+      LineChangedL@1000000000 : Boolean;
+    BEGIN
+      //T0056 18.09.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Check all Sales header Line if MPP and possible Handel Discounts
+      SalesLineL.RESET;
+      SalesLineL.SETCURRENTKEY(SalesLineL."Document Type",SalesLineL."Document No.");
+      SalesLineL.SETRANGE("Document Type", SalesHeaderV."Document Type");
+      SalesLineL.SETRANGE("Document No.", SalesHeaderV."No.");
+      LineChangedL := FALSE;
+      IF SalesLineL.FINDSET(TRUE) THEN BEGIN
+        REPEAT
+          IF HandelMPLine(SalesLineL) THEN BEGIN
+            LineChangedL := TRUE;
+          END;
+        UNTIL SalesLineL.NEXT = 0;
+      END;
+
+      IF LineChangedL THEN BEGIN
+        CheckTotalSum(SalesHeaderV);
+      END;
+
+      //T0056 18.09.14 TEC-GH --------------------------------------------------
+    END;
+
+    LOCAL PROCEDURE HandelMPLine@1100409001(VAR SalesLineR@1100409000 : Record 37) : Boolean;
+    VAR
+      RecRefL@1100409005 : RecordRef;
+      xRecRefL@1100409006 : RecordRef;
+      NextSalesLineL@1100409007 : Record 37;
+      FromDocDimL@1000000002 : Record 357;
+      ChangeLogMgtL@1100409004 : Codeunit 423;
+      ChangeRecordL@1100409003 : Boolean;
+      NoOfLineToAddL@1100409008 : Integer;
+      LastLineNoL@1100409009 : Integer;
+      StepNoL@1100409010 : Integer;
+      NextIDL@1000000001 : Integer;
+    BEGIN
+      //T0056 18.09.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Check all Sales header Line if MPP and possible Handel Discounts
+      // Return True if Line changed
+      IF NOT IsMPSalesLine(SalesLineR) THEN
+        EXIT(FALSE);
+
+      // GetSetup
+      GetMPGenSetup;
+
+      xRecRefL.GETTABLE(SalesLineR);
+      SalesLineR.SuspendStatusCheck(TRUE);
+
+      //T0075,T0056 09.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      ChangeRecordL := SetMarketplace(SalesLineR);
+      //T0075,T0056 09.10.14 TEC-GH --------------------------------------------------
+
+      // Calc Nos of Lines to add
+      CASE TRUE OF
+        (SalesLineR."Inv. Discount Amount" <> 0) AND (SalesLineR."Line Discount Amount" <> 0):
+          BEGIN
+            NoOfLineToAddL := 2;
+          END;
+        (SalesLineR."Inv. Discount Amount" <> 0) OR
+        (SalesLineR."Line Discount Amount" <> 0):
+          BEGIN
+            NoOfLineToAddL := 1;
+          END;
+        ELSE
+          NoOfLineToAddL := 0;
+      END;
+      IF NoOfLineToAddL >0 THEN BEGIN
+        // Set Next Line No and Index
+        NextSalesLineL := SalesLineR;
+        NextSalesLineL.RESET;
+        NextSalesLineL.SETRANGE("Document Type", SalesLineR."Document Type");
+        NextSalesLineL.SETRANGE("Document No.", SalesLineR."Document No.");
+
+        IF NextSalesLineL.NEXT = 0 THEN BEGIN
+          LastLineNoL := SalesLineR."Line No.";
+          StepNoL := 10000;
+        END ELSE BEGIN
+          StepNoL := ROUND((NextSalesLineL."Line No." - SalesLineR."Line No.") / (NoOfLineToAddL+1), 1, '<');
+          IF StepNoL = 0 THEN BEGIN
+            NextSalesLineL.FINDLAST;
+            LastLineNoL := NextSalesLineL."Line No.";
+            StepNoL := 10000;
+          END ELSE BEGIN
+            LastLineNoL := SalesLineR."Line No.";
+          END;
+        END;
+      END;
+
+      FromDocDimL.RESET;
+      FromDocDimL.SETRANGE("Table ID", DATABASE::"Sales Line");
+      FromDocDimL.SETRANGE("Document Type", SalesLineR."Document Type");
+      FromDocDimL.SETRANGE("Document No.", SalesLineR."Document No.");
+      FromDocDimL.SETRANGE("Line No.", SalesLineR."Line No.");
+
+      // Handel Invoice Discount
+      IF SalesLineR."Inv. Discount Amount" <> 0 THEN BEGIN
+        CreateNewLine(
+          SalesLineR, FromDocDimL, LastLineNoL, StepNoL, MPGenSetupG."Item Charge Pre. Pay. Reb.",-SalesLineR."Inv. Discount Amount");
+        SalesLineR.VALIDATE("Allow Invoice Disc.",FALSE);
+        ChangeRecordL := TRUE;
+      END ELSE IF SalesLineR."Allow Invoice Disc." THEN BEGIN
+        // For MPP Line never allow Invoice Discount
+        SalesLineR.VALIDATE("Allow Invoice Disc.",FALSE);
+        ChangeRecordL := TRUE;
+      END;
+
+      //T0057 17.09.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Handle Line Discount
+      IF SalesLineR."Line Discount Amount" <> 0 THEN BEGIN
+        CreateNewLine(
+          SalesLineR, FromDocDimL, LastLineNoL, StepNoL, MPGenSetupG."Item Charge Shop Vouch.", -SalesLineR."Line Discount Amount");
+        SalesLineR.VALIDATE("Line Discount Amount",0);
+        ChangeRecordL := TRUE;
+      END;
+      //T0057 17.09.14 TEC-GH --------------------------------------------------
+
+      // Write Modfiy
+      IF ChangeRecordL THEN BEGIN
+        SalesLineR.MODIFY(TRUE);
+        RecRefL.GETTABLE(SalesLineR);
+        ChangeLogMgtL.LogModification(RecRefL,xRecRefL);
+      END;
+
+      EXIT(ChangeRecordL);
+      //T0056 18.09.14 TEC-GH --------------------------------------------------
+    END;
+
+    LOCAL PROCEDURE GetMPGenSetup@1100409002();
+    BEGIN
+      //T0056 17.09.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF NOT MPGenSetupGotG THEN BEGIN
+        MPGenSetupG.GET;
+        MPGenSetupG.TESTFIELD("Item Charge Pre. Pay. Reb.");
+        MPGenSetupG.TESTFIELD("Item Charge Shop Vouch.");
+        MPGenSetupGotG := TRUE;
+      END;
+      //T0056 17.09.14 TEC-GH --------------------------------------------------
+    END;
+
+    LOCAL PROCEDURE CheckTotalSum@1000000001(SalesHeaderV@1000000000 : Record 36);
+    VAR
+      SalesLineL@1000000001 : Record 37;
+      FPCSetupL@1000000002 : Record 50055;
+      TotalOrderAmountL@1000000003 : Decimal;
+    BEGIN
+      //T0056 18.09.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Check that Value is inside Tolerance
+      TotalOrderAmountL := 0;
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type",SalesHeaderV."Document Type");
+      SalesLineL.SETRANGE("Document No.",SalesHeaderV."No.");
+      IF SalesLineL.FINDSET THEN BEGIN
+        REPEAT
+          TotalOrderAmountL += SalesLineL."Line Amount" - SalesLineL."Inv. Discount Amount";
+        UNTIL SalesLineL.NEXT = 0;
+      END;
+      IF TotalOrderAmountL <> SalesHeaderV."Original Shop Amount" THEN
+        ERROR(TextTEC001,SalesHeaderV."Original Shop Amount",TotalOrderAmountL,FPCSetupL."Max. Shop Rounding Difference");
+      //T0056 18.09.14 TEC-GH --------------------------------------------------
+    END;
+
+    LOCAL PROCEDURE TansferFieldsFromParent@1000000002(ParentSalesLineV@1000000000 : Record 37;VAR ChildSalesLineR@1000000001 : Record 37);
+    BEGIN
+      //T0056 18.09.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Transfer needed Fields from Parent to Child
+      ChildSalesLineR."Location Code" := ParentSalesLineV."Location Code";
+      ChildSalesLineR."Planned Delivery Date" := ParentSalesLineV."Planned Delivery Date";
+      ChildSalesLineR."Planned Shipment Date" := ParentSalesLineV."Planned Shipment Date";
+      ChildSalesLineR."Shipping Agent Code" := ParentSalesLineV."Shipping Agent Code";
+      ChildSalesLineR."Shipping Agent Service Code" := ParentSalesLineV."Shipping Agent Service Code";
+      ChildSalesLineR."Shipping Source" := ParentSalesLineV."Shipping Source";
+      ChildSalesLineR."Delivery Days" := ParentSalesLineV."Delivery Days";
+      ChildSalesLineR."Transp. Type" := ParentSalesLineV."Transp. Type";
+      ChildSalesLineR."Max. Order Date - Master" := ParentSalesLineV."Max. Order Date - Master";
+      ChildSalesLineR."Original Line Amount" := 0;
+      ParentSalesLineV."Latest First Scan" := ParentSalesLineV."Latest First Scan";
+      ChildSalesLineR."Max. Order Date" := ParentSalesLineV."Max. Order Date";
+      ChildSalesLineR."Payment Transaction No." := ParentSalesLineV."Payment Transaction No.";
+      //T0056 18.09.14 TEC-GH --------------------------------------------------
+    END;
+
+    LOCAL PROCEDURE CreateNewLine@1000000004(VAR SalesLineR@1000000000 : Record 37;VAR FromDocDimR@1000000009 : Record 357;VAR LastLineNoR@1000000001 : Integer;StepNoV@1000000002 : Integer;ItemChargeCodeV@1000000003 : Code[20];AmountV@1000000004 : Decimal);
+    VAR
+      RecRefL@1000000006 : RecordRef;
+      NewSalesLineL@1000000005 : Record 37;
+      ChangeLogMgtL@1000000007 : Codeunit 423;
+      DimMgtL@1000000008 : Codeunit 408;
+    BEGIN
+      //T0056 18.09.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Create New Sales Line by Parent Line
+      NewSalesLineL.INIT;
+      NewSalesLineL."Document Type" := SalesLineR."Document Type";
+      NewSalesLineL."Document No." := SalesLineR."Document No.";
+      NewSalesLineL."Line No." := LastLineNoR + StepNoV;
+      NewSalesLineL.INSERT(TRUE);
+      LastLineNoR := NewSalesLineL."Line No.";
+      NewSalesLineL.VALIDATE(Type, NewSalesLineL.Type::"Charge (Item)");
+      NewSalesLineL.VALIDATE("No.", ItemChargeCodeV);
+      NewSalesLineL.VALIDATE(Quantity,1);
+      SalesLineR.TESTFIELD(ID);
+      NewSalesLineL.ID := GetNextID(NewSalesLineL);
+      NewSalesLineL."Parent ID" := SalesLineR.ID;
+      NewSalesLineL.VALIDATE("Unit Price",AmountV);
+      // Transfer Dimensions
+      DimMgtL.DeleteDocDim(
+        DATABASE::"Sales Line",
+        NewSalesLineL."Document Type",
+        NewSalesLineL."Document No.",
+        NewSalesLineL."Line No.");
+      DimMgtL.MoveDocDimToDocDim(
+        FromDocDimR,
+        DATABASE::"Sales Line",
+        NewSalesLineL."Document No.",
+        NewSalesLineL."Document Type",
+        NewSalesLineL."Line No.");
+      NewSalesLineL."Shortcut Dimension 1 Code" := SalesLineR."Shortcut Dimension 1 Code";
+      NewSalesLineL."Shortcut Dimension 2 Code" := SalesLineR."Shortcut Dimension 2 Code";
+      TansferFieldsFromParent(SalesLineR,NewSalesLineL);
+      //T0071 30.09.14 GH
+      NewSalesLineL."Market Place" := TRUE;
+      //T0071 30.09.14 GH
+      NewSalesLineL.MODIFY(TRUE);
+
+      RecRefL.GETTABLE(NewSalesLineL);
+      ChangeLogMgtL.LogInsertion(RecRefL);
+      //T0056 18.09.14 TEC-GH --------------------------------------------------
+    END;
+
+    LOCAL PROCEDURE GetNextID@1000000003(VAR NewSalesLineR@1000000000 : Record 37) : Integer;
+    VAR
+      SearchSalesLineL@1000000001 : Record 37;
+    BEGIN
+      //T0056 18.09.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Get Last ID of Document
+      IF (LastIDDocTyp <> NewSalesLineR."Document Type") OR (LastIDDocNo <> NewSalesLineR."Document No.") THEN BEGIN
+        // Search Last ID - Da kein SchlÅssel suche per Loop
+        SearchSalesLineL := NewSalesLineR;
+        SearchSalesLineL.RESET;
+        SearchSalesLineL.SETRANGE("Document Type", NewSalesLineR."Document Type");
+        SearchSalesLineL.SETRANGE("Document No.", NewSalesLineR."Document No.");
+        //T0056 20.11.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+        IF SearchSalesLineL.FINDLAST THEN BEGIN
+        //T0056 20.11.14 TEC-GH --------------------------------------------------
+          REPEAT
+            LastIDG := SearchSalesLineL.ID;
+            SearchSalesLineL.SETFILTER(ID,'>%1',LastIDG);
+          UNTIL NOT SearchSalesLineL.FINDLAST;
+        //T0056 20.11.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+        END ELSE BEGIN
+          LastIDG := 0;
+        END;
+        //T0056 20.11.14 TEC-GH --------------------------------------------------
+        LastIDDocTyp := NewSalesLineR."Document Type";
+        LastIDDocNo := NewSalesLineR."Document No.";
+        IF (SearchSalesLineL."Line No." = NewSalesLineR."Line No.") AND (LastIDG > 0) THEN BEGIN
+          //T0056 20.11.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+          // It is Possible that the ID No of the actual Line is allready used by on other Line
+          // Max ID Line is the actual Line No
+          SearchSalesLineL.SETRANGE(ID, LastIDG);
+          SearchSalesLineL.SETFILTER("Line No.",'<>%1',NewSalesLineR."Line No.");
+          IF SearchSalesLineL.ISEMPTY THEN
+            EXIT(LastIDG); // Actual Is the only one with Max Id, reuse it
+          //T0056 20.11.14 TEC-GH --------------------------------------------------
+        END;
+      END;
+      LastIDG += 1;
+      EXIT(LastIDG);
+      //T0056 18.09.14 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE CheckTransfMPLocTransfHeader@1000000009(TransferHeaderV@1000000000 : Record 5740);
+    VAR
+      LocationL@1000000002 : Record 14;
+      IsMPTransferL@1000000003 : 'notKnown,MP,NoMP';
+    BEGIN
+      //T0053 01.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // All location shall be MP Location or No MP Location
+
+      IsMPTransferL := IsMPTransferL::notKnown;
+
+      IF NOT CheckOneMPLocation(IsMPTransferL,TransferHeaderV."Transfer-from Code") OR
+         NOT CheckOneMPLocation(IsMPTransferL,TransferHeaderV."Transfer-to Code") OR
+         NOT CheckOneMPLocation(IsMPTransferL,TransferHeaderV."In-Transit Code")
+      THEN
+         ERROR(TextTEC002,
+           TransferHeaderV.TABLECAPTION, TransferHeaderV."No.",
+           LocationL.FIELDCAPTION(LocationL."Market Place Partner Location"),
+           TransferHeaderV.FIELDCAPTION("Transfer-from Code"), TransferHeaderV."Transfer-from Code",
+           TransferHeaderV.FIELDCAPTION("Transfer-to Code"), TransferHeaderV."Transfer-to Code",
+           TransferHeaderV.FIELDCAPTION("In-Transit Code"), TransferHeaderV."In-Transit Code");
+      //T0053 01.10.14 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE CheckTransfMPLocTransfLine@1000000006(TransferLineV@1000000002 : Record 5741);
+    VAR
+      LocationL@1000000001 : Record 14;
+      IsMPTransferL@1000000000 : 'notKnown,MP,NoMP';
+    BEGIN
+      //T0053 01.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // All location shall be MP Location or No MP Location
+
+      IsMPTransferL := IsMPTransferL::notKnown;
+
+      IF NOT CheckOneMPLocation(IsMPTransferL,TransferLineV."Transfer-from Code") OR
+         NOT CheckOneMPLocation(IsMPTransferL,TransferLineV."Transfer-to Code") OR
+         NOT CheckOneMPLocation(IsMPTransferL,TransferLineV."In-Transit Code")
+      THEN
+         ERROR(TextTEC003,
+           TransferLineV."Document No.", TransferLineV."Line No.",
+           LocationL.FIELDCAPTION(LocationL."Market Place Partner Location"),
+           TransferLineV.FIELDCAPTION("Transfer-from Code"), TransferLineV."Transfer-from Code",
+           TransferLineV.FIELDCAPTION("Transfer-to Code"), TransferLineV."Transfer-to Code",
+           TransferLineV.FIELDCAPTION("In-Transit Code"), TransferLineV."In-Transit Code");
+      //T0053 01.10.14 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE CheckTransfMPLocAllTransfLines@1000000005(TransferHeaderV@1000000000 : Record 5740);
+    VAR
+      TransferLineL@1000000001 : Record 5741;
+    BEGIN
+      //T0053 01.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // All location shall be MP Location or No MP Location
+      TransferLineL.SETRANGE("Document No.",TransferHeaderV."No.");
+      IF TransferLineL.FINDSET THEN BEGIN
+        REPEAT
+          CheckTransfMPLocTransfLine(TransferLineL);
+        UNTIL (TransferLineL.NEXT = 0);
+      END;
+      //T0053 01.10.14 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE CheckTransfMPLocTransfRoute@1100409003(TransferRouteV@1000000000 : Record 5742);
+    VAR
+      LocationL@1000000002 : Record 14;
+      IsMPTransferL@1000000003 : 'notKnown,MP,NoMP';
+    BEGIN
+      //T0053 01.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // All location shall be MP Location or No MP Location
+
+      IsMPTransferL := IsMPTransferL::notKnown;
+
+      IF NOT CheckOneMPLocation(IsMPTransferL,TransferRouteV."Transfer-from Code") OR
+         NOT CheckOneMPLocation(IsMPTransferL,TransferRouteV."Transfer-to Code") OR
+         NOT CheckOneMPLocation(IsMPTransferL,TransferRouteV."In-Transit Code")
+      THEN
+         ERROR(TextTEC004,
+           TransferRouteV.TABLECAPTION,'',
+           LocationL.FIELDCAPTION(LocationL."Market Place Partner Location"),
+           TransferRouteV.FIELDCAPTION("Transfer-from Code"), TransferRouteV."Transfer-from Code",
+           TransferRouteV.FIELDCAPTION("Transfer-to Code"), TransferRouteV."Transfer-to Code",
+           TransferRouteV.FIELDCAPTION("In-Transit Code"), TransferRouteV."In-Transit Code");
+      //T0053 01.10.14 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE CheckOneMPLocation@1000000011(VAR IsMPTransferO@1000000002 : 'notKnown,MP,NoMP';LocationCodeV@1000000000 : Code[10]) : Boolean;
+    VAR
+      LocationL@1000000003 : Record 14;
+    BEGIN
+      //T0053 01.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // When Valid Location check that Field "Market Place Partner Location" has the same Value.
+      // When not rise Error
+      // First Loaction <> '' defines Value
+      // Return true if no Error
+      IF (LocationCodeV <> '') THEN BEGIN
+        LocationL.GET(LocationCodeV);
+        CASE IsMPTransferO OF
+          IsMPTransferO::notKnown:
+            BEGIN
+              IF LocationL."Market Place Partner Location" THEN BEGIN
+                IsMPTransferO := IsMPTransferO::MP;
+              END ELSE BEGIN
+                IsMPTransferO := IsMPTransferO::NoMP;
+              END;
+            END;
+          IsMPTransferO::MP:
+            BEGIN
+              IF NOT LocationL."Market Place Partner Location" THEN BEGIN
+                EXIT(FALSE);
+              END;
+            END;
+          IsMPTransferO::NoMP:
+            BEGIN
+              IF LocationL."Market Place Partner Location" THEN BEGIN
+                EXIT(FALSE);
+              END;
+            END;
+        END;
+      END;
+      EXIT(TRUE);
+      //T0053 01.10.14 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE MarketplacePostingGrp@1000000012(VAR PurchaseLineR@1000000000 : Record 39);
+    VAR
+      MPItemVendorRelationL@1000000001 : Record 50501;
+    BEGIN
+      //T0073 09.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // For Marketplace Item Lines Change Prod. Postion Grp and VAT if needed
+      IF NOT PurchaseLineR."Market Place" THEN
+        EXIT;
+      IF (PurchaseLineR.Type <> PurchaseLineR.Type::Item) THEN
+        EXIT;
+
+      MPItemVendorRelationL.GET(PurchaseLineR."No.",PurchaseLineR."Buy-from Vendor No.");
+      IF MPItemVendorRelationL."Gen. Prod. Posting Group" <> PurchaseLineR."Gen. Prod. Posting Group" THEN BEGIN
+        PurchaseLineR.VALIDATE("Gen. Prod. Posting Group",MPItemVendorRelationL."Gen. Prod. Posting Group");
+      END;
+      IF MPItemVendorRelationL."VAT Prod. Posting Group" <> PurchaseLineR."VAT Prod. Posting Group" THEN BEGIN
+        PurchaseLineR.VALIDATE("VAT Prod. Posting Group",MPItemVendorRelationL."VAT Prod. Posting Group");
+      END;
+      IF PurchaseLineR."Direct Unit Cost" <> 0 THEN BEGIN
+        PurchaseLineR.VALIDATE("Direct Unit Cost", 0);
+      END;
+      IF PurchaseLineR."Unit Cost (LCY)" <> 0 THEN BEGIN
+        PurchaseLineR.VALIDATE("Unit Cost (LCY)", 0);
+      END;
+      IF PurchaseLineR."Unit Price (LCY)" <> 0 THEN BEGIN
+        PurchaseLineR.VALIDATE("Unit Price (LCY)",0);
+      END;
+      //T0073 09.10.14 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE AddMarketPlaceDimensions@1000000014(SalesLineV@1000000002 : Record 37;VAR TableIDR@1000000001 : ARRAY [10] OF Integer;VAR NoR@1000000000 : ARRAY [10] OF Code[20];IndexV@1000000003 : Integer);
+    BEGIN
+      //T0074 09.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Get Vendor Dimensions if Marketplace
+      IF (SalesLineV."Market Place") AND (IndexV >=1) AND (IndexV <= ARRAYLEN(TableIDR)) THEN BEGIN
+        TableIDR[IndexV] := DATABASE::Vendor;
+        NoR[IndexV] := SalesLineV."Vendor No.";
+      END;
+      //T0074 09.10.14 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE OnValidateMarketplace@1000000016(VAR SalesLineR@1000000000 : Record 37;xMarketPlaceV@1000000001 : Boolean);
+    BEGIN
+      //T0075 09.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      SalesLineR.TESTFIELD("Market Place",IsMPSalesLine(SalesLineR));
+      IF SalesLineR."Market Place" THEN BEGIN
+        IF SetMarketplace(SalesLineR) THEN ;
+      END ELSE IF xMarketPlaceV THEN BEGIN
+        IF ResetMarketplace(SalesLineR) THEN ;
+      END;
+      //T0075 09.10.14 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE SetMarketplace@1000000017(VAR SalesLineR@1000000000 : Record 37) ChangeRecordO : Boolean;
+    VAR
+      OrgSalesLineL@1000000003 : Record 37;
+      AttachedLines@1000000001 : Record 37;
+      MPPItemVendorRelationL@1000000002 : Record 50501;
+    BEGIN
+      OrgSalesLineL := SalesLineR;
+      ChangeRecordO := FALSE;
+
+      // First Check and Change Prod. Posting Grp
+      CASE SalesLineR.Type OF
+        SalesLineR.Type::Item:
+          BEGIN
+            SalesLineR.TESTFIELD("No.");
+            SalesLineR.TESTFIELD("Vendor No.");
+            MPPItemVendorRelationL.GET(SalesLineR."No.", SalesLineR."Vendor No.");
+            MPPItemVendorRelationL.TESTFIELD("Gen. Prod. Posting Group");
+            MPPItemVendorRelationL.TESTFIELD("VAT Prod. Posting Group");
+
+            IF MPPItemVendorRelationL."Gen. Prod. Posting Group" <> SalesLineR."Gen. Prod. Posting Group" THEN BEGIN
+              SalesLineR.VALIDATE("Gen. Prod. Posting Group", MPPItemVendorRelationL."Gen. Prod. Posting Group");
+              ChangeRecordO := TRUE;
+              //T0086 28.11.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+              IF (SalesLineR."Prepayment %" <> 0) THEN BEGIN
+                SalesLineR.VALIDATE("Prepayment %");
+              END;
+              //T0086 28.11.14 TEC-GH --------------------------------------------------
+            END;
+            IF MPPItemVendorRelationL."VAT Prod. Posting Group" <> SalesLineR."VAT Prod. Posting Group" THEN BEGIN
+              SalesLineR.VALIDATE("VAT Prod. Posting Group",MPPItemVendorRelationL."VAT Prod. Posting Group");
+              ChangeRecordO := TRUE;
+            END;
+            // Restore Unit Price
+            IF (SalesLineR."Unit Price" <> OrgSalesLineL."Unit Price") THEN BEGIN
+              SalesLineR.VALIDATE("Unit Price",OrgSalesLineL."Unit Price");
+            END;
+            IF (SalesLineR."Line Discount Amount" <> OrgSalesLineL."Line Discount Amount") THEN BEGIN
+              SalesLineR.VALIDATE("Unit Price",OrgSalesLineL."Line Discount Amount");
+            END;
+            IF (SalesLineR."Inv. Discount Amount" <> OrgSalesLineL."Inv. Discount Amount") THEN BEGIN
+              SalesLineR.VALIDATE("Inv. Discount Amount", OrgSalesLineL."Inv. Discount Amount");
+            END;
+          END;
+      END;
+      // Set MPP Flag
+      //T0075 09.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF NOT SalesLineR."Market Place" THEN BEGIN
+        SalesLineR."Market Place" := TRUE;
+        ChangeRecordO := TRUE;
+      END;
+      //T0075 09.10.14 TEC-GH --------------------------------------------------
+
+      //T0060 19.02.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      CASE SalesLineR."Document Type" OF
+        SalesLineR."Document Type"::"Credit Memo",
+        SalesLineR."Document Type"::"Return Order":
+          BEGIN
+            GetMPGenSetup;
+            MPGenSetupG.TESTFIELD("MPP Sales Return Location");
+            IF SalesLineR."Location Code" <> MPGenSetupG."MPP Sales Return Location" THEN BEGIN
+              SalesLineR."Location Code" := MPGenSetupG."MPP Sales Return Location";
+              ChangeRecordO := TRUE;
+              // Change attached Lines too
+              IF (SalesLineR.ID <> 0) THEN BEGIN
+                AttachedLines.RESET;
+                AttachedLines.SETRANGE("Document Type",SalesLineR."Document Type");
+                AttachedLines.SETRANGE("Document No.", SalesLineR."Document No.");
+                AttachedLines.SETRANGE("Parent ID", SalesLineR.ID);
+                IF NOT AttachedLines.ISEMPTY THEN BEGIN
+                  AttachedLines.MODIFYALL("Location Code",SalesLineR."Location Code");
+                END;
+              END;
+            END;
+          END;
+      END;
+      //T0060 19.02.15 CC-GH ---------------------------------------------------
+
+      // Set Unit Cost to Zero
+      IF SalesLineR."Unit Cost (LCY)" <> 0 THEN BEGIN
+        SalesLineR.VALIDATE("Unit Cost (LCY)",0);
+        ChangeRecordO := TRUE;
+      END;
+    END;
+
+    PROCEDURE ResetMarketplace@1000000020(VAR SalesLineR@1000000000 : Record 37) ChangeRecordO : Boolean;
+    VAR
+      OrgSalesLineL@1000000003 : Record 37;
+      MPPItemVendorRelationL@1000000002 : Record 50501;
+      Item@1000000001 : Record 27;
+    BEGIN
+      OrgSalesLineL := SalesLineR;
+      ChangeRecordO := FALSE;
+
+      // First Check and Change Prod. Posting Grp
+      CASE SalesLineR.Type OF
+        SalesLineR.Type::Item:
+          BEGIN
+            IF NOT Item.GET(SalesLineR."No.") THEN BEGIN
+              Item.INIT;
+            END;
+            IF Item."Gen. Prod. Posting Group" <> SalesLineR."Gen. Prod. Posting Group" THEN BEGIN
+              SalesLineR.VALIDATE("Gen. Prod. Posting Group", Item."Gen. Prod. Posting Group");
+              //T0078 28.11.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+              IF (SalesLineR."Prepayment %" <> 0) THEN BEGIN
+                SalesLineR.VALIDATE("Prepayment %");
+              END;
+              //T0078 28.11.14 TEC-GH --------------------------------------------------
+              ChangeRecordO := TRUE;
+            END;
+            IF Item."VAT Prod. Posting Group" <> SalesLineR."VAT Prod. Posting Group" THEN BEGIN
+              SalesLineR.VALIDATE("VAT Prod. Posting Group",Item."VAT Prod. Posting Group");
+              ChangeRecordO := TRUE;
+            END;
+            // Restore Unit Price
+            IF (SalesLineR."Unit Price" <> OrgSalesLineL."Unit Price") THEN BEGIN
+              SalesLineR.VALIDATE("Unit Price",OrgSalesLineL."Unit Price");
+            END;
+            IF (SalesLineR."Line Discount Amount" <> OrgSalesLineL."Line Discount Amount") THEN BEGIN
+              SalesLineR.VALIDATE("Unit Price",OrgSalesLineL."Line Discount Amount");
+            END;
+            IF (SalesLineR."Inv. Discount Amount" <> OrgSalesLineL."Inv. Discount Amount") THEN BEGIN
+              SalesLineR.VALIDATE("Inv. Discount Amount", OrgSalesLineL."Inv. Discount Amount");
+            END;
+          END;
+      END;
+      // Set MPP Flag
+      //T0075 09.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF SalesLineR."Market Place" THEN BEGIN
+        SalesLineR."Market Place" := FALSE;
+        ChangeRecordO := TRUE;
+      END;
+      //T0075 09.10.14 TEC-GH --------------------------------------------------
+
+      // Set Unit Cost to Zero
+      IF SalesLineR."Unit Cost (LCY)" = 0  THEN BEGIN
+        SalesLineR.GetUnitCost;
+        ChangeRecordO := (SalesLineR."Unit Cost (LCY)" <> 0);
+      END;
+    END;
+
+    PROCEDURE ChangeVendorIfMarketplace@1000000021(VAR ReqLineR@1000000000 : Record 246);
+    VAR
+      PurchasingL@1000000001 : Record 5721;
+      SalesLineL@1000000002 : Record 37;
+      MarketPlacePartnerL@1000000003 : Record 50502;
+    BEGIN
+      //T0070 20.11.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF ReqLineR.Type <> ReqLineR.Type::Item THEN
+        EXIT;
+
+      IF ReqLineR."No." = '' THEN
+        EXIT;
+
+      IF ReqLineR."Vendor No." = '' THEN
+        EXIT;
+
+      IF ReqLineR."Purchasing Code" = '' THEN
+        EXIT;
+
+      IF ReqLineR."Sales Order No." = '' THEN
+        EXIT;
+
+      IF ReqLineR."Marketplace Partner Code" <> '' THEN
+        EXIT;
+
+      IF NOT PurchasingL.GET(ReqLineR."Purchasing Code") THEN
+        EXIT;
+
+      IF NOT PurchasingL."Market Place" THEN
+        EXIT;
+
+      IF NOT (PurchasingL."Drop Shipment" OR PurchasingL."Special Order") THEN
+        EXIT;
+
+      IF NOT SalesLineL.GET(
+        SalesLineL."Document Type"::Order,
+        ReqLineR."Sales Order No.",
+        ReqLineR."Sales Order Line No.")
+      THEN
+        EXIT;
+
+      IF (SalesLineL."Drop Shipment") <> (PurchasingL."Drop Shipment") THEN
+        EXIT;
+
+      IF (SalesLineL."Special Order") <> (PurchasingL."Special Order") THEN
+        EXIT;
+
+      MarketPlacePartnerL.GET(ReqLineR."Vendor No.");
+      MarketPlacePartnerL.TESTFIELD("Vendor No");
+
+      // Change Vendor
+      ReqLineR."Marketplace Partner Code" := MarketPlacePartnerL."Market Place Partner";
+      ReqLineR."Vendor No." := MarketPlacePartnerL."Vendor No";
+
+      //T0070 20.11.14 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE TestMPPreventionDiscountSL@1000000022(SalesLineV@1000000000 : Record 37);
+    VAR
+      SourceTypeL@1000000001 : 'Sales,MPPurchase,Rebuy';
+    BEGIN
+      //T0096 27.01.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF NOT SalesLineV."Market Place" THEN
+        EXIT;
+
+      IF SalesLineV.Type <> SalesLineV.Type::Item THEN
+        EXIT;
+
+      IF (SalesLineV."Prevention discount Amount" = 0) AND
+         (SalesLineV."Prevention discount (%)" = 0)
+      THEN
+        EXIT;
+
+      GetMPGenSetup;
+
+      CASE MPGenSetupG."Prepayment Discount Handling" OF
+        MPGenSetupG."Prepayment Discount Handling"::"Decline Prevention Discount":
+          BEGIN
+            ERROR(TextTEC005,
+              SalesLineV."Document Type", SalesLineV."Document No.", SalesLineV."Line No.",
+              SalesLineV.Type, SalesLineV."No.", SalesLineV.Description);
+          END;
+        MPGenSetupG."Prepayment Discount Handling"::"Limit Prevention Discount":
+          BEGIN
+            GetMarketPlacePartner(SalesLineV."Vendor No.",SourceTypeL::Sales);
+            IF (MarketPlacePartnerG."Max Prevention Discount %" < SalesLineV."Prevention discount (%)") THEN
+              ERROR(TextTEC008, MarketPlacePartnerG."Max Prevention Discount %",
+                SalesLineV."Document Type", SalesLineV."Document No.", SalesLineV."Line No.",
+                SalesLineV.Type, SalesLineV."No.", SalesLineV.Description);
+          END;
+        MPGenSetupG."Prepayment Discount Handling"::"Default Handling":
+          EXIT;
+        ELSE
+          EXIT;
+      END;
+      //T0096 27.01.15 CC-GH ---------------------------------------------------
+    END;
+
+    PROCEDURE GetMarketPlacePartner@1000000023(ForVendorV@1000000000 : Code[20];SourceTypeV@1000000001 : 'Sales,MPPurchase,Rebuy');
+    VAR
+      MarketPlacePartner2L@1000000002 : Record 50502;
+    BEGIN
+      //T0096 27.01.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF MPGenSetupGotG THEN BEGIN
+        CASE SourceTypeV OF
+          SourceTypeV::Sales:
+            BEGIN
+              IF MarketPlacePartnerG."Market Place Partner" = ForVendorV THEN
+                EXIT;
+            END;
+          SourceTypeV::MPPurchase:
+            BEGIN
+              IF MarketPlacePartnerG."Vendor No" = ForVendorV THEN
+                EXIT;
+            END;
+          SourceTypeV::Rebuy:
+            BEGIN
+              IF MarketPlacePartnerG."Market Place Partner" = ForVendorV THEN
+                EXIT;
+            END;
+        ELSE
+          ERROR(TextTEC006);
+        END;
+      END;
+      MarketPlacePartnerG.RESET;
+      CASE SourceTypeV OF
+        SourceTypeV::Sales:
+          BEGIN
+            MarketPlacePartnerG.SETRANGE("Market Place Partner",ForVendorV);
+          END;
+        SourceTypeV::MPPurchase:
+          BEGIN
+            MarketPlacePartnerG.SETRANGE("Vendor No",ForVendorV);
+          END;
+        SourceTypeV::Rebuy:
+          BEGIN
+            MarketPlacePartnerG.SETRANGE("Market Place Partner",ForVendorV);
+          END;
+      ELSE
+        ERROR(TextTEC006);
+      END;
+      MarketPlacePartnerG.FINDFIRST;
+      CASE SourceTypeV OF
+        SourceTypeV::MPPurchase:
+          BEGIN
+            MarketPlacePartner2L.COPY(MarketPlacePartnerG);
+            MarketPlacePartner2L.SETFILTER("Market Place Partner", '<>%1',MarketPlacePartnerG."Market Place Partner");
+            IF NOT MarketPlacePartner2L.ISEMPTY THEN BEGIN
+              ERROR(TextTEC007, ForVendorV);
+            END;
+          END;
+      END;
+      //T0096 27.01.15 CC-GH ---------------------------------------------------
+    END;
+
+    PROCEDURE CalcMPLineAmountSL@1000000024(SalesLineV@1000000000 : Record 37) LineAmountO : Decimal;
+    VAR
+      AttachedSalesLineL@1000000001 : Record 37;
+      NegativL@1000000002 : Boolean;
+    BEGIN
+      //T0096 27.01.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Reduce Line Ammount by Rebate Granted by Home24 if Marketplace
+      LineAmountO := SalesLineV."Line Amount";
+
+      IF NOT SalesLineV."Market Place" THEN
+        EXIT;
+
+      IF SalesLineV.Type <> SalesLineV.Type::Item THEN
+        EXIT;
+
+      GetMPGenSetup;
+      IF NOT MPGenSetupG."Calc Line Amount" THEN
+        EXIT;
+
+      NegativL := (LineAmountO < 0);
+      AttachedSalesLineL.RESET;
+      AttachedSalesLineL.SETRANGE("Document Type", SalesLineV."Document Type");
+      AttachedSalesLineL.SETRANGE("Document No.", SalesLineV."Document No.");
+      AttachedSalesLineL.SETRANGE(Type, AttachedSalesLineL.Type::"Charge (Item)");
+      AttachedSalesLineL.SETRANGE("Market Place", TRUE);
+      AttachedSalesLineL.SETRANGE("Parent ID", SalesLineV.ID);
+      IF AttachedSalesLineL.FINDSET THEN BEGIN
+        REPEAT
+          LineAmountO += AttachedSalesLineL."Line Amount";
+        UNTIL AttachedSalesLineL.NEXT =0;
+      END;
+
+      IF (LineAmountO < 0) XOR NegativL THEN BEGIN
+        // LineAmountO has chnaged sign
+        LineAmountO := 0;
+      END;
+      //T0096 27.01.15 CC-GH ---------------------------------------------------
+    END;
+
+    PROCEDURE SetMPLimitFilterPrevDiscSL@1000000025(VAR "PreventionDiscount%R"@1000000000 : Record 50068;SalesLineV@1000000001 : Record 37);
+    VAR
+      SourceTypeL@1000000002 : 'Sales,MPPurchase,Rebuy';
+    BEGIN
+      //T0096 27.01.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Filter to Max Allowed Discount Rate
+      IF NOT SalesLineV."Market Place" THEN
+        EXIT;
+
+      IF SalesLineV.Type <> SalesLineV.Type::Item THEN
+        EXIT;
+
+      GetMPGenSetup;
+
+      CASE MPGenSetupG."Prepayment Discount Handling" OF
+        MPGenSetupG."Prepayment Discount Handling"::"Decline Prevention Discount":
+          BEGIN
+            "PreventionDiscount%R".FILTERGROUP(2);
+            "PreventionDiscount%R".SETRANGE("Prevention Discount %", 0);
+            "PreventionDiscount%R".FILTERGROUP(0);
+          END;
+        MPGenSetupG."Prepayment Discount Handling"::"Limit Prevention Discount":
+          BEGIN
+            GetMarketPlacePartner(SalesLineV."Vendor No.",SourceTypeL::Sales);
+            "PreventionDiscount%R".FILTERGROUP(2);
+            "PreventionDiscount%R".SETRANGE("Prevention Discount %", 0, MarketPlacePartnerG."Max Prevention Discount %");
+            "PreventionDiscount%R".FILTERGROUP(0);
+          END;
+        MPGenSetupG."Prepayment Discount Handling"::"Default Handling":
+          EXIT;
+        ELSE
+          EXIT;
+      END;
+      //T0096 27.01.15 CC-GH ---------------------------------------------------
+    END;
+
+    PROCEDURE SetMPLimitFilterPrevCalcSL@1000000026(VAR PreventionDiscLinesSetupR@1000000000 : Record 50175;SalesLineV@1000000001 : Record 37);
+    VAR
+      SourceTypeL@1000000002 : 'Sales,MPPurchase,Rebuy';
+    BEGIN
+      //T0096 27.01.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Filter to Max Allowed Discount Rate
+      IF NOT SalesLineV."Market Place" THEN
+        EXIT;
+
+      IF SalesLineV.Type <> SalesLineV.Type::Item THEN
+        EXIT;
+
+      GetMPGenSetup;
+
+      CASE MPGenSetupG."Prepayment Discount Handling" OF
+        MPGenSetupG."Prepayment Discount Handling"::"Decline Prevention Discount":
+          BEGIN
+            PreventionDiscLinesSetupR.FILTERGROUP(2);
+             PreventionDiscLinesSetupR.SETRANGE("Discount (%)", 0);
+             PreventionDiscLinesSetupR.FILTERGROUP(0);
+          END;
+        MPGenSetupG."Prepayment Discount Handling"::"Limit Prevention Discount":
+          BEGIN
+            GetMarketPlacePartner(SalesLineV."Vendor No.",SourceTypeL::Sales);
+             PreventionDiscLinesSetupR.FILTERGROUP(2);
+             PreventionDiscLinesSetupR.SETRANGE("Discount (%)", 0, MarketPlacePartnerG."Max Prevention Discount %");
+             PreventionDiscLinesSetupR.FILTERGROUP(0);
+          END;
+        MPGenSetupG."Prepayment Discount Handling"::"Default Handling":
+          EXIT;
+        ELSE
+          EXIT;
+      END;
+      //T0096 27.01.15 CC-GH ---------------------------------------------------
+    END;
+
+    PROCEDURE TestMPPreventionDiscountSLA@1000000030(SalesLineArchiveV@1000000000 : Record 5108);
+    VAR
+      SourceTypeL@1000000001 : 'Sales,MPPurchase,Rebuy';
+    BEGIN
+      //T0096 27.01.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF NOT SalesLineArchiveV."Market Place" THEN
+        EXIT;
+
+      IF SalesLineArchiveV.Type <> SalesLineArchiveV.Type::Item THEN
+        EXIT;
+
+      IF (SalesLineArchiveV."Prevention discount Amount" = 0) AND
+         (SalesLineArchiveV."Prevention discount (%)" = 0)
+      THEN
+        EXIT;
+
+      GetMPGenSetup;
+
+      CASE MPGenSetupG."Prepayment Discount Handling" OF
+        MPGenSetupG."Prepayment Discount Handling"::"Decline Prevention Discount":
+          BEGIN
+            ERROR(TextTEC005,
+              SalesLineArchiveV."Document Type", SalesLineArchiveV."Document No.", SalesLineArchiveV."Line No.",
+              SalesLineArchiveV.Type, SalesLineArchiveV."No.", SalesLineArchiveV.Description);
+          END;
+        MPGenSetupG."Prepayment Discount Handling"::"Limit Prevention Discount":
+          BEGIN
+            GetMarketPlacePartner(SalesLineArchiveV."Vendor No.",SourceTypeL::Sales);
+            IF (MarketPlacePartnerG."Max Prevention Discount %" < SalesLineArchiveV."Prevention discount (%)") THEN
+              ERROR(TextTEC008, MarketPlacePartnerG."Max Prevention Discount %",
+                SalesLineArchiveV."Document Type", SalesLineArchiveV."Document No.", SalesLineArchiveV."Line No.",
+                SalesLineArchiveV.Type, SalesLineArchiveV."No.", SalesLineArchiveV.Description);
+          END;
+        MPGenSetupG."Prepayment Discount Handling"::"Default Handling":
+          EXIT;
+        ELSE
+          EXIT;
+      END;
+      //T0096 27.01.15 CC-GH ---------------------------------------------------
+    END;
+
+    PROCEDURE CalcMPLineAmountSLA@1000000029(SalesLineArchiveV@1000000000 : Record 5108) LineAmountO : Decimal;
+    VAR
+      AttachedSalesLineArchiveL@1000000001 : Record 5108;
+      NegativL@1000000002 : Boolean;
+    BEGIN
+      //T0096 27.01.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Reduce Line Ammount by Rebate Granted by Home24 if Marketplace
+      LineAmountO := SalesLineArchiveV."Line Amount";
+
+      IF NOT SalesLineArchiveV."Market Place" THEN
+        EXIT;
+
+      IF SalesLineArchiveV.Type <> SalesLineArchiveV.Type::Item THEN
+        EXIT;
+
+      GetMPGenSetup;
+      IF NOT MPGenSetupG."Calc Line Amount" THEN
+        EXIT;
+
+      NegativL := (LineAmountO < 0);
+      AttachedSalesLineArchiveL.RESET;
+      AttachedSalesLineArchiveL.SETRANGE("Document Type", SalesLineArchiveV."Document Type");
+      AttachedSalesLineArchiveL.SETRANGE("Document No.", SalesLineArchiveV."Document No.");
+      AttachedSalesLineArchiveL.SETRANGE(Type, AttachedSalesLineArchiveL.Type::"Charge (Item)");
+      AttachedSalesLineArchiveL.SETRANGE("Market Place", TRUE);
+      AttachedSalesLineArchiveL.SETRANGE("Parent ID", SalesLineArchiveV.ID);
+      IF AttachedSalesLineArchiveL.FINDSET THEN BEGIN
+        REPEAT
+          LineAmountO += AttachedSalesLineArchiveL."Line Amount";
+        UNTIL AttachedSalesLineArchiveL.NEXT =0;
+      END;
+
+      IF (LineAmountO < 0) XOR NegativL THEN BEGIN
+        // LineAmountO has changed sign
+        LineAmountO := 0;
+      END;
+      //T0096 27.01.15 CC-GH ---------------------------------------------------
+    END;
+
+    PROCEDURE SetMPLimitFilterPrevDiscSLA@1000000028(VAR "PreventionDiscount%R"@1000000000 : Record 50068;SalesLineArchiveV@1000000001 : Record 5108);
+    VAR
+      SourceTypeL@1000000002 : 'Sales,MPPurchase,Rebuy';
+    BEGIN
+      //T0096 27.01.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Filter to Max Allowed Discount Rate
+      IF NOT SalesLineArchiveV."Market Place" THEN
+        EXIT;
+
+      IF SalesLineArchiveV.Type <> SalesLineArchiveV.Type::Item THEN
+        EXIT;
+
+      GetMPGenSetup;
+
+      CASE MPGenSetupG."Prepayment Discount Handling" OF
+        MPGenSetupG."Prepayment Discount Handling"::"Decline Prevention Discount":
+          BEGIN
+            "PreventionDiscount%R".FILTERGROUP(2);
+            "PreventionDiscount%R".SETRANGE("Prevention Discount %", 0);
+            "PreventionDiscount%R".FILTERGROUP(0);
+          END;
+        MPGenSetupG."Prepayment Discount Handling"::"Limit Prevention Discount":
+          BEGIN
+            GetMarketPlacePartner(SalesLineArchiveV."Vendor No.",SourceTypeL::Sales);
+            "PreventionDiscount%R".FILTERGROUP(2);
+            "PreventionDiscount%R".SETRANGE("Prevention Discount %", 0, MarketPlacePartnerG."Max Prevention Discount %");
+            "PreventionDiscount%R".FILTERGROUP(0);
+          END;
+        MPGenSetupG."Prepayment Discount Handling"::"Default Handling":
+          EXIT;
+        ELSE
+          EXIT;
+      END;
+      //T0096 27.01.15 CC-GH ---------------------------------------------------
+    END;
+
+    PROCEDURE SetMPLimitFilterPrevCalcSLA@1000000027(VAR PreventionDiscLinesSetupR@1000000000 : Record 50175;SalesLineArchiveV@1000000001 : Record 5108);
+    VAR
+      SourceTypeL@1000000002 : 'Sales,MPPurchase,Rebuy';
+    BEGIN
+      //T0096 27.01.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Filter to Max Allowed Discount Rate
+      IF NOT SalesLineArchiveV."Market Place" THEN
+        EXIT;
+
+      IF SalesLineArchiveV.Type <> SalesLineArchiveV.Type::Item THEN
+        EXIT;
+
+      GetMPGenSetup;
+
+      CASE MPGenSetupG."Prepayment Discount Handling" OF
+        MPGenSetupG."Prepayment Discount Handling"::"Decline Prevention Discount":
+          BEGIN
+            PreventionDiscLinesSetupR.FILTERGROUP(2);
+             PreventionDiscLinesSetupR.SETRANGE("Discount (%)", 0);
+             PreventionDiscLinesSetupR.FILTERGROUP(0);
+          END;
+        MPGenSetupG."Prepayment Discount Handling"::"Limit Prevention Discount":
+          BEGIN
+            GetMarketPlacePartner(SalesLineArchiveV."Vendor No.",SourceTypeL::Sales);
+             PreventionDiscLinesSetupR.FILTERGROUP(2);
+             PreventionDiscLinesSetupR.SETRANGE("Discount (%)", 0, MarketPlacePartnerG."Max Prevention Discount %");
+             PreventionDiscLinesSetupR.FILTERGROUP(0);
+          END;
+        MPGenSetupG."Prepayment Discount Handling"::"Default Handling":
+          EXIT;
+        ELSE
+          EXIT;
+      END;
+      //T0096 27.01.15 CC-GH ---------------------------------------------------
+    END;
+
+    PROCEDURE SetMPSalesRetLocationCode@1000000032(VAR NewSalesLineR@1000000000 : Record 37;SalesLineToProcessTmpV@1000000001 : TEMPORARY Record 37) : Boolean;
+    BEGIN
+      //T0060 19.02.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Return True if MP Location Handling
+      // NewSalesLineR = Return Order Line
+      // SalesLineToProcessTmpV = Sales Lines to Return
+      IF NOT SalesLineToProcessTmpV."Market Place" THEN
+        EXIT(FALSE);
+
+      GetMPGenSetup;
+      MPGenSetupG.TESTFIELD("MPP Sales Return Location");
+      NewSalesLineR."Market Place" := TRUE;
+      NewSalesLineR.VALIDATE("Location Code", MPGenSetupG."MPP Sales Return Location");
+      NewSalesLineR.VALIDATE("Unit Cost (LCY)", 0);
+      EXIT(TRUE);
+      //T0060 19.02.15 CC-GH ---------------------------------------------------
+    END;
+
+    PROCEDURE SetMPSalesRetLocationCodeArch@1000000034(VAR NewSalesLineR@1000000000 : Record 37;SalesLineArchToProcessTmpV@1000000001 : TEMPORARY Record 5108) : Boolean;
+    VAR
+      SaleLineTmpL@1000000002 : TEMPORARY Record 37;
+    BEGIN
+      //T0060 19.02.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      SaleLineTmpL.TRANSFERFIELDS(SalesLineArchToProcessTmpV,TRUE);
+      EXIT(SetMPSalesRetLocationCode(NewSalesLineR,SaleLineTmpL));
+      //T0060 19.02.15 CC-GH ---------------------------------------------------
+    END;
+
+    PROCEDURE HandelMPSalesRetLocationCode@1000000033(VAR SalesLineR@1000000000 : Record 37);
+    BEGIN
+      //T0060 19.02.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Check Location for Return Orders
+      IF NOT SalesLineR."Market Place" THEN
+        EXIT;
+
+      IF SalesLineR.Type <> SalesLineR.Type::Item THEN
+        EXIT;
+
+      CASE SalesLineR."Document Type" OF
+        SalesLineR."Document Type"::"Credit Memo",
+        SalesLineR."Document Type"::"Return Order":
+          BEGIN
+            GetMPGenSetup;
+            MPGenSetupG.TESTFIELD("MPP Sales Return Location");
+            IF SalesLineR."Location Code" <> MPGenSetupG."MPP Sales Return Location" THEN BEGIN
+              SalesLineR."Location Code" := MPGenSetupG."MPP Sales Return Location";
+            END;
+          END;
+      END;
+      //T0060 19.02.15 CC-GH ---------------------------------------------------
+    END;
+
+    PROCEDURE HandelMPWhseLocationCode@1000000007(VAR SalesLineR@1000000000 : Record 37);
+    BEGIN
+      //T0060 09.03.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      // with to Whse Location for Return Orders
+      IF NOT SalesLineR."Market Place" THEN
+        EXIT;
+
+      IF SalesLineR.Type <> SalesLineR.Type::Item THEN
+        EXIT;
+
+      CASE SalesLineR."Document Type" OF
+        SalesLineR."Document Type"::"Credit Memo",
+        SalesLineR."Document Type"::"Return Order":
+          BEGIN
+            GetMPGenSetup;
+            MPGenSetupG.TESTFIELD("MPP Sales Return Location");
+            IF SalesLineR."Location Code" <> MPGenSetupG."MPP Whse. Return Location" THEN BEGIN
+              SalesLineR."Location Code" := MPGenSetupG."MPP Whse. Return Location";
+            END;
+          END;
+      END;
+      //T0060 09.03.15 CC-GH ---------------------------------------------------
+    END;
+
+    PROCEDURE CheckCopyMPChargeToReturnOrder@1000000069(SalesHeaderRecRefV@1000000001 : RecordRef;SalesLineToBeProcessedTmpV@1000000008 : TEMPORARY Record 37;SalesLineArchToBeProcessedTmpV@1000000009 : TEMPORARY Record 5108;NewSalesHeaderV@1000000005 : Record 36;NewSalesLineV@1000000002 : Record 37;parReturnType@1000000000 : Option);
+    VAR
+      RecRefL@1000000006 : RecordRef;
+      SalesLineChargeL@1000000003 : Record 37;
+      SalesLineArchiveChargeL@1000000004 : Record 5108;
+      FPCMgtL@1000000010 : Codeunit 50003;
+      LineNoL@1000000007 : Integer;
+    BEGIN
+      // CheckMPChargeToReturnOrder
+      //T0060 19.02.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      //H3967 25.03.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      GetMPGenSetup;
+      //H3967 25.03.15 CC-GH ---------------------------------------------------
+
+      CASE SalesHeaderRecRefV.NUMBER OF
+        DATABASE::"Sales Header":
+          BEGIN
+            IF NOT SalesLineToBeProcessedTmpV."Market Place" THEN
+              EXIT;
+
+            IF (SalesLineToBeProcessedTmpV.ID <> 0)
+            THEN BEGIN
+              CLEAR(SalesLineChargeL);
+              SalesLineChargeL.RESET;
+              SalesLineChargeL.SETRANGE("Document Type",SalesLineToBeProcessedTmpV."Document Type");
+              SalesLineChargeL.SETRANGE("Document No.",SalesLineToBeProcessedTmpV."Document No.");
+              SalesLineChargeL.SETRANGE("Parent ID",SalesLineToBeProcessedTmpV.ID);
+              //H3967 25.03.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+              SalesLineChargeL.SETRANGE(Type, SalesLineChargeL.Type::"Charge (Item)");
+              SalesLineChargeL.SETFILTER("No.",'%1|%2|%3',MPGenSetupG."Item Charge Pre. Pay. Reb.",
+                MPGenSetupG."Item Charge Shop Vouch.", MPGenSetupG."Item Charge Prevent. Reb.");
+              //H3967 25.03.15 CC-GH ---------------------------------------------------
+              IF SalesLineChargeL.FINDFIRST THEN BEGIN
+                RecRefL.GETTABLE(SalesLineChargeL);
+                LineNoL := FPCMgtL.GetLineNo(NewSalesLineV);
+                LineNoL += 10000;
+                CopyMPChargeToReturnOrder(RecRefL,NewSalesHeaderV,LineNoL);
+              END;
+            END;
+          END;
+
+        DATABASE::"Sales Header Archive":
+          BEGIN
+            //H3967 25.03.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+            IF NOT SalesLineArchToBeProcessedTmpV."Market Place" THEN
+              EXIT;
+            //H3967 25.03.15 CC-GH ---------------------------------------------------
+
+            IF (SalesLineArchToBeProcessedTmpV.ID <> 0)
+            THEN BEGIN
+              CLEAR(SalesLineArchiveChargeL);
+              SalesLineArchiveChargeL.RESET;
+              SalesLineArchiveChargeL.SETRANGE("Document Type",SalesLineArchToBeProcessedTmpV."Document Type");
+              SalesLineArchiveChargeL.SETRANGE("Document No.",SalesLineArchToBeProcessedTmpV."Document No.");
+              SalesLineArchiveChargeL.SETRANGE("Parent ID",SalesLineArchToBeProcessedTmpV.ID);
+              SalesLineArchiveChargeL.SETRANGE("Doc. No. Occurrence",SalesLineArchToBeProcessedTmpV."Doc. No. Occurrence");
+              SalesLineArchiveChargeL.SETRANGE("Version No.",SalesLineArchToBeProcessedTmpV."Version No.");
+              //H3967 25.03.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+              SalesLineArchiveChargeL.SETRANGE(Type, SalesLineChargeL.Type::"Charge (Item)");
+              SalesLineArchiveChargeL.SETFILTER("No.",'%1|%2|%3',MPGenSetupG."Item Charge Pre. Pay. Reb.",
+                MPGenSetupG."Item Charge Shop Vouch.", MPGenSetupG."Item Charge Prevent. Reb.");
+              //H3967 25.03.15 CC-GH ---------------------------------------------------
+              IF SalesLineArchiveChargeL.FINDFIRST THEN BEGIN
+                RecRefL.GETTABLE(SalesLineArchiveChargeL);
+                LineNoL := FPCMgtL.GetLineNo(NewSalesLineV);
+                LineNoL += 10000;
+                CopyMPChargeToReturnOrder(RecRefL,NewSalesHeaderV,LineNoL);
+              END;
+            END;
+          END;
+      END;
+      //T0060 19.02.15 CC-GH ---------------------------------------------------
+    END;
+
+    PROCEDURE CopyMPChargeToReturnOrder@1108200015(RecRefV@1108200000 : RecordRef;ReturnHeaderV@1108200003 : Record 36;LineNoV@1108200001 : Integer);
+    VAR
+      MPGeneralSetup@1000000003 : Record 50500;
+      SalesLineL@1108200002 : Record 37;
+      SalesLineArchL@1108200004 : Record 5108;
+      NewSalesLineL@1108200005 : Record 37;
+      FPCMgtL@1000000002 : Codeunit 50003;
+      UnitPriceL@1108200006 : Decimal;
+      CancRetOrderHistoryL@1000000000 : Record 50037;
+      NextEntryNoL@1000000001 : Integer;
+    BEGIN
+      // CopyRessourceToReturnOrder
+      //T0060 19.02.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF CancRetOrderHistoryL.FINDLAST THEN
+        NextEntryNoL := CancRetOrderHistoryL."Entry No." + 1
+      ELSE
+        NextEntryNoL := 1;
+
+      CASE RecRefV.NUMBER OF
+        37:
+          BEGIN
+            RecRefV.SETTABLE(SalesLineL);
+          END;
+
+        5108:
+          BEGIN
+            RecRefV.SETTABLE(SalesLineArchL);
+            SalesLineL.TRANSFERFIELDS(SalesLineArchL,TRUE);
+          END;
+      END;
+      MPGeneralSetup.GET;
+      MPGeneralSetup.TESTFIELD("MPP Sales Return Location");
+
+      NewSalesLineL.INIT;
+      NewSalesLineL."Document Type" := ReturnHeaderV."Document Type";
+      NewSalesLineL."Document No." := ReturnHeaderV."No.";
+      NewSalesLineL."Line No." := FPCMgtL.GetLineNo(NewSalesLineL);
+      NewSalesLineL.INSERT(TRUE);
+      NewSalesLineL.VALIDATE("Sell-to Customer No.",ReturnHeaderV."Sell-to Customer No.");
+      NewSalesLineL.VALIDATE(Type,SalesLineL.Type);
+      NewSalesLineL.VALIDATE("No.",SalesLineL."No.");
+      NewSalesLineL.VALIDATE("Location Code",MPGeneralSetup."MPP Sales Return Location");
+      NewSalesLineL.VALIDATE(Quantity,1);
+      NewSalesLineL.VALIDATE("Qty. to Invoice", 0); // No Invoice on Return Order
+      NewSalesLineL.VALIDATE("Qty. to Ship", 0); // No Ship
+      NewSalesLineL.VALIDATE("Return Qty. to Receive", 0); // No Receipt
+      UnitPriceL := SalesLineL."Unit Price";
+      IF (SalesLineL."Resource Type" = SalesLineL."Resource Type"::"Credit Bon") OR
+         (SalesLineL."Resource Type" = SalesLineL."Resource Type"::"Sales Bon")
+      THEN BEGIN
+        FPCMgtL.CalcRessourceBonPrice(SalesLineL."Document No.",
+                              ReturnHeaderV."No.",
+                              SalesLineL."No.",
+                              UnitPriceL);
+      END;
+      NewSalesLineL.VALIDATE("Unit Price",UnitPriceL);
+      NewSalesLineL.VALIDATE("Line Discount %",SalesLineL."Line Discount %");
+      NewSalesLineL."Return Type" := SalesLineL."Return Type";
+      NewSalesLineL."Customer Prevention" := SalesLineL."Customer Prevention";
+      NewSalesLineL."Prevention discount (%)" := SalesLineL."Prevention discount (%)";
+      NewSalesLineL."Prevention discount Amount" := SalesLineL."Prevention discount Amount";
+      NewSalesLineL."Return Reason Code" := SalesLineL."Return Reason Code";
+      NewSalesLineL."Resource Type" := SalesLineL."Resource Type";
+      NewSalesLineL."Linked to Sales Order No." := SalesLineL."Document No.";
+      NewSalesLineL."Linked to Sales Order Line No." := SalesLineL."Line No.";
+
+      NewSalesLineL."Parent ID" := SalesLineL."Parent ID";
+      //H3967 25.03.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      NewSalesLineL."Market Place" := SalesLineL."Market Place";
+      //H3967 25.03.15 CC-GH ---------------------------------------------------
+
+      NewSalesLineL.MODIFY;
+
+      CASE RecRefV.NUMBER OF
+        37:
+          BEGIN
+            FPCMgtL.CreateDocDimForSalesLine(NewSalesLineL,SalesLineL);
+          END;
+        5108:
+          BEGIN
+            FPCMgtL.CreateDocDimForSalesLineArch(NewSalesLineL,SalesLineArchL);
+          END;
+      END;
+
+      // Eintrag in History Tabelle erzeugen mit Gutscheinbetrag
+      CancRetOrderHistoryL.INIT;
+      CancRetOrderHistoryL."Entry No." := NextEntryNoL;
+      CancRetOrderHistoryL."Document Type" := CancRetOrderHistoryL."Document Type"::"Return Order";
+      CancRetOrderHistoryL."Document No." := NewSalesLineL."Document No.";
+      CancRetOrderHistoryL."Line No." := NewSalesLineL."Line No.";
+      CancRetOrderHistoryL."Return Type" := SalesLineL."Return Type";
+      CancRetOrderHistoryL.Type := SalesLineL.Type;
+      CancRetOrderHistoryL."No." := SalesLineL."No.";
+      CancRetOrderHistoryL.Amount := ABS(UnitPriceL);
+      CancRetOrderHistoryL."Related to Document Type" := CancRetOrderHistoryL."Related to Document Type"::Order;
+      CancRetOrderHistoryL."Related to Document No." := SalesLineL."Document No.";
+      CancRetOrderHistoryL."Related to Document Line No." := SalesLineL."Line No.";
+      CancRetOrderHistoryL."Date/Time" := CURRENTDATETIME;
+      CancRetOrderHistoryL."User ID" := USERID;
+      CancRetOrderHistoryL.INSERT;
+
+      //T0060 19.02.15 CC-GH ---------------------------------------------------
+    END;
+
+    PROCEDURE SetMPRetReceiptLineLocFilter@1000000037(VAR ReturnReceiptLineR@1000000000 : Record 6661;SalesHeaderV@1000000001 : Record 36);
+    VAR
+      SalesLineL@1000000002 : Record 37;
+    BEGIN
+      //T0060 25.02.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type",SalesHeaderV."Document Type");
+      SalesLineL.SETRANGE("Document No.",SalesHeaderV."No.");
+      //H3958 24.03.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF NOT SalesLineL.ISEMPTY THEN BEGIN
+      //H3958 24.03.15 CC-GH ---------------------------------------------------
+        SalesLineL.SETRANGE("Market Place",TRUE);
+        IF SalesLineL.ISEMPTY THEN
+          EXIT;
+      //H3958 24.03.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      END;
+      //H3958 24.03.15 CC-GH ---------------------------------------------------
+
+      GetMPGenSetup;
+      IF MPGenSetupG."MPP Sales Return Location" <> '' THEN BEGIN
+        IF ReturnReceiptLineR.GETFILTER("Location Code") <> '' THEN BEGIN
+          ReturnReceiptLineR.SETFILTER("Location Code",'%1|%2',
+            ReturnReceiptLineR.GETFILTER("Location Code"),
+            MPGenSetupG."MPP Sales Return Location");
+        END ELSE BEGIN
+          ReturnReceiptLineR.SETRANGE("Location Code",MPGenSetupG."MPP Sales Return Location");
+        END;
+      END;
+      //T0060 25.02.15 CC-GH ---------------------------------------------------
+    END;
+
+    PROCEDURE GetMPTransitLocationCode@1000000038(DefaultTransitLocationCodeV@1000000000 : Code[10];IsMarketplaceV@1000000001 : Boolean) : Code[10];
+    BEGIN
+      //T0060 25.02.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF IsMarketplaceV THEN BEGIN
+        GetMPGenSetup;
+        MPGenSetupG.TESTFIELD("MPP Transit Location");
+        EXIT(MPGenSetupG."MPP Transit Location");
+      END ELSE BEGIN
+        EXIT(DefaultTransitLocationCodeV);
+      END;
+      //T0060 25.02.15 CC-GH ---------------------------------------------------
+    END;
+
+    PROCEDURE CheckMPReturnOrderLocationOK@1000000039(SalesHeaderV@1000000000 : Record 36) : Boolean;
+    VAR
+      SalesLineL@1000000002 : Record 37;
+    BEGIN
+      //T0060 25.02.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      SalesLineL.SETRANGE("Document Type",SalesHeaderV."Document Type");
+      SalesLineL.SETRANGE("Document No.",SalesHeaderV."No.");
+      SalesLineL.SETRANGE("Market Place",TRUE);
+      IF SalesLineL.ISEMPTY THEN
+        EXIT(TRUE);
+      GetMPGenSetup;
+      MPGenSetupG.TESTFIELD("MPP Sales Return Location");
+      SalesLineL.SETFILTER("Location Code",'<>%1',MPGenSetupG."MPP Sales Return Location");
+      SalesLineL.SETFILTER("Return Qty. to Receive",'<>%1',0);
+      IF SalesLineL.FIND('-') THEN BEGIN
+        REPEAT
+          IF NOT CONFIRM(TextTEC009,FALSE,
+                         MPGenSetupG."MPP Sales Return Location",
+                         MPGenSetupG.TABLECAPTION,
+                         SalesLineL."Location Code",
+                         MPGenSetupG."MPP Sales Return Location",
+                         SalesLineL."Line No.") THEN
+            EXIT(FALSE);
+        UNTIL SalesLineL.NEXT = 0;
+      END;
+      EXIT(TRUE);
+      //T0060 25.02.15 CC-GH ---------------------------------------------------
+    END;
+
+    PROCEDURE CheckMPPartner@1000000036(PurchHeaderV@1000000000 : Record 38;companyinfoV@1000000002 : Record 79) : Text[50];
+    VAR
+      MPPartnerL@1000000001 : Record 50502;
+    BEGIN
+      //T0098 24.02.15  CC-JGR +++++++++++++++++++++++++++++++++++++++++++++++++
+      IF MPPartnerL.GET(PurchHeaderV."Marketplace Partner Code") THEN BEGIN
+        MPPartnerL.CALCFIELDS(Name);
+        EXIT(MPPartnerL.Name);
+      END ELSE BEGIN
+        EXIT(companyinfoV.Name);
+      END;
+      //T0098 24.02.15  CC-JGR --------------------------------------------------
+    END;
+
+    PROCEDURE SetRepurchasePrice@1000000040(VAR SalesLineR@1000000000 : Record 37);
+    VAR
+      SalesHeaderL@1000000001 : Record 36;
+      eBayNavCWebshopItemL@1000000002 : Record 5251566;
+    BEGIN
+      //T0100 26.02.15  CC-RST ++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF (SalesLineR.Type = SalesLineR.Type::Item) AND (SalesLineR."No." <> '') AND (SalesLineR."Market Place") THEN BEGIN
+        IF NOT SalesHeaderL.GET(SalesLineR."Document Type",SalesLineR."Document No.") THEN
+          EXIT;
+        IF eBayNavCWebshopItemL.GET(FORMAT(SalesHeaderL."Website No."),SalesLineR."No.") THEN BEGIN
+          IF (eBayNavCWebshopItemL."Repurchase Rate" > 0) THEN
+            SalesLineR."Repurchase Price" := ROUND((SalesLineR."Unit Price" * eBayNavCWebshopItemL."Repurchase Rate") / 100,0.01,'=')
+          ELSE
+            SalesLineR."Repurchase Price" := 0;
+        END;
+      END;
+      //T0100 26.02.15  CC-RST --------------------------------------------------
+    END;
+
+    PROCEDURE CreateTransferOrderFromSRO@1000000008(VAR BatchPostLineTmpR@1000000010 : TEMPORARY Record 50803);
+    VAR
+      ReturnReceiptLineL@1000000001 : Record 6661;
+      TransferHeaderL@1000000003 : Record 5740;
+      TransferHeaderTmpL@1000000002 : TEMPORARY Record 5740;
+      TransferLineL@1000000004 : Record 5741;
+      LinkedTransferLineL@1100409001 : Record 5741;
+      LinkedTransferShipmentLineL@1100409002 : Record 5745;
+      TransferOrderPostShipmentL@1000000006 : Codeunit 5704;
+      TransferOrderPostReceiptL@1000000007 : Codeunit 5705;
+      LineNoL@1000000005 : Integer;
+      ToLocationL@1100409000 : Code[10];
+      "****CC************************"@1000000008 : Integer;
+      SalesAndReceivablesSetupL@1000000000 : Record 311;
+      NoSeriesMngtL@1000000011 : Codeunit 396;
+    BEGIN
+      //H3823 10.03.15  CC-RST ++++++++++++++++++++++++++++++++++++++++++++++++++
+      MPGenSetupG.GET;
+      IF NOT MPGenSetupG."Post Transfer to Buy/Pick" THEN
+        EXIT;
+
+      SalesAndReceivablesSetupL.GET;
+      TransferHeaderTmpL.RESET;
+      TransferHeaderTmpL.DELETEALL;
+
+      BatchPostLineTmpR.RESET;
+      BatchPostLineTmpR.SETFILTER(Status,'<>%1',BatchPostLineTmpR.Status::Error);
+      BatchPostLineTmpR.SETRANGE(Marketplace,TRUE);
+      BatchPostLineTmpR.SETFILTER("Marketplace Partner Code", '<>%1','');
+      IF BatchPostLineTmpR.FIND('-') THEN BEGIN
+        REPEAT
+
+          ReturnReceiptLineL.RESET;
+          ReturnReceiptLineL.SETRANGE("Return Order No.", BatchPostLineTmpR."Sales Return Order No.");
+          ReturnReceiptLineL.SETFILTER(Quantity, '<>%1', 0);
+          ReturnReceiptLineL.SETRANGE(Type,ReturnReceiptLineL.Type::Item);
+          ReturnReceiptLineL.SETRANGE("No.",BatchPostLineTmpR."Item No.");
+          ReturnReceiptLineL.SETRANGE("Location Code",MPGenSetupG."MPP Whse. Return Location");
+          ReturnReceiptLineL.SETRANGE("Return Order Line No.",BatchPostLineTmpR."Sales Return Line No.");
+
+          IF ReturnReceiptLineL.FINDSET THEN BEGIN
+            REPEAT
+              IF BatchPostLineTmpR."Repurchase Price" <> 0 THEN
+                ToLocationL := MPGenSetupG."MPP Return Location Rebuy"
+              ELSE
+                ToLocationL := MPGenSetupG."MPP Return Location Pick";
+              IF ToLocationL <> '' THEN BEGIN
+                TransferHeaderL.RESET;
+                TransferHeaderL.SETRANGE("Transfer-from Code", ReturnReceiptLineL."Location Code");
+                TransferHeaderL.SETRANGE("Transfer-to Code", ToLocationL);
+                TransferHeaderL.SETFILTER(Status,'<>%1',TransferHeaderL.Status::Released);
+                IF NOT TransferHeaderL.FINDFIRST THEN BEGIN
+                  TransferHeaderL.RESET;
+                  TransferHeaderL.INIT;
+                  TransferHeaderL.VALIDATE("No. Series",SalesAndReceivablesSetupL."Sal. Ret. Transfer Order Nos.");
+                  TransferHeaderL.VALIDATE("No.",NoSeriesMngtL.GetNextNo(
+                    SalesAndReceivablesSetupL."Sal. Ret. Transfer Order Nos.",WORKDATE,TRUE));
+                  TransferHeaderL.INSERT(TRUE);
+
+                  TransferHeaderL.VALIDATE("Transfer-from Code", ReturnReceiptLineL."Location Code");
+                  TransferHeaderL.VALIDATE("Transfer-to Code", ToLocationL);
+                  TransferHeaderL.VALIDATE("In-Transit Code",MPGenSetupG."MPP Transit Location");
+                  TransferHeaderL.VALIDATE("Posting Date",WORKDATE);
+                  TransferHeaderL.VALIDATE("Shipment Date",WORKDATE);
+                  TransferHeaderL.MODIFY(TRUE);
+
+                  LineNoL := 10000;
+                END ELSE BEGIN
+                  TransferLineL.RESET;
+                  TransferLineL.SETRANGE("Document No.", TransferHeaderL."No.");
+                  IF TransferLineL.FINDLAST THEN
+                    LineNoL := TransferLineL."Line No." + 10000
+                  ELSE
+                    LineNoL := 10000;
+                END;
+                IF NOT TransferHeaderTmpL.GET(TransferHeaderL."No.") THEN BEGIN
+                  TransferHeaderTmpL := TransferHeaderL;
+                  TransferHeaderTmpL.INSERT;
+                END;
+
+                TransferLineL.RESET;
+                TransferLineL.INIT;
+                TransferLineL.VALIDATE("Document No.", TransferHeaderL."No.");
+                TransferLineL.VALIDATE("Line No.", LineNoL);
+                TransferLineL.VALIDATE("Item No.", ReturnReceiptLineL."No.");
+                TransferLineL.VALIDATE(Quantity, ReturnReceiptLineL.Quantity);
+                TransferLineL.VALIDATE("Qty. to Ship", TransferLineL.Quantity);
+                TransferLineL."Linked Sales Doc. Type" := TransferLineL."Linked Sales Doc. Type"::"Return Order";
+                TransferLineL."Linked Sales Doc. No." := ReturnReceiptLineL."Return Order No.";
+                TransferLineL."Linked Sales Line No." := ReturnReceiptLineL."Return Order Line No.";
+                TransferLineL."Return Receipt No." := ReturnReceiptLineL."Document No.";
+                TransferLineL."Return Receipt Line No." := ReturnReceiptLineL."Line No.";
+                TransferLineL."Repurchase Price" := ReturnReceiptLineL."Repurchase Price";
+                TransferLineL.INSERT(TRUE);
+                BatchPostLineTmpR."MP Transfer Order No." := TransferHeaderL."No.";
+                BatchPostLineTmpR.MODIFY;
+              END;
+            UNTIL ReturnReceiptLineL.NEXT = 0;
+          END;
+        UNTIL BatchPostLineTmpR.NEXT = 0;
+      END;
+      COMMIT;
+      IF TransferHeaderTmpL.FINDSET THEN BEGIN
+        REPEAT
+          CLEAR(TransferOrderPostShipmentL);
+          CLEAR(TransferOrderPostReceiptL);
+          CLEARLASTERROR;
+          IF NOT TransferHeaderL.GET(TransferHeaderTmpL."No.") THEN BEGIN
+            BatchPostLineTmpR.RESET;
+            BatchPostLineTmpR.SETRANGE("MP Transfer Order No.",TransferHeaderTmpL."No.");
+            BatchPostLineTmpR.SETFILTER(Status,'<>%1',BatchPostLineTmpR.Status::Error);
+            BatchPostLineTmpR.SETRANGE(Marketplace,TRUE);
+            BatchPostLineTmpR.SETFILTER("Marketplace Partner Code", '<>%1','');
+            BatchPostLineTmpR.MODIFYALL("Error Text", COPYSTR(
+              STRSUBSTNO(TextCC010, TransferHeaderTmpL."No."),
+              1, MAXSTRLEN(BatchPostLineTmpR."Error Text")));
+            BatchPostLineTmpR.MODIFYALL(Status, BatchPostLineTmpR.Status::Error);
+          END ELSE IF NOT TransferOrderPostShipmentL.RUN(TransferHeaderL) THEN BEGIN
+            BatchPostLineTmpR.RESET;
+            BatchPostLineTmpR.SETRANGE("MP Transfer Order No.",TransferHeaderTmpL."No.");
+            BatchPostLineTmpR.SETFILTER(Status,'<>%1',BatchPostLineTmpR.Status::Error);
+            BatchPostLineTmpR.SETRANGE(Marketplace,TRUE);
+            BatchPostLineTmpR.SETFILTER("Marketplace Partner Code", '<>%1','');
+            BatchPostLineTmpR.MODIFYALL("Error Text", COPYSTR(
+              GETLASTERRORTEXT,
+              1, MAXSTRLEN(BatchPostLineTmpR."Error Text")));
+            BatchPostLineTmpR.MODIFYALL(Status, BatchPostLineTmpR.Status::Error);
+          END ELSE IF NOT TransferOrderPostReceiptL.RUN(TransferHeaderL) THEN BEGIN
+            BatchPostLineTmpR.RESET;
+            BatchPostLineTmpR.SETRANGE("MP Transfer Order No.",TransferHeaderTmpL."No.");
+            BatchPostLineTmpR.SETFILTER(Status,'<>%1',BatchPostLineTmpR.Status::Error);
+            BatchPostLineTmpR.SETRANGE(Marketplace,TRUE);
+            BatchPostLineTmpR.SETFILTER("Marketplace Partner Code", '<>%1','');
+            BatchPostLineTmpR.MODIFYALL("Error Text", COPYSTR(
+              GETLASTERRORTEXT,
+              1, MAXSTRLEN(BatchPostLineTmpR."Error Text")));
+            BatchPostLineTmpR.MODIFYALL(Status, BatchPostLineTmpR.Status::Error);
+          END;
+        UNTIL TransferHeaderTmpL.NEXT =0;
+      END;
+      //H3823 10.03.15  CC-RST --------------------------------------------------
+    END;
+
+    PROCEDURE CreateTransferOrderFromTRO@1000000031(VAR BatchPostLineTmpR@1000000010 : TEMPORARY Record 50803);
+    VAR
+      ReturnReceiptLineL@1000000001 : Record 5747;
+      TransferHeaderL@1000000003 : Record 5740;
+      TransferHeaderTmpL@1000000002 : TEMPORARY Record 5740;
+      TransferLineL@1000000004 : Record 5741;
+      LinkedTransferLineL@1100409001 : Record 5741;
+      LinkedTransferShipmentLineL@1100409002 : Record 5745;
+      TransferOrderPostShipmentL@1000000006 : Codeunit 5704;
+      TransferOrderPostReceiptL@1000000007 : Codeunit 5705;
+      LineNoL@1000000005 : Integer;
+      ToLocationL@1100409000 : Code[10];
+      "****CC************************"@1000000008 : Integer;
+      SalesAndReceivablesSetupL@1000000000 : Record 311;
+      NoSeriesMngtL@1000000011 : Codeunit 396;
+    BEGIN
+      //H3823 10.03.15  CC-RST ++++++++++++++++++++++++++++++++++++++++++++++++++
+      MPGenSetupG.GET;
+      IF NOT MPGenSetupG."Post Transfer to Buy/Pick" THEN
+        EXIT;
+
+      SalesAndReceivablesSetupL.GET;
+      TransferHeaderTmpL.RESET;
+      TransferHeaderTmpL.DELETEALL;
+
+      BatchPostLineTmpR.RESET;
+      BatchPostLineTmpR.SETFILTER(Status,'<>%1',BatchPostLineTmpR.Status::Error);
+      BatchPostLineTmpR.SETRANGE(Marketplace,TRUE);
+      BatchPostLineTmpR.SETFILTER("Marketplace Partner Code", '<>%1','');
+      IF BatchPostLineTmpR.FIND('-') THEN BEGIN
+        REPEAT
+
+
+          ReturnReceiptLineL.RESET;
+          ReturnReceiptLineL.SETRANGE(ReturnReceiptLineL."Transfer Order No.",BatchPostLineTmpR."Transfer Order No.");
+          ReturnReceiptLineL.SETFILTER(Quantity, '<>%1', 0);
+          ReturnReceiptLineL.SETRANGE(ReturnReceiptLineL."Item No.",BatchPostLineTmpR."Item No.");
+          ReturnReceiptLineL.SETRANGE(ReturnReceiptLineL."Transfer-to Code",MPGenSetupG."MPP Whse. Return Location");
+          ReturnReceiptLineL.SETRANGE(ReturnReceiptLineL."Line No.",BatchPostLineTmpR."Transfer Order Line No.");
+
+          IF ReturnReceiptLineL.FINDSET THEN BEGIN
+            REPEAT
+              IF BatchPostLineTmpR."Repurchase Price" <> 0 THEN
+                ToLocationL := MPGenSetupG."MPP Return Location Rebuy"
+              ELSE
+                ToLocationL := MPGenSetupG."MPP Return Location Pick";
+              IF ToLocationL <> '' THEN BEGIN
+                TransferHeaderL.RESET;
+                TransferHeaderL.SETRANGE("Transfer-from Code", ReturnReceiptLineL."Transfer-to Code");
+                TransferHeaderL.SETRANGE("Transfer-to Code", ToLocationL);
+                TransferHeaderL.SETFILTER(Status,'<>%1',TransferHeaderL.Status::Released);
+                IF NOT TransferHeaderL.FINDFIRST THEN BEGIN
+                  TransferHeaderL.RESET;
+                  TransferHeaderL.INIT;
+                  TransferHeaderL.VALIDATE("No. Series",SalesAndReceivablesSetupL."Sal. Ret. Transfer Order Nos.");
+                  TransferHeaderL.VALIDATE("No.",NoSeriesMngtL.GetNextNo(
+                    SalesAndReceivablesSetupL."Sal. Ret. Transfer Order Nos.",WORKDATE,TRUE));
+                  TransferHeaderL.INSERT(TRUE);
+
+                  TransferHeaderL.VALIDATE("Transfer-from Code", ReturnReceiptLineL."Transfer-to Code");
+                  TransferHeaderL.VALIDATE("Transfer-to Code", ToLocationL);
+                  TransferHeaderL.VALIDATE("In-Transit Code",MPGenSetupG."MPP Transit Location");
+                  TransferHeaderL.VALIDATE("Posting Date",WORKDATE);
+                  TransferHeaderL.VALIDATE("Shipment Date",WORKDATE);
+                  TransferHeaderL.MODIFY(TRUE);
+
+                  LineNoL := 10000;
+                END ELSE BEGIN
+                  TransferLineL.RESET;
+                  TransferLineL.SETRANGE("Document No.", TransferHeaderL."No.");
+                  IF TransferLineL.FINDLAST THEN
+                    LineNoL := TransferLineL."Line No." + 10000
+                  ELSE
+                    LineNoL := 10000;
+                END;
+                TransferLineL.RESET;
+                TransferLineL.INIT;
+                TransferLineL.VALIDATE("Document No.", TransferHeaderL."No.");
+                TransferLineL.VALIDATE("Line No.", LineNoL);
+                TransferLineL.VALIDATE("Item No.", ReturnReceiptLineL."Item No.");
+                TransferLineL.VALIDATE(Quantity, ReturnReceiptLineL.Quantity);
+                TransferLineL.VALIDATE("Qty. to Ship", TransferLineL.Quantity);
+                TransferLineL."Linked Sales Doc. Type" := ReturnReceiptLineL."Linked Sales Doc. Type";
+                TransferLineL."Linked Sales Doc. No." := ReturnReceiptLineL."Linked Sales Doc. No.";
+                TransferLineL."Linked Sales Line No." := ReturnReceiptLineL."Linked Sales Line No.";
+                TransferLineL."Return Receipt No." := ReturnReceiptLineL."Return Receipt No.";
+                TransferLineL."Return Receipt Line No." := ReturnReceiptLineL."Return Receipt Line No.";
+                TransferLineL."Repurchase Price" := ReturnReceiptLineL."Repurchase Price";
+                TransferLineL.INSERT(TRUE);
+                BatchPostLineTmpR."MP Transfer Order No." := TransferHeaderL."No.";
+                BatchPostLineTmpR.MODIFY;
+                IF NOT TransferHeaderTmpL.GET(TransferHeaderL."No.") THEN BEGIN
+                  TransferHeaderTmpL := TransferHeaderL;
+                  TransferHeaderTmpL.INSERT;
+                END;
+              END;
+            UNTIL ReturnReceiptLineL.NEXT = 0;
+          END;
+        UNTIL BatchPostLineTmpR.NEXT = 0;
+      END;
+      COMMIT;
+      IF TransferHeaderTmpL.FINDSET THEN BEGIN
+        REPEAT
+          CLEAR(TransferOrderPostShipmentL);
+          CLEAR(TransferOrderPostReceiptL);
+          CLEARLASTERROR;
+          IF NOT TransferHeaderL.GET(TransferHeaderTmpL."No.") THEN BEGIN
+            BatchPostLineTmpR.RESET;
+            BatchPostLineTmpR.SETRANGE("MP Transfer Order No.",TransferHeaderTmpL."No.");
+            BatchPostLineTmpR.SETFILTER(Status,'<>%1',BatchPostLineTmpR.Status::Error);
+            BatchPostLineTmpR.SETRANGE(Marketplace,TRUE);
+            BatchPostLineTmpR.SETFILTER("Marketplace Partner Code", '<>%1','');
+            BatchPostLineTmpR.MODIFYALL("Error Text", COPYSTR(
+              STRSUBSTNO(TextCC010, TransferHeaderTmpL."No."),
+              1, MAXSTRLEN(BatchPostLineTmpR."Error Text")));
+            BatchPostLineTmpR.MODIFYALL(Status, BatchPostLineTmpR.Status::Error);
+          END ELSE IF NOT TransferOrderPostShipmentL.RUN(TransferHeaderL) THEN BEGIN
+            BatchPostLineTmpR.RESET;
+            BatchPostLineTmpR.SETRANGE("MP Transfer Order No.",TransferHeaderTmpL."No.");
+            BatchPostLineTmpR.SETFILTER(Status,'<>%1',BatchPostLineTmpR.Status::Error);
+            BatchPostLineTmpR.SETRANGE(Marketplace,TRUE);
+            BatchPostLineTmpR.SETFILTER("Marketplace Partner Code", '<>%1','');
+            BatchPostLineTmpR.MODIFYALL("Error Text", COPYSTR(
+              GETLASTERRORTEXT,
+              1, MAXSTRLEN(BatchPostLineTmpR."Error Text")));
+            BatchPostLineTmpR.MODIFYALL(Status, BatchPostLineTmpR.Status::Error);
+          END ELSE IF NOT TransferOrderPostReceiptL.RUN(TransferHeaderL) THEN BEGIN
+            BatchPostLineTmpR.RESET;
+            BatchPostLineTmpR.SETRANGE("MP Transfer Order No.",TransferHeaderTmpL."No.");
+            BatchPostLineTmpR.SETFILTER(Status,'<>%1',BatchPostLineTmpR.Status::Error);
+            BatchPostLineTmpR.SETRANGE(Marketplace,TRUE);
+            BatchPostLineTmpR.SETFILTER("Marketplace Partner Code", '<>%1','');
+            BatchPostLineTmpR.MODIFYALL("Error Text", COPYSTR(
+              GETLASTERRORTEXT,
+              1, MAXSTRLEN(BatchPostLineTmpR."Error Text")));
+            BatchPostLineTmpR.MODIFYALL(Status, BatchPostLineTmpR.Status::Error);
+          END;
+        UNTIL TransferHeaderTmpL.NEXT =0;
+      END;
+
+      //H3823 10.03.15  CC-RST --------------------------------------------------
+    END;
+
+    PROCEDURE SetMPItemChargeShopVouch@1000000010(RecRefHeaderV@1000000000 : RecordRef;VAR MPGeneralSetupR@1000000001 : Record 50500;VAR MPVoucherTotalR@1000000002 : Decimal;VAR MPVoucherVATR@1000000003 : Decimal;VAR MPVoucherDiscFoundR@1000000004 : Boolean;VAR MPPrePayTotalR@1000000005 : Decimal;VAR MPPrePayVATR@1000000006 : Decimal;VAR MPPrePayDiscFoundR@1000000007 : Boolean);
+    VAR
+      SalesInvoiceHeaderL@1000000010 : Record 112;
+      SalesCrMemoHeaderL@1000000011 : Record 114;
+      SalesInvoiceLineL@1000000008 : Record 113;
+      SalesInvoiceLineL2@1000000009 : Record 113;
+      SalesCrMemoLineL@1000000012 : Record 115;
+      SalesCrMemoLineL2@1000000013 : Record 115;
+    BEGIN
+      //T0103 16.03.15 CC-JGR ++++++++++++++++++++++++++++
+      CASE RecRefHeaderV.NUMBER OF
+        DATABASE :: "Sales Invoice Header" :
+          BEGIN
+            RecRefHeaderV.SETTABLE(SalesInvoiceHeaderL);
+            IF SalesInvoiceHeaderL."Is Market Place" AND NOT SalesInvoiceHeaderL."Is MP Home24 CR/Inv" THEN BEGIN
+              SalesInvoiceLineL.SETRANGE("Document No.",SalesInvoiceHeaderL."No.");
+              SalesInvoiceLineL.SETFILTER(Type,'%1',SalesInvoiceLineL.Type :: "Charge (Item)");
+              SalesInvoiceLineL.SETFILTER("No.",'%1|%2',MPGeneralSetupR."Item Charge Shop Vouch.",
+                                                        MPGeneralSetupR."Item Charge Pre. Pay. Reb.");
+              SalesInvoiceLineL.SETFILTER("Parent ID",'<>%1',0);
+              IF SalesInvoiceLineL.FINDSET THEN
+                REPEAT
+                  SalesInvoiceLineL2.SETRANGE("Document No.",SalesInvoiceLineL."Document No.");
+                  SalesInvoiceLineL2.SETRANGE(ID,SalesInvoiceLineL."Parent ID");
+                  SalesInvoiceLineL2.SETFILTER(Quantity,'<>%1',0);
+                  SalesInvoiceLineL2.SETFILTER("Line No.",'<>%1',SalesInvoiceLineL."Line No.");
+                    IF SalesInvoiceLineL2.FINDFIRST THEN BEGIN
+                      CASE SalesInvoiceLineL."No." OF
+                        MPGeneralSetupR."Item Charge Shop Vouch." :
+                         BEGIN
+                          MPVoucherTotalR += SalesInvoiceLineL."Unit Price";
+                          MPVoucherVATR += SalesInvoiceLineL."Unit Price"*(SalesInvoiceLineL."VAT %"/100);
+                          MPVoucherDiscFoundR := TRUE;
+                         END;
+                        MPGeneralSetupR."Item Charge Pre. Pay. Reb." :
+                         BEGIN;
+                          MPPrePayTotalR += SalesInvoiceLineL."Unit Price";
+                          MPPrePayVATR += SalesInvoiceLineL."Unit Price"*(SalesInvoiceLineL."VAT %"/100);
+                          MPPrePayDiscFoundR := TRUE;
+                         END;
+                      END;
+                    END;
+                UNTIL SalesInvoiceLineL.NEXT = 0;
+            END;
+            IF SalesInvoiceHeaderL."Is MP Home24 CR/Inv" AND NOT SalesInvoiceHeaderL."Is Market Place" THEN BEGIN
+              SalesInvoiceLineL.SETRANGE("Document No.",SalesInvoiceHeaderL."No.");
+              SalesInvoiceLineL.SETFILTER(Type,'%1',SalesInvoiceLineL.Type :: "Charge (Item)");
+              SalesInvoiceLineL.SETFILTER("No.",'%1|%2',MPGeneralSetupR."Item Charge Shop Vouch.",
+                                                        MPGeneralSetupR."Item Charge Pre. Pay. Reb.");
+              SalesInvoiceLineL.SETFILTER(Quantity,'<>%1',0);
+              IF SalesInvoiceLineL.FINDSET THEN
+                REPEAT
+                  CASE SalesInvoiceLineL."No." OF
+                    MPGeneralSetupR."Item Charge Shop Vouch." :
+                     BEGIN
+                      MPVoucherTotalR += SalesInvoiceLineL."Amount Including VAT";
+                      MPVoucherVATR += SalesInvoiceLineL."Amount Including VAT" - SalesInvoiceLineL.Amount;
+                      MPVoucherDiscFoundR := TRUE;
+                     END;
+                    MPGeneralSetupR."Item Charge Pre. Pay. Reb." :
+                     BEGIN;
+                      MPPrePayTotalR += SalesInvoiceLineL."Amount Including VAT";
+                      MPPrePayVATR += SalesInvoiceLineL."Amount Including VAT" - SalesInvoiceLineL.Amount;
+                      MPPrePayDiscFoundR := TRUE;
+                     END;
+                  END;
+                UNTIL SalesInvoiceLineL.NEXT = 0;
+            END;
+          END;
+        DATABASE :: "Sales Cr.Memo Header" :
+          BEGIN
+            RecRefHeaderV.SETTABLE(SalesCrMemoHeaderL);
+            IF SalesCrMemoHeaderL."Is Market Place" AND NOT SalesCrMemoHeaderL."Is MP Home24 CR/Inv" THEN BEGIN
+              SalesCrMemoLineL.SETRANGE("Document No.",SalesCrMemoHeaderL."No.");
+              SalesCrMemoLineL.SETFILTER(Type,'%1',SalesCrMemoLineL.Type :: "Charge (Item)");
+              SalesCrMemoLineL.SETFILTER("No.",'%1|%2',MPGeneralSetupR."Item Charge Shop Vouch.",
+                                                        MPGeneralSetupR."Item Charge Pre. Pay. Reb.");
+              SalesCrMemoLineL.SETFILTER("Parent ID",'<>%1',0);
+              IF SalesCrMemoLineL.FINDSET THEN
+                REPEAT
+                  SalesCrMemoLineL2.SETRANGE("Document No.",SalesCrMemoLineL."Document No.");
+                  SalesCrMemoLineL2.SETRANGE(ID,SalesCrMemoLineL."Parent ID");
+                  SalesCrMemoLineL2.SETFILTER(Quantity,'<>%1',0);
+                  SalesCrMemoLineL2.SETFILTER("Line No.",'<>%1',SalesCrMemoLineL."Line No.");
+                    IF SalesCrMemoLineL2.FINDFIRST THEN BEGIN
+                      CASE SalesCrMemoLineL."No." OF
+                        MPGeneralSetupR."Item Charge Shop Vouch." :
+                         BEGIN
+                          MPVoucherTotalR += SalesCrMemoLineL."Unit Price";
+                          MPVoucherVATR += SalesCrMemoLineL."Unit Price"*(SalesCrMemoLineL."VAT %"/100);
+                          MPVoucherDiscFoundR := TRUE;
+                         END;
+                        MPGeneralSetupR."Item Charge Pre. Pay. Reb." :
+                         BEGIN;
+                          MPPrePayTotalR += SalesCrMemoLineL."Unit Price";
+                          MPPrePayVATR += SalesCrMemoLineL."Unit Price"*(SalesCrMemoLineL."VAT %"/100);
+                          MPPrePayDiscFoundR := TRUE;
+                         END;
+                      END;
+                    END;
+                UNTIL SalesCrMemoLineL.NEXT = 0;
+            END;
+            IF SalesCrMemoHeaderL."Is MP Home24 CR/Inv" AND NOT SalesCrMemoHeaderL."Is Market Place" THEN BEGIN
+              SalesCrMemoLineL.SETRANGE("Document No.",SalesCrMemoHeaderL."No.");
+              SalesCrMemoLineL.SETFILTER(Type,'%1',SalesCrMemoLineL.Type :: "Charge (Item)");
+              SalesCrMemoLineL.SETFILTER("No.",'%1|%2',MPGeneralSetupR."Item Charge Shop Vouch.",
+                                                        MPGeneralSetupR."Item Charge Pre. Pay. Reb.");
+              SalesCrMemoLineL.SETFILTER(Quantity,'<>%1',0);
+              IF SalesCrMemoLineL.FINDSET THEN
+                REPEAT
+                  CASE SalesCrMemoLineL."No." OF
+                    MPGeneralSetupR."Item Charge Shop Vouch." :
+                     BEGIN
+                      MPVoucherTotalR += SalesCrMemoLineL."Amount Including VAT";
+                      MPVoucherVATR += SalesCrMemoLineL."Amount Including VAT" - SalesCrMemoLineL.Amount;
+                      MPVoucherDiscFoundR := TRUE;
+                     END;
+                    MPGeneralSetupR."Item Charge Pre. Pay. Reb." :
+                     BEGIN;
+                      MPPrePayTotalR += SalesCrMemoLineL."Amount Including VAT";
+                      MPPrePayVATR += SalesCrMemoLineL."Amount Including VAT" - SalesCrMemoLineL.Amount;
+                      MPPrePayDiscFoundR := TRUE;
+                     END;
+                  END;
+                UNTIL SalesCrMemoLineL.NEXT = 0;
+            END;
+          END;
+      END;
+      //T0103 16.03.15 CC-JGR -----------------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation Tectura & Home24 NAV Team  |
+      |                                            |
+      +--------------------------------------------+
+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      T0056       17.09.14  TEC-GH    This Codeunits holds all needed Function for Market Place Functions
+      T0057       17.09.14  TEC-GH    voucher handling: create line for voucher value or MP articles
+      T0071       30.09.14  TEC-GH    Set Field "Markteplace" To true for New Lines
+      T0053       01.10.14  TEC-GH    Check Tansferheader for Transfer between MPP and normal Locations
+      T0073       09.10.14  TEC-GH    Change Prod. Posting Grp. for Marketplace Item
+      T0074       09.10.14  TEC-GH    ADD Vendor Dimension on Market Place Lines
+      T0075       10.10.14  TEC-GH    Boolean flag MP in every new item line
+      T0070       20.11.14  TEC-GH    New Function ChangeVendorIfMarketplace
+      T0086       28.11.14  TEC-GH    Prepayment Vat Identifier
+      T0096       27.01.15  CC-GH     Prevention Rebate Handling for Marketplace
+      T0060       19.02.15  CC-GH     Special Return Locations for Marketplace
+      T0098       24.02.15  CC-JGR    Function CheckMPPartner added.
+      T0100       26.02.15  CC-RST    New Function SetRepurchasePrice
+      H3823       10.03.15  CC-RST    New Functions CreateTransferOrderFromSRO, CreateTransferOrderFromTFO, CreateAndPostTransferOrder
+      T0103       16.03.15  CC-JGR    Function SetMPItemChargeShopVouch for rebate and voucher setting added.
+      H3958       24.03.15  CC-GHE    SetMPRetReceiptLineLocFilter: Check Sales Line only if existing
+      H3967       25.03.15  CC-GHE    CheckCopyMPChargeToReturnOrder: Copy Only Item Charge for Marketplace
+    }
+    END.
+  }
+}
+

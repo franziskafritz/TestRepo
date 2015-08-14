@@ -1,0 +1,408 @@
+OBJECT Codeunit 50143 Prevention Calculation Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=01.07.15;
+    Time=12:16:02;
+    Modified=Yes;
+    Version List=T0096;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text001@1000000000 : TextConst 'DEU=Ein Vermeidungsrabatt von %1 (fr %2 Zeilen) wird angeboten.;ENU=A prevention amount of %1 has been offered (for %2 lines).';
+      Text002@1000000001 : TextConst 'DEU=Der ermittelte Vermeidungsrabatt von %1 berschreitet den erlaubten Schwellenwert von %2. Eine manuelle Freigabe fr %3 Zeilen ist erforderlich.;ENU=The calculated prevention amount of %1 exceeds the allowed threshold of %2. A manual check for %3 lines is required.';
+      Text003@1000000002 : TextConst 'DEU=Kein Vermeidungsrabatt wurde ermittelt. šberprfen Sie die Einrichtung in "Prevention Disc. Lines Setup".;ENU=No Prevention Amount has been calculated for offering. Check "Prevention Disc. Lines Setup".';
+      Text004@1000000003 : TextConst 'DEU=Es wurde kein Vermeidungsrabatt wegen der Einstellung "Prevention Offer Chance" von %1 Prozent ermittelt.;ENU=No prevention is offered due to "Prevention Offer Chance" of %1 percent.';
+
+    PROCEDURE DoPreventionCalculation@1000000008(VAR SalesHeaderR@1000000000 : Record 36;withUserOutput@1000000005 : Boolean) : Boolean;
+    VAR
+      SalesLineL@1000000001 : Record 37;
+      FPCGeneralSetup@1000000003 : Record 50055;
+      BatchSalesPostHeaderL@1000000008 : Record 50225;
+      preventionAmount@1000000002 : Decimal;
+      SalesLineTempL@1000000004 : TEMPORARY Record 37;
+      ACFManagement@1000000006 : Codeunit 5327126;
+      msg@1000000007 : Text[1024];
+    BEGIN
+      FPCGeneralSetup.GET;
+
+      // >> T0052
+      // FPCGeneralSetup.TESTFIELD("Prevention Offer Chance (%)");
+      // << T0052
+
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type", SalesHeaderR."Document Type");
+      SalesLineL.SETRANGE("Document No.", SalesHeaderR."No.");
+      SalesLineL.SETFILTER("Return Type", '%1|%2|%3',
+        SalesLineL."Return Type"::Return,
+        SalesLineL."Return Type"::Change,
+        SalesLineL."Return Type"::"Spare Part");
+      SalesLineL.SETFILTER("Return Reason Code", '<>%1', '');
+      SalesLineL.SETRANGE("Customer Prevention", SalesLineL."Customer Prevention"::" ");
+
+      SalesLineL.FINDSET;
+
+      IF NOT IsPreventionOfferAllowed(FPCGeneralSetup."Prevention Offer Chance (%)") THEN BEGIN
+        // no prevention is offered
+        IF SalesLineL.FINDSET(TRUE) THEN BEGIN
+          REPEAT
+            SalesLineL.VALIDATE("Customer Prevention", SalesLineL."Customer Prevention"::"Not offered");
+            SalesLineL.MODIFY(TRUE);
+          UNTIL SalesLineL.NEXT = 0;
+        END;
+        IF withUserOutput THEN BEGIN
+          // T0045 tec-cs +++++++++++
+          //MESSAGE(
+          //  'No Prevention is offered due to "Prevention Offer Chance" of %1%%',
+          //  FPCGeneralSetup."Prevention Offer Chance (%)");
+          msg :=
+            STRSUBSTNO(
+              Text004,
+              FPCGeneralSetup."Prevention Offer Chance (%)");
+
+          IF ACFManagement.IsACF THEN ACFManagement.MESSAGE(msg)
+                                 ELSE MESSAGE(msg);
+          // T0045 tec-cs -----------
+        END;
+        EXIT(FALSE);
+      END;
+
+      // remeber affected records
+      IF SalesLineL.FINDSET THEN BEGIN
+        REPEAT
+          SalesLineTempL := SalesLineL;
+          SalesLineTempL.INSERT;
+        UNTIL SalesLineL.NEXT = 0;
+      END;
+
+      preventionAmount := CalcPreventionAmounts(SalesLineL, TRUE); // calculate and save
+
+      IF (preventionAmount = 0) AND (withUserOutput) THEN BEGIN
+        // T0045 tec-cs +++++++++++
+        //MESSAGE('No Prevention Amount has been calculated for offering. Check "Prevention Disc. Lines Setup".');
+        msg := Text003;
+
+        IF ACFManagement.IsACF THEN ACFManagement.MESSAGE(msg)
+                               ELSE MESSAGE(msg);
+        // T0045 tec-cs -----------
+      END;
+
+      IF (preventionAmount > FPCGeneralSetup."Manual Confirmation Threshold") THEN BEGIN
+        // prevention discount is too high
+        IF SalesLineTempL.FINDSET THEN BEGIN
+          REPEAT
+            SalesLineL.GET(
+              SalesLineTempL."Document Type",
+              SalesLineTempL."Document No.",
+              SalesLineTempL."Line No.");
+            SalesLineL.VALIDATE("Customer Prevention", SalesLineL."Customer Prevention"::"Manual Check");
+            SalesLineL.MODIFY(TRUE);
+          UNTIL SalesLineTempL.NEXT = 0;
+        END;
+        // T0045 tec-cs +++++++++++
+        msg :=
+          STRSUBSTNO(
+            Text002,
+            preventionAmount,
+            FPCGeneralSetup."Manual Confirmation Threshold",
+            SalesLineTempL.COUNT);
+
+        IF ACFManagement.IsACF THEN ACFManagement.MESSAGE(msg)
+                               ELSE MESSAGE(msg);
+        // T0045 tec-cs -----------
+      END ELSE BEGIN
+        // T0045 tec-cs +++++++++++
+        msg :=
+          STRSUBSTNO(
+            Text001,
+            preventionAmount,
+            SalesLineTempL.COUNT);
+
+        IF ACFManagement.IsACF THEN ACFManagement.MESSAGE(msg)
+                               ELSE MESSAGE(msg);
+        // T0045 tec-cs -----------
+      END;
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE CalcPreventionAmounts@1000000000(VAR SalesLinesR@1000000000 : Record 37;withModify@1000000005 : Boolean) : Decimal;
+    VAR
+      totalDiscountAmount@1000000002 : Decimal;
+      lineDiscountAmount@1000000001 : Decimal;
+    BEGIN
+      totalDiscountAmount := 0;
+
+      IF SalesLinesR.FINDSET(withModify) THEN BEGIN
+        REPEAT
+
+          lineDiscountAmount := SalesLine_CalcPrevention(SalesLinesR);
+          totalDiscountAmount += lineDiscountAmount;
+
+          IF withModify THEN BEGIN
+            IF lineDiscountAmount = 0 THEN BEGIN
+              SalesLinesR.VALIDATE("Customer Prevention", SalesLinesR."Customer Prevention"::"Not offered");
+            END ELSE BEGIN
+              SalesLinesR.VALIDATE("Customer Prevention", SalesLinesR."Customer Prevention"::Offered);
+            END;
+            SalesLinesR.VALIDATE("Prevention discount Amount", lineDiscountAmount);
+            SalesLinesR.MODIFY(TRUE);
+          END;
+
+        UNTIL SalesLinesR.NEXT = 0;
+      END;
+
+      EXIT(totalDiscountAmount);
+    END;
+
+    PROCEDURE SalesLine_CalcPrevention@1000000006(VAR SalesLinesR@1000000000 : Record 37) : Decimal;
+    VAR
+      PreventionCalculationLines@1000000001 : Record 50175;
+      lineDiscountAmount@1000000003 : Decimal;
+      discountPercent@1000000004 : Decimal;
+      "****TEC***********************"@1000000002 : Integer;
+      MPDocumentMgtL@1000000005 : Codeunit 50500;
+      MPLineAmountL@1000000006 : Decimal;
+    BEGIN
+      lineDiscountAmount := 0;
+
+      PreventionCalculationLines.RESET;
+      PreventionCalculationLines.SETRANGE("Return Reason Code", SalesLinesR."Return Reason Code");
+      PreventionCalculationLines.SETFILTER("Minimum Line Amount", '<=%1', SalesLinesR."Line Amount");
+      //T0096 28.01.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      MPLineAmountL := MPDocumentMgtL.CalcMPLineAmountSL(SalesLinesR);
+      MPDocumentMgtL.SetMPLimitFilterPrevCalcSL(PreventionCalculationLines,SalesLinesR);
+      //T0096 28.01.15 CC-GH ---------------------------------------------------
+      IF PreventionCalculationLines.FINDLAST THEN BEGIN
+        // prevention discount found
+        lineDiscountAmount := SalesLinesR."Line Amount" * (PreventionCalculationLines."Discount (%)" / 100.0);
+        //T0096 28.01.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+        lineDiscountAmount := MPLineAmountL * (PreventionCalculationLines."Discount (%)" / 100.0);
+        //T0096 28.01.15 CC-GH ---------------------------------------------------
+
+        lineDiscountAmount := ROUND(lineDiscountAmount, 1.0, '>'); // round up to the next integer
+
+        SalesLinesR.VALIDATE("Customer Prevention", SalesLinesR."Customer Prevention"::Offered);
+        SalesLinesR.VALIDATE("Prevention discount Amount", lineDiscountAmount);
+      END ELSE BEGIN
+        // no setup for this line found
+        SalesLinesR.VALIDATE("Customer Prevention", SalesLinesR."Customer Prevention"::"Not offered");
+      END;
+
+      EXIT(lineDiscountAmount);
+    END;
+
+    PROCEDURE DoPreventionCalculationArchive@1000000003(VAR SalesHeaderArchiveR@1000000000 : Record 5107;withUserOutput@1000000006 : Boolean) : Boolean;
+    VAR
+      SalesLineArchiveL@1000000001 : Record 5108;
+      SalesLineArchiveTempL@1000000005 : TEMPORARY Record 5108;
+      FPCGeneralSetup@1000000003 : Record 50055;
+      preventionAmount@1000000002 : Decimal;
+      ACFManagement@1000000004 : Codeunit 5327126;
+      msg@1000000007 : Text[1024];
+    BEGIN
+      FPCGeneralSetup.GET;
+
+      SalesLineArchiveL.RESET;
+      SalesLineArchiveL.SETRANGE("Document Type", SalesHeaderArchiveR."Document Type");
+      SalesLineArchiveL.SETRANGE("Document No.", SalesHeaderArchiveR."No.");
+      SalesLineArchiveL.SETRANGE("Doc. No. Occurrence", SalesHeaderArchiveR."Doc. No. Occurrence");
+      SalesLineArchiveL.SETRANGE("Version No.", SalesHeaderArchiveR."Version No.");
+      SalesLineArchiveL.SETFILTER("Return Type", '%1|%2|%3',
+        SalesLineArchiveL."Return Type"::Return,
+        SalesLineArchiveL."Return Type"::Change,
+        SalesLineArchiveL."Return Type"::"Spare Part");
+      SalesLineArchiveL.SETFILTER("Return Reason Code", '<>%1', '');
+      SalesLineArchiveL.SETRANGE("Customer Prevention", SalesLineArchiveL."Customer Prevention"::" ");
+
+      SalesLineArchiveL.FINDSET;
+
+      IF NOT IsPreventionOfferAllowed(FPCGeneralSetup."Prevention Offer Chance (%)") THEN BEGIN
+        // no prevention is offered
+        IF SalesLineArchiveL.FINDSET(TRUE) THEN BEGIN
+          REPEAT
+            SalesLineArchiveL.VALIDATE("Customer Prevention", SalesLineArchiveL."Customer Prevention"::"Not offered");
+            SalesLineArchiveL.MODIFY(TRUE);
+          UNTIL SalesLineArchiveL.NEXT = 0;
+        END;
+        IF withUserOutput THEN BEGIN
+          // T0045 tec-cs +++++++++++
+          msg :=
+            STRSUBSTNO(
+              Text004,
+              FPCGeneralSetup."Prevention Offer Chance (%)");
+
+          IF ACFManagement.IsACF THEN ACFManagement.MESSAGE(msg)
+                                 ELSE MESSAGE(msg);
+          // T0045 tec-cs -----------
+        END;
+        EXIT(FALSE);
+      END;
+
+      // remeber affected lines
+      IF SalesLineArchiveL.FINDSET THEN BEGIN
+        REPEAT
+          SalesLineArchiveTempL := SalesLineArchiveL;
+          SalesLineArchiveTempL.INSERT;
+        UNTIL SalesLineArchiveL.NEXT = 0;
+      END;
+
+      preventionAmount := CalcPreventionAmountsArchive(SalesLineArchiveL, TRUE); // calculate
+
+      IF (preventionAmount = 0) AND (withUserOutput) THEN BEGIN
+        // T0045 tec-cs +++++++++++
+        msg := Text003;
+
+        IF ACFManagement.IsACF THEN ACFManagement.MESSAGE(msg)
+                               ELSE MESSAGE(msg);
+        // T0045 tec-cs -----------
+      END;
+
+      IF (preventionAmount > FPCGeneralSetup."Manual Confirmation Threshold") THEN BEGIN
+        // prevention discount is too high
+        IF SalesLineArchiveTempL.FINDSET(TRUE) THEN BEGIN
+          REPEAT
+            SalesLineArchiveL.GET(
+              SalesLineArchiveTempL."Document Type",
+              SalesLineArchiveTempL."Document No.",
+              SalesLineArchiveTempL."Doc. No. Occurrence",
+              SalesLineArchiveTempL."Version No.",
+              SalesLineArchiveTempL."Line No.");
+
+            SalesLineArchiveL.VALIDATE("Customer Prevention", SalesLineArchiveL."Customer Prevention"::"Manual Check");
+            SalesLineArchiveL.MODIFY(TRUE);
+          UNTIL SalesLineArchiveTempL.NEXT = 0;
+        END;
+        // T0045 tec-cs +++++++++++
+        msg :=
+          STRSUBSTNO(
+            Text002,
+            preventionAmount,
+            FPCGeneralSetup."Manual Confirmation Threshold",
+            SalesLineArchiveTempL.COUNT);
+
+        IF ACFManagement.IsACF THEN ACFManagement.MESSAGE(msg)
+                               ELSE MESSAGE(msg);
+        // T0045 tec-cs -----------
+      END ELSE BEGIN
+        // T0045 tec-cs +++++++++++
+        msg :=
+          STRSUBSTNO(
+            Text001,
+            preventionAmount,
+            SalesLineArchiveTempL.COUNT);
+
+        IF ACFManagement.IsACF THEN ACFManagement.MESSAGE(msg)
+                               ELSE MESSAGE(msg);
+        // T0045 tec-cs -----------
+      END;
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE CalcPreventionAmountsArchive@1000000002(VAR SalesLinesArchiveR@1000000000 : Record 5108;withModify@1000000005 : Boolean) : Decimal;
+    VAR
+      totalDiscountAmount@1000000002 : Decimal;
+      lineDiscountAmount@1000000001 : Decimal;
+    BEGIN
+      totalDiscountAmount := 0;
+
+      IF SalesLinesArchiveR.FINDSET(withModify) THEN BEGIN
+        REPEAT
+          lineDiscountAmount := SalesLineArch_CalcPrevention(SalesLinesArchiveR);
+          totalDiscountAmount += lineDiscountAmount;
+
+          IF withModify THEN BEGIN
+            IF lineDiscountAmount = 0 THEN BEGIN
+              SalesLinesArchiveR.VALIDATE("Customer Prevention", SalesLinesArchiveR."Customer Prevention"::"Not offered");
+            END ELSE BEGIN
+              SalesLinesArchiveR.VALIDATE("Customer Prevention", SalesLinesArchiveR."Customer Prevention"::Offered);
+            END;
+            SalesLinesArchiveR.VALIDATE("Prevention discount Amount", lineDiscountAmount);
+            SalesLinesArchiveR.MODIFY(TRUE);
+          END;
+        UNTIL SalesLinesArchiveR.NEXT = 0;
+      END;
+
+      EXIT(totalDiscountAmount);
+    END;
+
+    PROCEDURE SalesLineArch_CalcPrevention@1000000007(SalesLinesArchiveR@1000000000 : Record 5108) : Decimal;
+    VAR
+      PreventionCalculationLines@1000000001 : Record 50175;
+      lineDiscountAmount@1000000003 : Decimal;
+      discountPercent@1000000004 : Decimal;
+      "****TEC***********************"@1000000006 : Integer;
+      MPDocumentMgtL@1000000005 : Codeunit 50500;
+      MPLineAmountL@1000000002 : Decimal;
+      SaleLineL@1000000007 : Record 37;
+    BEGIN
+      lineDiscountAmount := 0;
+
+      PreventionCalculationLines.RESET;
+      PreventionCalculationLines.SETRANGE("Return Reason Code", SalesLinesArchiveR."Return Reason Code");
+      PreventionCalculationLines.SETFILTER("Minimum Line Amount", '<=%1', SalesLinesArchiveR."Line Amount");
+      //T0096 28.01.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      MPLineAmountL := MPDocumentMgtL.CalcMPLineAmountSLA(SalesLinesArchiveR);
+      MPDocumentMgtL.SetMPLimitFilterPrevCalcSLA(PreventionCalculationLines,SalesLinesArchiveR);
+      //T0096 28.01.15 CC-GH ---------------------------------------------------
+      IF PreventionCalculationLines.FINDLAST THEN BEGIN
+        // prevention discount found
+        lineDiscountAmount := SalesLinesArchiveR."Line Amount" * (PreventionCalculationLines."Discount (%)" / 100.0);
+        //T0096 28.01.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+        lineDiscountAmount := MPLineAmountL * (PreventionCalculationLines."Discount (%)" / 100.0);
+        //T0096 28.01.15 CC-GH ---------------------------------------------------
+        lineDiscountAmount := ROUND(lineDiscountAmount, 1.0, '>'); // round up to the next integer
+      END;
+
+      EXIT(lineDiscountAmount);
+    END;
+
+    PROCEDURE IsPreventionOfferAllowed@1000000001(chanceForOfferInPercentV@1000000001 : Decimal) : Boolean;
+    VAR
+      randomInt@1000000000 : Integer;
+    BEGIN
+      // checks, wether a prevention should be offered
+      // currently, the decision is only a "global" chance from the setup (ignoring the sales lines)
+
+      RANDOMIZE(TIME-000000T);
+
+      // note: RANDOM(100) returns an integer in the range 1..100
+      randomInt := RANDOM(100);
+
+      IF randomInt <= chanceForOfferInPercentV THEN BEGIN
+        EXIT(TRUE);
+      END;
+
+      // do not offer a prevention
+      EXIT(FALSE);
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation Tectura & Home24 NAV Team  |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+
+      T0016       23.06.14  tec-cs    FTTC3 Phase 6: Prevention Calculation
+      T0045       07.10.14  tec-cs    Prevention Calculation for Anveo
+      T0052       02.12.14  tec-cs    disabled annoying test
+      T0096       28.01.15  CC-GH     Prevention Rebate Handling for Marketplace
+    }
+    END.
+  }
+}
+

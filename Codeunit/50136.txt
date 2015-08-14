@@ -1,0 +1,170 @@
+OBJECT Codeunit 50136 Locking Order Rules Mgt. HME
+{
+  OBJECT-PROPERTIES
+  {
+    Date=31.05.13;
+    Time=14:54:45;
+    Version List=DEBUGW13.10.01;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      LockingRuleArray@1000 : ARRAY [100] OF Record 50167;
+      LineNo@1001 : Integer;
+
+    PROCEDURE OpenTransactionsWithViolForm@2(VAR Transaction@1001 : Record 50165);
+    VAR
+      LockingRule@1000 : Record 50167;
+      ClientMonitorLine@1005 : Record 50162;
+      LockingRuleViolation@1004 : Record 50169;
+      TransactionMgt@1003 : Codeunit 50133;
+      ClientMonitorMgt@1002 : Codeunit 50131;
+    BEGIN
+      // Expand Locking Rules
+      LockingRule.SETRANGE("System-Created",TRUE);
+      LockingRule.DELETEALL;
+      LockingRule.SETCURRENTKEY("Table ID","Table ID 2");
+      LockingRule.SETFILTER("Table ID",'<>0');
+      LockingRule.SETFILTER("Table ID 2",'<>0');
+      LockingRule.SETRANGE("System-Created",FALSE);
+      ExplodeLockingRules(LockingRule,1);
+      COMMIT;
+
+      // Calculate Transactions
+      TransactionMgt.OpenForm(Transaction);
+      COMMIT;
+
+      // Find Locking Rule Violations
+      ClientMonitorMgt.OpenForm(ClientMonitorLine);
+      ClientMonitorLine.COPYFILTER("Login Date",LockingRuleViolation."Login Date");
+      ClientMonitorLine.COPYFILTER("Login Time",LockingRuleViolation."Login Time");
+      ClientMonitorLine.COPYFILTER("Connection ID",LockingRuleViolation."Connection ID");
+      IF ClientMonitorLine.FIND('+') THEN BEGIN
+        LockingRuleViolation.DELETEALL;
+        CheckAllTransactions;
+      END ELSE
+        LockingRuleViolation.DELETEALL;
+    END;
+
+    PROCEDURE ExplodeLockingRules@3(VAR LockingRule@1000 : Record 50167;Level@1002 : Integer);
+    VAR
+      LockingRule2@1001 : Record 50167;
+      NewLockingRule@1004 : Record 50167;
+      Window@1005 : Dialog;
+      i@1003 : Integer;
+    BEGIN
+      IF Level = 1 THEN
+        Window.OPEN('Processing Rule  #1###### #2######');
+      IF LockingRule.FIND('-') THEN
+        REPEAT
+          IF Level = 1 THEN BEGIN
+            Window.UPDATE(1,LockingRule."Table ID");
+            Window.UPDATE(2,LockingRule."Table ID 2");
+          END;
+          FOR i := 1 TO Level - 1 DO BEGIN
+            IF LockingRuleArray[i]."Table ID" = LockingRule."Table ID 2" THEN BEGIN
+              LockingRule.CALCFIELDS("Table Name","Table Name 2");
+              ERROR(
+                'There is a conflict in the locking order for %1 (%2) and %3 (%4).',
+                LockingRule."Table Name",LockingRule."Table ID",
+                LockingRule."Table Name 2",LockingRule."Table ID 2");
+            END;
+            NewLockingRule.SETCURRENTKEY("Table ID","Table ID 2");
+            NewLockingRule.SETRANGE("Table ID",LockingRuleArray[i]."Table ID");
+            NewLockingRule.SETRANGE("Table ID 2",LockingRule."Table ID 2");
+            IF NOT NewLockingRule.FIND('-') THEN BEGIN
+              LineNo := LineNo + 10000;
+              NewLockingRule.INIT;
+              NewLockingRule."Line No." := LineNo;
+              NewLockingRule."Table ID" := LockingRuleArray[i]."Table ID";
+              NewLockingRule."Table ID 2" := LockingRule."Table ID 2";
+              NewLockingRule."System-Created" := TRUE;
+              NewLockingRule.INSERT;
+            END;
+          END;
+          LockingRuleArray[Level] := LockingRule;
+          LockingRule2.SETCURRENTKEY("Table ID","Table ID 2");
+          LockingRule2.SETRANGE("Table ID",LockingRule."Table ID 2");
+          LockingRule2.SETFILTER("Table ID 2",'<>0');
+          LockingRule2.SETRANGE("System-Created",FALSE);
+          ExplodeLockingRules(LockingRule2,Level + 1);
+        UNTIL LockingRule.NEXT = 0;
+    END;
+
+    PROCEDURE CheckAllTransactions@5();
+    VAR
+      ClientMonitorLine@1005 : Record 50162;
+      Transaction@1001 : Record 50165;
+      LockingRuleViolation@1004 : Record 50169;
+      ClientMonitorMgt@1002 : Codeunit 50131;
+      Window@1000 : Dialog;
+    BEGIN
+      ClientMonitorMgt.OpenForm(ClientMonitorLine);
+      ClientMonitorLine.COPYFILTER("Login Date",Transaction."Login Date");
+      ClientMonitorLine.COPYFILTER("Login Time",Transaction."Login Time");
+      ClientMonitorLine.COPYFILTER("Connection ID",Transaction."Connection ID");
+      ClientMonitorLine.COPYFILTER("Login Date",LockingRuleViolation."Login Date");
+      ClientMonitorLine.COPYFILTER("Login Time",LockingRuleViolation."Login Time");
+      ClientMonitorLine.COPYFILTER("Connection ID",LockingRuleViolation."Connection ID");
+
+      Window.OPEN(
+        'Processing       #1###### to #2######\\' +
+        'No. of violat.   #3######');
+      IF Transaction.FIND('+') THEN
+        Window.UPDATE(2,Transaction."No.");
+
+      IF Transaction.FIND('-') THEN
+        REPEAT
+          Window.UPDATE(1,Transaction."No.");
+          Window.UPDATE(3,LockingRuleViolation.COUNTAPPROX);
+          CheckOneTransaction(Transaction);
+        UNTIL Transaction.NEXT = 0;
+
+      ClientMonitorLine.LOCKTABLE;
+      IF ClientMonitorLine.FIND('+') THEN BEGIN
+        ClientMonitorLine."Locking Rules Checked" := TRUE;
+        ClientMonitorLine.MODIFY;
+      END;
+    END;
+
+    PROCEDURE CheckOneTransaction@1(VAR Transaction@1003 : Record 50165);
+    VAR
+      TransactionLock@1001 : Record 50166;
+      TempTransactionLock@1002 : TEMPORARY Record 50166;
+      LockingRuleViolation@1000 : Record 50169;
+      LockingRule@1004 : Record 50167;
+    BEGIN
+      TransactionLock.SETRANGE("Login Date",Transaction."Login Date");
+      TransactionLock.SETRANGE("Login Time",Transaction."Login Time");
+      TransactionLock.SETRANGE("Connection ID",Transaction."Connection ID");
+      TransactionLock.SETRANGE("Transaction No.",Transaction."No.");
+      IF TransactionLock.FIND('-') THEN
+        REPEAT
+          IF TempTransactionLock.FIND('-') THEN
+            REPEAT
+              LockingRule.SETCURRENTKEY("Table ID","Table ID 2");
+              LockingRule.SETRANGE("Table ID",TransactionLock."Table ID");
+              LockingRule.SETRANGE("Table ID 2",TempTransactionLock."Table ID");
+              IF NOT LockingRule.ISEMPTY THEN BEGIN
+                LockingRuleViolation.TRANSFERFIELDS(TempTransactionLock);
+                LockingRuleViolation."Table ID 2" := TransactionLock."Table ID";
+                LockingRuleViolation."Table Name 2" := TransactionLock."Table Name";
+                LockingRuleViolation.INSERT;
+              END;
+            UNTIL TempTransactionLock.NEXT = 0;
+          TempTransactionLock := TransactionLock;
+          TempTransactionLock.INSERT;
+        UNTIL TransactionLock.NEXT = 0;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

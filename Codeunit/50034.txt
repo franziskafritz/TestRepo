@@ -1,0 +1,566 @@
+OBJECT Codeunit 50034 REB-Verwaltung
+{
+  OBJECT-PROPERTIES
+  {
+    Date=14.04.15;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=REB,GOB1.00,HME4060;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 25=rm,
+                TableData 38=rimd,
+                TableData 122=r,
+                TableData 124=r;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Einkaufskopf@1000 : Record 38;
+      Einkaufszeile@1001 : Record 39;
+      RE_Nr@1002 : Code[10];
+      Mitglied_von@1003 : Record 2000000003;
+      EinkBuchen@1004 : Codeunit 90;
+      Rec@1005 : Record 38;
+      TotalEkZeile@1006 : Record 39;
+      TotalEkZeileMW@1007 : Record 39;
+      Kred@1008 : Record 23;
+      MWStBetrag@1009 : Decimal;
+      MWSTBetragText@1010 : Text[30];
+      eekk@1011 : Record 38;
+      PurchSetup@1000000000 : Record 312;
+      fibuEinr@1000000001 : Record 98;
+      BenEinr@1000000002 : Record 91;
+      NoSeriesMgt@1119478000 : Codeunit 396;
+      GOBPurchHeader@1000000003 : Record 38;
+      GOBPurchLine@1000000004 : Record 121;
+      GOBGetReceipt@1000000005 : Codeunit 74;
+      GOBText001@1000000006 : TextConst 'DEU=Der Brutto-Betrag stimmt nicht mit dem Betrag aus dem Kopf Åberein!;ENU=The Amount doesn''t match the amount in the header!';
+      GOBText002@1000000007 : TextConst 'DEU=Buchungsdatum eingeben!;ENU=Posting Date is missing!';
+      GOBText003@1000000008 : TextConst 'DEU=Buchungsdatum fÅr Sie nicht erlaubt!;ENU=Posting Date is not within the allowed posting period';
+      InvLine@1000000009 : Record 39;
+      PostDate@1000000010 : Date;
+      GOBPurchOrderline@1000000012 : Record 39;
+
+    PROCEDURE EK_Rechnung_erstellen@10(VAR _Re_Buch@1000 : Record 50082);
+    VAR
+      REBTextL@1000000002 : Text[30];
+      REBValueL@1000000001 : Decimal;
+      DotPosL@1000000000 : Integer;
+    BEGIN
+      RE_Nr := FORMAT(_Re_Buch.lfdNummer);
+      Einkaufskopf.INIT;
+      Einkaufskopf."Document Type":= Einkaufskopf."Document Type"::Invoice;
+      Einkaufskopf."No." := _Re_Buch.Stempelnummer;
+      Einkaufskopf."Posting Date" := _Re_Buch.Buchungsdatum;
+      Einkaufskopf.VALIDATE("Buy-from Vendor No.",_Re_Buch.Einkauf_Kreditor);
+      Einkaufskopf.VALIDATE("Pay-to Vendor No.",_Re_Buch.Kreditor);
+      Einkaufskopf.VALIDATE("Document Date",_Re_Buch.Belegdatum);
+      Einkaufskopf."Shortcut Dimension 1 Code" := _Re_Buch."Shortcut Dimension 1 Code";
+      Einkaufskopf."Shortcut Dimension 2 Code" := _Re_Buch."Shortcut Dimension 2 Code";
+      Einkaufskopf."Vendor Invoice No." := _Re_Buch."externe Rechnungsnr.";
+      Einkaufskopf."REB No." := _Re_Buch.lfdNummer;
+      Einkaufskopf."REB Stamp No." := _Re_Buch.Stempelnummer;
+      //H2153 17.03.15 TST +++++++++++++++++++++++++++++
+      REBTextL := FORMAT(_Re_Buch."Brutto Rechnungsbetrag");
+      //H4060 14.04.15 TST +++++++++++++++++++++++++++++
+      //H4060 14.04.15 TST -----------------------------
+      DotPosL := STRPOS(REBTextL,',');
+      IF DotPosL <> 0 THEN
+        REBTextL := COPYSTR(REBTextL,1,DotPosL+2);
+      EVALUATE(REBValueL, REBTextL);
+      Einkaufskopf."REB Gross Invoice Amount":= REBValueL;
+
+      REBTextL := FORMAT(_Re_Buch."Netto Rechnungsbetrag");
+      //H4060 14.04.15 TST +++++++++++++++++++++++++++++
+      //H4060 14.04.15 TST -----------------------------
+      DotPosL := STRPOS(REBTextL,',');
+      IF DotPosL <> 0 THEN
+        REBTextL := COPYSTR(REBTextL,1,DotPosL+2);
+      EVALUATE(REBValueL, REBTextL);
+
+      Einkaufskopf."REB Net Invoice Amount":= REBValueL;
+      //H2153 17.03.15 TST -----------------------------
+      Einkaufskopf."REB Receiving Date":= _Re_Buch.Eingangsdatum;
+      Einkaufskopf.VALIDATE("Currency Code",_Re_Buch.WÑhrungscode);
+      Einkaufskopf.VALIDATE("Payment Terms Code",_Re_Buch."Zahlungsbedingung Beleg");
+      Einkaufskopf.VALIDATE("Due Date",_Re_Buch.FÑlligkeitsdatum);
+      Einkaufskopf.VALIDATE("Pmt. Discount Date",_Re_Buch.Skontodatum);
+      Einkaufskopf.VALIDATE("Payment Discount %",_Re_Buch."Skonto%");
+      //H0480 06.08.13 ARI +++++++++++++++++++++++++++++
+      //Einkaufskopf."Posting Description" := COPYSTR(_Re_Buch.Info,1,50);
+      IF _Re_Buch."Rechnung gehîrt zu Abteilung" = 'LAGER' THEN
+        Einkaufskopf."Posting Description" :=  _Re_Buch."Bestellnummer (Text)";
+      //H0480 06.08.13 ARI -----------------------------
+      //DYN FK 101020 >>>>>>>>>>>>
+      {original
+      Einkaufskopf."Posting No." := _Re_Buch.Stempelnummer;
+      }
+      //DYN FK 101020 <<<<<<<<<<<<<
+      PurchSetup.GET;
+      NoSeriesMgt.SetDefaultSeries(Einkaufskopf."Posting No. Series",PurchSetup."Posted Invoice Nos.");
+      IF PurchSetup."Receipt on Invoice" THEN
+        NoSeriesMgt.SetDefaultSeries(Einkaufskopf."Receiving No. Series",PurchSetup."Posted Receipt Nos.");
+      //DYN FK 101007 >>>>>>>>>>>>>>>>>>
+      IF _Re_Buch.Zahlungsfreigabe THEN
+         Einkaufskopf."On Hold" := ''
+      ELSE
+         Einkaufskopf."On Hold" := 'REB';
+      //DYN FK 101007 <<<<<<<<<<<<<<<<<<
+      Einkaufskopf.INSERT;
+      //A/P0125/01082012
+      IF NOT GOBPurchHeader.GET(1,_Re_Buch."Bestellnummer (Text)") THEN BEGIN
+      //E/P0125/01082012
+          Einkaufszeile.INIT;
+          Einkaufszeile."Document Type" := Einkaufszeile."Document Type"::Invoice;
+          Einkaufszeile."Document No." := _Re_Buch.Stempelnummer;
+          Einkaufszeile."Line No." := 10000;
+          Einkaufszeile.Type := Einkaufszeile.Type::"G/L Account";
+          Einkaufszeile.VALIDATE("No.",_Re_Buch.Kontierung);
+          Einkaufszeile.VALIDATE("Currency Code",_Re_Buch.WÑhrungscode);
+          Einkaufszeile."Qty. to Receive" := 1;
+          Einkaufszeile."Qty. to Invoice" :=1;
+          Einkaufszeile."Direct Unit Cost" := _Re_Buch."Netto Rechnungsbetrag";
+          Einkaufszeile.Amount := _Re_Buch."Netto Rechnungsbetrag";
+          Einkaufszeile."Shortcut Dimension 1 Code" := _Re_Buch."Shortcut Dimension 1 Code";
+          Einkaufszeile."Shortcut Dimension 2 Code" := _Re_Buch."Shortcut Dimension 2 Code";
+          //H0480 06.08.13 ARI +++++++++++++++++++++++++++++
+          IF _Re_Buch."Rechnung gehîrt zu Abteilung" = 'LAGER' THEN
+            Einkaufszeile."Dropshipnr." := _Re_Buch."Bestellnummer (Text)";
+          //H0480 06.08.13 ARI -----------------------------
+          Einkaufszeile.INSERT;
+
+          Einkaufszeile.VALIDATE("Shortcut Dimension 1 Code");
+          Einkaufszeile.VALIDATE("Shortcut Dimension 2 Code");
+          Einkaufszeile.MODIFY;
+      //A/P0125/01082012
+      END ELSE BEGIN
+          GOBGetReceipt.SetPurchHeader(Einkaufskopf);
+          GOBPurchLine.RESET;
+          GOBPurchLine.SETCURRENTKEY(GOBPurchLine."Pay-to Vendor No.");
+          GOBPurchLine.SETRANGE(GOBPurchLine."Order No.", _Re_Buch."Bestellnummer (Text)");
+          GOBPurchLine.SETRANGE(GOBPurchLine."Pay-to Vendor No.",Einkaufskopf."Pay-to Vendor No.");
+          GOBGetReceipt.CreateInvLines(GOBPurchLine);
+      END;
+      //E/P0125/01082012
+      //A/gob-ko/09112012/P0570
+      PostDate := 0D;
+      InvLine.RESET;
+      InvLine.SETRANGE(InvLine."Document Type",Einkaufskopf."Document Type");
+      InvLine.SETRANGE(InvLine."Document No.",Einkaufskopf."No.");
+      IF InvLine.FINDFIRST THEN BEGIN
+         REPEAT
+         IF InvLine."Posting Date of Reciept" > PostDate THEN BEGIN
+            PostDate := InvLine."Posting Date of Reciept";
+         END;
+         UNTIL InvLine.NEXT = 0;
+         IF Einkaufskopf."Posting Date" = 0D THEN BEGIN
+            Einkaufskopf."Posting Date" := PostDate;
+            Einkaufskopf.MODIFY;
+         END;
+      END;
+      //E/gob-ko/09112012/P0570
+    END;
+
+    PROCEDURE EK_Gutschrift_erstellen@12(VAR _Re_Buch@1000 : Record 50082);
+    BEGIN
+      RE_Nr := FORMAT(_Re_Buch.lfdNummer);
+      Einkaufskopf.INIT;
+      Einkaufskopf."Document Type" := Einkaufskopf."Document Type"::"Credit Memo";
+      Einkaufskopf."No." := _Re_Buch.Stempelnummer;
+      Einkaufskopf."Posting Date" := _Re_Buch.Buchungsdatum;
+      Einkaufskopf.VALIDATE("Buy-from Vendor No.",_Re_Buch.Einkauf_Kreditor);
+      Einkaufskopf.VALIDATE("Pay-to Vendor No.",_Re_Buch.Kreditor);
+      Einkaufskopf.VALIDATE("Document Date",_Re_Buch.Belegdatum);
+      Einkaufskopf."Shortcut Dimension 1 Code" := _Re_Buch."Shortcut Dimension 1 Code";
+      Einkaufskopf."Shortcut Dimension 2 Code" := _Re_Buch."Shortcut Dimension 2 Code";
+      Einkaufskopf."Vendor Cr. Memo No." := _Re_Buch."externe Rechnungsnr.";
+      Einkaufskopf."REB No." := _Re_Buch.lfdNummer;
+      Einkaufskopf."REB Stamp No." := _Re_Buch.Stempelnummer;
+      Einkaufskopf."REB Gross Invoice Amount":= ABS(_Re_Buch."Brutto Rechnungsbetrag");
+      Einkaufskopf."REB Net Invoice Amount":= ABS(_Re_Buch."Netto Rechnungsbetrag");
+      Einkaufskopf."REB Receiving Date":= _Re_Buch.Eingangsdatum;
+      Einkaufskopf.VALIDATE("Payment Terms Code",_Re_Buch."Zahlungsbedingung Beleg");
+      Einkaufskopf.VALIDATE("Due Date",_Re_Buch.FÑlligkeitsdatum);
+      Einkaufskopf.VALIDATE("Pmt. Discount Date",_Re_Buch.Skontodatum);
+      Einkaufskopf.VALIDATE("Payment Discount %",_Re_Buch."Skonto%");
+      Einkaufskopf."Posting Description" := COPYSTR(_Re_Buch.Info,1,50);
+      //DYN FK 101020 >>>>>>>>>>>>>>
+      {original
+      Einkaufskopf."Posting No." := _Re_Buch.Stempelnummer;
+      }
+      //DYN FK 101020 <<<<<<<<<<<<<<
+      PurchSetup.GET;
+      NoSeriesMgt.SetDefaultSeries(Einkaufskopf."Posting No. Series",PurchSetup."Posted Credit Memo Nos.");
+      IF PurchSetup."Return Shipment on Credit Memo" THEN
+        NoSeriesMgt.SetDefaultSeries(Einkaufskopf."Return Shipment No. Series",PurchSetup."Posted Return Shpt. Nos.");
+      //DYN FK 101007 >>>>>>>>>>>>>>>>>>
+      IF _Re_Buch.Zahlungsfreigabe THEN
+         Einkaufskopf."On Hold" := ''
+      ELSE
+         Einkaufskopf."On Hold" := 'REB';
+      //DYN FK 101007 <<<<<<<<<<<<<<<<<<
+
+      Einkaufskopf.INSERT;
+      Einkaufszeile.INIT;
+      Einkaufszeile."Document Type" := Einkaufszeile."Document Type"::"Credit Memo";
+      Einkaufszeile."Document No." := _Re_Buch.Stempelnummer;
+      Einkaufszeile."Line No." := 10000;
+      Einkaufszeile.Type := Einkaufszeile.Type::"G/L Account";
+      Einkaufszeile.VALIDATE("No.",_Re_Buch.Kontierung);
+      Einkaufszeile.VALIDATE("Currency Code",_Re_Buch.WÑhrungscode);
+      Einkaufszeile."Qty. to Invoice" :=1;
+      Einkaufszeile."Direct Unit Cost" := ABS(_Re_Buch."Netto Rechnungsbetrag");
+      Einkaufszeile.Amount := ABS(_Re_Buch."Netto Rechnungsbetrag");
+      Einkaufszeile."Shortcut Dimension 1 Code" := _Re_Buch."Shortcut Dimension 1 Code";
+      Einkaufszeile."Shortcut Dimension 2 Code" := _Re_Buch."Shortcut Dimension 2 Code";
+      Einkaufszeile.INSERT;
+
+      Einkaufszeile.VALIDATE("Shortcut Dimension 1 Code");
+      Einkaufszeile.VALIDATE("Shortcut Dimension 2 Code");
+      Einkaufszeile.MODIFY;
+    END;
+
+    PROCEDURE EK_Bestellung_aktualisieren@13(VAR _ReBuch@1000 : Record 50082;_Bestellnummer@1001 : Code[20]);
+    VAR
+      REBTextL@1000000002 : Text[30];
+      REBValueL@1000000001 : Decimal;
+      DotPosL@1000000000 : Integer;
+    BEGIN
+      Einkaufskopf.RESET;
+      Einkaufskopf.SETRANGE(Einkaufskopf."Document Type",Einkaufskopf."Document Type"::Order);
+      Einkaufskopf.SETRANGE("No.",_Bestellnummer);
+      IF Einkaufskopf.FIND('-') THEN BEGIN
+        Einkaufskopf.VALIDATE("Posting Date",WORKDATE);
+        Einkaufskopf.VALIDATE("Document Date",_ReBuch.Belegdatum);
+        Einkaufskopf."REB Stamp No.":= _ReBuch.Stempelnummer;
+        //H2153 17.03.15 TST +++++++++++++++++++++++++++++
+        REBTextL := FORMAT(_ReBuch."Brutto Rechnungsbetrag");
+        DotPosL := STRPOS(REBTextL,'.');
+        IF DotPosL = 0 THEN
+          DotPosL := STRPOS(REBTextL,',');
+        IF DotPosL <> 0 THEN
+          REBTextL := COPYSTR(REBTextL,1,DotPosL+2);
+        EVALUATE(REBValueL, REBTextL);
+        Einkaufskopf."REB Gross Invoice Amount":= REBValueL;
+
+        REBTextL := FORMAT(_ReBuch."Netto Rechnungsbetrag");
+        DotPosL := STRPOS(REBTextL,'.');
+        IF DotPosL = 0 THEN
+          DotPosL := STRPOS(REBTextL,',');
+        IF DotPosL <> 0 THEN
+          REBTextL := COPYSTR(REBTextL,1,DotPosL+2);
+        EVALUATE(REBValueL, REBTextL);
+        Einkaufskopf."REB Net Invoice Amount":= REBValueL;
+        //H2153 17.03.15 TST -----------------------------
+        Einkaufskopf."REB Receiving Date":= _ReBuch.Eingangsdatum;
+        Einkaufskopf."Vendor Invoice No." := _ReBuch."externe Rechnungsnr.";
+        Einkaufskopf.VALIDATE("Payment Terms Code",_ReBuch."Zahlungsbedingung Beleg");
+        Einkaufskopf.VALIDATE("Due Date",_ReBuch.FÑlligkeitsdatum);
+        Einkaufskopf.VALIDATE("Pmt. Discount Date",_ReBuch.Skontodatum);
+        Einkaufskopf.VALIDATE("Payment Discount %",_ReBuch."Skonto%");
+        //DYN FK 101007 >>>>>>>>>>>>>>>>>>
+        IF _ReBuch.Zahlungsfreigabe THEN
+          Einkaufskopf."On Hold" := ''
+        ELSE
+          Einkaufskopf."On Hold" := 'REB';
+        //DYN FK 101007 <<<<<<<<<<<<<<<<<<
+        Einkaufskopf.MODIFY;
+      END;
+    END;
+
+    PROCEDURE Buchung_Setzen@1(VAR _EKKopf@1000 : Record 38);
+    VAR
+      L_Recheingbuch@1001 : Record 50082;
+    BEGIN
+      WITH _EKKopf DO BEGIN
+        IF "Document Type" = "Document Type"::Invoice THEN BEGIN
+          L_Recheingbuch.SETRANGE(Stempelnummer,"REB Stamp No.");
+          L_Recheingbuch.SETRANGE(Belegart,L_Recheingbuch.Belegart::Rechnung);
+          L_Recheingbuch.SETRANGE(Kreditor,"Buy-from Vendor No.");
+          IF L_Recheingbuch.FIND('-') THEN BEGIN
+            L_Recheingbuch.gebucht:= TRUE;
+            L_Recheingbuch."gebucht am":= TODAY;
+            L_Recheingbuch."gebucht von":= USERID;
+            //DYN FK 101020 >>>>>>>>>>
+            L_Recheingbuch."geb. Rechnungs/Gutschriftsnr" := _EKKopf."Last Posting No.";
+            //DYN FK 101020 <<<<<<<<<<
+            L_Recheingbuch.MODIFY;
+          END;
+        END;
+        IF "Document Type" = "Document Type"::"Credit Memo" THEN BEGIN
+          L_Recheingbuch.SETRANGE(Stempelnummer,"REB Stamp No.");
+          L_Recheingbuch.SETRANGE(Belegart,L_Recheingbuch.Belegart::Gutschrift);
+          L_Recheingbuch.SETRANGE(Kreditor,"Buy-from Vendor No.");
+          IF L_Recheingbuch.FIND('-') THEN BEGIN
+            L_Recheingbuch.gebucht:= TRUE;
+            L_Recheingbuch."gebucht am":= TODAY;
+            L_Recheingbuch."gebucht von":= USERID;
+            //DYN FK 101020 >>>>>>>>>>
+            L_Recheingbuch."geb. Rechnungs/Gutschriftsnr" := _EKKopf."Last Posting No.";
+            //DYN FK 101020 <<<<<<<<<<
+            L_Recheingbuch.MODIFY;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE Bestell_Buchung_Setzen@3(VAR _EKKopf@1000 : Record 38);
+    VAR
+      L_Recheingbuch@1001 : Record 50082;
+    BEGIN
+      WITH _EKKopf DO BEGIN
+        IF "Document Type" = "Document Type"::Order THEN BEGIN
+            L_Recheingbuch.SETRANGE(Stempelnummer,"REB Stamp No.");
+            L_Recheingbuch.SETRANGE(Belegart,L_Recheingbuch.Belegart::Rechnung);
+            IF L_Recheingbuch.FIND('-') THEN BEGIN
+              L_Recheingbuch.gebucht:= TRUE;
+              L_Recheingbuch."gebucht am":= TODAY;
+              L_Recheingbuch."gebucht von":= USERID;
+              L_Recheingbuch.MODIFY;
+            END;
+           END;
+      END;
+    END;
+
+    PROCEDURE Rechnungsmenge_fÅllen@4(VAR _EKKopf@1000 : Record 38);
+    VAR
+      L_EKZeile@1001 : Record 39;
+      L_LiefEKKopf@1002 : Record 120;
+      L_LiefEKZeile@1003 : Record 121;
+      L_Menge@1004 : Decimal;
+    BEGIN
+      L_LiefEKKopf.RESET;
+      L_LiefEKKopf.SETCURRENTKEY("Vendor Shipment No.");
+      L_LiefEKKopf.SETRANGE("Vendor Shipment No.",_EKKopf."Vendor Shipment No.");
+      IF L_LiefEKKopf.FIND('-') THEN BEGIN
+        L_LiefEKZeile.RESET;
+        L_LiefEKZeile.SETRANGE("Document No.",L_LiefEKKopf."No.");
+        IF L_LiefEKZeile.FIND('-') THEN BEGIN
+          REPEAT
+            L_EKZeile.RESET;
+            L_EKZeile.SETRANGE("Document No.",_EKKopf."No.");
+            L_EKZeile.SETRANGE("Line No.",L_LiefEKZeile."Line No.");
+            IF L_EKZeile.FIND('-') THEN BEGIN
+              L_Menge := L_EKZeile."Qty. to Invoice" + L_LiefEKZeile.Quantity;
+              L_EKZeile.VALIDATE("Qty. to Invoice",L_Menge);
+              L_EKZeile.MODIFY;
+            END;
+          UNTIL L_LiefEKZeile.NEXT=0;
+        END;
+      END;
+    END;
+
+    PROCEDURE "betrÑge prÅfen"@17(VAR ekk@1000 : Record 38);
+    VAR
+      L_REB@1001 : Record 50082;
+      totalekz@1002 : Decimal;
+      ekz@1000000000 : Record 39;
+      GenJnlCheckLine@1119478000 : Codeunit 11;
+      RoundingDiffL@1000000001 : Decimal;
+    BEGIN
+      //DYN FK 101007 >>>>>>>>>>>>>>>
+      //A/gob-ko/080812/P0125
+      //IF ekk.Re_Stempelnummer = '' THEN EXIT;
+      IF ekk."REB Stamp No." <> '' THEN BEGIN
+      //E/gob-ko/080812/P0125
+      //DYN FK 101007 <<<<<<<<<<<<<<<
+          eekk.COPY(ekk);
+          EinkBuchen.SumPurchLines(eekk,0,TotalEkZeile,TotalEkZeileMW,MWStBetrag,MWSTBetragText);
+
+          IF (TotalEkZeile.Amount) <> eekk."REB Net Invoice Amount" THEN
+            ERROR('Der Netto-Betrag stimmt nicht mit dem Rechnungseingangsbuch Åberein!');
+
+          IF TotalEkZeile."Amount Including VAT" <> eekk."REB Gross Invoice Amount" THEN
+            //H1703 31.10.2014 MDO ++++++++++++++++++++++++++++++++
+            RoundingDiffL := TotalEkZeile."Amount Including VAT" - ROUND(eekk."REB Gross Invoice Amount", 0.01);
+            IF ABS(RoundingDiffL) > 0.01 THEN
+            //H1703 31.10.2014 MDO --------------------------------
+              ERROR('Der Brutto-Betrag stimmt nicht mit dem Rechnungseingangsbuch Åberein!');
+
+          IF eekk."Posting Date" = 0D THEN
+            ERROR('Buchungsdatum eingeben!');
+
+          IF GenJnlCheckLine.DateNotAllowed(eekk."Posting Date") THEN
+            ERROR('Buchungsdatum fÅr Sie nicht erlaubt!');
+      //A/gob-ko/080812/P0125
+      END ELSE BEGIN
+          eekk.COPY(ekk);
+          EinkBuchen.SumPurchLines(eekk,0,TotalEkZeile,TotalEkZeileMW,MWStBetrag,MWSTBetragText);
+
+
+          IF TotalEkZeile."Amount Including VAT" <> eekk."REB Gross Invoice Amount" THEN
+            ERROR(GOBText001);
+
+          IF eekk."Posting Date" = 0D THEN
+            ERROR(GOBText002);
+
+          IF GenJnlCheckLine.DateNotAllowed(eekk."Posting Date") THEN
+            ERROR(GOBText003);
+
+      END;
+      //DYN FK 110121 >>>>>>>>>>>>>>
+      {PrÅfung nur Åber Einrichtung Sachkonten
+      ekz.RESET;
+      ekz.SETRANGE("Document Type",eekk."Document Type");
+      ekz.SETRANGE("Document No.",eekk."No.");
+      IF ekz.FIND('-') THEN REPEAT
+        IF (ekz."Qty. to Invoice" <> 0) AND (ekz."Shortcut Dimension 1 Code" = '') THEN
+          ERROR('Bitte Kostenstellen in den zu buchenden Zeilen eintragen.');
+      UNTIL ekz.NEXT = 0;
+      }
+      //DYN FK 110121 <<<<<<<<<<<<<<<<
+    END;
+
+    PROCEDURE Freigabe_setzen@1119478000(VAR _Re_Buch@1119478000 : Record 50082);
+    VAR
+      LT_ERK@1119478001 : Record 122;
+      LT_EGK@1119478002 : Record 124;
+      LT_EKK@1119478003 : Record 38;
+      LT_KP@1119478004 : Record 25;
+    BEGIN
+      IF _Re_Buch.gebucht THEN BEGIN
+        IF _Re_Buch.Belegart = _Re_Buch.Belegart::Rechnung THEN BEGIN
+          LT_ERK.SETCURRENTKEY(REB_Nr);
+          LT_ERK.SETRANGE(REB_Nr,_Re_Buch.Stempelnummer);
+          IF LT_ERK.FINDLAST THEN BEGIN
+            LT_KP.SETCURRENTKEY("Document No.","Document Type","Vendor No.");
+            LT_KP.SETRANGE("Document No.",LT_ERK."No.");
+            LT_KP.SETRANGE("Document Type",LT_KP."Document Type"::Invoice);
+            LT_KP.SETRANGE("Vendor No.",LT_ERK."Pay-to Vendor No.");
+            IF LT_KP.FINDLAST THEN BEGIN
+              IF _Re_Buch.Zahlungsfreigabe THEN
+                LT_KP."On Hold":=''
+              ELSE
+                LT_KP."On Hold":='REB';
+              LT_KP.MODIFY;
+            END;
+          END;
+        END ELSE BEGIN
+          LT_EGK.SETCURRENTKEY(REB_Nr);
+          LT_EGK.SETRANGE(REB_Nr,_Re_Buch.Stempelnummer);
+          IF LT_EGK.FINDLAST THEN BEGIN
+            LT_KP.SETCURRENTKEY("Document No.","Document Type","Vendor No.");
+            LT_KP.SETRANGE("Document No.",LT_EGK."No.");
+            LT_KP.SETRANGE("Document Type",LT_KP."Document Type"::"Credit Memo");
+            LT_KP.SETRANGE("Vendor No.",LT_EGK."Pay-to Vendor No.");
+            IF LT_KP.FINDLAST THEN BEGIN
+              IF _Re_Buch.Zahlungsfreigabe THEN
+                LT_KP."On Hold":=''
+              ELSE
+                LT_KP."On Hold":='REB';
+              LT_KP.MODIFY;
+            END;
+          END;
+        END;
+      END ELSE BEGIN
+        IF _Re_Buch.Belegart = _Re_Buch.Belegart::Rechnung THEN BEGIN
+          IF _Re_Buch.Bestellnummer <> '' THEN BEGIN
+            IF NOT LT_EKK.GET(LT_EKK."Document Type"::Order,_Re_Buch.Bestellnummer) THEN
+              EXIT;
+          END ELSE
+            IF NOT LT_EKK.GET(LT_EKK."Document Type"::Invoice,_Re_Buch.Stempelnummer) THEN
+              EXIT;
+        END ELSE BEGIN
+          IF NOT LT_EKK.GET(LT_EKK."Document Type"::"Credit Memo",_Re_Buch.Stempelnummer) THEN
+            EXIT;
+        END;
+        IF _Re_Buch.Zahlungsfreigabe THEN
+          LT_EKK."On Hold":=''
+         ELSE
+           LT_EKK."On Hold":='REB';
+         LT_EKK.MODIFY;
+      END;
+    END;
+
+    PROCEDURE "---------Buchblattverwaltung"@1113800000();
+    BEGIN
+    END;
+
+    PROCEDURE OpenJnl@2(VAR CurrentJnlBatchName@1000 : Code[10];VAR PT_REB@1001 : Record 50082);
+    BEGIN
+      CheckTemplateName(CurrentJnlBatchName);
+      PT_REB.FILTERGROUP := 2;
+      PT_REB.SETRANGE(PT_REB.Buchblattname,CurrentJnlBatchName);
+      PT_REB.FILTERGROUP := 0;
+    END;
+
+    LOCAL PROCEDURE CheckTemplateName@1119478002(VAR CurrentJnlBatchName@1001 : Code[10]);
+    VAR
+      GenJnlBatch@1002 : Record 50089;
+    BEGIN
+      IF NOT GenJnlBatch.GET(CurrentJnlBatchName) THEN BEGIN
+        IF NOT GenJnlBatch.FIND('-') THEN BEGIN
+          GenJnlBatch.INIT;
+          GenJnlBatch."REB Buchblattname":='STANDARD';
+          GenJnlBatch.Beschreibung := 'Standard Buch.-Blatt';
+          GenJnlBatch.INSERT(TRUE);
+          COMMIT;
+        END;
+        CurrentJnlBatchName := GenJnlBatch."REB Buchblattname";
+      END;
+    END;
+
+    PROCEDURE CheckName@1119478001(CurrentJnlBatchName@1000 : Code[10]);
+    VAR
+      GenJnlBatch@1002 : Record 50089;
+    BEGIN
+      GenJnlBatch.GET(CurrentJnlBatchName);
+    END;
+
+    PROCEDURE SetName@5(CurrentJnlBatchName@1000 : Code[10];VAR PT_REB@1001 : Record 50082);
+    BEGIN
+      PT_REB.FILTERGROUP := 2;
+      PT_REB.SETRANGE(PT_REB.Buchblattname,CurrentJnlBatchName);
+      PT_REB.FILTERGROUP := 0;
+      IF PT_REB.FIND('-') THEN;
+    END;
+
+    PROCEDURE LookupName@6(VAR CurrentJnlBatchName@1000 : Code[10];VAR PT_REB@1001 : Record 50082);
+    VAR
+      GenJnlBatch@1002 : Record 50089;
+    BEGIN
+      COMMIT;
+      GenJnlBatch."REB Buchblattname" := PT_REB.GETRANGEMAX(Buchblattname);
+      GenJnlBatch.FILTERGROUP := 0;
+      IF FORM.RUNMODAL(0,GenJnlBatch) = ACTION::LookupOK THEN BEGIN
+        CurrentJnlBatchName := GenJnlBatch."REB Buchblattname";
+        SetName(CurrentJnlBatchName,PT_REB);
+      END;
+    END;
+
+    BEGIN
+    {
+      DYN FK 101007 Fkt. EK_Rechnung_erstellen,EK_Gutschrift_erstellen,EK_Bestellung_aktualisieren
+                    --> Abwarten setzen, wenn nicht freigegeben
+                    neue Fkt. Freigabe_setzen
+             101020 Buchungsnr nicht mit Stempelnummer vorbelegen
+             110121 Keine KST-PrÅfung beim Buchen
+             110801 REB Buchblattverwaltung
+
+      P0125  01082012  GOB-ko   énderung fÅr Wareneingangszeilen holen
+      P0125  08082012  GOB-KO   émderung fÅr Wareneingangszeilen holen
+      P0570  09112012  gob-ko   énderung letzts Wareneingangsdatum als Buchungsdatum verwenden
+
+      +--------------------------------------------+
+      |                                            |
+      | Home24                                     |
+      | Internal Customizing by NAV-Team           |
+      |                                            |
+      +--------------------------------------------+
+      Project No. Date Shortcut Description
+      _____________________________________________
+
+      H0480   06.08.13 ARI       Serveral Optimizations for FiBu Step1
+      H1703   31.10.14 MDO       BugFix Rounding Check on Function "betrÑge prÅfen"
+      H2153   17.03.15 TST       Round REB Values
+      H4060   14.04.15 TST       Bugfix H2153
+    }
+    END.
+  }
+}
+

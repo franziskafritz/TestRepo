@@ -1,0 +1,188 @@
+OBJECT Codeunit 50236 PostApplication
+{
+  OBJECT-PROPERTIES
+  {
+    Date=22.05.15;
+    Time=16:38:20;
+    Modified=Yes;
+    Version List=P1274;
+  }
+  PROPERTIES
+  {
+    TableNo=21;
+    OnRun=BEGIN
+            GLSetup.GET;
+            FirstPostingDate := CheckFirstPostingDate;
+            custEntry1.GET("Entry No.");
+            ApplyDate := "Posting Date";
+            IF ApplyDate < FirstPostingDate THEN
+              IF GLSetup."Posting Date for Application" <> 0D THEN
+                ApplyDate := GLSetup."Posting Date for Application"
+              ELSE
+                ApplyDate := WORKDATE;
+            IF ApplyDate < FirstPostingDate THEN
+               ApplyDate := FirstPostingDate;
+
+            BucheAusgleich(custEntry1);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      ApplyDate@1000000000 : Date;
+      custEntry1@1000000001 : Record 21;
+      EntryNoBeforeApplication@1000000002 : Integer;
+      GenJnlPostLine@1000000003 : Codeunit 12;
+      EntryNoAfterApplication@1000000004 : Integer;
+      HMEText001@1000000023 : TextConst 'DEU=Ausgleich wird gebucht...;ENU=Posting application...';
+      HMEText002@1000000022 : TextConst 'DEU=Der Ausgleich ist gebucht worden.;ENU=The application was successfully posted.';
+      HMEText003@1000000021 : TextConst 'DEU=Das eingegebene %1 darf nicht vor dem %2 im %3 liegen.;ENU=The %1 entered must not be before the %2 on the %3.';
+      HMEText004@1000000020 : TextConst 'DEU=Der Ausgleich ist gebucht worden, aber es wurden keine Posten ausgeglichen.;ENU=The application was successfully posted though no entries have been applied.';
+      HMEText005@1000000019 : TextConst 'DEU=Bevor Sie den Ausgleich fr diesen Posten aufheben k”nnen, mssen Sie den Ausgleich fr alle Ausgleichsposten aufheben, die nach diesem Posten gebucht wurden.;ENU=Before you can unapply this entry, you must first unapply all application entries that were posted after this entry.';
+      HMEText006@1000000018 : TextConst 'DEU=%1 Nr. %2 verfgt ber keinen Ausgleichsposten.;ENU=%1 No. %2 does not have an application entry.';
+      HMEText007@1000000017 : TextConst 'DEU=Soll der Ausgleich fr diese Posten aufgehoben werden?;ENU=Do you want to unapply the entries?';
+      HMEText008@1000000016 : TextConst 'DEU=Ausgleich wird aufgehoben und Buchung erfolgt...;ENU=Unapplying and posting...';
+      HMEText009@1000000015 : TextConst 'DEU=Der Ausgleich fr diese Posten wurde erfolgreich aufgehoben.;ENU=The entries were successfully unapplied.';
+      HMEText010@1000000014 : TextConst 'DEU="Es kann kein Ausgleich aufgehoben werden. ";ENU="There is nothing to unapply. "';
+      HMEText011@1000000013 : TextConst 'DEU=Zum Aufheben des Ausgleichs fr diese Posten bucht das Programm Korrekturposten.\;ENU=To unapply these entries, the program will post correcting entries.\';
+      HMEText012@1000000012 : TextConst 'DEU=Bevor Sie den Ausgleich fr diesen Posten aufheben k”nnen, mssen Sie den Ausgleich fr alle Ausgleichsposten in %1 Nr. %2 aufheben, die nach diesem Posten gebucht wurden.;ENU=Before you can unapply this entry, you must first unapply all application entries in %1 No. %2 that were posted after this entry.';
+      HMEText013@1000000011 : TextConst 'DEU=%1 liegt nicht innerhalb des zul„ssigen Buchungsdatumsbereichs in %2 Nr. %3.;ENU=%1 is not within your range of allowed posting dates in %2 No. %3.';
+      HMEText014@1000000010 : TextConst 'DEU=%1 liegt nicht innerhalb des zugelassenen Buchungszeitraums.;ENU=%1 is not within your range of allowed posting dates.';
+      HMEText015@1000000009 : TextConst 'DEU=Das aktuellste %3 muss ein Ausgleich in %1 Nr. %2 sein.;ENU=The latest %3 must be an application in %1 No. %2.';
+      HMEText016@1000000008 : TextConst 'DEU="Sie k”nnen den Ausgleich fr den Posten mit dem Buchungsdatum %1 nicht aufheben, weil der Wechselkurs fr die zus„tzliche Berichtsw„hrung ge„ndert wurde. ";ENU="You cannot unapply the entry with the posting date %1, because the exchange rate for the additional reporting currency has been changed. "';
+      HMEText017@1000000007 : TextConst 'DEU=Sie k”nnen den Ausgleich fr %1 Nr. %2 nicht aufheben, weil der Posten bereits Gegenstand einer Stornierung war.;ENU=You cannot unapply %1 No. %2 because the entry has been involved in a reversal.';
+      HMEText018@1000000006 : TextConst 'DEU=Mindestens einer der ausgew„hlten Posten ist geschlossen. Geschlossene Posten k”nnen nicht angewendet werden.;ENU=One or more of the entries that you selected is closed. You cannot apply closed entries.';
+      HMETEXT019@1000000005 : TextConst 'DEU=Sie mssen ein Buchungsdatum angeben;ENU=Please enter a posting date';
+      UserSetup@1000000026 : Record 91;
+      GLSetup@1000000025 : Record 98;
+      FirstPostingDate@1000000024 : Date;
+
+    LOCAL PROCEDURE FindLastApplDtldCustLedgEntry@1() : Integer;
+    VAR
+      DtldCustLedgEntryL@1000 : Record 379;
+    BEGIN
+      DtldCustLedgEntryL.LOCKTABLE;
+      IF DtldCustLedgEntryL.FIND('+') THEN
+        EXIT(DtldCustLedgEntryL."Entry No.")
+      ELSE
+        EXIT(0);
+    END;
+
+    PROCEDURE BucheAusgleich@1000000000(VAR RecR@1000000001 : Record 21);
+    VAR
+      EntriesToApplyL@1000000008 : Record 21;
+      ApplicationDateL@1000000007 : Date;
+      UpdateAnalysisViewL@1000000006 : Codeunit 410;
+      TempGenJnlLineGOBL@1000000005 : Record 81;
+      CustLedgEntrEditL@1000000004 : Codeunit 103;
+      "***HME************************"@1000000003 : Integer;
+      TempJnlLineDimL@1000000002 : TEMPORARY Record 356;
+      LedgEntryDimL@1000000000 : Record 355;
+      SourceCodeSetupL@1000000009 : Record 242;
+      GenJnlLineL@1000000010 : Record 81;
+    BEGIN
+      WITH RecR DO BEGIN
+
+
+        EntriesToApplyL.SETCURRENTKEY("Customer No.");
+        EntriesToApplyL.SETRANGE("Customer No.","Customer No.");
+        EntriesToApplyL.SETRANGE("Applies-to ID","Applies-to ID");
+
+        SourceCodeSetupL.GET;
+
+        TempGenJnlLineGOBL := GenJnlLineL;
+
+        EntriesToApplyL.FIND('-');
+        REPEAT
+          EntriesToApplyL.CALCFIELDS("Remaining Amount",EntriesToApplyL."Remaining Amt. (LCY)");
+          GenJnlLineL.INIT;
+          GenJnlLineL := TempGenJnlLineGOBL;
+
+          EntriesToApplyL."Applies-to ID" := '';
+          CustLedgEntrEditL.RUN(EntriesToApplyL);
+
+          GenJnlLineL."Posting Date" := ApplyDate;
+
+
+          GenJnlLineL."Document Date" := "Document Date";
+          GenJnlLineL."Document No." := "Document No.";
+          GenJnlLineL."Account Type" := GenJnlLineL."Account Type"::Customer;
+          GenJnlLineL.VALIDATE("Account No.",EntriesToApplyL."Customer No.");
+          GenJnlLineL.Description := 'Automatikbuchung aus Batch';
+          GenJnlLineL."External Document No." := EntriesToApplyL."External Document No.";
+          IF EntriesToApplyL."Currency Code" <> '' THEN BEGIN
+            GenJnlLineL.VALIDATE("Currency Code",EntriesToApplyL."Currency Code");
+            GenJnlLineL.VALIDATE("Currency Factor",EntriesToApplyL."Original Currency Factor");
+          END;
+          GenJnlLineL.VALIDATE(Amount,-EntriesToApplyL."Remaining Amount");
+          GenJnlLineL.VALIDATE("Payment Method Code",EntriesToApplyL."Payment Method Code");
+          GenJnlLineL."Shortcut Dimension 1 Code" := EntriesToApplyL."Global Dimension 1 Code";
+          GenJnlLineL."Shortcut Dimension 2 Code" := EntriesToApplyL."Global Dimension 2 Code";
+
+
+          TempJnlLineDimL.DELETEALL;
+
+          LedgEntryDimL.SETRANGE("Table ID",21);
+          LedgEntryDimL.SETRANGE("Entry No.",EntriesToApplyL."Entry No.");
+
+          IF LedgEntryDimL.FIND('-') THEN REPEAT
+            TempJnlLineDimL."Table ID" := DATABASE::"Gen. Journal Line";
+            TempJnlLineDimL."Journal Template Name" := GenJnlLineL."Journal Template Name";
+            TempJnlLineDimL."Journal Batch Name" := GenJnlLineL."Journal Batch Name";
+            TempJnlLineDimL."Journal Line No." := GenJnlLineL."Line No.";
+            TempJnlLineDimL."Dimension Code" := LedgEntryDimL."Dimension Code";
+            TempJnlLineDimL."Dimension Value Code" := LedgEntryDimL."Dimension Value Code";
+            TempJnlLineDimL.INSERT;
+          UNTIL LedgEntryDimL.NEXT = 0;
+
+
+          GenJnlLineL."Posting Group" := EntriesToApplyL."Customer Posting Group";
+          GenJnlLineL."Source Type" := TempGenJnlLineGOBL."Source Type"::Customer;
+          GenJnlLineL."Source No." := EntriesToApplyL."Customer No.";
+          GenJnlLineL."Source Code" := SourceCodeSetupL."Sales Entry Application";
+          GenJnlLineL."Applies-to Doc. Type" := EntriesToApplyL."Document Type";
+          GenJnlLineL."Applies-to Doc. No." := EntriesToApplyL."Document No.";
+          //GenJnlLine."System-Created Entry" := TRUE;
+
+
+          EntryNoBeforeApplication := FindLastApplDtldCustLedgEntry;
+
+
+          GenJnlPostLine.RunWithCheck(GenJnlLineL,TempJnlLineDimL);
+        UNTIL EntriesToApplyL.NEXT = 0;
+
+      END;
+    END;
+
+    PROCEDURE CheckFirstPostingDate@1000000003() : Date;
+    BEGIN
+      GLSetup.GET('');
+      IF NOT UserSetup.GET(USERID) THEN
+        EXIT(GLSetup."Allow Posting From")
+      ELSE BEGIN
+        IF (UserSetup."Allow Posting From" = 0D) AND (UserSetup."Allow Posting To" = 0D) THEN
+          EXIT(GLSetup."Allow Posting From")
+        ELSE
+           EXIT(UserSetup."Allow Posting From");
+      END;
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+
+      P1274       05.09.14 gob-ko    codeunit created
+    }
+    END.
+  }
+}
+

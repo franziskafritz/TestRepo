@@ -1,0 +1,1353 @@
+OBJECT Codeunit 415 Release Purchase Document
+{
+  OBJECT-PROPERTIES
+  {
+    Date=29.06.15;
+    Time=16:10:22;
+    Modified=Yes;
+    Version List=NAVW16.00.01,chrmu,gob1.07,EDIINT6.1,HME4387;
+  }
+  PROPERTIES
+  {
+    TableNo=38;
+    OnRun=VAR
+            PurchLine@1000 : Record 39;
+            TempVATAmountLine0@1001 : TEMPORARY Record 290;
+            TempVATAmountLine1@1002 : TEMPORARY Record 290;
+            NotOnlyDropShipment@1003 : Boolean;
+            ProcessLog@1000000000 : Record 50070;
+            IFExportMgt@1000000001 : Codeunit 50010;
+            DHLCrossDocking2MHMgt@1108200001 : Codeunit 50023;
+            PurchLineLoc@1108200000 : Record 39;
+            FPCMgt@1000000002 : Codeunit 50003;
+            FOBPurchServices@1000000054 : Codeunit 50092;
+            PurchServices@1000000055 : Codeunit 50090;
+            done@1000000003 : Boolean;
+            BatchPostDoc2@1000000004 : Record 50043;
+            cCreateEDISingleOrder@1000000006 : Codeunit 82857;
+            rVendor@1000000005 : Record 23;
+            rEDIPartner@1000000007 : Record 82851;
+            "*** HME **********************"@1000000010 : Integer;
+            PurchLineL@1000000009 : Record 39;
+            PurchLine2L@1000000008 : Record 39;
+            TryToAddNewBatchPostDocL@1000000013 : Boolean;
+            PurchPriceCheckLogHeaderL@1000000011 : Record 50806;
+          BEGIN
+            IF Status = Status::Released THEN
+              EXIT;
+
+            TESTFIELD("Buy-from Vendor No.");
+            // 27.08.12 chrmu >>>>>>>>>
+            "Release Counter" := "Release Counter" + 1;
+            // 27.08.12 chrmu <<<<<<<<
+
+            //H0762 16.12.13 ARU ++++++++++++++++++
+            //S/FOB1.01//P0282
+            //IF "Shipping Type" <> '' THEN
+            //  FOBPurchServices.StartProcess(Rec);
+            //E/FOB1.01//p0282
+            //H0762 16.12.13 ARU ------------------
+
+            //H1692 23.10.14 gob-dah ++++++++++++++++++++
+            IF NOT ("Document Type" IN ["Document Type"::Invoice,"Document Type"::"Credit Memo"]) THEN
+            //H1692 23.10.14 gob-dah --------------------
+
+            //H1392,H1208 25.09.14 DMA ++++++++++++++++++
+            IF Container THEN BEGIN
+              PurchLineL.RESET;
+              PurchLineL.SETRANGE("Document Type","Document Type");
+              PurchLineL.SETRANGE("Document No.","No.");
+              PurchLineL.SETRANGE(Carrier, TRUE);
+              IF NOT PurchLineL.FINDFIRST THEN
+                ERROR(HMEText001)
+              ELSE BEGIN
+                REPEAT
+                  PurchLine2L.RESET;
+                  PurchLine2L.SETRANGE("Document Type", PurchLineL."Document Type");
+                  PurchLine2L.SETRANGE("Document No.", PurchLineL."Document No.");
+                  PurchLine2L.SETRANGE("Cont. Reference", PurchLineL."Cont. Reference");
+                  PurchLine2L.SETRANGE(Carrier,FALSE);
+                  PurchLineL.CALCFIELDS("Calc. Receipt Date");
+                  PurchLine2L.MODIFYALL("Expected Receipt Date", PurchLineL."Calc. Receipt Date");
+                  PurchLine2L.MODIFYALL("Location Code", PurchLineL."New Location Code");
+                  PurchLine2L.MODIFYALL("Container No.", PurchLineL."Container No.");
+                UNTIL PurchLineL.NEXT = 0;
+              END;
+            END;
+            //H1392,H1208 25.09.14 DMA ------------------
+
+            PurchLine.SETRANGE("Document Type","Document Type");
+            PurchLine.SETRANGE("Document No.","No.");
+            PurchLine.SETFILTER(Type,'>0');
+            PurchLine.SETFILTER(Quantity,'<>0');
+            IF NOT PurchLine.FIND('-') THEN
+              ERROR(Text001,"Document Type","No.");
+            InvtSetup.GET;
+            IF InvtSetup."Location Mandatory" THEN BEGIN
+              PurchLine.SETRANGE(Type,PurchLine.Type::Item);
+              IF PurchLine.FIND('-') THEN
+                REPEAT
+                  PurchLine.TESTFIELD("Location Code");
+                UNTIL PurchLine.NEXT = 0;
+              PurchLine.SETFILTER(Type,'>0');
+            END;
+            PurchLine.SETRANGE("Drop Shipment",FALSE);
+            NotOnlyDropShipment := PurchLine.FIND('-');
+            PurchLine.RESET;
+
+            //H0483 02.08.13 ARI +++++++++++++++++++++++++++++
+            {
+            //H0483 02.08.13 ARI -----------------------------
+            // A/P0991
+            PurchLine.SetPurchHeader(Rec);
+            PurchLine.CalcPlannedReceiptDate(PurchLine);
+            // E/P0991;
+            //H0483 02.08.13 ARI +++++++++++++++++++++++
+            }
+            PurchLine.SetPurchHeader(Rec);
+            PurchLine.SetOOD(PurchLine);
+            PurchLine.CalcPlannedReceiptDate(PurchLine);
+            //H0483 02.08.13 ARI -----------------------
+
+            //H1590 24.02.15 TST +++++++++++++++++++++++++++++
+            CreateItemChargeLines(Rec);
+            CreateServiceChargeLines(Rec);
+            //H1590 24.02.15 TST -----------------------------
+
+            PurchSetup.GET;
+            IF PurchSetup."Calc. Inv. Discount" THEN BEGIN
+              CODEUNIT.RUN(CODEUNIT::"Purch.-Calc.Discount",PurchLine);
+              GET("Document Type","No.");
+            END;
+
+            //H0559 13.09.13 ARU +++++
+            AutomPmtCalc(Rec);
+            //H0559 13.09.13 ARU -----
+
+            //H4316,H4161 03.06.15 TST +++++++++++++++++++++++++++++
+            IF "Document Type" = "Document Type"::Invoice THEN BEGIN
+              CLEAR(PurchPriceCheckLogHeaderL);
+              PurchPriceCheckLogHeaderL.SETRANGE("No.","No.");
+              IF PurchPriceCheckLogHeaderL.FINDLAST THEN;
+              IF PurchPriceCheckLogHeaderL."Approval Status" = PurchPriceCheckLogHeaderL."Approval Status"::"in progress" THEN BEGIN
+                ERROR(HMEText004);
+              END;
+              IF PurchPriceCheckLogHeaderL."Approval Status" = PurchPriceCheckLogHeaderL."Approval Status"::open THEN
+                IF NOT MDBPriceCheck.CheckPurchPrice(Rec) THEN BEGIN
+                  COMMIT;
+                  ERROR(HMEText004);
+                END;
+            END;
+            //H4316,H4161 03.06.15 TST -----------------------------
+
+            //H2074 04.02.15 DMO ++++++++++++++++++++++++++++++++++++++++++++++++++++
+            IF TestPrepayment(Rec) AND ("Document Type" = "Document Type"::Order) THEN BEGIN
+              Status := Status::"Pending Prepayment";
+              MODIFY(TRUE);
+              TryToAddNewBatchPostDocL := FALSE;
+              IF Kommissionierung THEN BEGIN
+                IF FPCMgt.CheckLastDocNoInteger("No.") THEN BEGIN
+                  rVendor.GET("Buy-from Vendor No.");
+                  IF rVendor."EDI ORDERS Partner" <> '' THEN BEGIN
+                    IF rEDIPartner.GET(rVendor."EDI ORDERS Partner") THEN BEGIN
+                      IF NOT rEDIPartner."Surpress Purch. Mail" THEN
+                        TryToAddNewBatchPostDocL := TRUE;
+                    END ELSE
+                      TryToAddNewBatchPostDocL := TRUE;
+                  END ELSE
+                    TryToAddNewBatchPostDocL := TRUE;
+                END;
+
+                BatchPostDoc.CreateExpMW(Rec);
+              END;
+              IF TryToAddNewBatchPostDocL THEN BEGIN
+                PostedBatchDoc.RESET;
+                PostedBatchDoc.SETCURRENTKEY("Document No.","Document Type","Action Type");
+                PostedBatchDoc.SETRANGE("Document No.","No.");
+                PostedBatchDoc.SETRANGE("Document Type",PostedBatchDoc."Document Type"::Order);
+                PostedBatchDoc.SETRANGE("Action Type",PostedBatchDoc."Action Type"::"Purch. EMail");
+                IF NOT PostedBatchDoc.ISEMPTY THEN BEGIN
+                  IF GUIALLOWED THEN
+                    IF NOT SkipMailSending THEN
+                      IF CONFIRM(gobText002,FALSE) THEN
+                        BatchPostDoc.CreatePurchEMailBatch(Rec);
+                END ELSE
+                  BatchPostDoc.CreatePurchEMailBatch(Rec);
+              END;
+
+              EXIT;
+            END ELSE
+              Status := Status::Released;
+
+            PurchLine.SetPurchHeader(Rec);
+            PurchLine.CalcVATAmountLines(0,Rec,PurchLine,TempVATAmountLine0);
+            PurchLine.CalcVATAmountLines(1,Rec,PurchLine,TempVATAmountLine1);
+            PurchLine.UpdateVATOnLines(0,Rec,PurchLine,TempVATAmountLine0);
+            PurchLine.UpdateVATOnLines(1,Rec,PurchLine,TempVATAmountLine1);
+
+            MODIFY(TRUE);
+
+            IF NotOnlyDropShipment THEN
+              IF "Document Type" IN ["Document Type"::Order,"Document Type"::"Return Order"] THEN
+                WhsePurchRelease.Release(Rec);
+
+            IF Kommissionierung THEN BEGIN
+              TryToAddNewBatchPostDocL := FALSE;
+              IF FPCMgt.CheckLastDocNoInteger("No.") THEN BEGIN
+                rVendor.GET("Buy-from Vendor No.");
+                IF rVendor."EDI ORDERS Partner" <> '' THEN BEGIN
+                  IF rEDIPartner.GET(rVendor."EDI ORDERS Partner") THEN BEGIN
+                    IF NOT rEDIPartner."Surpress Purch. Mail" THEN
+                      TryToAddNewBatchPostDocL := TRUE;
+                  END ELSE
+                    TryToAddNewBatchPostDocL := TRUE;
+                END ELSE
+                  TryToAddNewBatchPostDocL := TRUE;
+              END;
+              IF TryToAddNewBatchPostDocL THEN BEGIN
+                PostedBatchDoc.RESET;
+                PostedBatchDoc.SETCURRENTKEY("Document No.","Document Type","Action Type");
+                PostedBatchDoc.SETRANGE("Document No.","No.");
+                PostedBatchDoc.SETRANGE("Document Type",PostedBatchDoc."Document Type"::Order);
+                PostedBatchDoc.SETRANGE("Action Type",PostedBatchDoc."Action Type"::"Purch. EMail");
+                IF NOT PostedBatchDoc.ISEMPTY THEN BEGIN
+                  IF GUIALLOWED THEN
+                    IF NOT SkipMailSending THEN
+                      IF CONFIRM(gobText002,FALSE) THEN
+                        BatchPostDoc.CreatePurchEMailBatch(Rec);
+                END ELSE
+                  BatchPostDoc.CreatePurchEMailBatch(Rec);
+              END;
+              BatchPostDoc.CreateExpMW(Rec);
+            END;
+            PurchLineLoc.RESET;
+            PurchLineLoc.SETRANGE("Document Type","Document Type");
+            PurchLineLoc.SETRANGE("Document No.","No.");
+            PurchLineLoc.SETRANGE(Type,PurchLineLoc.Type::Item);
+            IF PurchLineLoc.FINDFIRST THEN
+              IF PurchLineLoc."Purchasing Code" = 'GER-4' THEN BEGIN
+                IF ("Document Type" = "Document Type"::Order) AND (Kommissionierung) THEN BEGIN
+                  DHLCrossDocking2MHMgt.CreatePOtoBatch(PurchLine."Document No.");
+                END;
+              END;
+            //H3890 12.03.15 DMO ++++++++++++++++++++++++++++++++++++++
+            SendToInterface(Rec);
+            //H3890 12.03.15 DMO  --------------------------------------
+            IF "Shipping Type" <> '' THEN BEGIN
+              TESTFIELD(Kommissionierung,FALSE);
+              PostedBatchDoc.RESET;
+              PostedBatchDoc.SETCURRENTKEY("Document No.","Document Type","Action Type");
+              PostedBatchDoc.SETRANGE("Document No.","No.");
+              PostedBatchDoc.SETRANGE("Document Type",PostedBatchDoc."Document Type"::"Container Order");
+              PostedBatchDoc.SETRANGE("Action Type",PostedBatchDoc."Action Type"::"Purch. EMail");
+              IF NOT PostedBatchDoc.ISEMPTY THEN BEGIN
+                IF NOT SkipMailSending THEN
+                  IF CONFIRM(gobText002,FALSE) THEN
+                    BatchPostDoc.CreatePurchEMailBatch(Rec);
+              END ELSE
+                BatchPostDoc.CreatePurchEMailBatch(Rec);
+            END;
+            //H2074 04.02.15 DMO ----------------------------------------------------
+            //gob-sfe/a/19.07.2012
+            SetOrderStatus(Rec);
+            //gob-sfe/e/19.07.2012
+
+            //A,gob-dst,07.11.2012,EDIINT
+            cCreateEDISingleOrder.CheckRequirementsForSending(Rec,TRUE);
+            //E,gob-dst,07.11.2012,EDIINT
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text001@1001 : TextConst 'DEU=FÅr %1 %2 gibt es nichts freizugeben.;ENU=There is nothing to release for %1 %2.';
+      PurchSetup@1002 : Record 312;
+      InvtSetup@1000 : Record 313;
+      WhsePurchRelease@1004 : Codeunit 5772;
+      Text002@1005 : TextConst 'DEU=Dieses Dokument kann nur freigegeben werden, wenn der Genehmigungsprozess abgeschlossen ist.;ENU=This document can only be released when the approval process is complete.';
+      Text003@1006 : TextConst 'DEU=Zum erneuten ôffnen dieses Dokuments muss der Genehmigungsprozess abgebrochen oder abgeschlossen werden.;ENU=The approval process must be cancelled or completed to reopen this document.';
+      "----------------------------DN"@1000000001 : Integer;
+      BatchPostDoc@1000000000 : Record 50043;
+      "***GOB***"@1000000002 : Integer;
+      DDSetup@1000000003 : Record 50060;
+      HeaderEntryNo@1000000004 : Integer;
+      DDHeader@1000000005 : Record 50061;
+      DDPosTemp@1000000006 : Integer;
+      gobText001@1000000007 : TextConst 'DEU=Keine Posiitionen fÅr Kanal %1 gefunden!;ENU=No positions found for Channel %1.';
+      PostedBatchDoc@1000000008 : Record 50044;
+      gobText002@1000000009 : TextConst 'DEU=Eine Email wurde bereits an den Lieferanten geschickt. Soll erneut eine E-Mail versendet werden?;ENU=An e-mail has been sent to the Vendor. Should be sent again an e-mail?';
+      gobText003@1000000010 : TextConst 'DEU=Die Bestellung kann nicht an docdata gesendet werden, da der Lieferant dort nicht bekannt ist.;ENU=The PO cannt be transferred to docdata because the Vendor is not known by docdata.';
+      gobtext004@1000000011 : TextConst 'DEU=Wenn eine Zeile den Status avisiert hat, mÅssen alle avisisiert sein. Ggf. Bestellung umlegen.;ENU=If a line has announced the status, they must all be announced. If necessary, skip Order.';
+      gobtext005@1000000012 : TextConst 'DEU=Avise Daten mÅssen alle gleich. Ggf. umlegen.;ENU=Avise data must all the same. Skip if necessary.';
+      gobText006@1000000014 : TextConst 'DEU=Die Bestellung wurde Åbertragen, jedoch ist der Lieferant bei DocData nicht bekannt. Bitte halten Sie RÅcksprache mit Ihrem Teamleiter.;ENU=The PO was transferred, but the supplier is not known by DocData. Please contact your team leader.';
+      "***HME***"@1000000013 : Integer;
+      SkipMailSending@1000000015 : Boolean;
+      "** HME ***********************"@1000000017 : TextConst;
+      HMEText001@1000000016 : TextConst 'ENU=You must specify at least one item that is carrirer for container order.';
+      HideValidationDialog@1000000018 : Boolean;
+      HMEText003@1000001018 : TextConst 'DEU=Es ist nicht genÅgend Platz, um die ZuschlÑge zu entfalten.;ENU=There is not enough space to explode the Item Charges.';
+      Currency@1000000019 : Record 4;
+      HMEText004@1000000020 : TextConst 'ENU=Price check failed.\Check Purchase Price Log, please.';
+      HMEText005@1000000021 : TextConst 'ENU=There is no %1 with a %2.';
+      HMEText006@1000000022 : TextConst 'ENU=%1 %2 % not found.';
+      HMEText007@1000000023 : TextConst 'ENU=No match %1';
+      MDBPriceCheck@1000000024 : Codeunit 50250;
+
+    PROCEDURE Reopen@1(VAR PurchHeader@1000 : Record 38);
+    VAR
+      PurchLine@1001 : Record 39;
+      "****HME***********************"@1000000001 : Integer;
+      PurchlineL@1000000000 : Record 39;
+    BEGIN
+      WITH PurchHeader DO BEGIN
+        IF Status = Status::Open THEN
+          EXIT;
+        IF "Document Type" IN ["Document Type"::Order,"Document Type"::"Return Order"] THEN
+          WhsePurchRelease.Reopen(PurchHeader);
+        Status := Status::Open;
+        PurchLine.SetPurchHeader(PurchHeader);
+        PurchLine.SETRANGE("Document Type","Document Type");
+        PurchLine.SETRANGE("Document No.","No.");
+        PurchLine.SETFILTER(Type,'>0');
+        PurchLine.SETFILTER(Quantity,'<>0');
+        IF PurchLine.FIND('-') THEN
+          REPEAT
+            PurchLine.Amount := 0;
+            PurchLine."Amount Including VAT" := 0;
+            PurchLine."VAT Base Amount" := 0;
+            PurchLine.InitOutstandingAmount;
+            PurchLine.MODIFY;
+          UNTIL PurchLine.NEXT = 0;
+        PurchLine.RESET;
+        MODIFY(TRUE);
+        //H1590 24.02.15 TST +++++++++++++++++++++++++++++
+        IF PurchLine."Document Type" = PurchLine."Document Type"::Order THEN BEGIN
+          COMMIT;
+          PurchLine.SETRANGE("Document Type","Document Type");
+          PurchLine.SETRANGE("Document No.","No.");
+          PurchLine.SETRANGE(Type,PurchLine.Type::"Charge (Item)");
+          PurchLine.SETRANGE("Autom. Item Charge",TRUE);
+          IF NOT PurchLine.ISEMPTY THEN BEGIN
+            PurchLine.FINDSET;
+            REPEAT
+              PurchlineL := PurchLine;
+              PurchlineL.MODIFY;
+              PurchlineL.DELETE(TRUE);
+            UNTIL PurchLine.NEXT = 0;
+          END;
+          PurchLine.RESET;
+        END;
+        //H1590 24.02.15 TST -----------------------------
+      END;
+    END;
+
+    PROCEDURE PerformManualRelease@2(VAR PurchHeader@1002 : Record 38);
+    VAR
+      ApprovalEntry@1004 : Record 454;
+      ApprovalManagement@1001 : Codeunit 439;
+      ApprovedOnly@1005 : Boolean;
+    BEGIN
+      WITH PurchHeader DO BEGIN
+        IF ApprovalManagement.CheckApprPurchaseDocument(PurchHeader) THEN BEGIN
+          CASE Status OF
+            Status::"Pending Approval":
+              ERROR(Text002);
+            Status::Released,Status::"Pending Prepayment":
+              CODEUNIT.RUN(415,PurchHeader);
+            Status::Open:
+              BEGIN
+                ApprovedOnly := TRUE;
+                ApprovalEntry.SETCURRENTKEY("Table ID","Document Type","Document No.","Sequence No.");
+                ApprovalEntry.SETRANGE("Table ID",DATABASE::"Purchase Header");
+                ApprovalEntry.SETRANGE("Document Type","Document Type");
+                ApprovalEntry.SETRANGE("Document No.","No.");
+                ApprovalEntry.SETFILTER(Status,'<>%1&<>%2',ApprovalEntry.Status::Rejected,ApprovalEntry.Status::Canceled);
+                IF ApprovalEntry.FIND('-') THEN BEGIN
+                  REPEAT
+                    IF (ApprovedOnly = TRUE) AND (ApprovalEntry.Status <> ApprovalEntry.Status::Approved) THEN
+                      ApprovedOnly := FALSE;
+                  UNTIL ApprovalEntry.NEXT = 0;
+
+                  IF ApprovedOnly = TRUE AND TestApprovalLimit(PurchHeader) THEN
+                    CODEUNIT.RUN(415,PurchHeader)
+                  ELSE
+                    ERROR(Text002);
+                END ELSE
+                  ERROR(Text002);
+              END;
+          END;
+        END ELSE
+          CODEUNIT.RUN(415,PurchHeader);
+      END;
+    END;
+
+    PROCEDURE PerformManualReopen@3(VAR PurchHeader@1002 : Record 38);
+    VAR
+      ApprovalManagement@1001 : Codeunit 439;
+    BEGIN
+      WITH PurchHeader DO BEGIN
+        IF ApprovalManagement.CheckApprPurchaseDocument(PurchHeader) THEN BEGIN
+          CASE Status OF
+            Status::"Pending Approval":
+              ERROR(Text003);
+            Status::Open,Status::Released,Status::"Pending Prepayment":
+              Reopen(PurchHeader);
+          END;
+        END ELSE
+          Reopen(PurchHeader);
+      END;
+    END;
+
+    PROCEDURE TestPrepayment@31(PurchaseHeader@1000 : Record 38) : Boolean;
+    VAR
+      PurchaseLines@1001 : Record 39;
+    BEGIN
+      PurchaseLines.SETRANGE("Document Type",PurchaseHeader."Document Type");
+      PurchaseLines.SETRANGE("Document No.",PurchaseHeader."No.");
+      PurchaseLines.SETFILTER("Prepmt. Line Amount",'<>%1',0);
+      IF PurchaseLines.FIND('-') THEN BEGIN
+        REPEAT
+          IF PurchaseLines."Prepmt. Amt. Inv." <> PurchaseLines."Prepmt. Line Amount" THEN
+            EXIT(TRUE);
+        UNTIL PurchaseLines.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE TestApprovalLimit@4(PurchaseHeader@1000 : Record 38) : Boolean;
+    VAR
+      UserSetup@1004 : Record 91;
+      AppManagement@1001 : Codeunit 439;
+      AppAmount@1002 : Decimal;
+      AppAmountLCY@1003 : Decimal;
+    BEGIN
+      AppManagement.CalcPurchaseDocAmount(PurchaseHeader,AppAmount,AppAmountLCY);
+      UserSetup.GET(USERID);
+      IF UserSetup."Unlimited Purchase Approval" THEN
+        EXIT(TRUE)
+      ELSE BEGIN
+        IF AppAmountLCY > UserSetup."Purchase Amount Approval Limit" THEN
+          ERROR(Text002)
+        ELSE
+          EXIT(TRUE);
+      END;
+    END;
+
+    PROCEDURE "**GOB***"@1000000002();
+    BEGIN
+    END;
+
+    PROCEDURE InsertOrder2DDInterface@1000000003(PurchHeader@1000000000 : Record 38;PurchLine@1000000001 : Record 39;txtTableName@1000000002 : Text[50];LocationCode@1000000003 : Code[20]) : Integer;
+    VAR
+      PurchHeaderDD@1000000004 : Record 50061;
+      PurchLineDD@1000000005 : Record 50062;
+      PurchHeaderDD2@1000000007 : Record 50061;
+      PurchLineDD2@1000000006 : Record 50062;
+      Location@1000000008 : Record 14;
+      DDInterfaceOut@1000000009 : Codeunit 50051;
+      DDCheckfield@1000000010 : Codeunit 50053;
+      EntryNo@1000000011 : Integer;
+      DDSetup@1000000012 : Record 50060;
+      GLSetup@1000000013 : Record 98;
+    BEGIN
+
+      DDSetup.GET;
+      IF NOT DDSetup."DD Interface active" THEN
+        EXIT;
+
+      CheckPOStatus(PurchHeader);
+
+      EntryNo := 0;
+
+      CASE txtTableName OF
+        PurchHeader.TABLENAME:
+           BEGIN
+             //A,P0186,gob-dst,14.08.2012
+             IF NOT CheckVendorImportStatus(PurchHeader) THEN
+               MESSAGE(gobText006);
+             //E,P0186,gob-dst,14.08.2012
+
+             IF PurchHeader."Document Type" <> PurchHeader."Document Type"::Order THEN
+               EXIT;
+             DDCheckfield.CheckPurchHeader(PurchHeader);
+             PurchHeaderDD.INIT;
+             PurchHeaderDD.TRANSFERFIELDS(PurchHeader);
+             PurchHeaderDD."Entry No." := DDInterfaceOut.GETORDHENTRYNO;
+             PurchHeaderDD."Order No. Navision" := PurchHeader."No.";
+             DDInterfaceOut.SetOrderNoHeader(PurchHeaderDD);
+             PurchHeaderDD."Document Entry Type" := PurchHeaderDD."Document Entry Type"::Purchase;
+             PurchHeaderDD."Entry Date" := WORKDATE;
+             PurchHeaderDD."Entry Time" := TIME;
+             PurchHeaderDD.Company := COMPANYNAME;
+             PurchHeaderDD."DD Status" := PurchHeaderDD."DD Status"::new;
+             PurchHeaderDD.Direction := PurchHeaderDD.Direction::out;
+
+             IF PurchHeader."DD Entry No." <> 0 THEN BEGIN
+               IF PurchHeaderDD2.GET(PurchHeader."DD Entry No.") THEN BEGIN
+                 IF PurchHeaderDD2."DD Status" IN  [PurchHeaderDD2."DD Status"::new,
+                                                    PurchHeaderDD2."DD Status"::transmitted]
+                    THEN
+                      PurchHeaderDD."DD Action" := PurchHeaderDD."DD Action"::N;
+                 PurchHeaderDD2."DD Status" := PurchHeaderDD2."DD Status"::canceled;
+                 PurchHeaderDD2.MODIFY;
+               END ELSE
+                 PurchHeaderDD."DD Action" := PurchHeaderDD."DD Action"::N;
+             END ELSE
+               PurchHeaderDD."DD Action" := PurchHeaderDD."DD Action"::N;
+
+             IF PurchHeaderDD.INSERT THEN
+               HeaderEntryNo := PurchHeaderDD."Entry No.";
+             EntryNo := PurchHeaderDD."Entry No.";
+             //Update Deleted Records
+             SetPointerFilter(PurchLineDD,PurchHeaderDD2,PurchHeader);
+             IF PurchLineDD.FIND('-') THEN
+               REPEAT
+                 SetPointerFilter2(PurchLine,PurchLineDD);
+                 IF NOT PurchLine.FIND('-') THEN BEGIN
+                   IF PurchLineDD."DD Status" = PurchLineDD."DD Status"::transmitted THEN BEGIN
+                     PurchLineDD2.INIT;
+                     PurchLineDD2 := PurchLineDD;
+                     PurchLineDD2."Entry No." := DDInterfaceOut.GETORDLENTRYNO;
+                     PurchLineDD2."Document No." := PurchHeaderDD."No.";
+                     PurchLineDD2."Order No. Navision" := PurchHeaderDD."Order No. Navision";
+                     PurchLineDD2."DD Status" := PurchLineDD2."DD Status"::new;
+                     PurchLineDD2."DD Action" := PurchLineDD2."DD Action"::D;
+                     PurchLineDD2."Entry Date" := WORKDATE;
+                     PurchLineDD2."Entry Time" := TIME;
+                     PurchLineDD2."Header Entry No." := PurchHeaderDD."Entry No.";
+                     PurchLineDD2.Quantity:=0; //Kennzeichen fÅr Storno
+                     PurchLineDD2."File Name" := '';
+                     PurchLineDD2."Trans. No." := '';
+                     PurchLineDD2."Record ID" := '';
+                     PurchLineDD2."File Position" := 0;
+                     PurchLineDD2.INSERT;
+                   END;
+
+                   PurchLineDD."DD Status" := PurchLineDD."DD Status"::canceled;
+                   PurchLineDD.MODIFY;
+
+                 END;
+               UNTIL PurchLineDD.NEXT = 0;
+
+           END;
+        PurchLine.TABLENAME:
+           BEGIN
+
+             IF PurchLine."Document Type" <> PurchLine."Document Type"::Order THEN
+               EXIT;
+             IF PurchLine.Quantity = 0 THEN
+               EXIT;
+             DDCheckfield.CheckPurchline(PurchLine);
+             PurchLineDD.INIT;
+             PurchLineDD.TRANSFERFIELDS(PurchLine);
+             PurchLineDD."Entry No." := DDInterfaceOut.GETORDLENTRYNO;
+             PurchLineDD."Order No. Navision" := PurchHeader."No.";
+             DDInterfaceOut.SetOrderNoLine(PurchLineDD);
+
+             PurchLineDD."Document Entry Type" := PurchLineDD."Document Entry Type"::Purchase;
+             PurchLineDD."Entry Date" := WORKDATE;
+             PurchLineDD."Entry Time" := TIME;
+
+             PurchLineDD.Company := COMPANYNAME;
+             PurchLineDD."Header Entry No." := HeaderEntryNo;
+             PurchLineDD."DD Status" := PurchLineDD."DD Status"::new;
+             PurchLineDD.Direction := PurchLineDD.Direction::out;
+             PurchLineDD."DD Pos. No." := PurchLine."DD Pos No.";
+
+             IF (PurchLine."DD Entry No." <> 0)                   AND
+                (PurchLineDD2.GET(PurchLine."DD Entry No."))
+             THEN BEGIN
+
+               IF PurchLineDD2."DD Status" = PurchLineDD2."DD Status"::new THEN
+                 PurchLineDD."DD Action" := PurchLineDD."DD Action"::N;
+               IF PurchLineDD2."DD Status" = PurchLineDD2."DD Status"::transmitted THEN
+                 PurchLineDD."DD Action" := PurchLineDD."DD Action"::"3";
+
+               PurchLineDD2."DD Status" := PurchLineDD2."DD Status"::canceled;
+               PurchLineDD2.MODIFY;
+             END ELSE
+               PurchLineDD."DD Action" := PurchLineDD."DD Action"::N;
+
+             IF PurchLineDD."DD Action" = PurchLineDD."DD Action"::" " THEN
+               PurchLineDD."DD Action" := PurchLineDD."DD Action"::N;
+
+            PurchLineDD."Qty. to Ship" := 0;
+
+            IF PurchLineDD.INSERT THEN;
+             EntryNo := PurchLineDD."Entry No.";
+           END;
+      END;
+
+      EXIT(EntryNo);
+    END;
+
+    PROCEDURE SetPointerFilter@1000000006(VAR PurchLineDD@1000000000 : Record 50062;PurchHeaderDD2@1000000001 : Record 50061;PurchHeader@1000000002 : Record 38);
+    BEGIN
+
+      PurchLineDD.SETCURRENTKEY(
+        "Document Entry Type","Header Entry No.","Document Type","Document No.","Line No.","DD Status",Direction,Company);
+      PurchLineDD.SETRANGE("Document Entry Type",PurchLineDD."Document Entry Type"::Purchase);
+      PurchLineDD.SETRANGE("Header Entry No.", PurchHeaderDD2."Entry No.");
+      PurchLineDD.SETRANGE("Document Type",PurchHeader."Document Type");
+
+      PurchLineDD.SETRANGE("Document No.",PurchHeaderDD2."No.");
+
+      PurchLineDD.SETFILTER("DD Status",'%1|%2',PurchLineDD."DD Status"::transmitted,
+        PurchLineDD."DD Status"::new);
+      PurchLineDD.SETRANGE(Direction,PurchLineDD.Direction::out);
+      PurchLineDD.SETRANGE(Company,COMPANYNAME);
+    END;
+
+    PROCEDURE SetPointerFilter2@1000000007(VAR PurchLine2@1000000000 : Record 39;PurchLineDD2@1000000001 : Record 50062);
+    BEGIN
+
+      PurchLine2.RESET;
+      PurchLine2.SETCURRENTKEY("Document Type","Document No.","DD Pos No.");
+      PurchLine2.SETRANGE("Document Type",PurchLineDD2."Document Type");
+      PurchLine2.SETRANGE("Document No.",PurchLineDD2."Order No. Navision");
+      PurchLine2.SETRANGE("DD Pos No.",PurchLineDD2."DD Pos. No.");
+    END;
+
+    PROCEDURE InitiateOrder2DDInterface@1000000010(VAR PurchHeader@1000000000 : Record 38);
+    VAR
+      PurchLine@1000000001 : Record 39;
+      PosNo@1000000002 : Integer;
+    BEGIN
+      //A/GOB-SFE/Create docdata Order
+      DDSetup.GET;
+      WITH PurchHeader DO BEGIN
+        PurchLine.SETRANGE("Document Type","Document Type");
+        PurchLine.SETRANGE("Document No.","No.");
+        PurchLine.SETRANGE(Type,PurchLine.Type::Item);
+        //a/gob-sfe/P0110
+        //PurchLine.SETRANGE("Purchasing Code",DDSetup."Purchasing Code");
+        PurchLine.SETRANGE("Location Code",'DD'); //P0129
+        //a/gob-sfe/P0110
+
+        IF PurchLine.FIND('-') THEN BEGIN
+
+          HeaderEntryNo := 0;
+          DDHeader.LOCKTABLE(TRUE); //a/P0610/gob-sfe/27.11.12
+          IF DDHeader.FIND('+') THEN;
+            "DD Entry No." := InsertOrder2DDInterface(PurchHeader,PurchLine,TABLENAME,"Location Code");
+          MODIFY;
+
+          DDPosTemp := 0;
+          REPEAT
+            DDPosTemp += 1;
+            //A/P0851
+            IF PurchLine."DD Pos No." = 0 THEN
+            //E/P0851
+
+            PurchLine."DD Pos No.":=DDPosTemp;
+            PurchLine."DD Entry No." := InsertOrder2DDInterface(PurchHeader,PurchLine,PurchLine.TABLENAME,PurchLine."Location Code");
+            PurchLine.MODIFY;
+          UNTIL PurchLine.NEXT = 0;
+
+          //COMMIT;
+          IF DDHeader.GET("DD Entry No.") THEN BEGIN
+            DDHeader."DD Status":=DDHeader."DD Status"::new;
+            DDHeader.MODIFY;
+          END;
+        END ELSE BEGIN
+          //P0162/gob-sfe
+          //IF GUIALLOWED THEN
+          //  MESSAGE(gobText001,DDSetup."Purchasing Code");
+          //P0162/gob-sfe
+        END;
+      END;
+    END;
+
+    PROCEDURE CheckPOStatus@1000000012(VAR PurchHeader@1000000000 : Record 38);
+    VAR
+      DDHeader@1000000001 : Record 50061;
+      Location@1000000002 : Record 14;
+      gobError001@1000000003 : TextConst 'ENU=The purchase order has already been processed at docdata warehouse.\Please check the modification.';
+    BEGIN
+      WITH PurchHeader DO BEGIN
+
+      //  IF Location.GET("Location Code") THEN
+      //    IF NOT Location."DD Interface" THEN
+      //      EXIT;
+
+        IF "DD Entry No." <> 0 THEN
+          IF DDHeader.GET("DD Entry No.") THEN
+            IF DDHeader."DD Status" IN [DDHeader."DD Status"::shipment] THEN
+              //a/P0520/gob-sfe/25.10.12
+              //ERROR(gobError001);
+              MESSAGE(gobError001);
+              //e/P0520/gob-sfe/25.10.12
+
+      END;
+    END;
+
+    PROCEDURE CheckVendorImportStatus@1000000000(PurchHeaderLoc@1000000000 : Record 38) : Boolean;
+    VAR
+      Vendor@1000000001 : Record 23;
+    BEGIN
+
+      IF Vendor.GET(PurchHeaderLoc."Buy-from Vendor No.") THEN BEGIN
+        Vendor.CALCFIELDS("DD Import Status");
+        EXIT(Vendor."DD Import Status"='A');
+      END;
+    END;
+
+    PROCEDURE SetOrderStatus@1000000001(PurchHeader@1000000000 : Record 38);
+    VAR
+      PurchLines@1000000001 : Record 39;
+      OrderStatusLog@1000000002 : Record 50069;
+      SetStatus@1000000003 : Boolean;
+    BEGIN
+      //gob-sfe/a/19.07.2012
+      PurchLines.RESET;
+      PurchLines.SETRANGE("Document Type",PurchHeader."Document Type");
+      PurchLines.SETRANGE("Document No.",PurchHeader."No.");
+      IF PurchLines.FINDSET THEN
+        REPEAT
+          SetStatus:=FALSE;
+          OrderStatusLog.RESET;
+          OrderStatusLog.SETCURRENTKEY(Timestamp,"Document Type","Document No.","Line No.");
+          OrderStatusLog.SETRANGE("Document Type",1);
+          OrderStatusLog.SETRANGE("Document No.",PurchLines."Document No.");
+          OrderStatusLog.SETRANGE("Line No.",PurchLines."Line No.");
+          IF OrderStatusLog.FINDLAST THEN BEGIN
+            IF (OrderStatusLog.Code='') OR (OrderStatusLog.Code='10') THEN
+              SetStatus:=TRUE
+          END ELSE BEGIN
+            SetStatus:=TRUE;
+          END;
+          IF SetStatus THEN
+            OrderStatusLog.CreateOrderStatus(1,PurchLines."Document No.",PurchLines."Line No.",'10','Ordered');
+
+        UNTIL PurchLines.NEXT=0;
+      //gob-sfe/e/19.07.2012
+    END;
+
+    PROCEDURE CheckOrderStatusAvis@1000000004(PurchHeader@1000000000 : Record 38);
+    VAR
+      PurchLines@1000000002 : Record 39;
+      OrderStatusLog@1000000001 : Record 50069;
+      NotAllStatus30@1000000003 : Boolean;
+      LastStatus@1000000004 : Code[10];
+    BEGIN
+      //a/gob-mab/20.07.12/p0070
+      PurchLines.RESET;
+      PurchLines.SETRANGE("Document Type",PurchHeader."Document Type");
+      PurchLines.SETRANGE("Document No.",PurchHeader."No.");
+      PurchLines.SETRANGE(Type,PurchLines.Type :: Item);
+      IF PurchLines.FIND('-') THEN BEGIN
+        LastStatus := '';
+        REPEAT
+          OrderStatusLog.RESET;
+          OrderStatusLog.SETCURRENTKEY(Timestamp,"Document Type","Document No.","Line No.");
+          OrderStatusLog.SETRANGE("Document Type",1);
+          OrderStatusLog.SETRANGE("Document No.",PurchLines."Document No.");
+          OrderStatusLog.SETRANGE("Line No.",PurchLines."Line No.");
+          IF OrderStatusLog.FINDLAST THEN BEGIN
+            IF (OrderStatusLog.Code<>'60') AND (OrderStatusLog.Code<>'61') THEN BEGIN //P0419/gob-sfe/09.10.12
+              IF LastStatus = '' THEN
+                LastStatus := OrderStatusLog.Code;
+              IF (OrderStatusLog.Code = '30') OR (LastStatus = '30') THEN
+                IF LastStatus <> OrderStatusLog.Code THEN
+                 NotAllStatus30 := TRUE
+               ELSE
+                 NotAllStatus30 := FALSE;
+            END;//P0419/gob-sfe/09.10.12
+          END;
+          IF NotAllStatus30 THEN
+            ERROR(gobtext004);
+
+        UNTIL PurchLines.NEXT=0;
+      END;
+
+      //e/gob-mab/20.07.12/p0070
+    END;
+
+    PROCEDURE CheckAviseDate@1000000008(PurchHeader@1000000000 : Record 38);
+    VAR
+      LastexpDate@1000000001 : Date;
+      PurchLines@1000000002 : Record 39;
+      OrderStatusLog@1000000003 : Record 50069;
+    BEGIN
+      //a/gob-mab/20.07.12/p0070
+      PurchLines.RESET;
+      PurchLines.SETRANGE("Document Type",PurchHeader."Document Type");
+      PurchLines.SETRANGE("Document No.",PurchHeader."No.");
+      PurchLines.SETRANGE(Type,PurchLines.Type :: Item);
+      IF PurchLines.FIND('-') THEN BEGIN
+        OrderStatusLog.RESET;
+        OrderStatusLog.SETCURRENTKEY(Timestamp,"Document Type","Document No.","Line No.");
+        OrderStatusLog.SETRANGE("Document Type",1);
+        OrderStatusLog.SETRANGE("Document No.",PurchLines."Document No.");
+        OrderStatusLog.SETRANGE("Line No.",PurchLines."Line No.");
+        IF OrderStatusLog.FINDLAST THEN
+          IF (OrderStatusLog.Code = '30') THEN BEGIN
+            LastexpDate := PurchLines."Expected Receipt Date";
+            REPEAT
+              IF LastexpDate <> PurchLines."Expected Receipt Date" THEN
+                ERROR(gobtext005);
+            UNTIL PurchLines.NEXT = 0;
+          END;
+      END;
+    END;
+
+    PROCEDURE "**** HME *****"@1000000005();
+    BEGIN
+    END;
+
+    PROCEDURE AutomPmtCalc@1000000009(PurchHeaderV@1000000000 : Record 38);
+    VAR
+      PurchInvHeaderL@1000000001 : Record 122;
+      PurchLineL@1000000002 : Record 39;
+      GLSetupL@1000000010 : Record 98;
+      PmtAmountL@1000000003 : Decimal;
+      TotalLineAmountL@1000000004 : Decimal;
+      QuotientL@1000000005 : Decimal;
+      PmtLineAmountL@1000000006 : Decimal;
+      PmtLineAmountTotalL@1000000012 : Decimal;
+      PmtDiffL@1000000007 : Decimal;
+      PmtLineAmtLastL@1000000009 : Decimal;
+      PmtAmtInvL@1000000011 : Decimal;
+      LineNoHighValL@1000000008 : Integer;
+    BEGIN
+      //H0559 13.09.13 ARU ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      GLSetupL.GET();
+      CLEAR(PmtAmtInvL);
+      CLEAR(TotalLineAmountL);
+      CLEAR(PmtLineAmtLastL);
+      CLEAR(LineNoHighValL);
+
+      //H1779 06.11.2014 MDO ++++++++++++++++++++++++++++
+      IF PurchHeaderV.Import AND PurchHeaderV.Container THEN
+        EXIT;
+      //H1779 06.11.2014 MDO ----------------------------
+
+      PurchInvHeaderL.RESET;
+      PurchInvHeaderL.SETRANGE("Prepayment Order No.", PurchHeaderV."No.");
+      IF PurchInvHeaderL.FINDLAST THEN BEGIN
+        PurchInvHeaderL.CALCFIELDS(Amount);
+        PmtAmountL := PurchInvHeaderL.Amount;
+      END ELSE
+        EXIT;
+
+      IF PmtAmountL > 0 THEN BEGIN
+        PurchLineL.RESET;
+        PurchLineL.SETRANGE("Document Type", PurchHeaderV."Document Type");
+        PurchLineL.SETRANGE("Document No.", PurchHeaderV."No.");
+        PurchLineL.SETRANGE(Type, PurchLineL.Type::Item);
+
+        IF PurchLineL.FIND('-') THEN
+          REPEAT
+            IF PurchLineL."Quantity Received" <> 0 THEN
+              PmtAmountL -= PurchLineL."Prepmt. Line Amount";
+
+            IF PurchLineL."Quantity Received" = 0 THEN BEGIN
+              PmtAmtInvL += PurchLineL."Prepmt. Amt. Inv.";
+              TotalLineAmountL += PurchLineL."Line Amount";
+            END;
+          UNTIL PurchLineL.NEXT=0;
+
+        IF (TotalLineAmountL = 0) OR (PmtAmtInvL <> 0) THEN
+          EXIT;
+
+        QuotientL := PmtAmountL/TotalLineAmountL;
+
+        IF PurchLineL.FIND('-') THEN BEGIN
+          REPEAT
+            IF PurchLineL."Quantity Received" = 0 THEN BEGIN
+              PurchLineL.VALIDATE("Prepmt. Line Amount",
+                                  ROUND(PurchLineL."Line Amount" * QuotientL,
+                                  GLSetupL."Inv. Rounding Precision (LCY)"));
+              PurchLineL.MODIFY;
+
+              PmtLineAmountTotalL += PurchLineL."Prepmt. Line Amount";
+
+              IF PurchLineL."Prepmt. Line Amount" > PmtLineAmtLastL THEN BEGIN
+                LineNoHighValL := PurchLineL."Line No.";
+
+                PmtLineAmtLastL := PurchLineL."Prepmt. Line Amount";
+              END;
+            END;
+          UNTIL PurchLineL.NEXT = 0;
+        END;
+      END;
+
+      IF (PmtAmountL - PmtLineAmountTotalL) <> 0 THEN BEGIN
+        PurchLineL.GET(PurchLineL."Document Type",PurchLineL."Document No.",LineNoHighValL);
+        PurchLineL.VALIDATE("Prepmt. Line Amount",PurchLineL."Prepmt. Line Amount" + (PmtAmountL - PmtLineAmountTotalL));
+        PurchLineL.MODIFY;
+      END;
+      //H0559 13.09.13 ARU ------------------------------------------------------------------------
+    END;
+
+    PROCEDURE SetHideValidationDialog@14(NewHideValidationDialogV@1000 : Boolean);
+    BEGIN
+      //H2120 23.03.15 DMO ++++++++++++++++++++++++++
+      HideValidationDialog := NewHideValidationDialogV;
+      //H2120 23.03.15 DMO --------------------------
+    END;
+
+    PROCEDURE "****H0766****"@1000000011();
+    BEGIN
+    END;
+
+    PROCEDURE SetSkipMailSending@1000000013(SkipP@1000000000 : Boolean);
+    BEGIN
+      SkipMailSending := SkipP;
+    END;
+
+    PROCEDURE SendToInterface@1000000017(PurchaseHeaderV@1000000000 : Record 38);
+    VAR
+      PurchaseLineL@1000000001 : Record 39;
+      LocationL@1000000002 : Record 14;
+      ItemL@1000000004 : Record 27;
+      RHDSetupL@1000000005 : Record 50177;
+      SalesHeaderL@1000000006 : Record 36;
+      ItemFunctionsL@1000000003 : Codeunit 50002;
+      ReleaseSalesDocL@1000000007 : Codeunit 414;
+      SparePartMgtL@1000000009 : Codeunit 50322;
+      PurchLineUpdatedL@1000000008 : Boolean;
+    BEGIN
+      //H1623 24.11.14 DMA ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      //Implement rules:
+      //IF PurchaseHeaderV."Document Type" NOT IN [PurchaseHeaderV."Document Type"::Order,PurchaseHeaderV."Document Type"::"Return Order"]
+
+      PurchaseLineL.RESET;
+      PurchaseLineL.SETRANGE("Document Type",PurchaseHeaderV."Document Type");
+      PurchaseLineL.SETRANGE("Document No.",PurchaseHeaderV."No.");
+      PurchaseLineL.SETRANGE("Drop Shipment",TRUE);
+      IF NOT PurchaseLineL.ISEMPTY THEN
+        EXIT;
+
+      PurchaseLineL.RESET;
+      PurchaseLineL.SETRANGE("Document Type",PurchaseHeaderV."Document Type");
+      PurchaseLineL.SETRANGE("Document No.",PurchaseHeaderV."No.");
+      IF PurchaseLineL.FINDFIRST THEN BEGIN
+        REPEAT
+          //H3780 24.03.15 EHN ++++++++++++++++++++++++++
+          PurchLineUpdatedL := FALSE;
+          //H3780 24.03.15 EHN --------------------------
+          IF LocationL.GET(PurchaseLineL."Location Code") THEN BEGIN
+            IF LocationL."Is LF Whse." THEN
+              //H2146 21.04.15 EHN ++++++++++++++++++++++++++
+              IF PurchaseLineL.LudwigsfeldeWEAAllowed THEN
+              //H2146 21.04.15 EHN --------------------------
+                //H2120 23.03.15 DMO ++++++++++++++++++++++++++
+                PurchaseHeaderV.CreateLudwigsfeldeWEA(PurchaseLineL."Document Type",PurchaseLineL."Document No.",HideValidationDialog);
+                //H2120 23.03.15 DMO --------------------------
+            //H1824,H1623 25.11.14 DMA ++++++++++++++++++++++++++++++++
+            IF LocationL."Rhenus Location" THEN BEGIN
+              RHDSetupL.GET;
+              IF RHDSetupL."Upd. Item On WEA/KAD Creation" THEN BEGIN
+                IF PurchaseLineL.Type = PurchaseLineL.Type::Item THEN BEGIN
+                  IF ItemFunctionsL.UpdateItemForWEAKAD(
+                       DATABASE::"Purchase Line",PurchaseLineL."Document Type",
+                       PurchaseLineL."Document No.",PurchaseLineL."Line No.")
+                  THEN BEGIN
+                    IF ItemL.GET(PurchaseLineL."No.") THEN BEGIN
+                      //H4267, H3847 20.05.15 EHN ++++++++++++++++++++++++++++++++
+                      IF ItemL."Vendor Description" <> '' THEN BEGIN
+                        PurchaseLineL.Description := COPYSTR(ItemL."Vendor Description",1,50);
+                        IF NOT SparePartMgtL.IsSparePartOrderFromPOrder(PurchaseHeaderV) THEN
+                          PurchaseLineL."Description 2" := COPYSTR(ItemL."Vendor Description",51,50);
+                      END ELSE BEGIN
+                        PurchaseLineL.Description := ItemL.Description;
+                        IF NOT SparePartMgtL.IsSparePartOrderFromPOrder(PurchaseHeaderV) THEN
+                          PurchaseLineL."Description 2" := ItemL."Description 2";
+                      END;
+                      //H4267, H3847 20.05.15 EHN --------------------------------
+                      PurchaseLineL."Vendor Item No." := ItemL."Vendor Item No.";
+                      PurchaseLineL."Parcels Number" := ItemL."Parcels Number";
+                      PurchaseLineL."Unit Volume" := ItemL."Unit Volume";
+                      PurchaseLineL."Gross Weight" := ItemL."Gross Weight";
+                      PurchaseLineL."Net Weight" := ItemL."Net Weight";
+                      ItemL.CALCFIELDS("Parcels Number");
+                      IF ItemL."Parcels Number" <> 0 THEN
+                        PurchaseLineL."Units per Parcel" := 1 / ItemL."Parcels Number";
+                      PurchaseLineL."Item Category Code" := ItemL."Item Category Code";
+                      PurchaseLineL.MODIFY;
+                      //H3780 24.03.15 EHN ++++++++++++++++++++++++++
+                      PurchLineUpdatedL := TRUE;
+                      //H3780 24.03.15 EHN --------------------------
+                    END;
+                  END;
+                END;
+              END;
+              //H2120 23.03.15 DMO ++++++++++++++++++++++++++
+              PurchaseHeaderV.CreateRhenusWEA(PurchaseLineL."Document Type",PurchaseLineL."Document No.",HideValidationDialog);
+              //H2120 23.03.15 DMO --------------------------
+              //H3780 24.03.15 EHN ++++++++++++++++++++++++++
+              IF PurchaseHeaderV.Kommissionierung AND
+                 PurchLineUpdatedL AND
+                 PurchaseLineL."Special Order" AND
+                 (PurchaseLineL."Special Order Sales No." <> '') AND
+                 (PurchaseLineL."Special Order Sales Line No." <> 0) THEN BEGIN
+                IF SalesHeaderL.GET(SalesHeaderL."Document Type"::Order,PurchaseLineL."Special Order Sales No.") THEN
+                  ReleaseSalesDocL.InsertExpLog(SalesHeaderL);
+              END;
+              //H3780 24.03.15 EHN --------------------------
+            END;
+            //H1824,H1623 25.11.14 DMA --------------------------------
+            IF LocationL."Docdata Location" THEN
+              IF PurchaseHeaderV.Kommissionierung THEN
+                InitiateOrder2DDInterface(PurchaseHeaderV);
+          END;
+        UNTIL PurchaseLineL.NEXT = 0;
+      END;
+      //H1623 24.11.14 DMA ------------------------------------------------------------------------
+    END;
+
+    PROCEDURE "***GOB************************"@1000000014();
+    BEGIN
+    END;
+
+    PROCEDURE CheckNoEDIProcessPossible@1000000015(VAR PurchaseHeaderR@1000000000 : Record 38) : Boolean;
+    VAR
+      PurchaseLineL@1000000001 : Record 39;
+      ItemL@1000000002 : Record 27;
+      NoEDIL@1000000003 : Boolean;
+    BEGIN
+      // S/H1773
+      PurchaseLineL.SETRANGE("Document Type",PurchaseHeaderR."Document Type");
+      PurchaseLineL.SETRANGE("Document No.",PurchaseHeaderR."No.");
+      PurchaseLineL.SETRANGE(Type,PurchaseLineL.Type::Item);
+      IF PurchaseLineL.FINDSET THEN
+        REPEAT
+          ItemL.SETRANGE("No.",PurchaseLineL."No.");
+          ItemL.SETRANGE("No EDI process possible",TRUE);
+          IF NOT ItemL.ISEMPTY THEN
+            NoEDIL := TRUE;
+        UNTIL (PurchaseLineL.NEXT = 0) OR NoEDIL;
+      IF NoEDIL THEN
+        EXIT(TRUE);
+
+      EXIT(FALSE);
+      // E/H1773
+    END;
+
+    PROCEDURE CreateItemChargeLines@1000000018(VAR PurchHeaderP@1000000000 : Record 38);
+    VAR
+      PurchLineL@1000000001 : Record 39;
+      ItemChargePerItemL@1000000002 : Record 50606;
+      ToPurchLineL@1000000003 : Record 39;
+      LineSpacingL@1000000004 : Integer;
+      NextLineNoL@1000000005 : Integer;
+      VendPurchSetupL@1000000006 : Record 50805;
+    BEGIN
+      //H4164,H1590 15.06.15 TST +++++++++++++++++++++++++++++
+      IF PurchHeaderP."Document Type" <> PurchHeaderP."Document Type"::Order THEN
+        EXIT;
+
+      IF VendPurchSetupL.GET(PurchHeaderP."Buy-from Vendor No.") THEN
+        IF NOT VendPurchSetupL."Use Item Charges from MDB" THEN
+          EXIT;
+
+      PurchLineL.RESET;
+      PurchLineL.SETRANGE("Document Type",PurchHeaderP."Document Type");
+      PurchLineL.SETRANGE("Document No.",PurchHeaderP."No.");
+      PurchLineL.SETRANGE(Type,PurchLineL.Type::Item);
+      PurchLineL.SETFILTER(Quantity,'<>%1',0);
+      IF PurchLineL.ISEMPTY THEN
+        EXIT;
+
+      IF PurchHeaderP."Currency Code" = '' THEN
+        Currency.InitRoundingPrecision
+      ELSE BEGIN
+        PurchHeaderP.TESTFIELD("Currency Factor");
+        Currency.GET(PurchHeaderP."Currency Code");
+        Currency.TESTFIELD("Amount Rounding Precision");
+      END;
+
+      PurchLineL.FINDSET;
+      REPEAT
+        ItemChargePerItemL.RESET;
+        ItemChargePerItemL.SETRANGE("Item No.",PurchLineL."No.");
+        ItemChargePerItemL.SETRANGE("Vendor No.",PurchHeaderP."Buy-from Vendor No.");
+        ItemChargePerItemL.SETRANGE("Currency Code",PurchHeaderP."Currency Code");
+        ItemChargePerItemL.SETFILTER("Minimum Quantity",'<=%1',PurchLineL.Quantity);
+        ItemChargePerItemL.SETRANGE("App Domain",PurchLineL."App Domain");
+        ItemChargePerItemL.SETRANGE("WH Strategy",PurchLineL."WH Strategy");
+        ItemChargePerItemL.SETFILTER("Item Charge Code", '<>%1','');
+        IF NOT ItemChargePerItemL.ISEMPTY THEN BEGIN
+
+          ToPurchLineL.RESET;
+          ToPurchLineL.SETRANGE("Document Type",PurchLineL."Document Type");
+          ToPurchLineL.SETRANGE("Document No.",PurchLineL."Document No.");
+          ToPurchLineL := PurchLineL;
+          IF ToPurchLineL.FIND('>') THEN BEGIN
+            LineSpacingL := (ToPurchLineL."Line No." - PurchLineL."Line No.") DIV (1 + ItemChargePerItemL.COUNT);
+            IF LineSpacingL = 0 THEN
+              ERROR(HMEText003);
+          END ELSE
+            LineSpacingL := 10000;
+
+          NextLineNoL := PurchLineL."Line No.";
+
+          ItemChargePerItemL.FINDSET;
+          REPEAT
+            ToPurchLineL.INIT;
+            NextLineNoL := NextLineNoL + LineSpacingL;
+            ToPurchLineL."Line No." := NextLineNoL;
+            ToPurchLineL.Type := ToPurchLineL.Type::"Charge (Item)";
+            ToPurchLineL.VALIDATE("No.",ItemChargePerItemL."Item Charge Code");
+            ToPurchLineL.VALIDATE(Quantity,1);
+            ToPurchLineL.VALIDATE("Qty. to Receive",1);
+            ToPurchLineL.VALIDATE("Direct Unit Cost",ItemChargePerItemL."Charge Amount");
+            ToPurchLineL."Autom. Item Charge" := TRUE;
+            ToPurchLineL."Created by Line No." := PurchLineL."Line No.";
+            ToPurchLineL.INSERT(TRUE);
+
+            AssignItemCharge(PurchLineL,ToPurchLineL,PurchHeaderP);
+            ToPurchLineL.VALIDATE("Qty. to Receive",0);
+            ToPurchLineL.MODIFY;
+
+          UNTIL ItemChargePerItemL.NEXT = 0;
+        END;
+      UNTIL PurchLineL.NEXT = 0;
+
+      PurchHeaderP.GET(PurchHeaderP."Document Type",PurchHeaderP."No.")
+      //H4164,H1590 15.06.15 TST -----------------------------
+    END;
+
+    PROCEDURE AssignItemCharge@1000000019(ItemLineV@1000000000 : Record 39;ChargeLineV@1000000001 : Record 39;PurchheaderV@1000000003 : Record 38);
+    VAR
+      ItemChargeAssgntPurchL@1000000002 : Record 5805;
+      AssignItemChargePurchL@1000000004 : Codeunit 5805;
+    BEGIN
+      //H1590 24.02.15 TST +++++++++++++++++++++++++++++
+      ItemChargeAssgntPurchL.RESET;
+      ItemChargeAssgntPurchL.SETRANGE("Document Type",ChargeLineV."Document Type");
+      ItemChargeAssgntPurchL.SETRANGE("Document No.",ChargeLineV."Document No.");
+      ItemChargeAssgntPurchL.SETRANGE("Document Line No.",ChargeLineV."Line No.");
+      ItemChargeAssgntPurchL.SETRANGE("Item Charge No.",ChargeLineV."No.");
+      IF NOT ItemChargeAssgntPurchL.FINDLAST THEN BEGIN
+        ItemChargeAssgntPurchL."Document Type" := ChargeLineV."Document Type";
+        ItemChargeAssgntPurchL."Document No." := ChargeLineV."Document No.";
+        ItemChargeAssgntPurchL."Document Line No." := ChargeLineV."Line No.";
+        ItemChargeAssgntPurchL."Item Charge No." := ChargeLineV."No.";
+        IF (ChargeLineV."Inv. Discount Amount" = 0) AND (NOT PurchheaderV."Prices Including VAT") THEN
+          ItemChargeAssgntPurchL."Unit Cost" := ChargeLineV."Unit Cost"
+        ELSE
+          IF PurchheaderV."Prices Including VAT" THEN
+            ItemChargeAssgntPurchL."Unit Cost" :=
+              ROUND(
+                (ChargeLineV."Line Amount" - ChargeLineV."Inv. Discount Amount") / ChargeLineV.Quantity / (1 + ChargeLineV."VAT %" / 100
+      ),
+                Currency."Unit-Amount Rounding Precision")
+          ELSE
+            ItemChargeAssgntPurchL."Unit Cost" :=
+              ROUND(
+                (ChargeLineV."Line Amount" - ChargeLineV."Inv. Discount Amount") / ChargeLineV.Quantity,
+                Currency."Unit-Amount Rounding Precision");
+      END;
+
+
+      AssignItemChargePurchL.CreateDocChargeAssgnt(ItemChargeAssgntPurchL,ChargeLineV."Receipt No.");
+
+      ItemChargeAssgntPurchL.RESET;
+      ItemChargeAssgntPurchL.SETRANGE("Document Type",ChargeLineV."Document Type");
+      ItemChargeAssgntPurchL.SETRANGE("Document No.",ChargeLineV."Document No.");
+      ItemChargeAssgntPurchL.SETRANGE("Document Line No.",ChargeLineV."Line No.");
+      IF ItemChargeAssgntPurchL.FINDFIRST THEN BEGIN
+        ItemChargeAssgntPurchL.VALIDATE("Qty. to Assign",1);
+        ItemChargeAssgntPurchL.MODIFY;
+      END;
+      CLEAR(AssignItemChargePurchL);
+      //H1590 24.02.15 TST -----------------------------
+    END;
+
+    PROCEDURE CreateServiceChargeLines@1000000020(VAR PurchHeaderP@1000000000 : Record 38);
+    VAR
+      PurchLineL@1000000001 : Record 39;
+      ServiceChargePerVendorL@1000000002 : Record 50607;
+      ToPurchLineL@1000000003 : Record 39;
+      NextLineNoL@1000000005 : Integer;
+      EdiPartnerL@1000000004 : Record 82851;
+      EdiPartnerDocTypeL@1000000006 : Record 82852;
+      VendPurchSetupL@1000000007 : Record 50805;
+    BEGIN
+      //H4164,H1590 15.06.15 TST +++++++++++++++++++++++++++++
+      IF PurchHeaderP."Document Type" <> PurchHeaderP."Document Type"::Order THEN
+        EXIT;
+
+      IF VendPurchSetupL.GET(PurchHeaderP."Buy-from Vendor No.") THEN
+        IF NOT VendPurchSetupL."Use Item Charges from MDB" THEN
+          EXIT;
+
+      PurchLineL.RESET;
+      PurchLineL.SETRANGE("Document Type",PurchHeaderP."Document Type");
+      PurchLineL.SETRANGE("Document No.",PurchHeaderP."No.");
+      IF PurchLineL.ISEMPTY THEN
+        EXIT;
+
+      IF PurchHeaderP."Currency Code" = '' THEN
+        Currency.InitRoundingPrecision
+      ELSE BEGIN
+        PurchHeaderP.TESTFIELD("Currency Factor");
+        Currency.GET(PurchHeaderP."Currency Code");
+        Currency.TESTFIELD("Amount Rounding Precision");
+      END;
+
+      PurchLineL.FINDLAST;
+
+      ServiceChargePerVendorL.RESET;
+      ServiceChargePerVendorL.SETRANGE("Vendor No.",PurchHeaderP."Buy-from Vendor No.");
+      ServiceChargePerVendorL.SETRANGE("Currency Code",PurchHeaderP."Currency Code");
+      ServiceChargePerVendorL.SETRANGE("App Domain",PurchLineL."App Domain");
+      ServiceChargePerVendorL.SETRANGE("WH Strategy",PurchLineL."WH Strategy");
+      ServiceChargePerVendorL.SETFILTER("Service Charge Code", '<>%1','');
+      IF NOT ServiceChargePerVendorL.ISEMPTY THEN BEGIN
+
+        ToPurchLineL.RESET;
+        ToPurchLineL.SETRANGE("Document Type",PurchLineL."Document Type");
+        ToPurchLineL.SETRANGE("Document No.",PurchLineL."Document No.");
+        ToPurchLineL := PurchLineL;
+
+        NextLineNoL := PurchLineL."Line No.";
+
+        ServiceChargePerVendorL.FINDSET;
+        REPEAT
+          ToPurchLineL.INIT;
+          NextLineNoL := NextLineNoL + 10000;
+          ToPurchLineL."Line No." := NextLineNoL;
+          ToPurchLineL.Type := ToPurchLineL.Type::"Charge (Item)";
+          ToPurchLineL.VALIDATE("No.",ServiceChargePerVendorL."Service Charge Code");
+          ToPurchLineL.VALIDATE(Quantity,1);
+          ToPurchLineL.VALIDATE("Qty. to Receive",1);
+          ToPurchLineL.VALIDATE("Direct Unit Cost",ServiceChargePerVendorL."Charge Amount");
+          ToPurchLineL."Autom. Item Charge" := TRUE;
+          ToPurchLineL.INSERT(TRUE);
+
+          AssignServiceCharge(ToPurchLineL,PurchHeaderP);
+
+          ToPurchLineL.VALIDATE("Qty. to Receive",0);
+          ToPurchLineL.MODIFY;
+        UNTIL ServiceChargePerVendorL.NEXT = 0;
+        PurchHeaderP.GET(PurchHeaderP."Document Type",PurchHeaderP."No.")
+      END;
+      //H4164,H1590 15.06.15 TST -----------------------------
+    END;
+
+    PROCEDURE AssignServiceCharge@1000000021(ChargeLineV@1000000001 : Record 39;PurchheaderV@1000000003 : Record 38);
+    VAR
+      ItemChargeAssgntPurchL@1000000002 : Record 5805;
+      AssignItemChargePurchL@1000000004 : Codeunit 5805;
+      ServChargePerVendorL@1000000000 : Record 50607;
+    BEGIN
+      //H1590 24.02.15 TST +++++++++++++++++++++++++++++
+      ItemChargeAssgntPurchL.RESET;
+      ItemChargeAssgntPurchL.SETRANGE("Document Type",ChargeLineV."Document Type");
+      ItemChargeAssgntPurchL.SETRANGE("Document No.",ChargeLineV."Document No.");
+      ItemChargeAssgntPurchL.SETRANGE("Document Line No.",ChargeLineV."Line No.");
+      ItemChargeAssgntPurchL.SETRANGE("Item Charge No.",ChargeLineV."No.");
+      IF NOT ItemChargeAssgntPurchL.FINDLAST THEN BEGIN
+        ItemChargeAssgntPurchL."Document Type" := ChargeLineV."Document Type";
+        ItemChargeAssgntPurchL."Document No." := ChargeLineV."Document No.";
+        ItemChargeAssgntPurchL."Document Line No." := ChargeLineV."Line No.";
+        ItemChargeAssgntPurchL."Item Charge No." := ChargeLineV."No.";
+        IF (ChargeLineV."Inv. Discount Amount" = 0) AND (NOT PurchheaderV."Prices Including VAT") THEN
+          ItemChargeAssgntPurchL."Unit Cost" := ChargeLineV."Unit Cost"
+        ELSE
+          IF PurchheaderV."Prices Including VAT" THEN
+            ItemChargeAssgntPurchL."Unit Cost" :=
+              ROUND(
+                (ChargeLineV."Line Amount" - ChargeLineV."Inv. Discount Amount") / ChargeLineV.Quantity / (1 + ChargeLineV."VAT %" / 100
+      ),
+                Currency."Unit-Amount Rounding Precision")
+          ELSE
+            ItemChargeAssgntPurchL."Unit Cost" :=
+              ROUND(
+                (ChargeLineV."Line Amount" - ChargeLineV."Inv. Discount Amount") / ChargeLineV.Quantity,
+                Currency."Unit-Amount Rounding Precision");
+      END;
+
+      ServChargePerVendorL.SETRANGE("Vendor No.",ChargeLineV."Buy-from Vendor No.");
+      ServChargePerVendorL.SETRANGE("Currency Code",ChargeLineV."Currency Code");
+      ServChargePerVendorL.SETRANGE("Service Charge Code",ChargeLineV."No.");
+      ServChargePerVendorL.SETRANGE("App Domain",ChargeLineV."App Domain");
+      ServChargePerVendorL.SETRANGE("WH Strategy",ChargeLineV."WH Strategy");
+      ServChargePerVendorL.FINDLAST;
+
+      AssignItemChargePurchL.CreateDocChargeAssgnt(ItemChargeAssgntPurchL,ChargeLineV."Receipt No.");
+      AssignItemChargePurchL.SuggestAssgnt2(ChargeLineV,ChargeLineV.Quantity,ServChargePerVendorL."Assigment Type");
+      CLEAR(AssignItemChargePurchL);
+      //H1590 24.02.15 TST -----------------------------
+    END;
+
+    BEGIN
+    {
+
+      25.08.11  chrmu - on release - put the document in the Document Log for the interface processing
+      27.03.12  chrmu - on release - update Release Counter field
+
+      +--------------------------------------------------+
+      |                   ∏  Copyright                   |
+      |       GOB Software & Systeme GmbH & Co. KG       |
+      +--------------------------------------------------+
+      |                     FP Commerce                  |
+      +--------------------------------------------------+
+
+      Version   Date      Consultant  Comment
+      ____________________________________________________________________________________________________________________________________
+      GOB1.00   04.06.12  gob-rste    prepared Create XML for DHL Cross Docking
+      gob1.01   04.07.12  gob-mab     PrÅfung ob E-Mail schon versendet, Abfrag ob erneut
+      gob1.02   17.07.12  gob-sfe     Call DD Interface
+      gob1.02   19.07.12  gob-sfe     P0066  SetOrderStatus
+      gob1.03   20.07.12  gob-mab     p0070  PrÅfung Avise
+      gob1.04   30.07.12  gob-sfe     P0110  DocData öbergabe
+      gob1.05   02.08.12  gob-sfe     P0129  docData öbergabe Bugfix
+      gob1.06   09.08.12  gob-sfe     P0162  Message auskommentiert
+      gob1.07   14.08.12  gob-dst     P0186  Message geÑndert
+
+      090712 chrmu change doc log table
+      p0282  gob-mab   FOB          OnRun: Erstellen Umlagerungsauftrag
+      p0282  gob-mab   FOB1.01      OnRun: Create trasfer orders
+      P0404  gob-sfe   04.10.12     Exit korrigiert
+      P0419  gob-sfe   09.10.12     CheckStatus <> Cancel
+      P0520  gob-sfe   25.10.12     Bugfix DD Avise Status Shipment
+      EDIINT gob-dst   07.11.12     PrÅfung fÅr EDI Versand
+      P0610  gob-sfe   27.11.12     locktable(true)
+      P0666  gob-mab   11.12.12     Container check / Korrektur
+      P0704  gob-dst   19.12.12     Confirm fÅr Mailversand mit GUIALLOWED abfangen
+      P0851  gob-mab   12.03.13     Korrektur DD
+      P0991  gob-ael   25.06.13     Setzen des "Planned Receipt Date" bei Freigabe in Einkaufszeile
+      P1001  gob-ael   03.07.13     Keine automatischen WEA-Updates mehr an DD oder RHE
+      P1086  gob-lku   27.08.13     Redesign PO Splitting -> Don't use function CheckAviseDate
+      P1176  gob-rste  13.01.14     Func. CheckOrderStatusAvis removed Mail Hr. Berganski
+      H1692  gob-dah   23.10.14     Bugfix Purchase invoice error
+      H1773  gob-ael   19.11.14     Send purchase order via e-mail if an item in purchase order is marked as "No EDI process possible"
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+      H0111       06.12.12  PAD      Comment incorrectly calling function
+      H0559       13.09.13  ARU      Autom. Pmt. calculation after Qty variation > new function 'AutomPmtCalc'
+      H0678       21.11.13   FX      Error messages translated into ENU
+      H0766       10.12.13  DMA      Enable skipping of mail send methods
+      H0762       16.12.13  ARU      Changes in process to autom. create Transfer Orders
+      H1392       25.09.14  DMA      Remove restrictions from container PO item line,CODECHANGE
+      H1779       07.11.14  MDO      Disabled Automaticly Prepaiment Calculation of Container POs
+      H1623       24.11.14  DMA      WEA - Automatic exports (P1001),CODECHANGE,CLEANUP
+      H1824       25.11.14  DMA      Update item master data in purchase order on WEA creation,CODECHANGE
+      H2074       04.02.15  DMO      OnRun trigger is redesigned
+      H3890       12.03.15  DMO      OnRun trigger is corrected
+      H2120       23.03.15  DMO      SetHideValidationDialog is added; SendToInterface is modified
+      H3780       24.03.15  EHN      BUG: KAD is not updating Automatically, once the WEA is updated
+      H2146       18.02.15  EHN      Dynamic location for all home24 operated warehouses in WEA
+      H1590       24.02.15  TST      New functions CreateItemChargeLines, AssignItemCharge
+      H4161       04.05.15  TST      New Functions CheckPurchPrice
+      H4267       20.05.15  EHN      Bugfix - H3847 - Description 2 is overwritten in Purchase Line
+      H4316       03.06.15  TST      Check Purch. Price Log Approval Status
+      H4164       15.06.15  TST      Update Header, changed Parameter in functions of H1590
+      H4387       29.06.15  TST      HMEText004 changed
+    }
+    END.
+  }
+}
+

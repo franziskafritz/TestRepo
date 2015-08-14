@@ -1,0 +1,856 @@
+OBJECT Codeunit 50221 Service Contract
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02.09.13;
+    Time=14:59:54;
+    Version List=HME0513;
+  }
+  PROPERTIES
+  {
+    Subtype=Test;
+    OnRun=BEGIN
+            isInitialized := FALSE;
+            RANDOMIZE(1);  // Seed RANDOM function.
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      ServiceContractHeader2@1012 : Record 5965;
+      LibraryService@1010 : Codeunit 50209;
+      LibraryUtility@1007 : Codeunit 50206;
+      isInitialized@1001 : Boolean;
+      UnknownError@1008 : TextConst 'ENU=Unknown error.';
+      NoServiceLine@1006 : TextConst 'ENU=There is no Service Contract Line within the filter.Filters: Contract No.: %1';
+      NoServiceLineServiceTier@1005 : TextConst 'ENU=There is no Service Contract Line within the filter.  Filters: Contract No.: %1';
+      CustomerNotBlankError@1003 : TextConst 'ENU=Customer No. must not be blank in Service Contract Header %1';
+      ServiceCtrctTemplateExistError@1002 : TextConst 'ENU="The %1 must not exist. Identification field and value: %2=''%3''."';
+      ServiceCtrctHeaderExistError@1000 : TextConst 'ENU="The %1 must not exist. Identification field and value: %2=''%3'', %4=''%5''."';
+
+    [Normal]
+    LOCAL PROCEDURE Initialize@47();
+    BEGIN
+      IF isInitialized THEN
+        EXIT;
+
+      // Setup demonstration data
+      LibraryService.Initialize;
+      LibraryService.SetupServiceMgtNoSeries;
+      isInitialized := TRUE;
+      COMMIT;
+    END;
+
+    [Test]
+    [HandlerFunctions(SignContractConfirmHandler,ServContrctTemplateListHandler)]
+    PROCEDURE ChangeCustomerServiceContract@70();
+    VAR
+      ServiceContractHeader@1002 : Record 5965;
+      ServiceContractLine@1001 : Record 5964;
+      CustomerNo@1000 : Code[20];
+    BEGIN
+      // The Test Case checks to Change customer No. on Service Contract.
+
+      // 1. Setup: create Service Contract Header and Service Contract Line.
+      Initialize;
+      CreateServiceContract(ServiceContractHeader,ServiceContractLine,ServiceContractHeader."Contract Type"::Contract);
+      ModifyServiceContractHeader(ServiceContractHeader);
+
+      // 2. Exercise: Change Customer No. in Service Contract.
+      CustomerNo := ChangeCustomerNo(ServiceContractHeader);
+
+      // 3. Verify: Check that Customer No. is changed in Service Contract.
+      CheckChangeCustomerNo(ServiceContractHeader,CustomerNo);
+    END;
+
+    [Test]
+    [HandlerFunctions(SignContractConfirmHandler,MsgHandler,ServContrctTemplateListHandler)]
+    PROCEDURE NewLineOnServiceContract@69();
+    VAR
+      ServiceContractHeader@1003 : Record 5965;
+      ServiceContractLine@1002 : Record 5964;
+      LockOpenServContract@1001 : Codeunit 5943;
+      SignServContractDoc@1000 : Codeunit 5944;
+    BEGIN
+      // The Test Case checks to New Line field is Set to true after Creating New Line in Service Contract Line.
+
+      // 1. Setup: Create and Sign Service Contract.
+      Initialize;
+      CreateServiceContract(ServiceContractHeader,ServiceContractLine,ServiceContractHeader."Contract Type"::Contract);
+      ModifyServiceContractHeader(ServiceContractHeader);
+      SignServContractDoc.SignContract(ServiceContractHeader);
+
+      // 2. Exercise: Open and create New Service Contract Line in Service Contract.
+      LockOpenServContract.OpenServContract(ServiceContractHeader);
+      CreateServiceContractLine(ServiceContractLine,ServiceContractHeader);
+
+      // 3. Verify: Check that "New Line" field is set to true after creating new line in Service Contract Line.
+      ServiceContractLine.TESTFIELD("New Line",TRUE);
+    END;
+
+    [Test]
+    [HandlerFunctions(SignContractConfirmHandler,MsgHandler,ServContrctTemplateListHandler)]
+    PROCEDURE DeleteContractLineIfLocked@68();
+    VAR
+      ServiceContractHeader@1003 : Record 5965;
+      ServiceContractLine@1002 : Record 5964;
+      SignServContractDoc@1000 : Codeunit 5944;
+    BEGIN
+      // The Test Case checks Error on Deletion of Line while change status is locked on Service Contract Header.
+
+      // 1. Setup: Create Service Contract Header and Service Contract Line.
+      Initialize;
+      CreateServiceContract(ServiceContractHeader,ServiceContractLine,ServiceContractHeader."Contract Type"::Contract);
+      ModifyServiceContractHeader(ServiceContractHeader);
+
+      // 2. Exercise: Sign Service Contract.
+      SignServContractDoc.SignContract(ServiceContractHeader);
+
+      // 3. Verify: Check Service Contract Line deletion error On Locked change status.
+      ServiceContractLine.SETRANGE("Contract No.",ServiceContractHeader."Contract No.");
+      ASSERTERROR ServiceContractLine.DELETEALL(TRUE)
+    END;
+
+    [Test]
+    [HandlerFunctions(SignContractConfirmHandler,MsgHandler,ServContrctTemplateListHandler)]
+    PROCEDURE QtyOnSeviceContractInvoice@67();
+    VAR
+      ServiceContractHeader@1002 : Record 5965;
+      ServiceContractLine@1001 : Record 5964;
+      SignServContractDoc@1000 : Codeunit 5944;
+    BEGIN
+      // The Test Case checks Quantity on Service Invoice is same after Creation of Service Contract Invoice.
+
+      // 1. Setup: Create Service Contract Header and Service Contract Line.
+      Initialize;
+      CreateServiceContract(ServiceContractHeader,ServiceContractLine,ServiceContractHeader."Contract Type"::Contract);
+      ModifyServiceContractHeader(ServiceContractHeader);
+
+      // 2. Exercise: Sign Service Contract.
+      SignServContractDoc.SignContract(ServiceContractHeader);
+
+      // 3. Verify: Check that Quantity on Service Invoice is same after Creation of Service Contract Invoice.
+      CheckInvoiceQuantity(ServiceContractHeader."Contract No.")
+    END;
+
+    [Test]
+    [HandlerFunctions(SignContractConfirmHandler,MsgHandler,ServContrctTemplateListHandler)]
+    PROCEDURE CreditMemofromServiceContract@66();
+    VAR
+      ServiceHeader@1004 : Record 5900;
+      ServiceContractHeader@1003 : Record 5965;
+      ServiceContractLine@1002 : Record 5964;
+      SignServContractDoc@1001 : Codeunit 5944;
+      CurrentWorkDate@1000 : Date;
+    BEGIN
+      // The Test Case checks Customer No. on Service Credit Memo Header is the same after creating Service Credit Memo from Service
+      // Contract's Customer No. field.
+
+      // 1. Setup: Create and Sign Service Contract and Set Workdate.
+      Initialize;
+      CreateServiceContract(ServiceContractHeader,ServiceContractLine,ServiceContractHeader."Contract Type"::Contract);
+      ModifyServiceContractHeader(ServiceContractHeader);
+      SignServContractDoc.SignContract(ServiceContractHeader);
+      CurrentWorkDate := WORKDATE;
+      SetWorkDate;
+
+      // 2. Exercise: Post Service Invoice and Create Service Credit Memo from Service Contract.
+      COMMIT;
+      ServiceHeader.SETRANGE("Contract No.",ServiceContractHeader."Contract No.");
+      REPORT.RUNMODAL(REPORT::"Batch Post Service Invoices",FALSE,TRUE,ServiceHeader);
+      ModifyServiceContractStatus(ServiceContractHeader);
+      CreateServiceCreditMemo(ServiceContractHeader."Contract No.");
+
+      // 3. Verify: Check that the Customer No. on Service Credit Memo Header is the same after creating Service Credit Memo from Service
+      // Contract's Customer No. field.
+      CheckServiceCreditMemo(ServiceContractHeader);
+
+      // 4. Cleanup: Cleanup the WorkDate.
+      WORKDATE := CurrentWorkDate;
+    END;
+
+    [Test]
+    [HandlerFunctions(SignContractConfirmHandler,MsgHandler,ServContrctTemplateListHandler)]
+    PROCEDURE CustomerOnContractInvoice@65();
+    VAR
+      ServiceContractHeader@1003 : Record 5965;
+      ServiceContractLine@1002 : Record 5964;
+      SignServContractDoc@1001 : Codeunit 5944;
+      CurrentWorkDate@1000 : Date;
+    BEGIN
+      // The Test Case checks Customer No. on Service Contract Invoice.
+
+      // 1. Setup: Create and Sign Service Contract.
+      Initialize;
+      CreateServiceContract(ServiceContractHeader,ServiceContractLine,ServiceContractHeader."Contract Type"::Contract);
+      ModifyServiceContractHeader(ServiceContractHeader);
+      SignServContractDoc.SignContract(ServiceContractHeader);
+
+      // 2. Exercise: Create Service Contract Invoice.
+      CurrentWorkDate := WORKDATE;
+      WORKDATE := ServiceContractHeader."Last Invoice Date";
+      CreateServiceContractInvoice(ServiceContractHeader);
+
+      // 3. Verify: Check Customer No. on Service Contract Invoice.
+      CheckCustomerNoOnInvoice(ServiceContractHeader);
+
+      // 4. Cleanup: Cleanup the WorkDate.
+      WORKDATE := CurrentWorkDate;
+    END;
+
+    [Test]
+    [HandlerFunctions(SignContractConfirmHandler,MsgHandler,ServContrctTemplateListHandler)]
+    PROCEDURE PrepaidTransactionOnContract@62();
+    VAR
+      ServiceContractHeader@1003 : Record 5965;
+      ServiceContractLine@1002 : Record 5964;
+      ServiceLedgerEntry@1001 : Record 5907;
+      SignServContractDoc@1000 : Codeunit 5944;
+    BEGIN
+      // The Test Case checks "Moved from Prepaid Acc." set to TRUE in Service Ledger Entry.
+
+      // 1. Setup: Create Service Contract Header and Service Contract Line.
+      Initialize;
+      CreateServiceContract(ServiceContractHeader,ServiceContractLine,ServiceContractHeader."Contract Type"::Contract);
+      ModifyServiceContractHeader(ServiceContractHeader);
+
+      // 2. Exercise: Sign Service Contract.
+      SignServContractDoc.SignContract(ServiceContractHeader);
+
+      // 3. Verify: Check "Moved from Prepaid Acc." set to TRUE in Service Ledger Entry.
+      ServiceLedgerEntry.SETRANGE("Service Contract No.",ServiceContractHeader."Contract No.");
+      ServiceLedgerEntry.FINDFIRST;
+      ServiceLedgerEntry.TESTFIELD("Moved from Prepaid Acc.",TRUE);
+    END;
+
+    [Test]
+    [HandlerFunctions(SignContractConfirmHandler,MsgHandler,ServContrctTemplateListHandler)]
+    PROCEDURE RemoveContractLineOnContract@61();
+    VAR
+      ServiceHeader@1004 : Record 5900;
+      ServiceContractHeader@1003 : Record 5965;
+      ServiceContractLine@1002 : Record 5964;
+      SignServContractDoc@1001 : Codeunit 5944;
+      Assert@1000 : Codeunit 50200;
+    BEGIN
+      // The Test Case checks Removed Contract Line does not exist after deletion.
+
+      // 1. Setup: Create and Sign Service Contract.
+      Initialize;
+      CreateServiceContract(ServiceContractHeader,ServiceContractLine,ServiceContractHeader."Contract Type"::Contract);
+      ModifyServiceContractHeader(ServiceContractHeader);
+      SignServContractDoc.SignContract(ServiceContractHeader);
+      COMMIT;
+
+      // 2. Exercise: Post and remove the Contract Line from Service Contract.
+      ServiceHeader.SETRANGE("Contract No.",ServiceContractHeader."Contract No.");
+      REPORT.RUNMODAL(REPORT::"Batch Post Service Invoices",FALSE,TRUE,ServiceHeader);
+      ModifyServiceContractStatus(ServiceContractHeader);
+      RemoveContractLine(ServiceContractHeader."Contract No.");
+
+      // 3. Verify: Check that Removed Contract Line does not exist after deletion.
+      IF ISSERVICETIER THEN
+        Assert.IsFalse(
+          ServiceContractLine.GET(ServiceContractLine."Contract Type",ServiceContractLine."Contract No.",ServiceContractLine."Line No.")
+      ,
+          STRSUBSTNO(NoServiceLineServiceTier,ServiceContractLine."Contract No."))
+      ELSE
+        Assert.IsFalse(
+          ServiceContractLine.GET(ServiceContractLine."Contract Type",ServiceContractLine."Contract No.",ServiceContractLine."Line No.")
+      ,
+          STRSUBSTNO(NoServiceLine,ServiceContractLine."Contract No."));
+    END;
+
+    [Test]
+    PROCEDURE CreateServiceAccountGroup@60();
+    VAR
+      ServiceContractAccountGroup@1000 : Record 5973;
+    BEGIN
+      // The Test Case checks Service Account Group is created from ServiceAccGroup function.
+
+      // 1. Setup.
+      Initialize;
+
+      // 2. Exercise: Create Service Account Group.
+      LibraryService.CreateServiceContractAcctGrp(ServiceContractAccountGroup);
+      ModifyServiceAccountGroup(ServiceContractAccountGroup);
+
+      // 3. Verify: Check that Service Account Group is created from ServiceAccGroup function.
+      ServiceContractAccountGroup.GET(ServiceContractAccountGroup.Code);
+    END;
+
+    [Test]
+    PROCEDURE DeleteServiceContractTemplate@59();
+    VAR
+      ServiceContractTemplate@1001 : Record 5968;
+      Assert@1000 : Codeunit 50200;
+    BEGIN
+      // The Test Case checks Service Contract Template does not Exist after deletion.
+
+      // 1. Setup: Create Service Contract Template.
+      Initialize;
+      CreateServiceContractTemplate(ServiceContractTemplate);
+
+      // 2. Exercise: Delete newly created Service Contract Template.
+      ServiceContractTemplate.DELETE(TRUE);
+
+      // 3. Verify: Check that Service Contract Template does not Exist after deletion.
+      Assert.IsFalse(
+        ServiceContractTemplate.GET(ServiceContractTemplate."No."),
+        STRSUBSTNO(ServiceCtrctTemplateExistError,ServiceContractTemplate.TABLECAPTION,ServiceContractTemplate.FIELDCAPTION("No."),
+          ServiceContractTemplate."No."));
+    END;
+
+    [Test]
+    [HandlerFunctions(SignContractConfirmHandler,ServContrctTemplateListHandler)]
+    PROCEDURE ServiceContractTemplateFields@58();
+    VAR
+      ServiceContractTemplate@1002 : Record 5968;
+      ServiceContractHeader@1001 : Record 5965;
+      ServiceContractLine@1000 : Record 5964;
+    BEGIN
+      // The Test Case checks After creating Service Contract Template all fields TRUE automatic in Service Contract.
+
+      // 1. Setup: Create New Service Contract Template.
+      Initialize;
+      CreateServiceContractTemplate(ServiceContractTemplate);
+
+      // 2. Exercise: Create and Modify Service Contract Header and Service Contract Line.
+      CreateServiceContract(ServiceContractHeader,ServiceContractLine,ServiceContractHeader."Contract Type"::Contract);
+      ModifyServiceContractHeader(ServiceContractHeader);
+
+      // 3. Verify: Check that Service Contract Template set fields TRUE in Service Contract.
+      ServiceContractHeader.TESTFIELD(Prepaid,TRUE);
+      ServiceContractHeader.TESTFIELD("Combine Invoices",TRUE);
+      ServiceContractHeader.TESTFIELD("Contract Lines on Invoice",TRUE);
+    END;
+
+    [Test]
+    [HandlerFunctions(SignContractConfirmHandler,ServContrctTemplateListHandler)]
+    PROCEDURE ServiceContractQuotetLineValue@57();
+    VAR
+      ServiceContractHeader@1001 : Record 5965;
+      ServiceContractLine@1000 : Record 5964;
+    BEGIN
+      // The Test Case checks Service Contract Quote Line is same as Service Contract Quote Header.
+
+      // 1. Setup.
+      Initialize;
+
+      // 2. Exercise: Create Service Contract Quote Header and Service Contract Quote Line.
+      CreateServiceContract(ServiceContractHeader,ServiceContractLine,ServiceContractHeader."Contract Type"::Quote);
+      ModifyServiceContractHeader(ServiceContractHeader);
+
+      // 3. Verify: Check that Service Contract Quote Line is same as Service Contract Quote Header.
+      CheckSrvcCntractQuoteLinValues(ServiceContractHeader);
+    END;
+
+    [Test]
+    [HandlerFunctions(SignContractConfirmHandler,ServContrctTemplateListHandler,MsgHandler)]
+    PROCEDURE SignedServiceContractQuote@56();
+    VAR
+      ServiceContractHeader@1003 : Record 5965;
+      ServiceContractLine@1002 : Record 5964;
+      SignServContractDoc@1001 : Codeunit 5944;
+      Assert@1000 : Codeunit 50200;
+    BEGIN
+      // The Test Case checks Service Contract Quote does not exist after Signing Service Contract Quote.
+
+      // 1. Setup: Create Service Contract Quote Header and Service Contract Quote Line.
+      Initialize;
+      CreateServiceContract(ServiceContractHeader,ServiceContractLine,ServiceContractHeader."Contract Type"::Quote);
+      ModifyServiceContractHeader(ServiceContractHeader);
+
+      // 2. Exercise: Sign Service Contract Quote.
+      SignServContractDoc.SignContractQuote(ServiceContractHeader);
+
+      // 3. Verify: Check that the Service Contract Quote does not exist after Signing Service Contract Quote.
+      Assert.IsFalse(
+        ServiceContractHeader.GET(ServiceContractHeader."Contract Type",ServiceContractHeader."Contract No."),
+        STRSUBSTNO(ServiceCtrctHeaderExistError,ServiceContractHeader.TABLECAPTION,ServiceContractHeader.FIELDCAPTION("Contract Type"),
+          ServiceContractHeader."Contract Type",ServiceContractHeader.FIELDCAPTION("Contract No."),ServiceContractHeader."Contract No.")
+      );
+    END;
+
+    [Test]
+    [HandlerFunctions(SignContractConfirmHandler,ServContrctTemplateListHandler,MsgHandler)]
+    PROCEDURE ServiceContractAfterQuote@55();
+    VAR
+      ServiceContractHeader@1003 : Record 5965;
+      ServiceContractLine@1002 : Record 5964;
+      SignServContractDoc@1001 : Codeunit 5944;
+      ServiceItemNo@1000 : Code[20];
+    BEGIN
+      // The Test Case checks Service Item No is same after making Service Contract from Service Contract Quote.
+
+      // 1. Setup: Create Service Contract Quote Header and Service Contract Quote Line.
+      Initialize;
+      CreateServiceContract(ServiceContractHeader,ServiceContractLine,ServiceContractHeader."Contract Type"::Quote);
+      ModifyServiceContractHeader(ServiceContractHeader);
+      ServiceItemNo := ServiceContractLine."Service Item No.";
+
+      // 2. Exercise: Sign Service Contract Quote.
+      SignServContractDoc.SignContractQuote(ServiceContractHeader);
+
+      // 3. Verify: Check Service Item No is same after making Service Contract from Service Contract Quote.
+      ServiceContractLine.TESTFIELD("Service Item No.",ServiceItemNo);
+    END;
+
+    [Test]
+    [HandlerFunctions(SignContractConfirmHandler,ServContrctTemplateListHandler)]
+    PROCEDURE CopyDocumentOnServiceContract@51();
+    VAR
+      Customer@1005 : Record 18;
+      ServiceContractHeaderFrom@1004 : Record 5965;
+      ServiceContractHeaderTo@1003 : Record 5965;
+      ServiceContractLine@1002 : Record 5964;
+      ServiceContractLineTo@1001 : Record 5964;
+      CopyDocumentMgt@1000 : Codeunit 6620;
+    BEGIN
+      // The Test Case checks Service Contract Line fields are same after Copy Document.
+
+      // 1. Setup: Create Service Contract Header and Service Contract Line.
+      Initialize;
+      Customer.FINDFIRST;
+      LibraryService.CreateServiceContractHeader(
+        ServiceContractHeaderFrom,ServiceContractHeaderFrom."Contract Type"::Contract,Customer."No.");
+      CreateServiceContractLine(ServiceContractLine,ServiceContractHeaderFrom);
+      ModifyServiceContractHeader(ServiceContractHeaderFrom);
+
+      // 2. Exercise: Create Service Contract and Copy Document.
+      LibraryService.CreateServiceContractHeader(
+        ServiceContractHeaderTo,ServiceContractHeaderTo."Contract Type"::Contract,Customer."No.");
+      ModifyServiceContractHeader(ServiceContractHeaderTo);
+      CopyDocumentMgt.CopyServContractLines(ServiceContractHeaderTo,ServiceContractHeaderFrom."Contract Type",
+        ServiceContractHeaderFrom."Contract No.",ServiceContractLineTo);
+
+      // 3. Verify: Check that Service Contract Line fields are same after Copy Document.
+      ServiceContractLineTo.TESTFIELD("Service Item No.",ServiceContractLine."Service Item No.");
+      ServiceContractLineTo.TESTFIELD("Line Value",ServiceContractLine."Line Value");
+    END;
+
+    [Test]
+    [HandlerFunctions(SignContractConfirmHandler,ServContrctTemplateListHandler)]
+    PROCEDURE ServiceQuoteDetailReport@50();
+    VAR
+      ServiceContractHeader@1005 : Record 5965;
+      ServiceContractLine@1004 : Record 5964;
+      ServiceCommentLine@1003 : Record 5906;
+      ServiceContractQuoteDetail@1002 : Report 5973;
+      FilePath@1001 : Text[1024];
+      Type@1000 : Option;
+    BEGIN
+      // The Test Case Save Service Contract Quote Details report in XML and XLS format after adding comments Date in Service Contract
+      // header and check that some data exist in saved files.
+
+      // 1. Setup: Create Service Contract Quote Header and Service Contract Quote Line.
+      Initialize;
+      CreateServiceContract(ServiceContractHeader,ServiceContractLine,ServiceContractHeader."Contract Type"::Quote);
+      ModifyServiceContractHeader(ServiceContractHeader);
+      LibraryService.CreateCommentLineForServCntrct(ServiceCommentLine,ServiceContractLine,Type);
+      ServiceCommentLine.VALIDATE(Date,ServiceContractHeader."Starting Date");
+      ServiceCommentLine.MODIFY(TRUE);
+
+      // 2. Exercise: Save Report as XML in local Temp folder.
+      ServiceContractHeader.SETRANGE("Contract Type",ServiceContractHeader."Contract Type"::Contract);
+      ServiceContractHeader.SETRANGE("Contract No.",ServiceContractHeader."Contract No.");
+      ServiceContractQuoteDetail.SETTABLEVIEW(ServiceContractHeader);
+      IF ISSERVICETIER THEN BEGIN
+        FilePath := TEMPORARYPATH + FORMAT(ServiceContractHeader."Contract Type") + ServiceContractHeader."Contract No." + '.xls';
+        ServiceContractQuoteDetail.SAVEASEXCEL(FilePath);
+      END ELSE BEGIN
+        FilePath := TEMPORARYPATH + FORMAT(ServiceContractHeader."Contract Type") + ServiceContractHeader."Contract No." + '.xml';
+        ServiceContractQuoteDetail.SAVEASXML(FilePath);
+      END;
+
+      // 3. Verify: Verify that Saved file have some data.
+      LibraryUtility.CheckFileNotEmpty(FilePath);
+    END;
+
+    [Test]
+    [HandlerFunctions(SignContractConfirmHandler,ServContrctTemplateListHandler)]
+    PROCEDURE ServiceContractDetailReport@49();
+    VAR
+      ServiceContractHeader@1004 : Record 5965;
+      ServiceContractLine@1003 : Record 5964;
+      ServiceCommentLine@1002 : Record 5906;
+      ServiceContractDetailRep@1001 : Report 5971;
+      FilePath@1000 : Text[1024];
+    BEGIN
+      // The Test Case Save Service Contract Details report in XML and XLS format after adding comments and Date in Service Contract
+      // header and check that some data exist in saved files.
+
+      // 1. Setup: Create Service Contract Header and Service Contract Line.
+      Initialize;
+      CreateServiceContract(ServiceContractHeader,ServiceContractLine,ServiceContractHeader."Contract Type"::Contract);
+      ModifyServiceContractHeader(ServiceContractHeader);
+      LibraryService.CreateCommentLineForServCntrct(ServiceCommentLine,ServiceContractLine,ServiceContractHeader."Contract Type");
+      ServiceCommentLine.VALIDATE(Comment,FORMAT(ServiceContractHeader.Description + ServiceContractHeader."Contract No."));
+      ServiceCommentLine.VALIDATE(Date,ServiceContractHeader."Starting Date");
+      ServiceCommentLine.MODIFY(TRUE);
+
+      // 2. Exercise: Save Report as XML and XLS in local Temp folder.
+      ServiceContractHeader.SETRANGE("Contract Type",ServiceContractHeader."Contract Type"::Contract);
+      ServiceContractHeader.SETRANGE("Contract No.",ServiceContractHeader."Contract No.");
+      ServiceContractDetailRep.SETTABLEVIEW(ServiceContractHeader);
+      IF ISSERVICETIER THEN BEGIN
+        FilePath := TEMPORARYPATH + FORMAT(ServiceContractHeader."Contract Type") + ServiceContractHeader."Contract No." + '.xls';
+        ServiceContractDetailRep.SAVEASEXCEL(FilePath);
+      END ELSE BEGIN
+        FilePath := TEMPORARYPATH + FORMAT(ServiceContractHeader."Contract Type") + ServiceContractHeader."Contract No." + '.xml';
+        ServiceContractDetailRep.SAVEASXML(FilePath);
+      END;
+
+      // 3. Verify: Verify that Saved file have some data.
+      LibraryUtility.CheckFileNotEmpty(FilePath);
+    END;
+
+    [Test]
+    [HandlerFunctions(SignContractConfirmHandler,ServContrctTemplateListHandler)]
+    PROCEDURE TotalGroupByCustomerReport@48();
+    VAR
+      ServiceContractHeader@1003 : Record 5965;
+      ServiceContractLine@1002 : Record 5964;
+      ServiceContractCustomerRep@1001 : Report 5977;
+      FilePath@1000 : Text[1024];
+    BEGIN
+      // The Test Case Save Service Contract Customer report in XML and XLS format and check that some data exist in saved files.
+
+      // 1. Setup. Create Service Contract Header and Service Contract Line.
+      Initialize;
+      CreateServiceContract(ServiceContractHeader,ServiceContractLine,ServiceContractHeader."Contract Type"::Contract);
+      ModifyServiceContractHeader(ServiceContractHeader);
+
+      // 2. Exercise: Save Service Contract Customer Report as XML and XLS in local Temp folder.
+      ServiceContractHeader.SETRANGE("Contract Type",ServiceContractHeader."Contract Type"::Contract);
+      ServiceContractHeader.SETRANGE("Contract No.",ServiceContractHeader."Contract No.");
+      ServiceContractCustomerRep.SETTABLEVIEW(ServiceContractHeader);
+      IF ISSERVICETIER THEN BEGIN
+        FilePath := TEMPORARYPATH + FORMAT(ServiceContractHeader."Contract Type") + ServiceContractHeader."Contract No." + '.xls';
+        ServiceContractCustomerRep.SAVEASEXCEL(FilePath);
+      END ELSE BEGIN
+        FilePath := TEMPORARYPATH + FORMAT(ServiceContractHeader."Contract Type") + ServiceContractHeader."Contract No." + '.xml';
+        ServiceContractCustomerRep.SAVEASXML(FilePath);
+      END;
+
+      // 3. Verify: Verify that Saved file have some data.
+      LibraryUtility.CheckFileNotEmpty(FilePath);
+    END;
+
+    [Test]
+    [HandlerFunctions(SignContractConfirmHandler,ServContrctTemplateListHandler)]
+    PROCEDURE ServiceItemInformationOnLine@1();
+    VAR
+      ServiceContractHeader@1000 : Record 5965;
+      ServiceContractLine@1001 : Record 5964;
+    BEGIN
+      // Test the Service Item on Service Contract Line.
+
+      // 1. Setup:
+      Initialize;
+
+      // 2. Exercise: Creating Service Contract.
+      CreateServiceContract(ServiceContractHeader,ServiceContractLine,ServiceContractHeader."Contract Type"::Contract);
+
+      // 3. Verify: Service Item Details in Service Item Line must be same.
+      VerifyServiceContractLine(ServiceContractLine);
+    END;
+
+    [Test]
+    [HandlerFunctions(SignContractConfirmHandler,ServContrctTemplateListHandler)]
+    PROCEDURE SumOfLineAmountOnHeader@3();
+    VAR
+      Customer@1003 : Record 18;
+      ServiceContractHeader@1001 : Record 5965;
+      LineAmount@1002 : Decimal;
+    BEGIN
+      // The Test the Service Contract Header details.
+
+      // 1. Setup: Find a Customer, create Service Contract Header.
+      Initialize;
+      LibraryService.FindCustomer(Customer);
+      LibraryService.CreateServiceContractHeader(ServiceContractHeader,ServiceContractHeader."Contract Type"::Contract,Customer."No.");
+
+      // 2. Exercise: Creating multiple Service Contract Lines, adding the Line Amount.
+      CreateMultipleContractLines(ServiceContractHeader);
+      ModifyServiceContractHeader(ServiceContractHeader);
+      LineAmount := SumOfLineAmount(ServiceContractHeader."Contract No.");
+
+      // 3. Verify: Verify the Service Contract Header.
+      VerifyServiceContractHeader(ServiceContractHeader,LineAmount);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateMultipleContractLines@5(ServiceContractHeader@1001 : Record 5965);
+    VAR
+      ServiceContractLine@1002 : Record 5964;
+      Counter@1000 : Integer;
+    BEGIN
+      // Use RANDOM for creating Service Item Lines between 1 to 10.
+      FOR Counter := 1 TO 1 + RANDOM(9) DO
+        CreateServiceContractLine(ServiceContractLine,ServiceContractHeader);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateServiceContractLine@46(VAR ServiceContractLine@1002 : Record 5964;ServiceContractHeader@1000 : Record 5965);
+    VAR
+      ServiceItem@1001 : Record 5940;
+    BEGIN
+      LibraryService.CreateServiceItem(ServiceItem,ServiceContractHeader."Customer No.");
+      LibraryService.CreateServiceContractLine(ServiceContractLine,ServiceContractHeader,ServiceItem."No.");
+      ServiceContractLine.VALIDATE("Line Cost",RANDOM(10));  // Use Random because value is not important.
+      ServiceContractLine.VALIDATE("Line Value",RANDOM(10));  // Use Random because value is not important.
+      ServiceContractLine.MODIFY(TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateServiceCreditMemo@44(ContractNo@1000 : Code[20]);
+    VAR
+      ServiceContractLine@1002 : Record 5964;
+      ServContractManagement@1001 : Codeunit 5940;
+    BEGIN
+      ServiceContractLine.SETRANGE("Contract No.",ContractNo);
+      ServiceContractLine.FINDFIRST;
+      ServContractManagement.CreateContractLineCreditMemo(ServiceContractLine,TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateServiceContractInvoice@43(ServiceContractHeader@1000 : Record 5965);
+    VAR
+      CreateContractInvoices@1002 : Report 6030;
+      CreateInvoice@1001 : Option;
+    BEGIN
+      CreateContractInvoices.SETTABLEVIEW(ServiceContractHeader);
+      CreateContractInvoices.SetOptions(WORKDATE,WORKDATE,CreateInvoice);
+      CreateContractInvoices.USEREQUESTFORM(FALSE);
+      CreateContractInvoices.RUN;
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateServiceContractTemplate@42(VAR ServiceContractTemplate@1001 : Record 5968);
+    VAR
+      DefaultServicePeriod@1000 : DateFormula;
+    BEGIN
+      EVALUATE(DefaultServicePeriod,'<3M>');
+      LibraryService.CreateServiceContractTemplate(ServiceContractTemplate,DefaultServicePeriod);
+      EVALUATE(ServiceContractTemplate."Price Update Period",'<6M>');
+      ServiceContractTemplate.VALIDATE(Prepaid,TRUE);
+      ServiceContractTemplate.VALIDATE("Combine Invoices",TRUE);
+      ServiceContractTemplate.VALIDATE("Contract Lines on Invoice",TRUE);
+      ServiceContractTemplate.MODIFY(TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateServiceContract@41(VAR ServiceContractHeader@1003 : Record 5965;VAR ServiceContractLine@1001 : Record 5964;ContractType@1000 : Option);
+    VAR
+      Customer@1002 : Record 18;
+    BEGIN
+      // Create Service Item, Service Contract Header, Service Contract Line.
+      Customer.FINDFIRST;
+      LibraryService.CreateServiceContractHeader(ServiceContractHeader,ContractType,Customer."No.");
+      CreateServiceContractLine(ServiceContractLine,ServiceContractHeader);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CheckChangeCustomerNo@39(ServiceContractHeader@1001 : Record 5965;CustomerNo@1000 : Code[20]);
+    BEGIN
+      // Check that Customer No. is Changed after change Customer.
+      ServiceContractHeader.GET(ServiceContractHeader."Contract Type",ServiceContractHeader."Contract No.");
+      ServiceContractHeader.TESTFIELD("Customer No.",CustomerNo);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CheckInvoiceQuantity@38(ContractNo@1001 : Code[20]);
+    VAR
+      ServiceLine@1000 : Record 5902;
+    BEGIN
+      // Check Invoice for Quantity 1 which is created from Service Contract.
+      ServiceLine.SETRANGE("Document Type",ServiceLine."Document Type"::Invoice);
+      ServiceLine.SETRANGE("Contract No.",ContractNo);
+      ServiceLine.FINDFIRST;
+      ServiceLine.TESTFIELD(Quantity,1);  // Taking 1 because in every case it generates only 1 quantity.
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CheckServiceCreditMemo@37(ServiceContractHeader@1001 : Record 5965);
+    VAR
+      ServiceHeader@1000 : Record 5900;
+    BEGIN
+      // Verify that Customer No. is same after creating Credit Memo from Service Contract.
+      ServiceHeader.SETRANGE("Document Type",ServiceHeader."Document Type"::"Credit Memo");
+      ServiceHeader.SETRANGE("Contract No.",ServiceContractHeader."Contract No.");
+      ServiceHeader.FINDFIRST;
+      ServiceHeader.TESTFIELD("Customer No.",ServiceContractHeader."Customer No.");
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CheckCustomerNoOnInvoice@36(ServiceContractHeader@1001 : Record 5965);
+    VAR
+      ServiceLine@1000 : Record 5902;
+    BEGIN
+      ServiceLine.SETRANGE("Document Type",ServiceLine."Document Type"::Invoice);
+      ServiceLine.SETRANGE("Contract No.",ServiceContractHeader."Contract No.");
+      ServiceLine.FINDFIRST;
+      ServiceLine.TESTFIELD("Customer No.",ServiceContractHeader."Customer No.");
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CheckSrvcCntractQuoteLinValues@33(ServiceContractHeader@1000 : Record 5965);
+    VAR
+      ServiceContractLine@1001 : Record 5964;
+    BEGIN
+      ServiceContractLine.SETRANGE("Contract Type",ServiceContractLine."Contract Type"::Quote);
+      ServiceContractLine.SETRANGE("Contract No.",ServiceContractHeader."Contract No.");
+      ServiceContractLine.FINDFIRST;
+      ServiceContractLine.TESTFIELD(Profit,ServiceContractLine."Line Value" - ServiceContractLine."Line Cost");
+      ServiceContractLine.TESTFIELD("Next Planned Service Date",ServiceContractHeader."First Service Date");
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE SumOfLineAmount@6(ContractNo@1000 : Code[20]) LineAmount : Decimal;
+    VAR
+      ServiceContractLine@1001 : Record 5964;
+    BEGIN
+      ServiceContractLine.SETRANGE("Contract Type",ServiceContractLine."Contract Type"::Contract);
+      ServiceContractLine.SETRANGE("Contract No.",ContractNo);
+      ServiceContractLine.FINDSET;
+      REPEAT
+        LineAmount += ServiceContractLine."Line Amount";
+      UNTIL ServiceContractLine.NEXT = 0;
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE ModifyServiceContractStatus@30(VAR ServiceContractHeader@1000 : Record 5965);
+    VAR
+      LockOpenServContract@1001 : Codeunit 5943;
+    BEGIN
+      LockOpenServContract.OpenServContract(ServiceContractHeader);
+      ServiceContractHeader.VALIDATE("Expiration Date",WORKDATE);
+      ServiceContractHeader.MODIFY(TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE ModifyServiceContractHeader@29(VAR ServiceContractHeader@1000 : Record 5965);
+    BEGIN
+      ServiceContractHeader.CALCFIELDS("Calcd. Annual Amount");
+      ServiceContractHeader.VALIDATE("Annual Amount",ServiceContractHeader."Calcd. Annual Amount");
+      ServiceContractHeader.VALIDATE("Starting Date",WORKDATE);
+      ServiceContractHeader.VALIDATE("Price Update Period",ServiceContractHeader."Service Period");
+      ServiceContractHeader.MODIFY(TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE ModifyServiceAccountGroup@28(VAR ServiceContractAccountGroup@1000 : Record 5973);
+    VAR
+      GLAccount@1001 : Record 15;
+    BEGIN
+      GLAccount.SETRANGE("Direct Posting",TRUE);
+      GLAccount.SETFILTER("Gen. Bus. Posting Group",'<>''''');
+      GLAccount.FINDSET;
+      ServiceContractAccountGroup.VALIDATE("Non-Prepaid Contract Acc.",GLAccount."No.");
+      GLAccount.NEXT;
+      ServiceContractAccountGroup.VALIDATE("Prepaid Contract Acc.",GLAccount."No.");
+      ServiceContractAccountGroup.MODIFY(TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE RemoveContractLine@27(ContractNo@1000 : Code[20]);
+    VAR
+      ServiceContractLine@1001 : Record 5964;
+    BEGIN
+      ServiceContractLine.SETRANGE("Contract No.",ContractNo);
+      REPORT.RUNMODAL(REPORT::"Remove Lines from Contract",FALSE,TRUE,ServiceContractLine);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE VerifyServiceContractLine@2(ServiceContractLine@1000 : Record 5964);
+    VAR
+      ServiceItem@1001 : Record 5940;
+    BEGIN
+      ServiceItem.GET(ServiceContractLine."Service Item No.");
+      ServiceContractLine.TESTFIELD(Description,ServiceItem.Description);
+      ServiceContractLine.TESTFIELD("Item No.",ServiceItem."Item No.");
+      ServiceContractLine.TESTFIELD("Unit of Measure Code",ServiceItem."Unit of Measure Code");
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE VerifyServiceContractHeader@4(ServiceContractHeader@1000 : Record 5965;LineAmount@1001 : Decimal);
+    BEGIN
+      ServiceContractHeader.CALCFIELDS("Calcd. Annual Amount");
+      ServiceContractHeader.TESTFIELD("Calcd. Annual Amount",LineAmount);
+      ServiceContractHeader.TESTFIELD("Annual Amount",LineAmount);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE ConvertMessage@26(ErrorMessage@1001 : Text[1024]) : Text[1024];
+    VAR
+      NewLine@1000 : Text[1];
+    BEGIN
+      // Remove New Line Character from Error Message.
+      NewLine[1] := 13;
+      EXIT(DELCHR(ErrorMessage,'=',NewLine));
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE SetWorkDate@25();
+    BEGIN
+      WORKDATE := CALCDATE('<+1M-1D>',DMY2DATE(1,DATE2DMY(WORKDATE,2),DATE2DMY(WORKDATE,3)));
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE ChangeCustomerNo@24(VAR ServiceContractHeader@1002 : Record 5965) : Code[20];
+    VAR
+      ShiptoAddress@1001 : Record 222;
+      ServContractManagement@1000 : Codeunit 5940;
+    BEGIN
+      ShiptoAddress.FINDFIRST;
+      ServContractManagement.ChangeCustNoOnServContract(ShiptoAddress."Customer No.",ShiptoAddress.Code,ServiceContractHeader);
+      EXIT(ShiptoAddress."Customer No.");
+    END;
+
+    [ConfirmHandler]
+    PROCEDURE SignContractConfirmHandler@18(SignContractMessage@1001 : Text[1024];VAR Result@1000 : Boolean);
+    BEGIN
+      // Confirmation message handler to Sign Service Contract.
+    END;
+
+    [ModalFormHandler]
+    PROCEDURE ServContrctTemplateListHandler@12(VAR ServiceContractTemplateHandler@1001 : Form 6056;VAR Response@1000 : Action);
+    BEGIN
+      Response := ACTION::LookupOK;
+    END;
+
+    [MessageHandler]
+    PROCEDURE MsgHandler@11(MessageTest@1000 : Text[1024]);
+    BEGIN
+    END;
+
+    BEGIN
+    {
+      Test for CRM Service Contract.
+        1.  Test Change Customer No. in Service Contract.
+        2.  Test Check New Line is set to True on Service Contract Line.
+        3.  Test Remove Contract Line while Service Contract is locked.
+        4.  Test Create Service Invoice from Service Contract.
+        5.  Test Create Credit Memo and Check Customer No. from Service Contract.
+        6.  Test Create Contract Invoice.
+        7.  Test prepaid Transaction on Service Ledger Entry.
+        8. Test Remove Contract Line in Service Contract.
+        9. Test Service Account Group exist after creation.
+        10. Test Service Contract Template does not exist aft
+        er deletion and Test Service Contract Template exist in Service Contract.
+        11. Test Service Contract Quote Line have right values after making Service Contract Quote.
+        12. Test Service Contract Quote does not exist after Sign Service Contract Quote. Test Service Contract is same after Sign
+            contract on Service Contract Quote.
+        13. Test Service Contract Status after Sign Service Contract. Test Service Contract Header when Customer No. does not
+            exist in Contract Header.
+        14. Test Error on Service Contract during Copy Document and Test Service Contract Line made after Copy Document.
+        15. Test Comment on Service Contract Quote Detail Preview.
+        16. Test Comment on Service Contract Detail Preview.
+        17. Test the Service Contract Header and Service Contract Lines.
+    }
+    END.
+  }
+}
+

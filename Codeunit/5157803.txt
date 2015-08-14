@@ -1,0 +1,912 @@
+OBJECT Codeunit 5157803 Ext. Gen. Jnl.-Apply
+{
+  OBJECT-PROPERTIES
+  {
+    Date=21.02.14;
+    Time=10:29:37;
+    Modified=Yes;
+    Version List=OPP7.02.03,HME0882;
+  }
+  PROPERTIES
+  {
+    TableNo=81;
+    OnRun=BEGIN
+            ExtendedApplication(Rec)
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      OPplusSetup@5157805 : Record 5157802;
+      GLAcc@5157803 : Record 15;
+      GenJnlLine@1008 : Record 81;
+      GLSetup@1011 : Record 98;
+      Currency@1012 : Record 4;
+      AccNo@1016 : Code[20];
+      AccType@1019 : 'G/L Account,Customer,Vendor,Bank Account,Fixed Asset';
+      GLOpenEntries@5157802 : Boolean;
+      Text100@5157809 : TextConst 'DEU=%1 oder %2 muss Debitor, Kreditor oder OP fÅhrendes Sachkonto sein.;ENU=The %1 or %2 must be Customer or Vendor or %1 must be OE building G/L Account.';
+
+    PROCEDURE GetCurrency@2();
+    BEGIN
+      WITH GenJnlLine DO BEGIN
+        IF "Currency Code" = '' THEN
+          Currency.InitRoundingPrecision
+        ELSE BEGIN
+          Currency.GET("Currency Code");
+          Currency.TESTFIELD("Amount Rounding Precision");
+        END;
+      END;
+    END;
+
+    PROCEDURE ExtendedApplication@5157802(VAR REC@1000 : Record 81);
+    VAR
+      CustTemp@70005 : TEMPORARY Record 18;
+      VendTemp@1002 : TEMPORARY Record 18;
+      Cust@1004 : Record 18;
+      Vend@1003 : Record 23;
+      GLAccount@1000000002 : Record 15;
+      GLTemp@1000000003 : TEMPORARY Record 18;
+      GenJnlLine2@1007 : Record 81;
+      GenJnlLineOriginal@1006 : Record 81;
+      GenJnlLineNext@70007 : Record 81;
+      OPplusGenJnlBatch@70008 : Record 232;
+      AppLineDetails@70011 : Record 5157804;
+      AppLineDetails2@1005 : Record 5157804;
+      AppLine@70012 : Record 5157803;
+      TempJnlLineDim@1000000004 : TEMPORARY Record 356;
+      TempJnlLineDim3@1000000007 : TEMPORARY Record 356;
+      JnlLineDim@1000000005 : Record 356;
+      LedgEntryDim@1000000006 : Record 355;
+      Association@5157802 : Record 5157814;
+      ExtendedApply@70015 : Form 5157807;
+      GenJnlManagement@70016 : Codeunit 230;
+      ExchAccGLJnlLine@70017 : Codeunit 366;
+      DimMgt@1001 : Codeunit 408;
+      AdjGenJnlBalance@1000000000 : Codeunit 407;
+      OPPLicInfo@5157810 : Codeunit 5158000;
+      ExitState@70019 : Action;
+      CurrAmount@1008 : Decimal;
+      TotalBalance@1009 : Decimal;
+      RestAmount@70020 : Decimal;
+      Balance@70021 : Decimal;
+      TotalAmount@70022 : Integer;
+      LineNo@70027 : Integer;
+      LineNo2@70028 : Integer;
+      Steps@70029 : Integer;
+      More@70030 : Integer;
+      ShowBalance@1012 : Boolean;
+      ShowTotalBalance@1011 : Boolean;
+      Account@1010 : Boolean;
+      ValidAccount@1000000001 : Boolean;
+      CurrAmountCurr@5157803 : Decimal;
+      DocNo@5157805 : Text[50];
+      CVDocNo@5157806 : Text[50];
+      Cust2@5157807 : Record 18;
+      Vend2@5157808 : Record 23;
+      AssocPosting@5157809 : Boolean;
+      CurrAmtLCY@5157814 : Decimal;
+      RestAmtLCY@5157813 : Decimal;
+      GainLossAmt@5157812 : Decimal;
+    BEGIN
+      GenJnlLine.COPY(REC);
+      GLSetup.GET;
+      OPplusSetup.GET;
+      WITH GenJnlLine DO BEGIN
+        AccNo := '';
+        GetCurrency;
+        IF "Bal. Account Type" IN ["Bal. Account Type"::Customer,"Bal. Account Type"::Vendor] THEN BEGIN
+          Account := FALSE;
+          AccType := "Bal. Account Type";
+          AccNo := "Bal. Account No.";
+        END ELSE IF "Account Type" IN ["Account Type"::Customer,"Account Type"::Vendor] THEN BEGIN
+          Account := TRUE;
+          AccType := "Account Type";
+          AccNo := "Account No.";
+        END;
+
+        // gbedv GLOE ------------------------------------------------ BEGIN
+        GLOpenEntries := FALSE;
+        GLAcc.INIT;
+        IF AccNo = '' THEN BEGIN
+          IF "Applied Account No." <> '' THEN
+            IF NOT GLAcc.GET("Applied Account No.") THEN
+              GLAcc.INIT;
+          GLOpenEntries := GLAcc."Build Open Entries";
+          Account := "Applied by" <> "Applied by"::"Bal. Account";
+          IF GLOpenEntries THEN BEGIN
+            AccNo := GLAcc."No.";
+          END;
+        END;
+        // gbedv GLOE ------------------------------------------------ END
+        ValidAccount := FALSE;
+        IF AccType IN [AccType::Customer,AccType::Vendor] THEN
+          ValidAccount := TRUE;
+
+        // gbedv GLOE ------------------------------------------------ BEGIN
+        IF NOT ValidAccount THEN
+          ValidAccount := GLOpenEntries;
+        // gbedv GLOE ------------------------------------------------ END
+
+        IF NOT ValidAccount THEN
+          ERROR(Text100,FIELDCAPTION("Account Type"),FIELDCAPTION("Bal. Account Type"));
+
+        IF ValidAccount THEN BEGIN
+          // Betrag bestimmen
+          IF Account THEN BEGIN
+            IF GenJnlLine."Applied Account Type" IN
+              [GenJnlLine."Applied Account Type"::"G/L Account", GenJnlLine."Applied Account Type"::"Bank Account"]
+            THEN
+              CurrAmount := GenJnlLine."Amount (LCY)"
+            ELSE
+              CurrAmount := GenJnlLine.Amount;
+            // gbedv PMT CC -
+            IF (OPPLicInfo.IsOptionTransitGainLoss > 0) AND (GenJnlLine."Currency Code" <> '') THEN
+              CurrAmount := GenJnlLine.Amount;
+            // gbedv PMT CC +
+            CurrAmountCurr := GenJnlLine.Amount;
+          END ELSE BEGIN
+            IF GenJnlLine."Applied Account Type" IN
+              [GenJnlLine."Applied Account Type"::"G/L Account", GenJnlLine."Applied Account Type"::"Bank Account"]
+            THEN
+              CurrAmount := - GenJnlLine."Amount (LCY)"
+            ELSE
+              CurrAmount := - GenJnlLine.Amount;
+            // gbedv PMT CC -
+            IF (OPPLicInfo.IsOptionTransitGainLoss > 0) AND (GenJnlLine."Currency Code" <> '') THEN
+              CurrAmount := - GenJnlLine.Amount;
+            // gbedv PMT CC +
+            CurrAmountCurr := - GenJnlLine.Amount;
+          END;
+
+          IF (CurrAmount = 0) AND ("Pmt. Import Entry No." = 0) THEN BEGIN
+            GenJnlManagement.CalcBalance(GenJnlLine,REC,Balance,TotalBalance,ShowBalance,ShowTotalBalance);
+            GenJnlLine.Amount := 0 - Balance;
+            GenJnlLine.MODIFY;
+            COMMIT;
+          END;
+
+          CLEAR(ExtendedApply);
+          ExtendedApply.SetLine(GenJnlLine,Account);
+          ExitState := ExtendedApply.RUNMODAL;
+          RestAmount := ExtendedApply.GetRest;
+          // gbedv PMT CC -
+          RestAmtLCY := ExtendedApply.GetRestLCY;
+          GainLossAmt := 0;
+          IF (GenJnlLine."Applied Account Type" IN
+            [GenJnlLine."Applied Account Type"::"G/L Account", GenJnlLine."Applied Account Type"::"Bank Account"]) AND
+            (OPPLicInfo.IsOptionTransitGainLoss = OPplusSetup."Calc Gain/Loss on G/L Account"::Yes) AND
+            (GenJnlLine."Currency Code" <> '')
+          THEN
+            GainLossAmt := ExtendedApply.GetGainLoss;
+
+          // gbedv PMT CC +
+          CLEAR(ExtendedApply);
+
+
+          // Posten in Ausgleich TemporÑr lîschen
+          AppLine.SETCURRENTKEY("Journal Template Name","Journal Batch Name","Journal Line No.","Line No.");
+          AppLine.SETRANGE("Journal Template Name",GenJnlLine."Journal Template Name");
+          AppLine.SETRANGE("Journal Batch Name",GenJnlLine."Journal Batch Name");
+          AppLine.SETRANGE("Journal Line No.",GenJnlLine."Line No.");
+          IF NOT AppLine.ISEMPTY THEN
+            AppLine.DELETEALL;
+
+          IF (ExitState = ACTION::OK) OR
+             ((ExitState <> ACTION::Cancel) AND OPplusSetup."ESC equals OK in Ext. Apply")
+          THEN BEGIN
+            // Restbetrag ggf. lîschen
+            // gbedv PMT CC -
+            IF (GenJnlLine.Amount = 0) OR (OPplusGenJnlBatch."Suppress Balance Posting") THEN BEGIN
+              RestAmount := 0;
+              RestAmtLCY := 0;
+            END;
+            // gbedv PMT CC +
+
+            // gbedv PMT CC -
+            IF NOT Account THEN BEGIN
+              RestAmount := -RestAmount;
+              RestAmtLCY := -RestAmtLCY;
+            END;
+            // gbedv PMT CC +
+
+            // ggf. vorhandenen Ausgleich lîschen
+            GenJnlLine."Applies-to Doc. Type" := 0;
+            GenJnlLine."Applies-to Doc. No." := '';
+            GenJnlLine."Posting Payment Discount" := 0;
+            GenJnlLine."Posting Payment Discount %" := 0;
+            GenJnlLine."ID Applied-Entry" := 0;
+            GenJnlLine."Applies-to ID" := '';
+            GenJnlLine."Application Status" := GenJnlLine."Application Status"::Accounted;
+            GenJnlLine."Suppress CurrCode Validation" := TRUE;
+            GenJnlLineOriginal := GenJnlLine;
+
+            GenJnlLine.CALCFIELDS("Allocated Application Amount");
+            CurrAmount := GenJnlLine."Allocated Application Amount";
+            // gbedv PMT CC -
+            GenJnlLine.CALCFIELDS("Allocated Appln. Amount (LCY)");
+            CurrAmtLCY := GenJnlLine."Allocated Appln. Amount (LCY)";
+            // gbedv PMT CC -
+
+            IF (GenJnlLine."Applied Account Type" IN
+              [GenJnlLine."Applied Account Type"::"G/L Account", GenJnlLine."Applied Account Type"::"Bank Account"]) AND
+                (GenJnlLine."Currency Code" <> '')
+               AND (OPPLicInfo.IsOptionTransitGainLoss = 0) // PMT CC
+            THEN
+           //    CurrAmount := ROUND(CurrExchRate.ExchangeAmtFCYToFCY("Posting Date",'',GenJnlLineOriginal."Currency Code",CurrAmount));
+              CurrAmount := ROUND(CurrAmount * GenJnlLine."Currency Factor");
+            // Betrag aktualisieren
+            IF Account THEN
+              GenJnlLine.VALIDATE(Amount,CurrAmount)
+            ELSE
+              GenJnlLine.VALIDATE(Amount,-CurrAmount);
+            IF GenJnlLine."Currency Code" <> '' THEN BEGIN
+              IF Account THEN BEGIN
+                IF (CurrAmtLCY <> "Amount (LCY)") THEN
+                  GenJnlLine.VALIDATE("Amount (LCY)",CurrAmtLCY)
+              END ELSE BEGIN
+                IF (-CurrAmtLCY <> "Amount (LCY)") THEN
+                  GenJnlLine.VALIDATE("Amount (LCY)",-CurrAmtLCY);
+              END;
+            END;
+            IF (GenJnlLine."Applied Account Type" IN
+              [GenJnlLine."Applied Account Type"::"G/L Account", GenJnlLine."Applied Account Type"::"Bank Account"]) AND
+                (GenJnlLine."Currency Code" <> '')
+            THEN
+              IF RestAmount <> 0 THEN
+                RestAmount := CurrAmountCurr - GenJnlLine.Amount;
+
+            // Wenn Original ohne Betrag erfasst wurde, Betrag nachfÅhren
+            IF (GenJnlLineOriginal.Amount = 0) AND (GenJnlLine.Amount <> 0) THEN
+              GenJnlLineOriginal := GenJnlLine;
+
+            // Ausgleichszeilen buchen
+            OPplusGenJnlBatch.GET(GenJnlLine."Journal Template Name",GenJnlLine."Journal Batch Name");
+
+            AppLineDetails.SETCURRENTKEY("Journal Template Name","Journal Batch Name","Line No.","ID Applied-Entry");
+            AppLineDetails.SETRANGE ("Journal Template Name",GenJnlLine."Journal Template Name" );
+            AppLineDetails.SETRANGE ("Journal Batch Name",GenJnlLine."Journal Batch Name" );
+            AppLineDetails.SETRANGE ("Line No.",GenJnlLine."Line No.");
+
+            // TotalAmount := ApplineDetails.COUNT;
+            // SQL Optimierung: Es wird nur die Information benîtigt,
+            // ob Keine, Eine oder mehrere DatensÑtze in AppLineDetails enthalten sind
+            IF AppLineDetails.FINDFIRST THEN BEGIN
+              TotalAmount := 1;
+              IF AppLineDetails.NEXT(1) > 0 THEN
+                TotalAmount := 2;
+            END ELSE
+              TotalAmount := 0;
+
+            More := 0;
+            // PMT CC
+            IF GainLossAmt <> 0 THEN BEGIN
+              IF AppLineDetails.FIND('-') THEN
+                REPEAT
+                  AppLineDetails."Amount (LCY)" := -AppLineDetails."Remaining Amount (LCY)";
+                  AppLineDetails.MODIFY;
+                UNTIL AppLineDetails.NEXT = 0;
+            END;
+            // PMT CC
+
+            AssocPosting := FALSE;
+            IF GenJnlLineOriginal."Applied Account Type" = GenJnlLineOriginal."Account Type"::Customer THEN BEGIN
+              Cust2.GET(GenJnlLineOriginal."Applied Account No.");
+              IF Cust2."Association No." <> '' THEN BEGIN
+                Association.GET(Association.Type::Customer,Cust2."Association No.");
+                IF Association."Pmt. Account No." <> '' THEN
+                  AssocPosting := TRUE;
+              END;
+            END ELSE IF GenJnlLineOriginal."Applied Account Type" = GenJnlLineOriginal."Account Type"::Vendor THEN BEGIN
+              Vend2.GET(GenJnlLineOriginal."Applied Account No.");
+              IF Vend2."Association No." <> '' THEN BEGIN
+                Association.GET(Association.Type::Vendor,Vend2."Association No.");
+                IF Association."Pmt. Account No." <> '' THEN
+                  AssocPosting := TRUE;
+              END;
+            END;
+
+            // Falls mehr als ein Posten ausgeglichen wurde,
+            // wird die Zahlung zunÑchst komplett aufs Konto gebucht,
+            // anschlie·end die ausgeglichenen Posten als OP-Ausgleich gebucht.
+            // Dies passiert in Codeunit 12 in der Funktion Erw. Ausgleich buchen
+            // Ansonsten Betrag, Ausgleich-mit Belegnr. etc. Åbernehmen
+
+            // Falls kein Betrag zugeordnet wurde, keine Saldozeile erzeugen, ggf. gelîschte speichern
+            IF TotalAmount = 0 THEN BEGIN
+              RestAmount := 0;
+              GenJnlLine := GenJnlLineOriginal;
+              GenJnlLine."Applies-to Doc. No." := '';
+              GenJnlLine."Posting Payment Discount" := 0;
+              GenJnlLine."Posting Payment Discount %" := 0;
+              GenJnlLine."ID Applied-Entry" := 0;
+              GenJnlLine."Applies-to ID" := '';
+              GenJnlLine."Application Status" := GenJnlLine."Application Status"::Accounted;
+              //H0823 22.01.2014 ARI +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+              GenJnlLine."External Document No." := '';
+              //H0823 22.01.2014 ARI ---------------------------------------------------------------
+              //H0882 21.02.2014 ARI +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+              GenJnlLine."Payment Method Code" := '';
+              //H0882 21.02.2014 ARI ---------------------------------------------------------------
+              GenJnlLine.MODIFY;
+            END ELSE IF TotalAmount = 1 THEN BEGIN
+              AppLineDetails.FINDFIRST;
+              More := 1;
+              GenJnlLine."Applies-to Doc. Type" := AppLineDetails."Applies-to Doc. Type";
+              GenJnlLine."Applies-to Doc. No." := AppLineDetails."Applies-to Doc. No.";
+              GenJnlLine."ID Applied-Entry" := AppLineDetails."ID Applied-Entry";
+              GenJnlLine."Applies-to ID" := '';
+              GenJnlLine."Application Status" := GenJnlLine."Application Status"::Finished;
+              // gbedv PMT CC -
+              GenJnlLine."Original Currency Factor" := AppLineDetails."Original Currency Factor";
+              // gbedv PMT CC +
+              IF GenJnlLine."Applied Account Type" IN [
+                 GenJnlLine."Applied Account Type"::Customer,GenJnlLine."Applied Account Type"::Vendor]
+              THEN
+                IF GenJnlLine."Applied Account Type" = GenJnlLine."Account Type" THEN BEGIN
+                  GenJnlLine."Account Type" := AppLineDetails."Account Type";
+                  IF "Account No." <> AppLineDetails."Account No." THEN
+                    GenJnlLine.VALIDATE("Account No.",AppLineDetails."Account No.");
+                  GenJnlLine."Posting Payment Discount" := AppLineDetails."Posting Payment Discount";
+                  GenJnlLine.VALIDATE(Amount, AppLineDetails.Amount);
+                END ELSE BEGIN
+                  GenJnlLine."Bal. Account Type" := AppLineDetails."Account Type";
+                  IF "Bal. Account No." <> AppLineDetails."Account No." THEN
+                    GenJnlLine.VALIDATE("Bal. Account No.",AppLineDetails."Account No.");
+                  GenJnlLine."Posting Payment Discount" := -AppLineDetails."Posting Payment Discount";
+                  GenJnlLine.VALIDATE(Amount, -AppLineDetails.Amount);
+                END;
+              GenJnlLine.Description := GenJnlLineOriginal.Description;
+              DocNo := GenJnlLine."External Document No.";
+              IF DocNo = '' THEN
+                DocNo := GenJnlLine."Applies-to Doc. No.";
+              CVDocNo := GenJnlLine."External Document No.";
+              IF (CVDocNo = '') OR (GenJnlLine."Account Type" <> GenJnlLine."Account Type"::Vendor) THEN
+                CVDocNo := GenJnlLine."Applies-to Doc. No.";
+              IF AppLineDetails."Payment Text" <> '' THEN
+                GenJnlLine.Description := AppLineDetails."Payment Text"
+              ELSE IF OPplusSetup."Use Appl. Texts in Single App." THEN BEGIN
+                IF GenJnlLine."Document Type" = GenJnlLine."Document Type"::Payment THEN BEGIN
+                  IF OPplusSetup."Text Pmt. Application Posting" <> '' THEN
+                    GenJnlLine.Description :=
+                      COPYSTR(
+                        STRSUBSTNO(
+                          OPplusSetup."Text Pmt. Application Posting",
+                          AppLineDetails."Applies-to Doc. No.", // %1
+                          FORMAT(AppLineDetails.Amount,0,'<Sign><Integer Thousand><Decimals,3>'), // %2
+                          FORMAT(AppLineDetails."Posting Payment Discount",0,'<Sign><Integer Thousand><Decimals,3>'), // %3
+                          AppLineDetails."Pmt. Discount %", // %4
+                          AppLineDetails."Account No.", // %5
+                          AppLineDetails."Account Name", // %6
+                          AppLineDetails."External Document No.", // %7
+                          DocNo, // %8
+                          CVDocNo), // %9
+                        1,MAXSTRLEN(GenJnlLine.Description))
+                END ELSE BEGIN
+                  IF OPplusSetup."Text Application Posting" <> '' THEN
+                    GenJnlLine.Description :=
+                      COPYSTR(
+                        STRSUBSTNO(
+                          OPplusSetup."Text Application Posting",
+                          AppLineDetails."Applies-to Doc. No.", // %1
+                          FORMAT(AppLineDetails.Amount,0,'<Sign><Integer Thousand><Decimals,3>'), // %2
+                          FORMAT(AppLineDetails."Posting Payment Discount",0,'<Sign><Integer Thousand><Decimals,3>'), // %3
+                          AppLineDetails."Pmt. Discount %", // %4
+                          AppLineDetails."Account No.", // %5
+                          AppLineDetails."Account Name", // %6
+                          AppLineDetails."External Document No.", // %7
+                          DocNo, // %8
+                          CVDocNo), // %9
+                        1,MAXSTRLEN(GenJnlLine.Description))
+                END;
+              END;
+              GenJnlLine."Posting Payment Discount %" := AppLineDetails."Pmt. Discount %";
+              //H0823 22.01.2014 ARI +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+              GenJnlLine."External Document No." := AppLineDetails."External Document No.";
+              //H0823 22.01.2014 ARI ---------------------------------------------------------------
+
+              //H0882 21.02.2014 ARI +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+              GenJnlLine."Payment Method Code" := AppLineDetails."Payment Method Code";
+              //H0882 21.02.2014 ARI ---------------------------------------------------------------
+
+              AppLineDetails.DELETEALL;
+              GenJnlLine.MODIFY(TRUE);
+
+              IF (OPplusSetup."Dim. for Apply Line Details" = OPplusSetup."Dim. for Apply Line Details"::"Applied Entry") AND
+                 (GenJnlLine."ID Applied-Entry" <> 0) AND
+                 (GenJnlLine."Document Type" IN [GenJnlLine."Document Type"::Payment,GenJnlLine."Document Type"::Refund])
+              THEN BEGIN
+                TempJnlLineDim.RESET;
+                TempJnlLineDim.DELETEALL;
+                TempJnlLineDim3.RESET;
+                TempJnlLineDim3.DELETEALL;
+                JnlLineDim.RESET;
+                JnlLineDim.SETRANGE("Table ID",DATABASE::"Gen. Journal Line");
+                JnlLineDim.SETRANGE("Journal Template Name",GenJnlLine."Journal Template Name");
+                JnlLineDim.SETRANGE("Journal Batch Name",GenJnlLine."Journal Batch Name");
+                JnlLineDim.SETRANGE("Journal Line No.",GenJnlLine."Line No.");
+                JnlLineDim.SETRANGE("Allocation Line No.",0);
+                DimMgt.CopyJnlLineDimToJnlLineDim(JnlLineDim,TempJnlLineDim3);
+                DimMgt.DeleteJnlLineDim(
+                  DATABASE::"Gen. Journal Line",
+                  GenJnlLine."Journal Template Name",
+                  GenJnlLine."Journal Batch Name",
+                  GenJnlLine."Line No.",
+                  0);
+                IF GenJnlLine."Applied Account Type" = GenJnlLine."Applied Account Type"::Customer THEN
+                  LedgEntryDim.SETRANGE("Table ID",DATABASE::"Cust. Ledger Entry")
+                ELSE IF GenJnlLine."Applied Account Type" = GenJnlLine."Applied Account Type"::Vendor THEN
+                  LedgEntryDim.SETRANGE("Table ID",DATABASE::"Vendor Ledger Entry")
+                ELSE IF GenJnlLine."Applied Account Type" IN
+                  [GenJnlLine."Applied Account Type"::"G/L Account", GenJnlLine."Applied Account Type"::"Bank Account"]
+                THEN
+                  LedgEntryDim.SETRANGE("Table ID",DATABASE::"G/L Entry");
+                LedgEntryDim.SETRANGE("Entry No.",GenJnlLine."ID Applied-Entry");
+                DimMgt.CopyLedgEntryDimToJnlLineDim(LedgEntryDim,TempJnlLineDim);
+                TempJnlLineDim3.SETFILTER("Dimension Value Code",'<>%1','');
+                IF TempJnlLineDim3.FINDSET(FALSE,FALSE) THEN
+                  REPEAT
+                    TempJnlLineDim.SETRANGE("Dimension Code",TempJnlLineDim3."Dimension Code");
+                    IF NOT TempJnlLineDim.FIND('-') THEN BEGIN
+                      TempJnlLineDim3.SETRANGE("Dimension Code",TempJnlLineDim3."Dimension Code");
+                      DimMgt.CopyJnlLineDimToJnlLineDim(TempJnlLineDim3,TempJnlLineDim);
+                      TempJnlLineDim3.SETRANGE("Dimension Code");
+                    END;
+                  UNTIL TempJnlLineDim3.NEXT = 0;
+                TempJnlLineDim.RESET;
+                TempJnlLineDim.SETRANGE("Dimension Code",GLSetup."Global Dimension 1 Code");
+                IF TempJnlLineDim.FINDSET(FALSE,FALSE) THEN
+                  GenJnlLine."Shortcut Dimension 1 Code" := TempJnlLineDim."Dimension Value Code"
+                ELSE
+                  GenJnlLine."Shortcut Dimension 1 Code" := '';
+                TempJnlLineDim.SETRANGE("Dimension Code",GLSetup."Global Dimension 2 Code");
+                IF TempJnlLineDim.FIND('-') THEN
+                  GenJnlLine."Shortcut Dimension 2 Code" := TempJnlLineDim."Dimension Value Code"
+                ELSE
+                  GenJnlLine."Shortcut Dimension 2 Code" := '';
+                TempJnlLineDim.RESET;
+                DimMgt.MoveJnlLineDimToJnlLineDim(TempJnlLineDim,
+                  DATABASE::"Gen. Journal Line",
+                  GenJnlLine."Journal Template Name",
+                  GenJnlLine."Journal Batch Name",
+                  GenJnlLine."Line No.");
+                GenJnlLine.MODIFY;
+              END;
+            END ELSE IF (TotalAmount > 1) OR (AssocPosting) THEN BEGIN
+              GenJnlLine."Applies-to ID" := OPplusSetup.GetExtendedText();
+              GenJnlLine."Application Status" := GenJnlLine."Application Status"::Finished;
+
+              // GGf. Summen fÅr Verbandszahlungen erzeugen
+              IF AppLineDetails.FIND('-') THEN REPEAT
+                IF AppLineDetails."Account Type" = AppLineDetails."Account Type"::Customer THEN BEGIN
+                  IF NOT CustTemp.GET(AppLineDetails."Account No.") THEN BEGIN
+                    CustTemp.INIT;
+                    More := More + 1;
+                    CustTemp."No." := AppLineDetails."Account No.";
+                      Cust.GET(CustTemp."No.");
+                      CustTemp.Name := Cust.Name;
+                    CustTemp.INSERT;
+                  END;
+                  CustTemp.Amount := CustTemp.Amount + AppLineDetails.Amount;
+                  CustTemp.MODIFY;
+                END ELSE IF AppLineDetails."Account Type" = AppLineDetails."Account Type"::Vendor THEN BEGIN
+                  IF NOT VendTemp.GET(AppLineDetails."Account No.") THEN BEGIN
+                    VendTemp.INIT;
+                    More := More + 1;
+                    VendTemp."No." := AppLineDetails."Account No.";
+                    Vend.GET(VendTemp."No.");
+                    VendTemp.Name := Vend.Name;
+                    VendTemp.INSERT;
+                  END;
+                  VendTemp.Amount := VendTemp.Amount + AppLineDetails.Amount;
+                  VendTemp.MODIFY;
+                END ELSE IF AppLineDetails."Account Type" = AppLineDetails."Account Type"::"G/L Account" THEN BEGIN
+                  IF NOT GLTemp.GET(AppLineDetails."Account No.") THEN BEGIN
+                    GLTemp.INIT;
+                    More := More + 1;
+                    GLTemp."No." := AppLineDetails."Account No.";
+                    GLAccount.GET(GLTemp."No.");
+                    GLTemp.Name := GLAccount.Name;
+                    GLTemp.INSERT;
+                  END;
+                  GLTemp.Amount := GLTemp.Amount + AppLineDetails.Amount;
+                  GLTemp.MODIFY;
+                END;
+              UNTIL AppLineDetails.NEXT(1) = 0;
+
+              // gbedv EXT -------------------------------------------------- BEGIN
+              // ggf. Verbandsumme einfÅgen
+              IF AssocPosting THEN BEGIN
+                Association.SETCURRENTKEY(Type,"Leading Account No.");
+                Association.SETRANGE(Type,GenJnlLine."Applied Account Type");
+                Association.SETRANGE("Leading Account No.",GenJnlLine."Applied Account No.");
+                IF Association.FINDFIRST THEN
+                  IF Association."Pmt. Account No." <> '' THEN BEGIN
+                    GenJnlLine2 := GenJnlLineOriginal;
+                    GenJnlLine2."Line No." := GenJnlLine."Line No." - 3;
+                    GenJnlLine2.VALIDATE("Account No.");
+                    GenJnlLine2.VALIDATE("Bal. Account No.");
+                    GenJnlLine2.Description := GenJnlLine.Description;
+                    GenJnlLine2."Applies-to ID" := GenJnlLine."Document No.";
+                    GenJnlLine2.INSERT(TRUE);
+                    GenJnlLine2."Line No." := GenJnlLine."Line No." - 2;
+                    GenJnlLine2.VALIDATE(Amount,-GenJnlLineOriginal.Amount);
+                    GenJnlLine2."Applies-to ID" := GenJnlLine."Document No.";
+                    GenJnlLine2.Description := GenJnlLine.Description;
+                    IF GenJnlLine."Applied by" = GenJnlLine."Applied by"::Account THEN BEGIN
+                      GenJnlLine2."Bal. Account Type" := GenJnlLine2."Bal. Account Type"::"G/L Account";
+                      GenJnlLine2."Bal. Account No." := Association."Pmt. Account No.";
+                      GenJnlLine."Bal. Account Type" := GenJnlLine."Bal. Account Type"::"G/L Account";
+                      GenJnlLine."Bal. Account No." := Association."Pmt. Account No.";
+                      GenJnlLineOriginal."Bal. Account Type" := GenJnlLineOriginal."Bal. Account Type"::"G/L Account";
+                      GenJnlLineOriginal."Bal. Account No." := Association."Pmt. Account No.";
+                    END ELSE BEGIN
+                      GenJnlLine2."Account Type" := GenJnlLine2."Account Type"::"G/L Account";
+                      GenJnlLine2."Account No." := Association."Pmt. Account No.";
+                      GenJnlLine."Account Type" := GenJnlLine."Account Type"::"G/L Account";
+                      GenJnlLine."Account No." := Association."Pmt. Account No.";
+                      GenJnlLineOriginal."Bal. Account Type" := GenJnlLineOriginal."Bal. Account Type"::"G/L Account";
+                      GenJnlLineOriginal."Bal. Account No." := Association."Pmt. Account No.";
+                    END;
+                    GenJnlLine2.VALIDATE("Account No.");
+                    GenJnlLine2.VALIDATE("Bal. Account No.");
+                    GenJnlLine2.Description := GenJnlLine.Description;
+                    GenJnlLine2.INSERT(TRUE);
+                  END;
+              END;
+              // gbedv EXT -------------------------------------------------- END
+
+              // Aktuelle Zeile ggf. umkontieren
+              IF GenJnlLine."Applied Account Type" = GenJnlLine."Applied Account Type"::Customer THEN
+                IF NOT CustTemp.GET(GenJnlLine."Applied Account No.") THEN BEGIN
+                  CustTemp.FINDFIRST;
+                  GenJnlLine."Applied Account No." := CustTemp."No.";
+                  IF GenJnlLine."Applied Account Type" = GenJnlLine."Account Type" THEN
+                    GenJnlLine.VALIDATE("Account No.",CustTemp."No.")
+                  ELSE
+                    GenJnlLine.VALIDATE("Bal. Account No.",CustTemp."No.");
+                END;
+              IF GenJnlLine."Applied Account Type" = GenJnlLine."Applied Account Type"::Vendor THEN
+                IF NOT VendTemp.GET(GenJnlLine."Applied Account No.") THEN BEGIN
+                  VendTemp.FINDFIRST;
+                  GenJnlLine."Applied Account No." := VendTemp."No.";
+                  IF GenJnlLine."Applied Account Type" = GenJnlLine."Account Type" THEN
+                    GenJnlLine.VALIDATE("Account No.",VendTemp."No.")
+                  ELSE
+                    GenJnlLine.VALIDATE("Bal. Account No.",VendTemp."No.");
+                END;
+              IF GenJnlLine."Applied Account Type" = GenJnlLine."Applied Account Type"::"G/L Account" THEN
+                IF NOT GLTemp.GET(GenJnlLine."Applied Account No.") THEN BEGIN
+                  GLTemp.FINDFIRST;
+                  GenJnlLine."Applied Account No." := GLTemp."No.";
+                  IF GenJnlLine."Applied Account Type" = GenJnlLine."Account Type" THEN
+                    GenJnlLine.VALIDATE("Account No.",GLTemp."No.")
+                  ELSE
+                    GenJnlLine.VALIDATE("Bal. Account No.",GLTemp."No.");
+                END;
+              GenJnlLine.MODIFY(TRUE);
+            END;
+            // Ggf. Differenz zwischen Betrag und Saldo als Buchung erzeugen
+            IF (RestAmount <> 0) OR (GainLossAmt <> 0) THEN
+              More := More + 1;
+
+            // ggf. Schrittweite bestimmen
+            LineNo := GenJnlLine."Line No.";
+            IF More > 1 THEN BEGIN
+              GenJnlLineNext.SETCURRENTKEY("Journal Template Name","Journal Batch Name","Line No.");
+              GenJnlLineNext.SETRANGE("Journal Template Name",GenJnlLine."Journal Template Name");
+              GenJnlLineNext.SETRANGE("Journal Batch Name",GenJnlLine."Journal Batch Name");
+              GenJnlLineNext := GenJnlLine;
+              Steps := 10000;
+              IF GenJnlLineNext.NEXT (1) > 0 THEN BEGIN
+                LineNo2 := GenJnlLineNext."Line No.";
+                Steps := ROUND ((LineNo2 - LineNo) / (More + 2 ), 10, '<');
+              END ELSE
+                LineNo2 := GenJnlLineNext."Line No." + 10000;
+            END;
+
+            // ggf. Buchung splitten
+            IF ( More > 1) AND ("Account No." <> '') AND ("Bal. Account No." <> '') AND
+               OPplusSetup."Split Posting with Ext. Appl."
+            THEN BEGIN
+              IF GenJnlLine."Applied by" = GenJnlLine."Applied by"::Account THEN BEGIN
+                GenJnlLine2 := GenJnlLineOriginal;
+                ExchAccGLJnlLine.RUN(GenJnlLine2);
+              END ELSE BEGIN
+                ExchAccGLJnlLine.RUN(GenJnlLine);
+                ExchAccGLJnlLine.RUN(GenJnlLineOriginal);
+                GenJnlLine2 := GenJnlLineOriginal;
+                ExchAccGLJnlLine.RUN(GenJnlLine2);
+              END;
+              GenJnlLine2."Applied Account Type" := 0;
+              GenJnlLine2."Applied Account No." := '';
+              GenJnlLine2."ID Applied-Entry" := 0;
+              GenJnlLine2."Applies-to ID" := '';
+              GenJnlLine2."Applies-to Doc. No." := '';
+              GenJnlLine2."Posting Payment Discount" := 0;
+              GenJnlLine."Posting Payment Discount %" := 0;
+              GenJnlLine2."Line No." := GenJnlLine2."Line No." - 1;
+              GenJnlLine2."Bal. Account Type" := 0;
+              GenJnlLine2.VALIDATE("Bal. Account No.",'');
+              GenJnlLine2.INSERT(TRUE);
+              GenJnlLine2."Application Status" := GenJnlLine2."Application Status"::Finished;
+              GenJnlLine2.MODIFY;
+
+              GenJnlLine."Bal. Account Type" := 0;
+              GenJnlLine.VALIDATE("Bal. Account No.",'');
+              GenJnlLine.MODIFY(TRUE);
+              GenJnlLine."Application Status" := GenJnlLine."Application Status"::Finished;
+              GenJnlLine.MODIFY;
+            END;
+
+            // ggf. Verbandssummen einfÅgen
+            IF (CustTemp.COUNT + VendTemp.COUNT + GLTemp.COUNT) > 1 THEN BEGIN
+
+              // Originalzeile Modifizieren
+              IF GenJnlLine."Applied Account Type" = GenJnlLine."Applied Account Type"::Customer THEN BEGIN
+                CustTemp.GET(GenJnlLine."Applied Account No.");
+                IF GenJnlLine."Applied by" = GenJnlLine."Applied by"::Account THEN
+                  GenJnlLine.VALIDATE(Amount,CustTemp.Amount)
+                ELSE
+                  GenJnlLine.VALIDATE(Amount,-CustTemp.Amount);
+                GenJnlLine."Application Status" := GenJnlLine."Application Status"::Finished;
+                GenJnlLine.MODIFY(TRUE);
+              END;
+              IF GenJnlLine."Applied Account Type" = GenJnlLine."Applied Account Type"::Vendor THEN BEGIN
+                VendTemp.GET(GenJnlLine."Applied Account No.");
+                IF GenJnlLine."Applied by" = GenJnlLine."Applied by"::Account THEN
+                  GenJnlLine.VALIDATE(Amount,VendTemp.Amount)
+                ELSE
+                  GenJnlLine.VALIDATE(Amount,-VendTemp.Amount);
+                GenJnlLine."Application Status" := GenJnlLine."Application Status"::Finished;
+                GenJnlLine.MODIFY(TRUE);
+              END;
+              IF GenJnlLine."Applied Account Type" = GenJnlLine."Applied Account Type"::"G/L Account" THEN BEGIN
+                GLTemp.GET(GenJnlLine."Applied Account No.");
+                IF GenJnlLine."Applied by" = GenJnlLine."Applied by"::Account THEN
+                  GenJnlLine.VALIDATE(Amount,GLTemp.Amount)
+                ELSE
+                  GenJnlLine.VALIDATE(Amount,-GLTemp.Amount);
+                GenJnlLine."Application Status" := GenJnlLine."Application Status"::Finished;
+                GenJnlLine.MODIFY(TRUE);
+              END;
+
+              // Die weiteren Zeilen einfÅgen
+              IF GenJnlLine."Applied Account Type" = GenJnlLine."Applied Account Type"::Customer THEN
+                CustTemp.SETFILTER("No.",'<>%1',GenJnlLine."Applied Account No.")
+              ELSE IF GenJnlLine."Applied Account Type" = GenJnlLine."Applied Account Type"::Vendor THEN
+                VendTemp.SETFILTER("No.",'<>%1',GenJnlLine."Applied Account No.")
+              ELSE IF GenJnlLine."Applied Account Type" IN
+                [GenJnlLine."Applied Account Type"::"G/L Account",GenJnlLine."Applied Account Type"::"Bank Account"]
+              THEN
+                GLTemp.SETFILTER("No.",'<>%1',GenJnlLine."Applied Account No.");
+
+              IF CustTemp.FIND('-') THEN REPEAT
+                GenJnlLine2 := GenJnlLine;
+                GenJnlLine2."Line No." := LineNo + Steps;
+                LineNo := GenJnlLine2."Line No.";
+                IF GenJnlLine."Applied by" = GenJnlLine."Applied by"::Account THEN BEGIN
+                  GenJnlLine2."Account Type" := GenJnlLine2."Account Type"::Customer;
+                  GenJnlLine2.VALIDATE("Account No.",CustTemp."No.");
+                  GenJnlLine2.VALIDATE(Amount,CustTemp.Amount);
+                END ELSE BEGIN
+                  GenJnlLine2."Bal. Account Type" := GenJnlLine2."Bal. Account Type"::Customer;
+                  GenJnlLine2.VALIDATE("Bal. Account No.",CustTemp."No.");
+                  GenJnlLine2.VALIDATE(Amount,-CustTemp.Amount);
+                END;
+                GenJnlLine2."Application Status" := GenJnlLine2."Application Status"::Finished;
+                GenJnlLine2.INSERT(TRUE);
+
+                // zugehîrige AppLineDetails verschieben
+                AppLineDetails.SETRANGE ("Line No.",GenJnlLine."Line No.");
+                AppLineDetails.SETRANGE ("Account No.",CustTemp."No.");
+                AppLineDetails.SETRANGE("Account Type",AppLineDetails."Account Type"::Customer);
+                IF AppLineDetails.FIND('-') THEN REPEAT
+                  AppLineDetails2 := AppLineDetails;
+                  AppLineDetails2."Line No." := GenJnlLine2."Line No.";
+                  AppLineDetails2.INSERT;
+                UNTIL AppLineDetails.NEXT(1) = 0;
+                AppLineDetails.DELETEALL;
+              UNTIL CustTemp.NEXT(1) = 0;
+
+              IF VendTemp.FIND('-') THEN REPEAT
+                GenJnlLine2 := GenJnlLine;
+                GenJnlLine2."Line No." := LineNo + Steps;
+                LineNo := GenJnlLine2."Line No.";
+                IF GenJnlLine."Applied by" = GenJnlLine."Applied by"::Account THEN BEGIN
+                  GenJnlLine2."Account Type" := GenJnlLine2."Account Type"::Vendor;
+                  GenJnlLine2.VALIDATE("Account No.",VendTemp."No.");
+                  GenJnlLine2.VALIDATE(Amount,VendTemp.Amount);
+                END ELSE BEGIN
+                  GenJnlLine2."Bal. Account Type" := GenJnlLine2."Bal. Account Type"::Vendor;
+                  GenJnlLine2.VALIDATE("Bal. Account No.",VendTemp."No.");
+                  GenJnlLine2.VALIDATE(Amount,-VendTemp.Amount);
+                END;
+                GenJnlLine2."Application Status" := GenJnlLine2."Application Status"::Finished;
+                GenJnlLine2.INSERT(TRUE);
+
+                // zugehîrige AppLineDetails verschieben
+                AppLineDetails.SETRANGE("Line No.",GenJnlLine."Line No.");
+                AppLineDetails.SETRANGE("Account No.",VendTemp."No.");
+                AppLineDetails.SETRANGE("Account Type",AppLineDetails."Account Type"::Vendor);
+                IF AppLineDetails.FIND('-') THEN REPEAT
+                  AppLineDetails2 := AppLineDetails;
+                  AppLineDetails2."Line No." := GenJnlLine2."Line No.";
+                  AppLineDetails2.INSERT;
+                UNTIL AppLineDetails.NEXT = 0;
+                AppLineDetails.DELETEALL;
+              UNTIL VendTemp.NEXT(1) = 0;
+
+              IF GLTemp.FIND('-') THEN REPEAT
+                GenJnlLine2 := GenJnlLine;
+                GenJnlLine2."Line No." := LineNo + Steps;
+                LineNo := GenJnlLine2."Line No.";
+                IF GenJnlLine."Applied by" = GenJnlLine."Applied by"::Account THEN BEGIN
+                  GenJnlLine2."Account Type" := GenJnlLine2."Account Type"::"G/L Account";
+                  GenJnlLine2.VALIDATE("Account No.",GLTemp."No.");
+                  GenJnlLine2.VALIDATE(Amount,GLTemp.Amount);
+                END ELSE BEGIN
+                  GenJnlLine2."Bal. Account Type" := GenJnlLine2."Bal. Account Type"::"G/L Account";
+                  GenJnlLine2.VALIDATE("Bal. Account No.",GLTemp."No.");
+                  GenJnlLine2.VALIDATE(Amount,-GLTemp.Amount);
+                END;
+                GenJnlLine2."Application Status" := GenJnlLine2."Application Status"::Finished;
+                GenJnlLine2.INSERT(TRUE);
+
+                // zugehîrige AppLineDetails verschieben
+                AppLineDetails.SETRANGE("Line No.",GenJnlLine."Line No.");
+                AppLineDetails.SETRANGE("Account No.",GLTemp."No.");
+                AppLineDetails.SETRANGE("Account Type",AppLineDetails."Account Type"::"G/L Account");
+                IF AppLineDetails.FINDFIRST THEN REPEAT
+                  AppLineDetails2 := AppLineDetails;
+                  AppLineDetails2."Line No." := GenJnlLine2."Line No.";
+                  AppLineDetails2.INSERT;
+                UNTIL AppLineDetails.NEXT = 0;
+                AppLineDetails.DELETEALL;
+              UNTIL GLTemp.NEXT(1) = 0;
+            END;
+
+            // Ggf. Ausgleichssaldo im Buchungsblatt erzeugen
+            IF NOT OPplusGenJnlBatch."Suppress Balance Posting" AND (RestAmount <> 0) THEN BEGIN
+              GenJnlLine2 := GenJnlLine;
+              GenJnlLine2."Posting Payment Discount" := 0;
+              GenJnlLine2."Posting Payment Discount %" := 0;
+              GenJnlLine2."Applies-to Doc. Type" := 0;
+              GenJnlLine2."Applies-to Doc. No." := '';
+              GenJnlLine2."ID Applied-Entry" := 0;
+              GenJnlLine2."Applies-to ID" := '';
+              GenJnlLine2."Line No." := LineNo + Steps;
+              IF GLOpenEntries THEN BEGIN
+                IF RestAmount > 0 THEN BEGIN
+                  IF GLAcc."Application Bal. Debit Acc." <> '' THEN
+                    GenJnlLineOriginal."Account No." := GLAcc."Application Bal. Debit Acc.";
+                END ELSE BEGIN
+                  IF GLAcc."Application Bal. Credit Acc." <> '' THEN
+                    GenJnlLineOriginal."Account No." := GLAcc."Application Bal. Credit Acc.";
+                END;
+              END;
+              IF GenJnlLineOriginal."Applied by" = GenJnlLineOriginal."Applied by"::Account THEN BEGIN
+                GenJnlLine2."Account Type" := GenJnlLineOriginal."Account Type";
+                GenJnlLine2.VALIDATE("Account No.",GenJnlLineOriginal."Account No.");
+              END ELSE BEGIN
+                GenJnlLine2."Bal. Account Type" := GenJnlLineOriginal."Applied Account Type";
+                GenJnlLine2.VALIDATE("Bal. Account No.",GenJnlLineOriginal."Applied Account No.");
+              END;
+              IF OPplusSetup."Split Posting with Ext. Appl." THEN BEGIN
+                IF GenJnlLineOriginal."Applied by" = GenJnlLineOriginal."Applied by"::Account THEN
+                  GenJnlLine2.VALIDATE(Amount,RestAmount)
+                ELSE
+                  GenJnlLine2.VALIDATE(Amount,-RestAmount);
+              END ELSE
+                GenJnlLine2.VALIDATE(Amount,RestAmount);
+              // gbedv PMT CC -
+              IF GenJnlLine2."Currency Code" <> '' THEN BEGIN
+                IF OPplusSetup."Split Posting with Ext. Appl." THEN BEGIN
+                  IF GenJnlLineOriginal."Applied by" = GenJnlLineOriginal."Applied by"::Account THEN BEGIN
+                    IF GenJnlLine2."Amount (LCY)" <> RestAmtLCY THEN
+                      GenJnlLine2.VALIDATE("Amount (LCY)",RestAmtLCY)
+                  END ELSE BEGIN
+                    IF GenJnlLine2."Amount (LCY)" <> -RestAmtLCY THEN
+                      GenJnlLine2.VALIDATE("Amount (LCY)",-RestAmtLCY);
+                  END
+                END ELSE BEGIN
+                  IF GenJnlLine2."Amount (LCY)" <> RestAmtLCY THEN
+                    GenJnlLine2.VALIDATE("Amount (LCY)",RestAmtLCY);
+                END;
+              END;
+              // gbedv PMT CC +
+              GenJnlLine2."Application Status" := GenJnlLine2."Application Status"::Finished;
+              IF OPplusSetup."Text Balance Posting" <> '' THEN
+                GenJnlLine2.Description := OPplusSetup."Text Balance Posting"
+              ELSE
+                GenJnlLine2.Description := GenJnlLineOriginal.Description;
+              GenJnlLine2.INSERT(TRUE);
+            END;
+            // PMT CC Ggf. Kursdifferenz im Buchungsblatt erzeugen
+            IF (GainLossAmt <> 0) THEN BEGIN
+              GenJnlLine.VALIDATE("Amount (LCY)",GenJnlLine."Amount (LCY)" - GainLossAmt);
+              GenJnlLine.MODIFY;
+              GenJnlLine2 := GenJnlLine;
+              GenJnlLine2."Posting Payment Discount" := 0;
+              GenJnlLine2."Posting Payment Discount %" := 0;
+              GenJnlLine2."Applies-to Doc. Type" := 0;
+              GenJnlLine2."Applies-to Doc. No." := '';
+              GenJnlLine2."ID Applied-Entry" := 0;
+              GenJnlLine2."Applies-to ID" := '';
+              GenJnlLine2."Line No." := LineNo + Steps;
+
+              GetCurrency;
+              Currency.TESTFIELD("Realized G/L Gains Account");
+              Currency.TESTFIELD("Realized G/L Losses Account");
+              GLAcc."Application Bal. Debit Acc." := Currency."Realized G/L Gains Account";
+              GLAcc."Application Bal. Credit Acc." := Currency."Realized G/L Losses Account";
+
+              IF GainLossAmt > 0 THEN BEGIN
+                IF GLAcc."Application Bal. Debit Acc." <> '' THEN
+                  GenJnlLineOriginal."Account No." := GLAcc."Application Bal. Debit Acc.";
+              END ELSE BEGIN
+                IF GLAcc."Application Bal. Credit Acc." <> '' THEN
+                  GenJnlLineOriginal."Account No." := GLAcc."Application Bal. Credit Acc.";
+              END;
+              GenJnlLine2."Account Type" := GenJnlLineOriginal."Account Type";
+              GenJnlLine2.VALIDATE("Account No.",GenJnlLineOriginal."Account No.");
+              GenJnlLine2."Currency Code" := GenJnlLine."Currency Code";
+              GenJnlLine2."Allow Zero-Amount Posting" := TRUE;
+              GenJnlLine2.VALIDATE(Amount,0);
+              GenJnlLine2."Currency Factor" := 0;
+              IF OPplusSetup."Split Posting with Ext. Appl." THEN BEGIN
+                IF GenJnlLineOriginal."Applied by" = GenJnlLineOriginal."Applied by"::Account THEN
+                  GenJnlLine2."Amount (LCY)" := GainLossAmt
+                ELSE
+                  GenJnlLine2."Amount (LCY)" := -GainLossAmt;
+              END ELSE
+                GenJnlLine2."Amount (LCY)" := GainLossAmt;
+              GenJnlLine2.UpdateLineBalance;
+              GenJnlLine2."Application Status" := GenJnlLine2."Application Status"::Finished;
+              GenJnlLine2.Description := GenJnlLine.Description;
+              GenJnlLine2.INSERT(TRUE);
+            END;
+            // PMT CC
+            AdjGenJnlBalance.RUN(GenJnlLine);
+          END;
+        END;
+      END;
+      REC := GenJnlLine;
+    END;
+
+    BEGIN
+    {
+      -----------------------------------------------------
+      (c) gbedv, OPplus, All rights reserved
+
+      No.  Date       changed
+      -----------------------------------------------------
+      EA   01.11.08   Extended Application
+                      - Object created
+      EXT  01.11.08   Extended Application (Extension)
+      GLOE 01.11.08   Gen.Ledger Open Entries
+      -----------------------------------------------------
+
+
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+
+      *** Module: Payment Import via OPplus ***
+      H0823       22.01.14 ARI       Fill "External Document No." when Application is Set
+
+      *** Module: Payment Proposal - Payment Import ***
+      H0882       20.02.14 ARI       Fill "Payment Method Code" in GenJnlLine
+    }
+    END.
+  }
+}
+

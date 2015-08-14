@@ -1,0 +1,870 @@
+OBJECT Codeunit 50154 RHD Purchase JobQueue Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=23.09.14;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=GOB,HME0857;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=BEGIN
+            CASE "Parameter String" OF
+              'WEA': ExportWEA;
+              'WEM': ImportWEM;
+              'WEM_PROCESS': ProcessWEM;
+              // H0854 12022014 DMA +++++++++++++++++++++++++++++++++
+              'WMP': ImportWMP;
+              'WMP_PROCESS': ProcessWMP;
+              'WMP_PSE_PROCESS': ProcessWMPPSE;
+              // H0854 12022014 DMA ---------------------------------
+              // H0857 12022014 DMA +++++++++++++++++++++++++++++++++
+              'BMP': ImportBMP;
+              'BMP_PROCESS': ProcessBMP;
+              // H0857 12022014 DMA ---------------------------------
+              // H0856 12022014 DMA +++++++++++++++++++++++++++++++++
+              'UMP': ImportUMP;
+              'UMP_PROCESS': ProcessUMP;
+              // H0856 12022014 DMA ---------------------------------
+            END;
+          END;
+
+  }
+  CODE
+  {
+
+    PROCEDURE ExportWEA@1000000000();
+    VAR
+      lPurchExportHeader@1000000001 : Record 50178;
+      lPurchExportHeader2@1000000002 : Record 50178;
+      lPurchaseImExMgt@1000000000 : Codeunit 50155;
+    BEGIN
+      lPurchExportHeader.RESET;
+      lPurchExportHeader.SETRANGE(Status,lPurchExportHeader.Status::Unprocessed);
+      IF lPurchExportHeader.FINDSET THEN BEGIN
+        REPEAT
+          CLEARLASTERROR;
+          lPurchExportHeader2.GET(lPurchExportHeader."Entry No.");
+          CLEAR(lPurchaseImExMgt);
+          IF NOT lPurchaseImExMgt.RUN(lPurchExportHeader2) THEN BEGIN
+            lPurchExportHeader2.GET(lPurchExportHeader."Entry No.");
+            lPurchExportHeader2.Status := lPurchExportHeader2.Status::Error;
+            lPurchaseImExMgt.DeleteFileAfterError;
+          END ELSE BEGIN
+            lPurchExportHeader2.GET(lPurchExportHeader."Entry No.");
+            lPurchExportHeader2.Status := lPurchExportHeader2.Status::Exported;
+          END;
+          IF NOT lPurchExportHeader2.MODIFY THEN
+            lPurchaseImExMgt.DeleteFileAfterError;
+          CreateLogWEA(lPurchExportHeader2);
+          COMMIT;
+        UNTIL lPurchExportHeader.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE CreateLogWEA@1000000001(pPurchExportHeader@1000000001 : Record 50178);
+    VAR
+      lPurchaseLog@1000000000 : Record 80005;
+      lErrorText@1000000002 : Text[1000];
+      cRHDGenMgt@1000000003 : Codeunit 50157;
+    BEGIN
+      lPurchaseLog.INIT;
+      lPurchaseLog."Entry No." := cRHDGenMgt.GetNextEntryNo(80005);
+      lPurchaseLog.INSERT;
+
+      lPurchaseLog."Action Type" := lPurchaseLog."Action Type"::Export;
+      lPurchaseLog."Action Sub Type" := lPurchaseLog."Action Sub Type"::WEA;
+      CASE pPurchExportHeader.Status OF
+        pPurchExportHeader.Status::Exported:
+          BEGIN
+            lPurchaseLog.Status := lPurchaseLog.Status::Success;
+            lPurchaseLog.Filename := pPurchExportHeader.Filename;
+          END;
+        pPurchExportHeader.Status::Canceled:
+          BEGIN
+            lPurchaseLog.Status := lPurchaseLog.Status::Error;
+            lErrorText := COPYSTR(GETLASTERRORTEXT,1,1000);
+            lPurchaseLog."Error Description 1" := COPYSTR(lErrorText,1,250);
+            lPurchaseLog."Error Description 2" := COPYSTR(lErrorText,251,250);
+            lPurchaseLog."Error Description 3" := COPYSTR(lErrorText,501,250);
+            lPurchaseLog."Error Description 4" := COPYSTR(lErrorText,751,250);
+          END;
+      END;
+      lPurchaseLog."Process Date" := TODAY;
+      lPurchaseLog."Process Time" := TIME;
+      lPurchaseLog."Attached to Interface Entry" := pPurchExportHeader."Entry No.";
+      lPurchaseLog.MODIFY;
+    END;
+
+    PROCEDURE ImportWEM@1000000002();
+    VAR
+      RHDSetup@1000000005 : Record 50177;
+      FPCInterfaceSetup@1000000001 : Record 50014;
+      RHDPurchaseImport@1000000000 : Record 50180;
+      RHDPurchaseImExportMgt@1000000002 : Codeunit 50155;
+      FileRec@1000000003 : Record 2000000022;
+      FileName@1000000004 : Text[1024];
+    BEGIN
+      RHDSetup.GET;
+      RHDSetup.TESTFIELD("Interface Code WEM");
+
+      FPCInterfaceSetup.GET(RHDSetup."Interface Code WEM");
+      FPCInterfaceSetup.TESTFIELD("Import Folder");
+      FPCInterfaceSetup.TESTFIELD("Archive Root Folder");
+
+      IF COPYSTR(FPCInterfaceSetup."Import Folder",STRLEN(FPCInterfaceSetup."Import Folder"),1) <> '\' THEN
+        FPCInterfaceSetup."Import Folder" := FPCInterfaceSetup."Import Folder" + '\';
+
+      IF COPYSTR(FPCInterfaceSetup."Archive Root Folder",STRLEN(FPCInterfaceSetup."Archive Root Folder"),1) <> '\' THEN
+        FPCInterfaceSetup."Archive Root Folder" := FPCInterfaceSetup."Archive Root Folder" + '\';
+
+      FileRec.RESET;
+      FileRec.SETRANGE(Path,FPCInterfaceSetup."Import Folder");
+      FileRec.SETRANGE("Is a file",TRUE);
+      CLEARLASTERROR;
+      IF FileRec.FINDSET THEN BEGIN
+        REPEAT
+          FileName := FPCInterfaceSetup."Import Folder" + FileRec.Name;
+          IF RHDPurchaseImExportMgt.ReadWEM(FileName,FileRec.Name) THEN BEGIN
+            FILE.RENAME(FPCInterfaceSetup."Import Folder" + FileRec.Name,FPCInterfaceSetup."Archive Root Folder" + FileRec.Name);
+            //S/P1193
+            //CreateLogWEM(TRUE,FileName);
+            CreateLogWEM(TRUE,FileRec.Name);
+            //E/P1193
+            COMMIT;
+          END ELSE BEGIN
+            FILE.RENAME(FPCInterfaceSetup."Import Folder" + FileRec.Name,FPCInterfaceSetup."Archive Root Folder" + FileRec.Name);
+            //S/P1193
+            //CreateLogWEM(FALSE,FileName);
+            CreateLogWEM(TRUE,FileRec.Name);
+            //E/P1193
+          END;
+        UNTIL FileRec.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE CreateLogWEM@1000000003(pSuccess@1000000003 : Boolean;pFileName@1000000004 : Text[1024]);
+    VAR
+      lPurchaseLog@1000000000 : Record 80005;
+      lErrorText@1000000002 : Text[1000];
+      cRHDGenLog@1000000001 : Codeunit 50157;
+    BEGIN
+      lPurchaseLog.INIT;
+      lPurchaseLog."Entry No." := cRHDGenLog.GetNextEntryNo(80005);
+      lPurchaseLog.INSERT;
+
+      lPurchaseLog."Action Type" := lPurchaseLog."Action Type"::Import;
+      lPurchaseLog."Action Sub Type" := lPurchaseLog."Action Sub Type"::WEM;
+      lPurchaseLog.Filename := pFileName;
+
+      IF NOT pSuccess THEN BEGIN
+        lPurchaseLog.Status := lPurchaseLog.Status::Error;
+        lErrorText := COPYSTR(GETLASTERRORTEXT,1,1000);
+        lPurchaseLog."Error Description 1" := COPYSTR(lErrorText,1,250);
+        lPurchaseLog."Error Description 2" := COPYSTR(lErrorText,251,250);
+        lPurchaseLog."Error Description 3" := COPYSTR(lErrorText,501,250);
+        lPurchaseLog."Error Description 4" := COPYSTR(lErrorText,751,250);
+      END ELSE
+        lPurchaseLog.Status := lPurchaseLog.Status::Success;
+
+      lPurchaseLog."Process Date" := TODAY;
+      lPurchaseLog."Process Time" := TIME;
+      lPurchaseLog."Process by" := USERID;
+      lPurchaseLog.MODIFY;
+    END;
+
+    PROCEDURE ProcessWEM@1000000004();
+    VAR
+      RHDPurchaseImport@1000000000 : Record 50180;
+      RHDPurchaseImport2@1000000002 : Record 50180;
+      RHDPurchaseInterfaceMgt@1000000001 : Codeunit 50156;
+      sLastErrorText@1000000003 : Text[1024];
+      GOB001@1000000004 : TextConst 'DEU=Inbound Entry %1 successfully processed.;ENU=Inbound Entry %1 successfully processed.';
+      "*** HME ***"@1000000005 : Integer;
+      RHDSetupL@1000000006 : Record 50177;
+    BEGIN
+      RHDPurchaseImport.RESET;
+      RHDPurchaseImport.SETCURRENTKEY("Import Status");
+      RHDPurchaseImport.SETRANGE("Import Status",RHDPurchaseImport."Import Status"::Unprocessed);
+      // H0854 12022014 DMA +++++++++++++++++++++++++++++++++
+      RHDSetupL.GET;
+      RHDPurchaseImport.SETFILTER("Record Type",'%1',RHDSetupL."Record Type WEM");
+      // H0854 12022014 DMA ---------------------------------
+      IF RHDPurchaseImport.FIND('-') THEN
+        REPEAT
+          IF RHDPurchaseInterfaceMgt.RUN(RHDPurchaseImport) THEN BEGIN
+            RHDPurchaseImport2.GET(RHDPurchaseImport."Entry No.");
+            RHDPurchaseImport2."Import Status" := RHDPurchaseImport."Import Status"::Processed;
+            RHDPurchaseImport2."Process Timestamp" := CURRENTDATETIME;
+            //H0854 04.08.14 EHN +++++++++++++++++++++++++++
+            RHDPurchaseImport2."Error Description 1" := '';
+            //H0854 04.08.14 EHN ---------------------------
+            RHDPurchaseImport2.MODIFY;
+            //S/P1193
+            CreateLogProcessWEM(TRUE,STRSUBSTNO(GOB001,RHDPurchaseImport."Entry No."),RHDPurchaseImport2.Filename);
+            //E/P1193
+          END ELSE BEGIN
+            RHDPurchaseImport2.GET(RHDPurchaseImport."Entry No.");
+            RHDPurchaseImport2."Import Status" := RHDPurchaseImport."Import Status"::Error;
+            RHDPurchaseImport2."Process Timestamp" := CURRENTDATETIME;
+
+            IF STRLEN(GETLASTERRORTEXT) > 0 THEN
+              sLastErrorText := COPYSTR(GETLASTERRORTEXT,1,1000);
+            RHDPurchaseImport2."Error Description 1" := COPYSTR(sLastErrorText,1,250);
+            IF STRLEN(sLastErrorText) > 250 THEN
+              RHDPurchaseImport2."Error Description 2" := COPYSTR(sLastErrorText,251,250);
+            IF STRLEN(sLastErrorText) > 500 THEN
+              RHDPurchaseImport2."Error Description 3" := COPYSTR(sLastErrorText,501,250);
+            IF STRLEN(sLastErrorText) > 750 THEN
+              RHDPurchaseImport2."Error Description 4" := COPYSTR(sLastErrorText,751,250);
+
+            RHDPurchaseImport2.MODIFY;
+            //S/P1193
+            //CreateLogProcessWEM(FALSE,'');
+            CreateLogProcessWEM(FALSE,'',RHDPurchaseImport2.Filename);
+            //E/P1193
+          END;
+          COMMIT;
+        UNTIL RHDPurchaseImport.NEXT = 0;
+    END;
+
+    PROCEDURE CreateLogProcessWEM@1000000005(pSuccess@1000000003 : Boolean;pMessage@1000000004 : Text[1024];pFileName@1000000005 : Text[250]);
+    VAR
+      lPurchaseLog@1000000000 : Record 80005;
+      lErrorText@1000000002 : Text[1000];
+      cRHDGenLog@1000000001 : Codeunit 50157;
+    BEGIN
+      lPurchaseLog.INIT;
+      lPurchaseLog."Entry No." := cRHDGenLog.GetNextEntryNo(80005);
+      lPurchaseLog.INSERT;
+
+      lPurchaseLog."Action Type" := lPurchaseLog."Action Type"::Import;
+      lPurchaseLog."Action Sub Type" := lPurchaseLog."Action Sub Type"::WEM;
+      lPurchaseLog.Filename := pFileName;
+
+      IF NOT pSuccess THEN
+        lPurchaseLog.Status := lPurchaseLog.Status::Error
+      ELSE
+        lPurchaseLog.Status := lPurchaseLog.Status::Information;
+
+      IF pMessage <> '' THEN
+        lErrorText := pMessage
+      ELSE
+        lErrorText := COPYSTR(GETLASTERRORTEXT,1,1000);
+      lPurchaseLog."Error Description 1" := COPYSTR(lErrorText,1,250);
+      lPurchaseLog."Error Description 2" := COPYSTR(lErrorText,251,250);
+      lPurchaseLog."Error Description 3" := COPYSTR(lErrorText,501,250);
+      lPurchaseLog."Error Description 4" := COPYSTR(lErrorText,751,250);
+
+      lPurchaseLog."Process Date" := TODAY;
+      lPurchaseLog."Process Time" := TIME;
+      lPurchaseLog."Process by" := USERID;
+      lPurchaseLog.MODIFY;
+    END;
+
+    PROCEDURE "*** H0854 ***"@1000000006();
+    BEGIN
+    END;
+
+    PROCEDURE ProcessWMPPSE@1000000013();
+    VAR
+      RHDPurchaseImportL@1000000000 : Record 50180;
+      RHDPurchaseImport2L@1000000002 : Record 50180;
+      RHDSetupL@1000000005 : Record 50177;
+      ItemJournalLineL@1000000004 : Record 83;
+      ItemJnlPostL@1000000006 : Codeunit 23;
+      RHDPurchaseInterfaceMgtL@1000000001 : Codeunit 50156;
+      sLastErrorTextL@1000000003 : Text[1024];
+      LINE_PROCESS_SUCCESS@1000000008 : TextConst 'DEU=Inbound Entry %1 successfully processed.;ENU=Item Journal Line for Inbound Entry %1 successfully created.';
+    BEGIN
+      RHDSetupL.GET;
+      RHDPurchaseImportL.RESET;
+      RHDPurchaseImportL.SETCURRENTKEY("Import Status");
+      RHDPurchaseImportL.SETRANGE("Import Status",RHDPurchaseImportL."Import Status"::Unprocessed);
+      RHDPurchaseImportL.SETRANGE("Record Type",'PSE');
+
+      IF RHDPurchaseImportL.FINDFIRST THEN BEGIN
+        REPEAT
+          CLEARLASTERROR;
+          IF RHDPurchaseInterfaceMgtL.RUN(RHDPurchaseImportL) THEN BEGIN
+            RHDPurchaseImport2L.GET(RHDPurchaseImportL."Entry No.");
+            RHDPurchaseImport2L."Import Status" := RHDPurchaseImportL."Import Status"::Processed;
+            RHDPurchaseImport2L."Process Timestamp" := CURRENTDATETIME;
+            //H0854 04.08.14 EHN +++++++++++++++++++++++++++
+            RHDPurchaseImport2L."Error Description 1" := '';
+            //H0854 04.08.14 EHN ---------------------------
+            RHDPurchaseImport2L.MODIFY;
+          END ELSE BEGIN
+            RHDPurchaseImport2L.GET(RHDPurchaseImportL."Entry No.");
+            RHDPurchaseImport2L."Import Status" := RHDPurchaseImportL."Import Status"::Error;
+            RHDPurchaseImport2L."Process Timestamp" := CURRENTDATETIME;
+
+            IF STRLEN(GETLASTERRORTEXT) > 0 THEN
+              sLastErrorTextL := COPYSTR(GETLASTERRORTEXT,1,1000);
+            RHDPurchaseImport2L."Error Description 1" := COPYSTR(sLastErrorTextL,1,250);
+            IF STRLEN(sLastErrorTextL) > 250 THEN
+              RHDPurchaseImport2L."Error Description 2" := COPYSTR(sLastErrorTextL,251,250);
+            IF STRLEN(sLastErrorTextL) > 500 THEN
+              RHDPurchaseImport2L."Error Description 3" := COPYSTR(sLastErrorTextL,501,250);
+            IF STRLEN(sLastErrorTextL) > 750 THEN
+              RHDPurchaseImport2L."Error Description 4" := COPYSTR(sLastErrorTextL,751,250);
+
+            RHDPurchaseImport2L.MODIFY;
+            CreateLogProcessWMP(FALSE,STRSUBSTNO(LINE_PROCESS_SUCCESS,RHDPurchaseImportL."Entry No."),RHDPurchaseImport2L.Filename);
+          END;
+          COMMIT;
+        UNTIL RHDPurchaseImportL.NEXT = 0;
+
+        CLEARLASTERROR;
+        {
+        ItemJournalLineL.RESET;
+        ItemJournalLineL.SETRANGE("Journal Template Name",'UMLAGERUNG');
+        ItemJournalLineL.SETRANGE("Journal Batch Name",'RHENUS');
+        IF ItemJournalLineL.FINDFIRST THEN BEGIN
+          IF NOT ItemJnlPostL.RUN(ItemJournalLineL) THEN BEGIN
+            CreateLogProcessWMP(FALSE,COPYSTR(GETLASTERRORTEXT,1,1000),RHDPurchaseImport2L.Filename);
+          END;
+        END;
+        }
+      END;
+    END;
+
+    PROCEDURE ImportWMP@1000000022();
+    VAR
+      RHDSetup@1000000005 : Record 50177;
+      FPCInterfaceSetup@1000000001 : Record 50014;
+      RHDPurchaseImport@1000000000 : Record 50180;
+      ItemJournalLineL@1000000007 : Record 83;
+      ItemJnlPostL@1000000006 : Codeunit 23;
+      RHDPurchaseImExportMgt@1000000002 : Codeunit 50155;
+      FileRec@1000000003 : Record 2000000022;
+      FileName@1000000004 : Text[1024];
+    BEGIN
+      RHDSetup.GET;
+      RHDSetup.TESTFIELD("Interface Code WEM");
+
+      FPCInterfaceSetup.GET(RHDSetup."Interface Code WMP");
+      FPCInterfaceSetup.TESTFIELD("Import Folder");
+      FPCInterfaceSetup.TESTFIELD("Archive Root Folder");
+
+      IF COPYSTR(FPCInterfaceSetup."Import Folder",STRLEN(FPCInterfaceSetup."Import Folder"),1) <> '\' THEN
+        FPCInterfaceSetup."Import Folder" := FPCInterfaceSetup."Import Folder" + '\';
+
+      IF COPYSTR(FPCInterfaceSetup."Archive Root Folder",STRLEN(FPCInterfaceSetup."Archive Root Folder"),1) <> '\' THEN
+        FPCInterfaceSetup."Archive Root Folder" := FPCInterfaceSetup."Archive Root Folder" + '\';
+
+      FileRec.RESET;
+      FileRec.SETRANGE(Path,FPCInterfaceSetup."Import Folder");
+      FileRec.SETRANGE("Is a file",TRUE);
+      CLEARLASTERROR;
+      IF FileRec.FINDSET THEN BEGIN
+        REPEAT
+          FileName := FPCInterfaceSetup."Import Folder" + FileRec.Name;
+          IF RHDPurchaseImExportMgt.ReadWMP(FileName,FileRec.Name) THEN BEGIN
+            FILE.RENAME(FPCInterfaceSetup."Import Folder" + FileRec.Name,FPCInterfaceSetup."Archive Root Folder" + FileRec.Name);
+            CreateLogWMP(TRUE,FileRec.Name);
+            COMMIT;
+          END ELSE BEGIN
+            FILE.RENAME(FPCInterfaceSetup."Import Folder" + FileRec.Name,FPCInterfaceSetup."Archive Root Folder" + FileRec.Name);
+            CreateLogWMP(TRUE,FileRec.Name);
+          END;
+        UNTIL FileRec.NEXT = 0;
+
+        CLEARLASTERROR;
+
+      END;
+    END;
+
+    PROCEDURE CreateLogWMP@1000000021(pSuccess@1000000003 : Boolean;pFileName@1000000004 : Text[1024]);
+    VAR
+      lPurchaseLog@1000000000 : Record 80005;
+      lErrorText@1000000002 : Text[1000];
+      cRHDGenLog@1000000001 : Codeunit 50157;
+    BEGIN
+      lPurchaseLog.INIT;
+      lPurchaseLog."Entry No." := cRHDGenLog.GetNextEntryNo(80005);
+      lPurchaseLog.INSERT;
+
+      lPurchaseLog."Action Type" := lPurchaseLog."Action Type"::Import;
+      lPurchaseLog."Action Sub Type" := lPurchaseLog."Action Sub Type"::WMP;
+      lPurchaseLog.Filename := pFileName;
+
+      IF NOT pSuccess THEN BEGIN
+        lPurchaseLog.Status := lPurchaseLog.Status::Error;
+        lErrorText := COPYSTR(GETLASTERRORTEXT,1,1000);
+        lPurchaseLog."Error Description 1" := COPYSTR(lErrorText,1,250);
+        lPurchaseLog."Error Description 2" := COPYSTR(lErrorText,251,250);
+        lPurchaseLog."Error Description 3" := COPYSTR(lErrorText,501,250);
+        lPurchaseLog."Error Description 4" := COPYSTR(lErrorText,751,250);
+      END ELSE
+        lPurchaseLog.Status := lPurchaseLog.Status::Success;
+
+      lPurchaseLog."Process Date" := TODAY;
+      lPurchaseLog."Process Time" := TIME;
+      lPurchaseLog."Process by" := USERID;
+      lPurchaseLog.MODIFY;
+    END;
+
+    PROCEDURE ProcessWMP@1000000020();
+    VAR
+      RHDPurchaseImport@1000000000 : Record 50180;
+      RHDPurchaseImport2@1000000002 : Record 50180;
+      RHDPurchaseInterfaceMgt@1000000001 : Codeunit 50156;
+      sLastErrorText@1000000003 : Text[1024];
+      GOB001@1000000004 : TextConst 'DEU=Inbound Entry %1 successfully processed.;ENU=Inbound Entry %1 successfully processed.';
+      "*** HME ***"@1000000005 : Integer;
+      RHDSetupL@1000000006 : Record 50177;
+      ItemJournalLineL@1000000009 : Record 83;
+      ItemJnlPostL@1000000010 : Codeunit 22;
+      NoSeriesManagementL@1000000008 : Codeunit 396;
+      DocumentNoL@1000000007 : Code[20];
+    BEGIN
+      RHDPurchaseImport.RESET;
+      RHDPurchaseImport.SETCURRENTKEY("Import Status");
+      RHDPurchaseImport.SETRANGE("Import Status",RHDPurchaseImport."Import Status"::Unprocessed);
+      RHDSetupL.GET;
+      RHDPurchaseImport.SETFILTER("Record Type",'%1',RHDSetupL."Record Type WMP");
+      IF RHDPurchaseImport.FIND('-') THEN BEGIN
+        REPEAT
+          IF RHDPurchaseInterfaceMgt.RUN(RHDPurchaseImport) THEN BEGIN
+            RHDPurchaseImport2.GET(RHDPurchaseImport."Entry No.");
+            RHDPurchaseImport2."Import Status" := RHDPurchaseImport."Import Status"::Processed;
+            RHDPurchaseImport2."Process Timestamp" := CURRENTDATETIME;
+            //H0854 04.08.14 EHN +++++++++++++++++++++++++++
+            RHDPurchaseImport2."Error Description 1" := '';
+            //H0854 04.08.14 EHN ---------------------------
+            RHDPurchaseImport2.MODIFY;
+            CreateLogProcessWMP(TRUE,STRSUBSTNO(GOB001,RHDPurchaseImport."Entry No."),RHDPurchaseImport2.Filename);
+          END ELSE BEGIN
+            RHDPurchaseImport2.GET(RHDPurchaseImport."Entry No.");
+            RHDPurchaseImport2."Import Status" := RHDPurchaseImport."Import Status"::Error;
+            RHDPurchaseImport2."Process Timestamp" := CURRENTDATETIME;
+
+            IF STRLEN(GETLASTERRORTEXT) > 0 THEN
+              sLastErrorText := COPYSTR(GETLASTERRORTEXT,1,1000);
+            RHDPurchaseImport2."Error Description 1" := COPYSTR(sLastErrorText,1,250);
+            IF STRLEN(sLastErrorText) > 250 THEN
+              RHDPurchaseImport2."Error Description 2" := COPYSTR(sLastErrorText,251,250);
+            IF STRLEN(sLastErrorText) > 500 THEN
+              RHDPurchaseImport2."Error Description 3" := COPYSTR(sLastErrorText,501,250);
+            IF STRLEN(sLastErrorText) > 750 THEN
+              RHDPurchaseImport2."Error Description 4" := COPYSTR(sLastErrorText,751,250);
+
+            RHDPurchaseImport2.MODIFY;
+            CreateLogProcessWMP(FALSE,'',RHDPurchaseImport2.Filename);
+          END;
+          COMMIT;
+        UNTIL RHDPurchaseImport.NEXT = 0;
+        {
+        RHDSetupL.GET;
+        DocumentNoL := NoSeriesManagementL.GetNextNo(RHDSetupL."Transfer Item Journal Nos.",WORKDATE,TRUE);
+        COMMIT;
+
+
+        ItemJournalLineL.RESET;
+        ItemJournalLineL.SETRANGE("Journal Template Name",'UMLAGERUNG');
+        ItemJournalLineL.SETRANGE("Journal Batch Name",'RHENUS');
+        IF ItemJournalLineL.FINDFIRST THEN BEGIN
+          IF NOT ItemJnlPostL.RUN(ItemJournalLineL) THEN BEGIN
+            CreateLogProcessWMP(FALSE,COPYSTR(GETLASTERRORTEXT,1,1000),RHDPurchaseImport2.Filename);
+          END;
+        END;
+        }
+      END;
+    END;
+
+    PROCEDURE CreateLogProcessWMP@1000000019(pSuccess@1000000003 : Boolean;pMessage@1000000004 : Text[1024];pFileName@1000000005 : Text[250]);
+    VAR
+      lPurchaseLog@1000000000 : Record 80005;
+      lErrorText@1000000002 : Text[1000];
+      cRHDGenLog@1000000001 : Codeunit 50157;
+    BEGIN
+      lPurchaseLog.INIT;
+      lPurchaseLog."Entry No." := cRHDGenLog.GetNextEntryNo(80005);
+      lPurchaseLog.INSERT;
+
+      lPurchaseLog."Action Type" := lPurchaseLog."Action Type"::Import;
+      //H0854 01.08.14 EHN +++++++++++++++++++++++++++++++++++++++++++++++++++
+      //lPurchaseLog."Action Sub Type" := lPurchaseLog."Action Sub Type"::WEM;
+      lPurchaseLog."Action Sub Type" := lPurchaseLog."Action Sub Type"::WMP;
+      //H0854 01.08.14 EHN ---------------------------------------------------
+      lPurchaseLog.Filename := pFileName;
+
+      IF NOT pSuccess THEN
+        lPurchaseLog.Status := lPurchaseLog.Status::Error
+      ELSE
+        lPurchaseLog.Status := lPurchaseLog.Status::Information;
+
+      IF pMessage <> '' THEN
+        lErrorText := pMessage
+      ELSE
+        lErrorText := COPYSTR(GETLASTERRORTEXT,1,1000);
+      lPurchaseLog."Error Description 1" := COPYSTR(lErrorText,1,250);
+      lPurchaseLog."Error Description 2" := COPYSTR(lErrorText,251,250);
+      lPurchaseLog."Error Description 3" := COPYSTR(lErrorText,501,250);
+      lPurchaseLog."Error Description 4" := COPYSTR(lErrorText,751,250);
+
+      lPurchaseLog."Process Date" := TODAY;
+      lPurchaseLog."Process Time" := TIME;
+      lPurchaseLog."Process by" := USERID;
+      lPurchaseLog.MODIFY;
+    END;
+
+    PROCEDURE "*** H0857 ***"@1000000007();
+    BEGIN
+    END;
+
+    PROCEDURE CreateLogBMP@1000000009(SuccessV@1000000003 : Boolean;FileNameV@1000000004 : Text[1024]);
+    VAR
+      PurchaseLogL@1000000000 : Record 80005;
+      ErrorTextL@1000000002 : Text[1000];
+      RHDGenLogL@1000000001 : Codeunit 50157;
+    BEGIN
+      PurchaseLogL.INIT;
+      PurchaseLogL."Entry No." := RHDGenLogL.GetNextEntryNo(DATABASE::"RHD Purchase Log");
+      PurchaseLogL.INSERT;
+
+      PurchaseLogL."Action Type" := PurchaseLogL."Action Type"::Import;
+      PurchaseLogL."Action Sub Type" := PurchaseLogL."Action Sub Type"::BMP;
+      PurchaseLogL.Filename := FileNameV;
+
+      IF NOT SuccessV THEN BEGIN
+        PurchaseLogL.Status := PurchaseLogL.Status::Error;
+        ErrorTextL := COPYSTR(GETLASTERRORTEXT,1,1000);
+        PurchaseLogL."Error Description 1" := COPYSTR(ErrorTextL,1,250);
+        PurchaseLogL."Error Description 2" := COPYSTR(ErrorTextL,251,250);
+        PurchaseLogL."Error Description 3" := COPYSTR(ErrorTextL,501,250);
+        PurchaseLogL."Error Description 4" := COPYSTR(ErrorTextL,751,250);
+      END ELSE
+        PurchaseLogL.Status := PurchaseLogL.Status::Success;
+
+      PurchaseLogL."Process Date" := TODAY;
+      PurchaseLogL."Process Time" := TIME;
+      PurchaseLogL."Process by" := USERID;
+      PurchaseLogL.MODIFY;
+    END;
+
+    PROCEDURE CreateLogProcessBMP@1000000017(SuccessV@1000000003 : Boolean;MessageV@1000000004 : Text[1024]);
+    VAR
+      PurchaseLogL@1000000000 : Record 80005;
+      ErrorTextL@1000000002 : Text[1000];
+      cRHDGenLogL@1000000001 : Codeunit 50157;
+    BEGIN
+      PurchaseLogL.INIT;
+      PurchaseLogL."Entry No." := cRHDGenLogL.GetNextEntryNo(80005);
+      PurchaseLogL.INSERT;
+
+      PurchaseLogL."Action Type" := PurchaseLogL."Action Type"::Import;
+      PurchaseLogL."Action Sub Type" := PurchaseLogL."Action Sub Type"::BMP;
+      PurchaseLogL.Filename := '';
+
+      IF NOT SuccessV THEN
+        PurchaseLogL.Status := PurchaseLogL.Status::Error
+      ELSE
+        PurchaseLogL.Status := PurchaseLogL.Status::Information;
+
+      IF MessageV <> '' THEN
+        ErrorTextL := MessageV
+      ELSE
+        ErrorTextL := COPYSTR(GETLASTERRORTEXT,1,1000);
+      PurchaseLogL."Error Description 1" := COPYSTR(ErrorTextL,1,250);
+      PurchaseLogL."Error Description 2" := COPYSTR(ErrorTextL,251,250);
+      PurchaseLogL."Error Description 3" := COPYSTR(ErrorTextL,501,250);
+      PurchaseLogL."Error Description 4" := COPYSTR(ErrorTextL,751,250);
+
+      PurchaseLogL."Process Date" := TODAY;
+      PurchaseLogL."Process Time" := TIME;
+      PurchaseLogL."Process by" := USERID;
+      PurchaseLogL.MODIFY;
+    END;
+
+    PROCEDURE ImportBMP@1000000008();
+    VAR
+      RHDSetupL@1000000005 : Record 50177;
+      FPCInterfaceSetupL@1000000001 : Record 50014;
+      RHDBMPImportL@1000000000 : Record 50212;
+      RHDPurchaseImExportMgtL@1000000002 : Codeunit 50155;
+      FileRecL@1000000003 : Record 2000000022;
+      FileNameL@1000000004 : Text[1024];
+    BEGIN
+      RHDSetupL.GET;
+      RHDSetupL.TESTFIELD("Interface Code BMP");
+
+      FPCInterfaceSetupL.GET(RHDSetupL."Interface Code BMP");
+      FPCInterfaceSetupL.TESTFIELD("Import Folder");
+      FPCInterfaceSetupL.TESTFIELD("Archive Root Folder");
+
+      IF COPYSTR(FPCInterfaceSetupL."Import Folder",STRLEN(FPCInterfaceSetupL."Import Folder"),1) <> '\' THEN
+        FPCInterfaceSetupL."Import Folder" := FPCInterfaceSetupL."Import Folder" + '\';
+
+      IF COPYSTR(FPCInterfaceSetupL."Archive Root Folder",STRLEN(FPCInterfaceSetupL."Archive Root Folder"),1) <> '\' THEN
+        FPCInterfaceSetupL."Archive Root Folder" := FPCInterfaceSetupL."Archive Root Folder" + '\';
+
+      FileRecL.RESET;
+      FileRecL.SETRANGE(Path,FPCInterfaceSetupL."Import Folder");
+      FileRecL.SETRANGE("Is a file",TRUE);
+      CLEARLASTERROR;
+
+      //RHDBMPImportL.DELETEALL;
+      IF FileRecL.FINDSET THEN BEGIN
+        REPEAT
+          FileNameL := FPCInterfaceSetupL."Import Folder" + FileRecL.Name;
+          IF RHDPurchaseImExportMgtL.ReadBMP(FileNameL,FileRecL.Name) THEN BEGIN
+            FILE.RENAME(FPCInterfaceSetupL."Import Folder" + FileRecL.Name,FPCInterfaceSetupL."Archive Root Folder" + FileRecL.Name);
+            CreateLogBMP(TRUE,FileRecL.Name);
+            COMMIT;
+          END ELSE BEGIN
+            FILE.RENAME(FPCInterfaceSetupL."Import Folder" + FileRecL.Name,FPCInterfaceSetupL."Archive Root Folder" + FileRecL.Name);
+            CreateLogBMP(FALSE,FileRecL.Name);
+          END;
+        UNTIL FileRecL.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE ProcessBMP@1000000011();
+    VAR
+      RHDBMPImportL@1000000000 : Record 50212;
+      RHDBMPImport2L@1000000002 : Record 50212;
+      RHDPurchaseInterfaceMgtL@1000000001 : Codeunit 50156;
+      LastErrorTextL@1000000003 : Text[1024];
+    BEGIN
+      RHDBMPImportL.RESET;
+      RHDBMPImportL.SETRANGE("Import Status",RHDBMPImportL."Import Status"::Unprocessed);
+      IF RHDBMPImportL.FINDFIRST THEN
+        REPEAT
+          IF RHDPurchaseInterfaceMgtL.ProcessBMPLine(RHDBMPImportL) THEN BEGIN
+            RHDBMPImportL.GET(RHDBMPImportL."Entry No.");
+            RHDBMPImportL."Import Status" := RHDBMPImport2L."Import Status"::Processed;
+            RHDBMPImportL."Process Timestamp" := CURRENTDATETIME;
+            //H0857 04.08.14 EHN +++++++++++++++++++++++++++
+            RHDBMPImportL."Error Description 1" := '';
+            //H0857 04.08.14 EHN ---------------------------
+            RHDBMPImportL.MODIFY;
+          END ELSE BEGIN
+            RHDBMPImport2L.GET(RHDBMPImportL."Entry No.");
+            RHDBMPImport2L."Import Status" := RHDBMPImportL."Import Status"::Error;
+            RHDBMPImportL."Process Timestamp" := CURRENTDATETIME;
+
+            IF STRLEN(GETLASTERRORTEXT) > 0 THEN
+              LastErrorTextL := COPYSTR(GETLASTERRORTEXT,1,1000);
+            RHDBMPImport2L."Error Description 1" := COPYSTR(LastErrorTextL,1,250);
+            IF STRLEN(LastErrorTextL) > 250 THEN
+              RHDBMPImport2L."Error Description 2" := COPYSTR(LastErrorTextL,251,250);
+            IF STRLEN(LastErrorTextL) > 500 THEN
+              RHDBMPImport2L."Error Description 3" := COPYSTR(LastErrorTextL,501,250);
+            IF STRLEN(LastErrorTextL) > 750 THEN
+              RHDBMPImport2L."Error Description 4" := COPYSTR(LastErrorTextL,751,250);
+
+            RHDBMPImport2L.MODIFY;
+            CreateLogProcessBMP(FALSE,'');
+          END;
+          COMMIT;
+        UNTIL RHDBMPImportL.NEXT = 0;
+    END;
+
+    PROCEDURE "*** H0856 ***"@1000000010();
+    BEGIN
+    END;
+
+    PROCEDURE CreateLogUMP@1000000012(SuccessV@1000000003 : Boolean;FileNameV@1000000004 : Text[1024]);
+    VAR
+      PurchaseLogL@1000000000 : Record 80005;
+      ErrorTextL@1000000002 : Text[1000];
+      RHDGenLogL@1000000001 : Codeunit 50157;
+    BEGIN
+      PurchaseLogL.INIT;
+      PurchaseLogL."Entry No." := RHDGenLogL.GetNextEntryNo(80005);
+      PurchaseLogL.INSERT;
+
+      PurchaseLogL."Action Type" := PurchaseLogL."Action Type"::Import;
+      PurchaseLogL."Action Sub Type" := PurchaseLogL."Action Sub Type"::UMP;
+      PurchaseLogL.Filename := FileNameV;
+
+      IF NOT SuccessV THEN BEGIN
+        PurchaseLogL.Status := PurchaseLogL.Status::Error;
+        ErrorTextL := COPYSTR(GETLASTERRORTEXT,1,1000);
+        PurchaseLogL."Error Description 1" := COPYSTR(ErrorTextL,1,250);
+        PurchaseLogL."Error Description 2" := COPYSTR(ErrorTextL,251,250);
+        PurchaseLogL."Error Description 3" := COPYSTR(ErrorTextL,501,250);
+        PurchaseLogL."Error Description 4" := COPYSTR(ErrorTextL,751,250);
+      END ELSE
+        PurchaseLogL.Status := PurchaseLogL.Status::Success;
+
+      PurchaseLogL."Process Date" := TODAY;
+      PurchaseLogL."Process Time" := TIME;
+      PurchaseLogL."Process by" := USERID;
+      PurchaseLogL.MODIFY;
+    END;
+
+    PROCEDURE CreateLogProcessUMP@1000000016(SuccessV@1000000003 : Boolean;MessageV@1000000004 : Text[1024];FileNameV@1000000005 : Text[250]);
+    VAR
+      PurchaseLogL@1000000000 : Record 80005;
+      ErrorTextL@1000000002 : Text[1000];
+      RHDGenLogL@1000000001 : Codeunit 50157;
+    BEGIN
+      PurchaseLogL.INIT;
+      PurchaseLogL."Entry No." := RHDGenLogL.GetNextEntryNo(80005);
+      PurchaseLogL.INSERT;
+
+      PurchaseLogL."Action Type" := PurchaseLogL."Action Type"::Import;
+      PurchaseLogL."Action Sub Type" := PurchaseLogL."Action Sub Type"::UMP;
+      PurchaseLogL.Filename := FileNameV;
+
+      IF NOT SuccessV THEN
+        PurchaseLogL.Status := PurchaseLogL.Status::Error
+      ELSE
+        PurchaseLogL.Status := PurchaseLogL.Status::Information;
+
+      IF MessageV <> '' THEN
+        ErrorTextL := MessageV
+      ELSE
+        ErrorTextL := COPYSTR(GETLASTERRORTEXT,1,1000);
+      PurchaseLogL."Error Description 1" := COPYSTR(ErrorTextL,1,250);
+      PurchaseLogL."Error Description 2" := COPYSTR(ErrorTextL,251,250);
+      PurchaseLogL."Error Description 3" := COPYSTR(ErrorTextL,501,250);
+      PurchaseLogL."Error Description 4" := COPYSTR(ErrorTextL,751,250);
+
+      PurchaseLogL."Process Date" := TODAY;
+      PurchaseLogL."Process Time" := TIME;
+      PurchaseLogL."Process by" := USERID;
+      PurchaseLogL.MODIFY;
+    END;
+
+    PROCEDURE ImportUMP@1000000014();
+    VAR
+      RHDSetupL@1000000005 : Record 50177;
+      FPCInterfaceSetupL@1000000001 : Record 50014;
+      RHDPurchaseImportL@1000000000 : Record 50180;
+      RHDPurchaseImExportMgtL@1000000002 : Codeunit 50155;
+      FileRecL@1000000003 : Record 2000000022;
+      FileNameL@1000000004 : Text[1024];
+    BEGIN
+      RHDSetupL.GET;
+      RHDSetupL.TESTFIELD("Interface Code UMP");
+
+      FPCInterfaceSetupL.GET(RHDSetupL."Interface Code UMP");
+      FPCInterfaceSetupL.TESTFIELD("Import Folder");
+      FPCInterfaceSetupL.TESTFIELD("Archive Root Folder");
+
+      IF COPYSTR(FPCInterfaceSetupL."Import Folder",STRLEN(FPCInterfaceSetupL."Import Folder"),1) <> '\' THEN
+        FPCInterfaceSetupL."Import Folder" := FPCInterfaceSetupL."Import Folder" + '\';
+
+      IF COPYSTR(FPCInterfaceSetupL."Archive Root Folder",STRLEN(FPCInterfaceSetupL."Archive Root Folder"),1) <> '\' THEN
+        FPCInterfaceSetupL."Archive Root Folder" := FPCInterfaceSetupL."Archive Root Folder" + '\';
+
+      FileRecL.RESET;
+      FileRecL.SETRANGE(Path,FPCInterfaceSetupL."Import Folder");
+      FileRecL.SETRANGE("Is a file",TRUE);
+      CLEARLASTERROR;
+      IF FileRecL.FINDSET THEN BEGIN
+        REPEAT
+          FileNameL := FPCInterfaceSetupL."Import Folder" + FileRecL.Name;
+          IF RHDPurchaseImExportMgtL.ReadUMP(FileNameL,FileRecL.Name) THEN BEGIN
+            FILE.RENAME(FPCInterfaceSetupL."Import Folder" + FileRecL.Name,FPCInterfaceSetupL."Archive Root Folder" + FileRecL.Name);
+            CreateLogUMP(TRUE,FileRecL.Name);
+            COMMIT;
+          END ELSE BEGIN
+            FILE.RENAME(FPCInterfaceSetupL."Import Folder" + FileRecL.Name,FPCInterfaceSetupL."Archive Root Folder" + FileRecL.Name);
+            CreateLogUMP(FALSE,FileRecL.Name);
+          END;
+        UNTIL FileRecL.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE ProcessUMP@1000000015();
+    VAR
+      UMPImportLineL@1000000000 : Record 50211;
+      UMPImportLine2L@1000000002 : Record 50211;
+      RHDSetupL@1000000008 : Record 50177;
+      ItemJournalLineL@1000000007 : Record 83;
+      RHDPurchaseInterfaceMgtL@1000000001 : Codeunit 50156;
+      ItemJnlPostL@1000000006 : Codeunit 23;
+      NoSeriesManagementL@1000000005 : Codeunit 396;
+      DocumentNoL@1000000004 : Code[20];
+      LastErrorTextL@1000000003 : Text[1024];
+    BEGIN
+      UMPImportLineL.RESET;
+      UMPImportLineL.SETCURRENTKEY("Import Status");
+      UMPImportLineL.SETRANGE("Record Type",'UMP');
+      UMPImportLineL.SETRANGE("Import Status",UMPImportLineL."Import Status"::Unprocessed);
+      IF UMPImportLineL.FINDFIRST THEN BEGIN
+        REPEAT
+          CLEARLASTERROR;
+          IF RHDPurchaseInterfaceMgtL.ProcessUMPLine(UMPImportLineL) THEN BEGIN
+            UMPImportLine2L.GET(UMPImportLineL."Entry No.");
+            UMPImportLine2L."Import Status" := UMPImportLine2L."Import Status"::Processed;
+            UMPImportLine2L."Process Timestamp" := CURRENTDATETIME;
+            //H0854 04.08.14 EHN +++++++++++++++++++++++++++
+            UMPImportLine2L."Error Description 1" := '';
+            //H0854 04.08.14 EHN ---------------------------
+            UMPImportLine2L.MODIFY;
+          END ELSE BEGIN
+            UMPImportLine2L.GET(UMPImportLineL."Entry No.");
+            UMPImportLine2L."Import Status" := UMPImportLine2L."Import Status"::Error;
+            UMPImportLine2L."Process Timestamp" := CURRENTDATETIME;
+
+            IF STRLEN(GETLASTERRORTEXT) > 0 THEN
+              LastErrorTextL := COPYSTR(GETLASTERRORTEXT,1,1000);
+            UMPImportLine2L."Error Description 2" := COPYSTR(LastErrorTextL,1,250);
+            IF STRLEN(LastErrorTextL) > 250 THEN
+              UMPImportLine2L."Error Description 3" := COPYSTR(LastErrorTextL,251,250);
+            IF STRLEN(LastErrorTextL) > 500 THEN
+              UMPImportLine2L."Error Description 4" := COPYSTR(LastErrorTextL,501,250);
+            IF STRLEN(LastErrorTextL) > 750 THEN
+              UMPImportLine2L."Error Description 4" := COPYSTR(LastErrorTextL,751,250);
+
+            UMPImportLine2L.MODIFY;
+            CreateLogProcessUMP(FALSE,'',UMPImportLine2L."File Name");
+          END;
+          COMMIT;
+        UNTIL UMPImportLineL.NEXT = 0;
+      END;
+
+      RHDSetupL.GET;
+      DocumentNoL := NoSeriesManagementL.GetNextNo(RHDSetupL."Transfer Item Journal Nos.",WORKDATE,TRUE);
+      COMMIT;
+
+      ItemJournalLineL.RESET;
+      ItemJournalLineL.SETRANGE("Journal Template Name",'UMLAGERUNG');
+      ItemJournalLineL.SETRANGE("Journal Batch Name",'RHENUS');
+      ItemJournalLineL.SETRANGE("Document No.",DocumentNoL);
+      IF ItemJournalLineL.FINDSET THEN BEGIN
+        IF NOT ItemJnlPostL.RUN(ItemJournalLineL) THEN BEGIN
+          CreateLogProcessUMP(FALSE,COPYSTR(GETLASTERRORTEXT,1,1000),UMPImportLine2L."File Name");
+        END;
+      END;
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------------+
+      |                   ∏  Copyright                   |
+      |       GOB Software & Systeme GmbH & Co. KG       |
+      +--------------------------------------------------+
+      |                      home24                      |
+      +--------------------------------------------------+
+
+      Project   Date        Consultant  Comment
+      ------------------------------------------------------
+      P1100     11.09.2013  gob-dst     Object Created
+      P1193     10.02.2014  gob-dst     Filename ohne Pfad in Logs schreiben, Log auch im Erfolgsfall fÅr WEM
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+      H0854       12.02.14 DMA       Import and processing of PSE records
+      H0856       12.02.14 DMA       Import and processing of UMP files
+      H0857       12.02.14 DMA       Import and processing of BMP files
+    }
+    END.
+  }
+}
+

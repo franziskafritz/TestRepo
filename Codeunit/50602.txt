@@ -1,0 +1,669 @@
+OBJECT Codeunit 50602 IWS Global Data Handling
+{
+  OBJECT-PROPERTIES
+  {
+    Date=29.07.15;
+    Time=12:14:32;
+    Modified=Yes;
+    Version List=HME4392;
+  }
+  PROPERTIES
+  {
+    TableNo=50600;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Vendor@1000000008 : Record 23;
+      ItemImportLogSpecificData@1000000007 : Record 50600;
+      ItemTransfer@1000000006 : Record 50032;
+      Manufacturer@1000000005 : Record 5720;
+      Item@1000000004 : Record 27;
+      ErrorText@1000000003 : Text[250];
+      ItemDescription@1000000002 : Text[250];
+      txtCRLF@1000000001 : Text[2];
+      IsGlobalData@1000000000 : Boolean;
+      Text50000@1000000017 : TextConst 'ENU=Item No. %1 is longer than 20 characters';
+      Text50001@1000000016 : TextConst 'ENU=The imported Record is not a NAV Item.';
+      Text50002@1000000015 : TextConst 'ENU=Compared to previous Item Import Log Entry there is no difference!';
+      Text50003@1000000014 : TextConst 'ENU="Item category not found; "';
+      Text50004@1000000013 : TextConst 'ENU="Manufacturer doesn''t exist; "';
+      Text50005@1000000012 : TextConst 'ENU="Wrong EAN; "';
+      Text50006@1000000011 : TextConst 'ENU="EAN exists for item %1; "';
+      Text50007@1000000010 : TextConst 'ENU=Evaluated fields have not been inserted!';
+      Text50008@1000000009 : TextConst 'ENU="Country Code for %1 %2 doesnt exist;"';
+      Text50009@1000000018 : TextConst 'ENU=Compared to previous %1 Data there was no difference, Record will not be updated';
+      Text50010@1000000020 : TextConst 'ENU="Error when Inserting Item Unit of Meassure;"';
+      ManufacturerOccurence@1000000021 : Integer;
+
+    PROCEDURE CheckMarketPlace@1000000002(VAR ItemImportLogGlobalsR@1000000000 : Record 50600);
+    VAR
+      IsMarketPlaceL@1000000003 : Boolean;
+      MarketPlaceCaseL@1000000002 : Integer;
+      LC_GeneralMgt2@1000000001 : Codeunit 50040;
+    BEGIN
+      IsMarketPlaceL := FALSE;
+      MarketPlaceCaseL := LC_GeneralMgt2.CheckMP(ItemImportLogGlobalsR."Item No.",ItemImportLogGlobalsR."Vendor No.");
+      ItemImportLogGlobalsR."Evaluated MarketPlaceCaseID" := MarketPlaceCaseL;
+
+      IF MarketPlaceCaseL > 0 THEN BEGIN
+        ItemImportLogGlobalsR."Product Group" := '';
+        IsMarketPlaceL := TRUE;
+      END;
+
+      IF NOT FindItemCategory(ItemImportLogGlobalsR, IsMarketPlaceL,MarketPlaceCaseL) THEN
+        ErrorText:= ErrorText + COPYSTR(Text50003,1,MAXSTRLEN(ItemImportLogGlobalsR."Import Error Text"));
+
+      IF IsMarketPlaceL THEN
+        ItemImportLogGlobalsR."Evaluated Inventory Value Zero"  := TRUE;
+    END;
+
+    PROCEDURE FindItemCategory@1000000004(VAR ItemImportLogGlobalsR@1000000003 : Record 50600;IsMarketPlaceV@1000000001 : Boolean;MarketlaceCaseV@1000000000 : Integer) : Boolean;
+    VAR
+      ProdGroupL@1000000002 : Record 5723;
+      ItemCategoryL@1000000006 : Record 5722;
+    BEGIN
+      ItemImportLogGlobalsR."Product Category" := CONVERTSTR(ItemImportLogGlobalsR."Product Category",'&','/');
+      ItemImportLogGlobalsR."Product Category" := DELCHR(ItemImportLogGlobalsR."Product Category");
+
+      ProdGroupL.RESET;
+      ProdGroupL.SETRANGE(Description,ItemImportLogGlobalsR."Product Group");
+      IF IsMarketPlaceV THEN BEGIN
+        ProdGroupL.SETRANGE("Begin Item No.",COPYSTR(ItemImportLogGlobalsR."Item No.",1,5));
+        IF NOT ProdGroupL.FINDFIRST THEN
+          ProdGroupL.SETRANGE("Begin Item No.",COPYSTR(ItemImportLogGlobalsR."Item No.",1,2));
+      END ELSE
+        ProdGroupL.SETFILTER("Begin Item No.",'%1|%2',COPYSTR(ItemImportLogGlobalsR."Item No.",1,2),'');
+      IF ItemImportLogGlobalsR."Product Category" = '' THEN BEGIN
+        IF NOT ProdGroupL.FINDLAST THEN
+          EXIT(FALSE)
+        ELSE BEGIN
+          ItemImportLogGlobalsR."Evaluated Item Category Code" := ProdGroupL."Item Category Code";
+          ItemImportLogGlobalsR."Evaluated Product Group Code" := ProdGroupL.Code;
+        END;
+      END ELSE BEGIN
+        IF IsMarketPlaceV THEN
+          ItemCategoryL.SETFILTER(Description,'%1','@'+ 'MP' + FORMAT(MarketlaceCaseV) +' '+ ItemImportLogGlobalsR."Product Category")
+        ELSE
+          ItemCategoryL.SETFILTER(Description,'%1','@'+ ItemImportLogGlobalsR."Product Category");
+        IF NOT ItemCategoryL.FINDLAST THEN
+          EXIT(FALSE);
+        ItemImportLogGlobalsR."Evaluated Item Category Code" := ItemCategoryL.Code;
+        ProdGroupL.SETRANGE("Item Category Code",ItemCategoryL.Code);
+        IF ProdGroupL.FINDFIRST THEN
+          ItemImportLogGlobalsR."Evaluated Product Group Code" := ProdGroupL.Code;
+      END;
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE CheckEAN@1000000000(VAR ItemImportLogGlobalsR@1000000010 : Record 50600);
+    VAR
+      SumL@1000000003 : Integer;
+      CheckSumL@1000000004 : Integer;
+      ErrorTextL@1000000007 : Text[80];
+      IntL@1000000001 : Integer;
+      E005@1000000000 : TextConst 'DEU="EAN fehlerhaft ;";ENU="EAN false ; "';
+      E006@1000000006 : TextConst 'DEU="EAN existiert zu Artikel %1 ;";ENU="EAN exist for item %1 ;"';
+      ItemCrossRef@1000000008 : Record 5717;
+      CounterL@1000000002 : Integer;
+      LT_ItemReference@1000000005 : Record 5717;
+    BEGIN
+      SumL := 0;
+      CheckSumL := 0;
+      CounterL := 0;
+      IF STRLEN(ItemImportLogGlobalsR.EAN) <> 13 THEN
+        ErrorTextL:= Text50005
+      ELSE
+        FOR CounterL:= 1 TO 13 DO BEGIN
+          IF EVALUATE(IntL,COPYSTR(ItemImportLogGlobalsR.EAN,CounterL,1)) THEN BEGIN
+            CASE CounterL OF
+              1,3,5,7,9,11:
+                SumL := SumL + IntL;
+              2,4,6,8,10,12:
+                SumL := SumL + (IntL * 3);
+              13:
+                BEGIN
+                  CheckSumL := SumL + IntL;
+                  IF (ROUND(CheckSumL / 10,1) * 10) <> CheckSumL THEN
+                    ErrorTextL:= Text50005;
+                END;
+            END;
+          END ELSE
+            ErrorTextL:= Text50005;
+        END;
+
+      IF ItemImportLogGlobalsR.EAN <> '' THEN BEGIN
+        ItemCrossRef.SETFILTER("Item No.",'<>%1',ItemImportLogGlobalsR."Item No.");
+        ItemCrossRef.SETRANGE("Unit of Measure",ItemImportLogGlobalsR."Evaluated Unit of Measure");
+        ItemCrossRef.SETRANGE("Cross-Reference Type",ItemCrossRef."Cross-Reference Type"::"Bar Code");
+        ItemCrossRef.SETRANGE("Cross-Reference No.",ItemImportLogGlobalsR.EAN);
+        ItemCrossRef.SETRANGE("Discontinue Bar Code",FALSE);
+        IF NOT ItemCrossRef.ISEMPTY THEN BEGIN
+           ItemCrossRef.FINDFIRST;
+           ErrorTextL:= STRSUBSTNO(Text50006,ItemCrossRef."Item No.");
+        END;
+      END;
+
+      IF ErrorTextL <> '' THEN BEGIN
+        ErrorText := ErrorText +
+          COPYSTR(ErrorTextL,1,MAXSTRLEN(ItemImportLogGlobalsR."Import Error Text"));
+        ItemImportLogGlobalsR."Evaluated EAN Code" := '';
+      END ELSE BEGIN
+        ItemImportLogGlobalsR."Evaluated EAN Code" := ItemImportLogGlobalsR.EAN;
+      END;
+    END;
+
+    PROCEDURE CreateItemDescriptions@1000000001(VAR ItemImportLogGlobalsR@1000000005 : Record 50600);
+    VAR
+      ItemDescriptionL@1000000001 : Text[100];
+      ItemDescription2L@1000000002 : Text[100];
+      Stop@1000000003 : Boolean;
+      Length@1000000004 : Integer;
+    BEGIN
+      Length := STRLEN(ItemImportLogGlobalsR."Original Description");
+
+      CASE Length OF
+        1..50   : BEGIN
+                    ItemImportLogGlobalsR."Evaluated Item Description 1" := ItemImportLogGlobalsR."Original Description";
+                  END;
+        100     : BEGIN
+                    ItemImportLogGlobalsR."Evaluated Item Description 1" := COPYSTR(ItemImportLogGlobalsR."Original Description",1,50);
+                    ItemImportLogGlobalsR."Evaluated Item Description 2" := COPYSTR(ItemImportLogGlobalsR."Original Description",51);
+                  END;
+        51..99 : BEGIN
+                    IF STRPOS(ItemImportLogGlobalsR."Original Description",'') <> 0 THEN BEGIN
+                      ItemDescriptionL := COPYSTR(ItemImportLogGlobalsR."Original Description",1,
+                        STRPOS(ItemImportLogGlobalsR."Original Description",''));
+                      ItemDescription2L := COPYSTR(ItemImportLogGlobalsR."Original Description",
+                        STRPOS(ItemImportLogGlobalsR."Original Description",''));
+                      IF STRLEN(ItemDescriptionL) < 50 THEN
+                        REPEAT
+                          IF (STRLEN(ItemDescriptionL) + STRPOS(ItemDescription2L,'') < 50) THEN BEGIN
+                            ItemDescriptionL := ItemDescriptionL + COPYSTR(ItemDescription2L,1,STRPOS(ItemDescription2L,''));
+                            ItemDescription2L := DELSTR(ItemDescription2L,1,STRPOS(ItemDescription2L,''));
+                          END ELSE
+                            Stop := TRUE;
+                        UNTIL Stop;
+                    END ELSE BEGIN
+                      ItemImportLogGlobalsR."Evaluated Item Description 1" := COPYSTR(ItemImportLogGlobalsR."Original Description",1,50)
+      ;
+                      ItemImportLogGlobalsR."Evaluated Item Description 2" := COPYSTR(ItemImportLogGlobalsR."Original Description",51);
+                    END;
+                  END;
+      END;
+    END;
+
+    PROCEDURE EvaluateLanguageCode@1000000005(VAR ImportLogGeneralData@1000000000 : Record 50600);
+    VAR
+      CountryRegionL@1000000002 : Record 9;
+    BEGIN
+      IF ImportLogGeneralData."Production Country" <> '' THEN
+        IF NOT CountryRegionL.GET(ImportLogGeneralData."Production Country") THEN
+          ErrorText := ErrorText + COPYSTR(STRSUBSTNO(Text50008,ImportLogGeneralData.FIELDCAPTION("Production Country"),
+                       ImportLogGeneralData."Production Country"),1,MAXSTRLEN(ImportLogGeneralData."Import Error Text"))
+        ELSE
+          ImportLogGeneralData."Evaluated Production Country" := CountryRegionL.Code;
+
+      IF ImportLogGeneralData."Country of Origin" <> '' THEN
+        IF NOT CountryRegionL.GET(ImportLogGeneralData."Country of Origin") THEN
+          ErrorText := ErrorText + COPYSTR(STRSUBSTNO(Text50008,ImportLogGeneralData.FIELDCAPTION("Country of Origin"),
+                       ImportLogGeneralData."Country of Origin"),1,MAXSTRLEN(ImportLogGeneralData."Import Error Text"))
+        ELSE
+          ImportLogGeneralData."Evaluated Country of Origin" := CountryRegionL.Code;
+    END;
+
+    PROCEDURE CompareEvaluatedEntry@1000000006(VAR ItemImportGlobalsV@1000000003 : Record 50600);
+    VAR
+      ItemImportGlobalsL@1000000009 : Record 50600;
+      EvaluateAppDataL@1000000000 : Codeunit 50603;
+    BEGIN
+      //This Function compares the evaluated Entries with the latest evaluated entries.
+
+      ItemImportGlobalsL.SETRANGE("Item No.",ItemImportGlobalsV."Item No.");
+      ItemImportGlobalsL.SETFILTER("Request ID",'<%1',ItemImportGlobalsV."Request ID");
+      ItemImportGlobalsL.SETRANGE("Import Status",ItemImportGlobalsL."Import Status"::Finished);
+
+      IF ItemImportGlobalsL.FIND('+') THEN BEGIN
+        IF (ItemImportGlobalsV.EAN <> ItemImportGlobalsL.EAN) OR
+           (ItemImportGlobalsV."Vendor Item No." <> ItemImportGlobalsL."Vendor Item No.") OR
+           (ItemImportGlobalsV."Original Description" <> ItemImportGlobalsL."Original Description") OR
+           (ItemImportGlobalsV."Vendor No." <> ItemImportGlobalsL."Vendor No.") OR
+           (ItemImportGlobalsV."Product Group" <> ItemImportGlobalsL."Product Group") OR
+           (ItemImportGlobalsV."Product Category" <> ItemImportGlobalsL."Product Category") OR
+           (ItemImportGlobalsV.Volume <> ItemImportGlobalsL.Volume) OR
+           (ItemImportGlobalsV."Gross Weight" <> ItemImportGlobalsL."Gross Weight") OR
+           (ItemImportGlobalsV."Net Weight" <> ItemImportGlobalsL."Net Weight") OR
+           (ItemImportGlobalsV.Pieces <> ItemImportGlobalsL.Pieces) OR
+           (ItemImportGlobalsV."Assembly Amount" <> ItemImportGlobalsL."Assembly Amount") OR
+           (ItemImportGlobalsV."Production Country" <> ItemImportGlobalsL."Production Country") OR
+           (ItemImportGlobalsV."Country of Origin" <> ItemImportGlobalsL."Country of Origin") OR
+           (ItemImportGlobalsV."Customs Tariff Number EU" <> ItemImportGlobalsL."Customs Tariff Number EU") OR
+           (ItemImportGlobalsV."VOC Percentage" <> ItemImportGlobalsL."VOC Percentage") OR
+           (ItemImportGlobalsV."Cites Charge" <> ItemImportGlobalsL."Cites Charge") OR
+           (ItemImportGlobalsV."Wood Origin" <> ItemImportGlobalsL."Wood Origin") OR
+           (ItemImportGlobalsV."Hazardous Good" <> ItemImportGlobalsL."Hazardous Good") OR
+           (ItemImportGlobalsV."Extra Measure" <> ItemImportGlobalsL."Extra Measure") OR
+           (ItemImportGlobalsV."Evaluated Vendor Item No." <> ItemImportGlobalsL."Evaluated Vendor Item No.") OR
+           (ItemImportGlobalsV."Evaluated Vendor Item No. Add." <> ItemImportGlobalsL."Evaluated Vendor Item No. Add.") OR
+           (ItemImportGlobalsV."Evaluated Item Category Code" <> ItemImportGlobalsL."Evaluated Item Category Code") OR
+           (ItemImportGlobalsV."Evaluated Product Group Code" <> ItemImportGlobalsL."Evaluated Product Group Code") OR
+           (ItemImportGlobalsV."Evaluated EAN Code" <> ItemImportGlobalsL."Evaluated EAN Code") OR
+           (ItemImportGlobalsV."Evaluated Item Description 1" <> ItemImportGlobalsL."Evaluated Item Description 1") OR
+           (ItemImportGlobalsV."Evaluated Item Description 2" <> ItemImportGlobalsL."Evaluated Item Description 2") OR
+           (ItemImportGlobalsV."Evaluated Manufacturer Code" <> ItemImportGlobalsL."Evaluated Manufacturer Code") OR
+           (ItemImportGlobalsV."Evaluated Inventory Value Zero" <> ItemImportGlobalsL."Evaluated Inventory Value Zero") OR
+           (ItemImportGlobalsV."Evaluated MarketPlaceCaseID" <> ItemImportGlobalsL."Evaluated MarketPlaceCaseID") OR
+           (ItemImportGlobalsV."Evaluated Unit of Measure" <> ItemImportGlobalsL."Evaluated Unit of Measure") OR
+           (ItemImportGlobalsV."Evaluated Production Country" <> ItemImportGlobalsL."Evaluated Production Country") OR
+           (ItemImportGlobalsV."Evaluated Country of Origin" <> ItemImportGlobalsL."Evaluated Country of Origin") THEN BEGIN
+          ItemImportGlobalsV."Import Status" := ItemImportGlobalsV."Import Status"::Evaluated;
+          ItemImportGlobalsV."Modified on" := CURRENTDATETIME;
+        END ELSE BEGIN
+          ItemImportGlobalsV."Import Status" := ItemImportGlobalsV."Import Status"::Finished;
+          ItemImportGlobalsV."Import Error Text" := STRSUBSTNO(Text50009,'Global');
+          ItemImportGlobalsV."Modified on" := CURRENTDATETIME;
+        END;
+      END ELSE BEGIN
+        ItemImportGlobalsV."Import Status" := ItemImportGlobalsV."Import Status"::Evaluated;
+        ItemImportGlobalsV."Modified on" := CURRENTDATETIME;
+      END;
+    END;
+
+    PROCEDURE UpdateItemValues@1000000003(VAR ItemImportGlobalData@1000000000 : Record 50600);
+    VAR
+      ItemL@1000000001 : Record 27;
+      Item2L@1000000003 : Record 27;
+      LineNoL@1000000005 : Integer;
+    BEGIN
+      //H1216 16.06.14 ARI ++++++++++++++++++++++++++++++++++++
+      CLEAR(ItemL);
+      ItemL.LOCKTABLE;
+      IF ItemL.GET(ItemImportGlobalData."Item No.") THEN
+        ModifyItem(ItemL,ItemImportGlobalData)
+      ELSE
+        InsertItem(ItemImportGlobalData);
+
+      UpdateItemParcels(ItemImportGlobalData,ItemL);
+      UpdateTariffNumber(ItemImportGlobalData);
+      UpdateItemUnitofMeassure(ItemImportGlobalData);
+
+      //H1349 14.07.14 ARI +++++++++++++++++++++++++
+      IF ItemImportGlobalData."Evaluated EAN Code" <> '' THEN
+        ProcessEAN(ItemImportGlobalData);
+      //H1349 14.07.14 ARI -------------------------
+
+      ItemImportGlobalData."Import Status" := ItemImportGlobalData."Import Status"::Finished;
+      ItemImportGlobalData."Modified on" := CURRENTDATETIME;
+      //H1216 16.06.14 ARI ------------------------------------
+    END;
+
+    PROCEDURE UpdateItemParcels@1000000007(VAR ItemImportGlobalDataR@1000000000 : Record 50600;VAR ItemR@1000000001 : Record 27);
+    VAR
+      ItemParcelsL@1000000003 : Record 50023;
+      LineNoL@1000000002 : Integer;
+      CounterL@1000000004 : Integer;
+    BEGIN
+      //H1216 16.06.14 ARI ++++++++++++++++++++++++++++++++++++
+      ItemR.CALCFIELDS("Parcels Number");
+      IF ItemR."Parcels Number" <> ItemImportGlobalDataR.Pieces THEN BEGIN
+        ItemParcelsL.RESET;
+        ItemParcelsL.SETRANGE("Item No.",ItemImportGlobalDataR."Item No.");
+        IF NOT ItemParcelsL.ISEMPTY THEN
+          ItemParcelsL.DELETEALL;
+        IF ItemImportGlobalDataR.Pieces > 0 THEN BEGIN
+          LineNoL := 0;
+          FOR CounterL := 1 TO ItemImportGlobalDataR.Pieces DO BEGIN
+            LineNoL += 10000;
+            ItemParcelsL.INIT;
+            ItemParcelsL."Item No." := ItemImportGlobalDataR."Item No.";
+            ItemParcelsL."Line No." := LineNoL;
+            ItemParcelsL.INSERT;
+          END;
+        END;
+      END;
+      //H1216 16.06.14 ARI ------------------------------------
+    END;
+
+    PROCEDURE UpdateTariffNumber@1000000011(VAR ItemImportGlobalDataR@1000000001 : Record 50600);
+    VAR
+      TariffNumberL@1000000000 : Record 260;
+    BEGIN
+      //H1216 16.06.14 ARI ++++++++++++++++++++++++++++++++++++
+      IF NOT TariffNumberL.GET(ItemImportGlobalDataR."Customs Tariff Number EU") THEN BEGIN
+        TariffNumberL.INIT;
+        TariffNumberL."No." := ItemImportGlobalDataR."Customs Tariff Number EU";
+        TariffNumberL.Description := ItemImportGlobalDataR."Item No.";
+        TariffNumberL.INSERT;
+      END;
+      //H1216 16.06.14 ARI ------------------------------------
+    END;
+
+    PROCEDURE UpdateItemUnitofMeassure@1000000012(VAR ItemImportGlobalDataR@1000000001 : Record 50600);
+    VAR
+      ItemUoML@1000000000 : Record 5404;
+    BEGIN
+      //H1216 16.06.14 ARI ++++++++++++++++++++++++++++++++++++
+      IF NOT ItemUoML.GET(ItemImportGlobalDataR."Item No.",ItemImportGlobalDataR."Evaluated Unit of Measure") THEN BEGIN
+        ItemUoML.INIT;
+        ItemUoML."Item No." := ItemImportGlobalDataR."Item No.";
+        ItemUoML.Code := ItemImportGlobalDataR."Evaluated Unit of Measure";
+        ItemUoML.INSERT
+      END;
+      //H1216 16.06.14 ARI ------------------------------------
+    END;
+
+    PROCEDURE ModifyItem@1000000008(VAR ItemR@1000000000 : Record 27;VAR ItemImportGlobalDataR@1000000002 : Record 50600);
+    VAR
+      VendL@1000000004 : Record 23;
+      DoModifyL@1000000001 : Boolean;
+      EvaluatedVendorNameL@1000000003 : Text[50];
+    BEGIN
+      //H1216 16.06.14 ARI ++++++++++++++++++++++++++++++++++++
+
+      IF ItemR.EAN <> ItemImportGlobalDataR."Evaluated EAN Code" THEN BEGIN
+        ItemR.EAN := ItemImportGlobalDataR."Evaluated EAN Code";
+        DoModifyL := TRUE;
+      END;
+
+      IF ItemR."Vendor No." <> ItemImportGlobalDataR."Vendor No." THEN BEGIN
+        //H1188 17.06.14 ARI +++++++++++++++++++++++++++++
+        ItemR.VALIDATE("Vendor No.", ItemImportGlobalDataR."Vendor No.");
+        //H1188 17.06.14 ARI -----------------------------
+        DoModifyL := TRUE;
+      END;
+
+      IF ItemR."Vendor Item No." <> ItemImportGlobalDataR."Evaluated Vendor Item No." THEN BEGIN
+        //H1188 17.06.14 ARI +++++++++++++++++++++++++++++
+        ItemR.VALIDATE("Vendor Item No.",ItemImportGlobalDataR."Evaluated Vendor Item No.");
+        //H1188 17.06.14 ARI -----------------------------
+        DoModifyL := TRUE;
+      END;
+
+      IF ItemR."Vendor Item No. Add." <> ItemImportGlobalDataR."Evaluated Vendor Item No. Add." THEN BEGIN
+        ItemR."Vendor Item No. Add." := ItemImportGlobalDataR."Evaluated Vendor Item No. Add.";
+        DoModifyL := TRUE;
+      END;
+
+      IF ItemR."Vendor Description" <> ItemImportGlobalDataR."Original Description" THEN BEGIN
+        ItemR."Vendor Description" := ItemImportGlobalDataR."Original Description";
+        DoModifyL := TRUE;
+      END;
+
+      IF ItemR."Manufacturer Code" <> ItemImportGlobalDataR."Evaluated Manufacturer Code" THEN BEGIN
+        ItemR."Manufacturer Code" := ItemImportGlobalDataR."Evaluated Manufacturer Code";
+        DoModifyL := TRUE;
+      END;
+
+      IF ItemR."Inventory Value Zero" <> ItemImportGlobalDataR."Evaluated Inventory Value Zero" THEN BEGIN
+        ItemR."Inventory Value Zero" := ItemImportGlobalDataR."Evaluated Inventory Value Zero";
+        DoModifyL := TRUE;
+      END;
+
+      IF ItemR."Base Unit of Measure" <> ItemImportGlobalDataR."Evaluated Unit of Measure" THEN BEGIN
+        ItemR."Base Unit of Measure" := ItemImportGlobalDataR."Evaluated Unit of Measure";
+        DoModifyL := TRUE;
+      END;
+
+      IF ItemR."Sales Unit of Measure" <> ItemImportGlobalDataR."Evaluated Unit of Measure" THEN BEGIN
+        ItemR."Sales Unit of Measure" := ItemImportGlobalDataR."Evaluated Unit of Measure";
+        DoModifyL := TRUE;
+      END;
+
+      IF ItemR."Purch. Unit of Measure" <> ItemImportGlobalDataR."Evaluated Unit of Measure" THEN BEGIN
+        ItemR."Purch. Unit of Measure" := ItemImportGlobalDataR."Evaluated Unit of Measure";
+        DoModifyL := TRUE;
+      END;
+
+      IF ItemR."Units per Parcel" <> ItemImportGlobalDataR.Pieces THEN BEGIN
+        ItemR."Units per Parcel" := ItemImportGlobalDataR.Pieces;
+        DoModifyL := TRUE;
+      END;
+
+      IF ItemR."Tariff No." <> ItemImportGlobalDataR."Customs Tariff Number EU" THEN BEGIN
+        ItemR."Tariff No." := ItemImportGlobalDataR."Customs Tariff Number EU";
+        DoModifyL := TRUE;
+      END;
+
+      IF ItemR."Country/Region of Mfg. Code" <> ItemImportGlobalDataR."Evaluated Production Country" THEN BEGIN
+        ItemR."Country/Region of Mfg. Code" := ItemImportGlobalDataR."Evaluated Production Country";
+        DoModifyL := TRUE;
+      END;
+
+      IF ItemR."Country/Region of Origin Code" <> ItemImportGlobalDataR."Evaluated Country of Origin" THEN BEGIN
+        ItemR."Country/Region of Origin Code" := ItemImportGlobalDataR."Evaluated Country of Origin";
+        DoModifyL := TRUE;
+      END;
+
+      IF ItemR."Wood Origin" <> ItemImportGlobalDataR."Wood Origin" THEN BEGIN
+        ItemR."Wood Origin" := ItemImportGlobalDataR."Wood Origin";
+        DoModifyL := TRUE;
+      END;
+
+      IF ItemR."VOC Percentage" <> ItemImportGlobalDataR."VOC Percentage" THEN BEGIN
+        ItemR."VOC Percentage" := ItemImportGlobalDataR."VOC Percentage";
+        DoModifyL := TRUE;
+      END;
+
+      IF ItemR."Cites Charge" <> ItemImportGlobalDataR."Cites Charge" THEN BEGIN
+        ItemR."Cites Charge" := ItemImportGlobalDataR."Cites Charge";
+        DoModifyL := TRUE;
+      END;
+
+      IF ItemR."Hazardous Good" <> ItemImportGlobalDataR."Hazardous Good" THEN BEGIN
+        ItemR."Hazardous Good" := ItemImportGlobalDataR."Hazardous Good";
+        DoModifyL := TRUE;
+      END;
+
+      IF ItemR."Extra Measure" <> ItemImportGlobalDataR."Extra Measure" THEN BEGIN
+        ItemR."Extra Measure" := ItemImportGlobalDataR."Extra Measure";
+        DoModifyL := TRUE;
+      END;
+
+      IF ItemR."Unit Volume" <> ItemImportGlobalDataR.Volume THEN BEGIN
+        ItemR."Unit Volume" := ItemImportGlobalDataR.Volume;
+        DoModifyL := TRUE;
+      END;
+
+      IF ItemR."Gross Weight" <> ItemImportGlobalDataR."Gross Weight" THEN BEGIN
+        ItemR."Gross Weight" := ItemImportGlobalDataR."Gross Weight";
+        DoModifyL := TRUE;
+      END;
+
+      IF ItemR."Net Weight" <> ItemImportGlobalDataR."Net Weight" THEN BEGIN
+        ItemR."Net Weight" := ItemImportGlobalDataR."Net Weight";
+        DoModifyL := TRUE;
+      END;
+
+      IF ItemR."Assembly Service Amount" <> ItemImportGlobalDataR."Assembly Amount" THEN BEGIN
+        ItemR."Assembly Service Amount" := ItemImportGlobalDataR."Assembly Amount";
+        DoModifyL := TRUE;
+      END;
+
+      IF ItemR."Item Category Code" <>  ItemImportGlobalDataR."Evaluated Item Category Code" THEN BEGIN
+        ItemR.VALIDATE("Item Category Code",ItemImportGlobalDataR."Evaluated Item Category Code");
+        //H3511 11.03.15 FPR +++++++++++++++++++++++++
+        ItemR.UpdateMPPItemVendorRelation(ItemR,ItemR."Vendor No.",ItemR."Vendor No.",91); //Gen. Prod. Posting Group
+        ItemR.UpdateMPPItemVendorRelation(ItemR,ItemR."Vendor No.",ItemR."Vendor No.",99); //VAT Prod. Posting Group
+        //H3511 11.03.15 FPR -------------------------
+        DoModifyL := TRUE;
+      END;
+
+      IF ItemR."Product Group Code" <> ItemImportGlobalDataR."Evaluated Product Group Code" THEN BEGIN
+        ItemR.VALIDATE("Product Group Code",ItemImportGlobalDataR."Evaluated Product Group Code");
+        DoModifyL := TRUE;
+      END;
+
+      //H4392 25.06.14 BGA +++++++++++++++++
+      IF VendL.GET(ItemR."Vendor No.") THEN
+        IF VendL."Partner Type" = VendL."Partner Type"::"Market Place Partner" THEN BEGIN
+          ItemR."Use Cross-Docking" := FALSE;
+          DoModifyL := TRUE;
+        END;
+      //H4392 25.06.14 BGA -----------------
+
+      IF DoModifyL THEN
+        ItemR.MODIFY;
+
+      //H1216 16.06.14 ARI ------------------------------------
+    END;
+
+    PROCEDURE InsertItem@1000000009(VAR ItemImportGlobalDataR@1000000000 : Record 50600);
+    VAR
+      VendL@1000000002 : Record 23;
+      ItemL@1000000001 : Record 27;
+      EvaluatedVendorNameL@1000000003 : Text[50];
+    BEGIN
+      //H1216 16.06.14 ARI ++++++++++++++++++++++++++++++++++++
+
+      ItemL.INIT;
+      ItemL."No." := ItemImportGlobalDataR."Item No.";
+      ItemL.INSERT(TRUE);
+
+      ItemL.EAN := ItemImportGlobalDataR."Evaluated EAN Code";
+      //H3511 11.03.15 FPR +++++++++++++++++++++++++
+      ItemL.VALIDATE("Vendor No.",ItemImportGlobalDataR."Vendor No.");
+      //H3511 11.03.15 FPR -------------------------
+
+      ItemL."Vendor Item No." := ItemImportGlobalDataR."Evaluated Vendor Item No.";
+      ItemL."Vendor Item No. Add." := ItemImportGlobalDataR."Evaluated Vendor Item No. Add.";
+      ItemL."Vendor Description" := ItemImportGlobalDataR."Original Description";
+      ItemL."Manufacturer Code" := ItemImportGlobalDataR."Evaluated Manufacturer Code";
+      ItemL."Inventory Value Zero" := ItemImportGlobalDataR."Evaluated Inventory Value Zero";
+      ItemL."Base Unit of Measure" := ItemImportGlobalDataR."Evaluated Unit of Measure";
+      ItemL."Sales Unit of Measure" := ItemImportGlobalDataR."Evaluated Unit of Measure";
+      ItemL."Purch. Unit of Measure" := ItemImportGlobalDataR."Evaluated Unit of Measure";
+      ItemL."Units per Parcel" := ItemImportGlobalDataR.Pieces;
+      ItemL."Tariff No." := ItemImportGlobalDataR."Customs Tariff Number EU";
+      ItemL."Country/Region of Mfg. Code" := ItemImportGlobalDataR."Evaluated Production Country";
+      ItemL."Country/Region of Origin Code" := ItemImportGlobalDataR."Evaluated Country of Origin";
+      ItemL."Wood Origin" := ItemImportGlobalDataR."Wood Origin";
+      ItemL."VOC Percentage" := ItemImportGlobalDataR."VOC Percentage";
+      ItemL."Cites Charge" := ItemImportGlobalDataR."Cites Charge";
+      ItemL."Hazardous Good" := ItemImportGlobalDataR."Hazardous Good";
+      ItemL."Extra Measure" := ItemImportGlobalDataR."Extra Measure";
+      ItemL."Unit Volume" := ItemImportGlobalDataR.Volume;
+      ItemL."Gross Weight" := ItemImportGlobalDataR."Gross Weight";
+      ItemL."Net Weight" := ItemImportGlobalDataR."Net Weight";
+      ItemL."Assembly Service Amount" := ItemImportGlobalDataR."Assembly Amount";
+      ItemL."Automatic Ext. Texts" := TRUE;
+      ItemL.VALIDATE("Item Category Code",ItemImportGlobalDataR."Evaluated Item Category Code");
+      ItemL.VALIDATE("Price Includes VAT",TRUE);
+      ItemL.VALIDATE("Price/Profit Calculation",ItemL."Price/Profit Calculation"::"Profit=Price-Cost");
+      ItemL.VALIDATE("Reorder Quantity",1);
+      ItemL.VALIDATE("Product Group Code",ItemImportGlobalDataR."Evaluated Product Group Code");
+
+      ItemL.MODIFY;
+      //H1216 16.06.14 ARI ------------------------------------
+
+      //H3511 11.03.15 FPR +++++++++++++++++++++++++
+      IF ItemL."Vendor No." <> '' THEN BEGIN
+        ItemL.UpdateMPPItemVendorRelation(ItemL,'',ItemL."Vendor No.",0);
+        IF VendL.GET(ItemL."Vendor No.") THEN
+          IF VendL."Partner Type" = VendL."Partner Type"::"Market Place Partner" THEN
+            ItemL."Use Cross-Docking" := FALSE;
+      END;
+      //H3511 11.03.15 FPR -------------------------
+    END;
+
+    PROCEDURE ProcessEAN@1000000010(VAR ItemImporGlobalDataR@1000000001 : Record 50600);
+    VAR
+      ItemCrossReferenceL@1000000000 : Record 5717;
+    BEGIN
+      //H1349 14.07.14 ARI ++++++++++++++++++++++++++++++++++
+      ItemCrossReferenceL.SETRANGE("Item No.",ItemImporGlobalDataR."Item No.");
+
+      IF ItemCrossReferenceL.FINDSET(TRUE,FALSE) THEN BEGIN
+        ItemCrossReferenceL.MODIFYALL("Discontinue Bar Code",TRUE);
+      END;
+
+      ItemCrossReferenceL.SETRANGE("Unit of Measure", ItemImporGlobalDataR."Evaluated Unit of Measure");
+      ItemCrossReferenceL.SETRANGE("Cross-Reference Type", ItemCrossReferenceL."Cross-Reference Type"::"Bar Code");
+      ItemCrossReferenceL.SETRANGE("Cross-Reference No.", ItemImporGlobalDataR."Evaluated EAN Code");
+
+      IF ItemCrossReferenceL.FINDSET(TRUE,FALSE) THEN BEGIN
+        //Set "Discontinue Bar Code" to true
+        ItemCrossReferenceL.VALIDATE("Discontinue Bar Code",FALSE);
+        ItemCrossReferenceL.MODIFY;
+      END ELSE BEGIN
+        //Insert new Cross Reference
+        ItemCrossReferenceL.INIT;
+        ItemCrossReferenceL."Item No." := ItemImporGlobalDataR."Item No.";
+        ItemCrossReferenceL."Unit of Measure" := ItemImporGlobalDataR."Evaluated Unit of Measure";
+        ItemCrossReferenceL."Cross-Reference Type" := ItemCrossReferenceL."Cross-Reference Type"::"Bar Code";
+        ItemCrossReferenceL."Cross-Reference No." := ItemImporGlobalDataR."Evaluated EAN Code";
+        ItemCrossReferenceL."Discontinue Bar Code":= FALSE;
+        ItemCrossReferenceL.INSERT;
+      END;
+      //H1349 14.07.14 ARI ----------------------------------
+    END;
+
+    PROCEDURE EvaluateData@1000000013(VAR IILGlobalDataR@1000000000 : Record 50600;VAR ErrorMessageR@1000000001 : Text[250]);
+    BEGIN
+      //H1422 19.09.14 ARI ++++++++++++++++++++++++++++++++++++++++++++
+      ErrorMessageR := '';
+
+      IF STRLEN(IILGlobalDataR."Item No.") > 20 THEN
+        ErrorMessageR := ErrorMessageR + COPYSTR(Text50000,1,MAXSTRLEN(IILGlobalDataR."Import Error Text"))
+      ELSE
+        IF ItemTransfer.GET(IILGlobalDataR."Item No.") THEN
+          ErrorMessageR := ErrorMessageR + COPYSTR(Text50001,1,MAXSTRLEN(IILGlobalDataR."Import Error Text"));
+
+      IILGlobalDataR."Evaluated Vendor Item No." := COPYSTR(IILGlobalDataR."Vendor Item No.",1,MAXSTRLEN(Item."Vendor Item No."));
+      IILGlobalDataR."Evaluated Vendor Item No. Add." := COPYSTR(IILGlobalDataR."Vendor Item No.",MAXSTRLEN(Item."Vendor Item No.")+ 1);
+
+      IILGlobalDataR."Evaluated Unit of Measure" := 'STK';
+
+      txtCRLF := 'XX';
+      txtCRLF[1] := 13;
+      txtCRLF[2] := 10;
+      ItemDescription := DELCHR(IILGlobalDataR."Original Description", '=', txtCRLF);
+
+      CheckMarketPlace(IILGlobalDataR);
+      CheckEAN(IILGlobalDataR);
+      CreateItemDescriptions(IILGlobalDataR);
+      EvaluateLanguageCode(IILGlobalDataR);
+
+      IILGlobalDataR."Modified on" := CURRENTDATETIME;
+
+      IF ErrorMessageR = '' THEN BEGIN
+        IILGlobalDataR."Import Status" := IILGlobalDataR."Import Status"::Evaluated;
+        IILGlobalDataR.MODIFY;
+      END;
+      //H1422 19.09.14 ARI --------------------------------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+
+      H0566       30.01.14  ARI       Created
+      H1055       07.07.14  ARI       Insert Item with Insert(true) for Dimensions
+      H1076       11.04.14  ARI       Changed Logic to make sure that Item Unit is inserted in Table
+      H1121       05.05.14  ARI       Use Setfilter instead of Setrange and Convert VendorName
+      H1216       16.06.14  ARI       Redesign of Update/Insert Logic
+      H1188       17.06.14  ARI       Validate "Vendor No." and "Vendor Item No."
+      H1349       14.07.14  ARI       EAN Redesign
+      H1504       03.09.14  ARI       No manufacturer Identification anymore
+      H1422       25.09.14  ARI       Redesign Item Webservice: Renumber Object,New Function
+      H3511       11.03.15  FPR       - Set the field "Use Cross-Docking" in T27 to False if the vendor of this item is a MPP
+                                      - "Vendor No." is required before in OnInsert Trigger of T27 (Item)
+                                      - "Item Category Code" is required before in OnInsert Trigger of T27 (Item)
+      H4082       05.05.15  ARI       Delete Code for Field 40 "Vendor Name"
+      H4392       25.06.14  BGA       Change Use "Cross-Docking" if related vendor is market place partner
+    }
+    END.
+  }
+}
+

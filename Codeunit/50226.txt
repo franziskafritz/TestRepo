@@ -1,0 +1,817 @@
+OBJECT Codeunit 50226 Inventory Revaluation I
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02.09.13;
+    Time=14:59:54;
+    Version List=HME0513;
+  }
+  PROPERTIES
+  {
+    Subtype=Test;
+    OnRun=BEGIN
+            isInitialized := FALSE;
+            RANDOMIZE(1);  // Seed RANDOM function.
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      LibrarySCM@1001 : Codeunit 50210;
+      LibraryFinance@1102601000 : Codeunit 50207;
+      LibraryUtility@1003 : Codeunit 50206;
+      Assert@1004 : Codeunit 50200;
+      ErrorQtyMustBeEqual@1006 : TextConst 'ENU=ErrorQtyMustBeEqual';
+      ErrorCostMustBeEqual@1005 : TextConst 'ENU=Cost must be Equal';
+      ErrorGeneratedMustBeSame@1009 : TextConst 'ENU=Error Generated Must Be Same';
+      UndoReceiptErrorMessage@1008 : TextConst 'ENU=You cannot undo line %1, because a revaluation has already been posted.';
+      UndoSalesReturnErrorMessage@1007 : TextConst 'ENU=This receipt has already been invoiced. Undo Return Receipt can be applied only to posted, but not invoiced receipts.';
+      InventoryPostingGroup@1010 : Code[10];
+      isInitialized@1000 : Boolean;
+
+    [Normal]
+    LOCAL PROCEDURE Initialize@110();
+    VAR
+      BackupManagement@1000 : Codeunit 50201;
+    BEGIN
+      // Initialize setup.
+      IF isInitialized THEN
+        EXIT;
+
+      // Setup Demonstration data.
+      BackupManagement.DefaultFixture;
+
+      LibraryFinance.InitializeGeneralPostingSetup;
+      LibraryFinance.InitializeVATPostingSetup;
+
+      isInitialized := TRUE;
+      COMMIT;
+    END;
+
+    [Test]
+    [HandlerFunctions(CalcStdCostMenuHandler,ConfirmHandler)]
+    PROCEDURE RevaluePartialReceiveInvoice@1();
+    VAR
+      Item@1004 : Record 27;
+      PurchaseHeader@1002 : Record 38;
+      SalesHeader@1009 : Record 36;
+      ItemJournalLine@1006 : Record 83;
+      CalculateStandardCost@1005 : Codeunit 5812;
+      ItemNo@1001 : Code[20];
+      LocationCode@1003 : Code[10];
+      OldUnitCost@1015 : Decimal;
+      NewUnitCost@1007 : Decimal;
+      DocumentType@1008 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order';
+    BEGIN
+      // Create required Inventory setups and Location.
+      Initialize;
+      LocationCode := CreateRequiredSetup;
+
+      // Create Item and calculate standard cost.
+      ItemNo := CreateItem(InventoryPostingGroup);
+      Item.GET(ItemNo);
+      CalculateStandardCost.CalcItem(ItemNo,FALSE);
+
+      // Create and Post Purchase order.
+      CreatePurchaseOrder(PurchaseHeader,DocumentType::Order,ItemNo,LocationCode,TRUE,TRUE);
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,TRUE,TRUE);
+
+      // Run Adjust cost and create Revaluation Journal.
+      LibrarySCM.AdjustCostItemEntries(ItemNo,'');
+      CreateRevalutionJournal(Item,ItemJournalLine);
+
+      // Verify: Inventory To Revalue.
+      VerifyInventoryToRevalue(Item."No.");
+
+      // Execute : Post Revaluation Journal.
+      OldUnitCost := Item."Standard Cost";
+      NewUnitCost :=
+        UpdateUnitCostToRevalue(ItemJournalLine."Journal Template Name",ItemJournalLine."Journal Batch Name",Item."No.",OldUnitCost);
+      LibrarySCM.PostItemJournalLine(ItemJournalLine."Journal Template Name",ItemJournalLine."Journal Batch Name");
+      Item.GET(ItemNo);
+      Item.CALCFIELDS(Inventory);
+
+      // Verify: Item Cost with revalued cost.
+      Assert.AreEqual(Item."Standard Cost",NewUnitCost,ErrorCostMustBeEqual);
+
+      // Create and Post sales order.
+      CreateSalesDocument(SalesHeader,Item."No.",LocationCode,DocumentType::Order,Item.Inventory,FALSE);
+      PostSalesDocument(DocumentType::Order,SalesHeader."No.",TRUE,TRUE,FALSE);
+
+      // Run Adjust cost,post remaining purchase order and post inventory cost to GL.
+      LibrarySCM.AdjustCostItemEntries(ItemNo,'');
+      PostOpenPurchaseOrder(PurchaseHeader);
+
+      // Verify Value Entry.
+      VerifyValueEntry(
+        PurchaseHeader."No.",SalesHeader."No.",Item."No.",OldUnitCost,NewUnitCost,OldUnitCost - NewUnitCost,TRUE,FALSE,FALSE,FALSE);
+    END;
+
+    [Test]
+    [HandlerFunctions(CalcStdCostMenuHandler,ConfirmHandler)]
+    PROCEDURE RevaluePurchReceiptUndoReceipt@17();
+    VAR
+      Item@1004 : Record 27;
+      PurchaseHeader@1002 : Record 38;
+      SalesHeader@1009 : Record 36;
+      ItemJournalLine@1006 : Record 83;
+      CalculateStandardCost@1005 : Codeunit 5812;
+      LocationCode@1000 : Code[10];
+      ItemNo@1001 : Code[20];
+      OldUnitCost@1015 : Decimal;
+      NewUnitCost@1007 : Decimal;
+      DocumentType@1008 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order';
+    BEGIN
+      // Create required Inventory setups and Location.
+      Initialize;
+      LocationCode := CreateRequiredSetup;
+
+      // Create Item and calculate standard cost.
+      ItemNo := CreateItem(InventoryPostingGroup);
+      Item.GET(ItemNo);
+      CalculateStandardCost.CalcItem(ItemNo,FALSE);
+
+      // Create and Post Purchase Receipt, undo receipt, Post receipt.
+      CreatePurchaseOrder(PurchaseHeader,DocumentType::Order,ItemNo,LocationCode,TRUE,FALSE);
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,TRUE,FALSE);
+      UndoPurchaseReceipt(PurchaseHeader."No.",Item."No.",FALSE);
+      UpdatePurchaseLine(PurchaseHeader."No.",Item."No.");
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,TRUE,FALSE);
+
+      // Run Adjust cost and create Revaluation Journal.
+      LibrarySCM.AdjustCostItemEntries(ItemNo,'');
+      CreateRevalutionJournal(Item,ItemJournalLine);
+
+      // Verify: Inventory To Revalue.
+      VerifyInventoryToRevalue(Item."No.");
+
+      // Execute : Post Revaluation Journal.
+      OldUnitCost := Item."Standard Cost";
+      NewUnitCost :=
+        UpdateUnitCostToRevalue(ItemJournalLine."Journal Template Name",ItemJournalLine."Journal Batch Name",Item."No.",OldUnitCost);
+      LibrarySCM.PostItemJournalLine(ItemJournalLine."Journal Template Name",ItemJournalLine."Journal Batch Name");
+      Item.GET(ItemNo);
+      Item.CALCFIELDS(Inventory);
+
+      // Verify: Item Cost with revalued cost.
+      Assert.AreEqual(Item."Standard Cost",NewUnitCost,ErrorCostMustBeEqual);
+
+      // Verify: Undo Purchase Receipt Error.
+      VerifyUndoPurchaseReceiptError(PurchaseHeader."No.",Item."No.");
+
+      // Create and Post sales order.
+      CreateSalesDocument(SalesHeader,Item."No.",LocationCode,DocumentType::Order,Item.Inventory,FALSE);
+      PostSalesDocument(DocumentType::Order,SalesHeader."No.",TRUE,TRUE,FALSE);
+
+      // Run Adjust cost,post remaining purchase order and post inventory cost to GL.
+      LibrarySCM.AdjustCostItemEntries(ItemNo,'');
+      PostOpenPurchaseOrder(PurchaseHeader);
+
+      // Verify Value Entry.
+      VerifyValueEntry(
+        PurchaseHeader."No.",SalesHeader."No.",Item."No.",OldUnitCost,NewUnitCost,OldUnitCost - NewUnitCost,FALSE,TRUE,FALSE,FALSE);
+    END;
+
+    [Test]
+    [HandlerFunctions(CalcStdCostMenuHandler,ConfirmHandler)]
+    PROCEDURE RevalueSalesUndoReturnReceipt@20();
+    VAR
+      Item@1004 : Record 27;
+      SalesHeader@1009 : Record 36;
+      ItemJournalLine@1006 : Record 83;
+      CalculateStandardCost@1005 : Codeunit 5812;
+      LocationCode@1016 : Code[10];
+      ItemNo@1001 : Code[20];
+      OldUnitCost@1015 : Decimal;
+      NewUnitCost@1007 : Decimal;
+      DocumentType@1008 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order';
+    BEGIN
+      // Create required Inventory setups and Location.
+      Initialize;
+      LocationCode := CreateRequiredSetup;
+
+      // Create Item and calculate standard cost.
+      ItemNo := CreateItem(InventoryPostingGroup);
+      CalculateStandardCost.CalcItem(ItemNo,FALSE);
+
+      // Create and Post sales Return Receipt, Undo Return receipt, Update Return quantity to receive and Post it.
+      CreateSalesDocument(SalesHeader,ItemNo,LocationCode,DocumentType::"Return Order",RANDOM(50),TRUE);
+      PostSalesDocument(DocumentType::"Return Order",SalesHeader."No.",FALSE,FALSE,TRUE);
+      UndoSalesReturnReceipt(SalesHeader."No.",ItemNo);
+      UpdateSalesLine(SalesHeader."No.",ItemNo);
+      PostSalesDocument(DocumentType::"Return Order",SalesHeader."No.",FALSE,FALSE,TRUE);
+
+      // Run Adjust cost and create Revaluation Journal.
+      LibrarySCM.AdjustCostItemEntries(ItemNo,'');
+      Item.GET(ItemNo);
+      CreateRevalutionJournal(Item,ItemJournalLine);
+
+      // Verify: Inventory To Revalue.
+      VerifyInventoryToRevalue(Item."No.");
+
+      // Execute : Post Revaluation Journal.
+      OldUnitCost := Item."Standard Cost";
+      NewUnitCost :=
+        UpdateUnitCostToRevalue(ItemJournalLine."Journal Template Name",ItemJournalLine."Journal Batch Name",Item."No.",OldUnitCost);
+      LibrarySCM.PostItemJournalLine(ItemJournalLine."Journal Template Name",ItemJournalLine."Journal Batch Name");
+
+      // Verify: Undo Sales Return Receipt Error.
+      VerifyUndoSaleRetReceiptError(SalesHeader."No.",Item."No.");
+
+      // Post remaing Sales Return Order,Run Adjust cost,post remaining purchase order and and post inventory cost to GL.
+      PostSalesDocument(DocumentType::"Return Order",SalesHeader."No.",FALSE,TRUE,FALSE);
+      LibrarySCM.AdjustCostItemEntries(ItemNo,'');
+
+      // Verify Value Entry.
+      VerifyValueEntry(
+        '',SalesHeader."No.",Item."No.",OldUnitCost,NewUnitCost,OldUnitCost - NewUnitCost,FALSE,FALSE,TRUE,FALSE);
+    END;
+
+    [Test]
+    [HandlerFunctions(CalcStdCostMenuHandler,ConfirmHandler)]
+    PROCEDURE RevalueSalesPurchReturn@33();
+    VAR
+      Item@1004 : Record 27;
+      PurchaseHeader@1002 : Record 38;
+      SalesHeader@1009 : Record 36;
+      ItemJournalLine@1006 : Record 83;
+      CalculateStandardCost@1005 : Codeunit 5812;
+      LocationCode@1017 : Code[10];
+      ItemNo@1001 : Code[20];
+      OldUnitCost@1015 : Decimal;
+      NewUnitCost@1007 : Decimal;
+      DocumentType@1008 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order';
+    BEGIN
+      // Create required Inventory setups and Location.
+      Initialize;
+      LocationCode := CreateRequiredSetup;
+
+      // Create Item and calculate standard cost.
+      ItemNo := CreateItem(InventoryPostingGroup);
+      CalculateStandardCost.CalcItem(ItemNo,FALSE);
+
+      // Create and Post Sales Return Receipt.
+      CreateSalesDocument(SalesHeader,ItemNo,LocationCode,DocumentType::"Return Order",RANDOM(50),FALSE);
+      PostSalesDocument(DocumentType::"Return Order",SalesHeader."No.",FALSE,FALSE,TRUE);
+
+      // Run Adjust cost and create Revaluation Journal.
+      LibrarySCM.AdjustCostItemEntries(ItemNo,'');
+      Item.GET(ItemNo);
+      CreateRevalutionJournal(Item,ItemJournalLine);
+
+      // Verify Inventory To Revalue.
+      VerifyInventoryToRevalue(Item."No.");
+
+      // Execute : Post Revaluation Journal.
+      OldUnitCost := Item."Standard Cost";
+      NewUnitCost :=
+        UpdateUnitCostToRevalue(ItemJournalLine."Journal Template Name",ItemJournalLine."Journal Batch Name",Item."No.",OldUnitCost);
+      LibrarySCM.PostItemJournalLine(ItemJournalLine."Journal Template Name",ItemJournalLine."Journal Batch Name");
+      Item.GET(ItemNo);
+      Item.CALCFIELDS(Inventory);
+
+      // Verify: Item Cost with revalued cost.
+      Assert.AreEqual(Item."Standard Cost",NewUnitCost,ErrorCostMustBeEqual);
+
+      // Create and Post Purchase Return Order.
+      CreatePurchaseOrder(PurchaseHeader,DocumentType::"Return Order",ItemNo,LocationCode,FALSE,FALSE);
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,TRUE,TRUE);
+
+      // Post remaining Sales return order,Run Adjust cost and and post inventory cost to GL.
+      PostSalesDocument(DocumentType::"Return Order",SalesHeader."No.",FALSE,TRUE,FALSE);
+      LibrarySCM.AdjustCostItemEntries(ItemNo,'');
+
+      // Verify Value Entry.
+      VerifyValueEntry(
+        PurchaseHeader."No.",SalesHeader."No.",Item."No.",OldUnitCost,NewUnitCost,
+        OldUnitCost - NewUnitCost,FALSE,FALSE,FALSE,TRUE);
+    END;
+
+    [Test]
+    [HandlerFunctions(CalcStdCostMenuHandler,ConfirmHandler)]
+    PROCEDURE RevaluePartialPurchReceive@14();
+    VAR
+      Item@1004 : Record 27;
+      PurchaseHeader@1002 : Record 38;
+      SalesHeader@1009 : Record 36;
+      ItemJournalLine@1006 : Record 83;
+      CalculateStandardCost@1005 : Codeunit 5812;
+      LocationCode@1017 : Code[10];
+      ItemNo@1001 : Code[20];
+      OldUnitCost@1015 : Decimal;
+      NewUnitCost@1007 : Decimal;
+      DocumentType@1008 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order';
+    BEGIN
+      // Create required Inventory setups and Location.
+      Initialize;
+      LocationCode := CreateRequiredSetup;
+
+      // Create Item and calculate standard cost.
+      ItemNo := CreateItem(InventoryPostingGroup);
+      Item.GET(ItemNo);
+      CalculateStandardCost.CalcItem(ItemNo,FALSE);
+
+      // Create and Post Purchase Receipt.
+      CreatePurchaseOrder(PurchaseHeader,DocumentType::Order,ItemNo,LocationCode,FALSE,FALSE);
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,TRUE,FALSE);
+
+      // Run Adjust cost and create Revaluation Journal.
+      LibrarySCM.AdjustCostItemEntries(ItemNo,'');
+      CreateRevalutionJournal(Item,ItemJournalLine);
+
+      // Verify: Inventory To Revalue.
+      VerifyInventoryToRevalue(Item."No.");
+
+      // Execute : Post Revaluation Journal.
+      OldUnitCost := Item."Standard Cost";
+      NewUnitCost :=
+        UpdateUnitCostToRevalue(ItemJournalLine."Journal Template Name",ItemJournalLine."Journal Batch Name",Item."No.",OldUnitCost);
+      LibrarySCM.PostItemJournalLine(ItemJournalLine."Journal Template Name",ItemJournalLine."Journal Batch Name");
+      Item.GET(ItemNo);
+      Item.CALCFIELDS(Inventory);
+
+      // Verify: Item Cost with revalued cost.
+      Assert.AreEqual(Item."Standard Cost",NewUnitCost,ErrorCostMustBeEqual);
+
+      // Create and Post sales order.
+      CreateSalesDocument(SalesHeader,Item."No.",LocationCode,DocumentType::Order,Item.Inventory,FALSE);
+      PostSalesDocument(DocumentType::Order,SalesHeader."No.",TRUE,TRUE,FALSE);
+
+      // Run Adjust cost,post remaining purchase order and and post inventory cost to GL.
+      LibrarySCM.AdjustCostItemEntries(ItemNo,'');
+      PostOpenPurchaseOrder(PurchaseHeader);
+
+      // Verify Value Entry.
+      VerifyValueEntry(
+        PurchaseHeader."No.",SalesHeader."No.",Item."No.",OldUnitCost,NewUnitCost,OldUnitCost - NewUnitCost,FALSE,TRUE,FALSE,FALSE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateRequiredSetup@34() : Code[10];
+    VAR
+      InventorySetup@1003 : Record 313;
+      Location@1004 : Record 14;
+      AutomaticCostAdjustment@1002 : 'Never,Day,Week,Month,Quarter,Year,Always';
+      AverageCostCalcType@1001 : ' ,Item,Item & Location & Variant';
+      AverageCostPeriod@1000 : ' ,Day,Week,Month,Quarter,Year,Accounting Period';
+    BEGIN
+      // make sure confirm handlers are triggered
+      IF CONFIRM('') THEN ;
+
+      LibrarySCM.UpdateInventorySetup(
+        InventorySetup,TRUE,FALSE,AutomaticCostAdjustment::Never,AverageCostCalcType::Item,AverageCostPeriod::Day);
+      LibrarySCM.CreateLocation(Location);
+      InventoryPostingGroup := CreateInventoryPostingSetup(Location.Code);
+      EXIT(Location.Code);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateInventoryPostingSetup@32(LocationCode@1000 : Code[10]) : Code[10];
+    VAR
+      InventoryPostingSetup@1001 : Record 5813;
+      InventoryPostingGroup@1002 : Record 94;
+    BEGIN
+      InventoryPostingGroup.FINDFIRST;
+
+      InventoryPostingSetup.INIT;
+      InventoryPostingSetup.VALIDATE("Location Code",LocationCode);
+      InventoryPostingSetup.VALIDATE("Invt. Posting Group Code",InventoryPostingGroup.Code);
+      InventoryPostingSetup.INSERT(TRUE);
+
+      InventoryPostingSetup.VALIDATE("Inventory Account",SelectGLAccountNo);
+      InventoryPostingSetup.VALIDATE("Inventory Account (Interim)",SelectGLAccountNo);
+      InventoryPostingSetup.MODIFY(TRUE);
+
+      EXIT(InventoryPostingSetup."Invt. Posting Group Code");
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE SelectGLAccountNo@89() : Code[10];
+    VAR
+      GLAccount@1000 : Record 15;
+    BEGIN
+      // Select Account from General Ledger Account of type Posting.
+      GLAccount.SETRANGE("Direct Posting",TRUE);
+      GLAccount.SETRANGE(Blocked,FALSE);
+      GLAccount.FINDFIRST;
+      EXIT(GLAccount."No.");
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateItem@10(InventoryPostingGroup@1002 : Code[10]) : Code[20];
+    VAR
+      Item@1001 : Record 27;
+      GeneralPostingSetup@1102601000 : Record 252;
+    BEGIN
+      LibrarySCM.CreateItem(Item);
+      LibraryFinance.FindGeneralPostingSetup(GeneralPostingSetup);
+
+      Item.VALIDATE("Gen. Prod. Posting Group",GeneralPostingSetup."Gen. Prod. Posting Group");
+      Item.VALIDATE("Inventory Posting Group",InventoryPostingGroup);
+      Item.VALIDATE("Costing Method",Item."Costing Method"::Standard);
+      Item.VALIDATE("Standard Cost",RANDOM(50));
+      Item.MODIFY(TRUE);
+      EXIT(Item."No.");
+    END;
+
+    LOCAL PROCEDURE CreatePurchaseOrder@5(VAR PurchaseHeader@1001 : Record 38;DocumentType@1005 : Option;ItemNo@1000 : Code[20];LocationCode@1002 : Code[20];PartialReceive@1004 : Boolean;PartialReceiveInvoice@1003 : Boolean);
+    BEGIN
+      LibrarySCM.CreatePurchaseHeader(PurchaseHeader,DocumentType,LibrarySCM.SelectVendor);
+
+      IF PurchaseHeader."Document Type" = PurchaseHeader."Document Type"::Order THEN
+        PurchaseHeader.VALIDATE(
+          "Vendor Invoice No.",
+          LibraryUtility.GenerateRandomCode(PurchaseHeader.FIELDNO("Vendor Invoice No."),DATABASE::"Purchase Header"));
+      IF PurchaseHeader."Document Type" = PurchaseHeader."Document Type"::"Return Order" THEN
+        PurchaseHeader.VALIDATE(
+          "Vendor Cr. Memo No.",
+          LibraryUtility.GenerateRandomCode(PurchaseHeader.FIELDNO("Vendor Cr. Memo No."),DATABASE::"Purchase Header"));
+
+      PurchaseHeader.VALIDATE("Location Code",LocationCode);
+      PurchaseHeader.MODIFY(TRUE);
+      CreatePurchaseLine(PurchaseHeader,ItemNo,PartialReceive,PartialReceiveInvoice);
+    END;
+
+    LOCAL PROCEDURE CreatePurchaseLine@6(VAR PurchaseHeader@1001 : Record 38;ItemNo@1000 : Code[20];PartialReceive@1002 : Boolean;PartialInvoice@1004 : Boolean);
+    VAR
+      PurchaseLine@1003 : Record 39;
+    BEGIN
+      // Create Purchase Line with Partial quantity to receive and invoice,Values used are important for test.
+      LibrarySCM.CreatePurchaseLine(PurchaseHeader,PurchaseLine,PurchaseLine.Type::Item,ItemNo,RANDOM(50) + 50);
+
+      IF PartialReceive THEN
+        PurchaseLine.VALIDATE("Qty. to Receive",PurchaseLine.Quantity - 10);
+      IF PartialInvoice THEN
+        PurchaseLine.VALIDATE("Qty. to Invoice",PurchaseLine."Qty. to Receive" - 10);
+      PurchaseLine.MODIFY;
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE UndoPurchaseReceipt@24(PurchaseOrderNo@1000 : Code[20];ItemNo@1003 : Code[20];IsCostRevalued@1004 : Boolean);
+    VAR
+      PurchRcptHeader@1001 : Record 120;
+      PurchRcptLine@1002 : Record 121;
+    BEGIN
+      PurchRcptHeader.SETRANGE("Order No.",PurchaseOrderNo);
+      IF IsCostRevalued THEN
+        PurchRcptHeader.FINDLAST
+      ELSE
+        PurchRcptHeader.FINDFIRST;
+      PurchRcptLine.SETRANGE("Document No.",PurchRcptHeader."No.");
+      PurchRcptLine.SETRANGE("No.",ItemNo);
+      PurchRcptLine.FINDFIRST;
+      CODEUNIT.RUN(CODEUNIT::"Undo Purchase Receipt Line",PurchRcptLine);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE UndoSalesReturnReceipt@27(SalesReturnOrderNo@1000 : Code[20];ItemNo@1003 : Code[20]);
+    VAR
+      ReturnReceiptHeader@1001 : Record 6660;
+      ReturnReceiptLine@1002 : Record 6661;
+    BEGIN
+      ReturnReceiptHeader.SETRANGE("Return Order No.",SalesReturnOrderNo);
+      ReturnReceiptHeader.FINDFIRST;
+      ReturnReceiptLine.SETRANGE("Document No.",ReturnReceiptHeader."No.");
+      ReturnReceiptLine.SETRANGE("No.",ItemNo);
+      ReturnReceiptLine.FINDFIRST;
+      CODEUNIT.RUN(CODEUNIT::"Undo Return Receipt Line",ReturnReceiptLine);
+    END;
+
+    LOCAL PROCEDURE UpdatePurchaseLine@15(PurchaseOrderNo@1001 : Code[20];ItemNo@1000 : Code[20]);
+    VAR
+      PurchaseLine@1003 : Record 39;
+    BEGIN
+      PurchaseLine.SETRANGE("Document No.",PurchaseOrderNo);
+      PurchaseLine.SETRANGE("No.",ItemNo);
+      PurchaseLine.FINDFIRST;
+      PurchaseLine.VALIDATE("Qty. to Receive",PurchaseLine.Quantity);
+      PurchaseLine.MODIFY(TRUE);
+    END;
+
+    LOCAL PROCEDURE UpdateSalesLine@29(SalesDocumentNo@1001 : Code[20];ItemNo@1000 : Code[20]);
+    VAR
+      SalesLine@1003 : Record 37;
+    BEGIN
+      SalesLine.SETRANGE("Document Type",SalesLine."Document Type"::"Return Order");
+      SalesLine.SETRANGE("Document No.",SalesDocumentNo);
+      SalesLine.SETRANGE("No.",ItemNo);
+      SalesLine.FINDFIRST;
+      SalesLine.VALIDATE("Return Qty. to Receive",SalesLine.Quantity);
+      SalesLine.MODIFY(TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateSalesDocument@8(VAR SalesHeader@1001 : Record 36;ItemNo@1000 : Code[20];LocationCode@1008 : Code[20];DocumentType@1005 : Option;RevaluedQuantity@1004 : Decimal;IsPartial@1006 : Boolean) : Code[20];
+    VAR
+      Customer@1003 : Record 18;
+    BEGIN
+      Customer.SETRANGE("Currency Code",'');
+      Customer.SETRANGE("Location Code",'');
+      Customer.FINDFIRST;
+
+      LibrarySCM.CreateSalesHeader(SalesHeader,DocumentType,Customer."No.");
+      SalesHeader.VALIDATE("Location Code",LocationCode);
+
+      SalesHeader.MODIFY(TRUE);
+
+      CreateSalesLine(SalesHeader,ItemNo,RevaluedQuantity,IsPartial);
+      EXIT(SalesHeader."No.")
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateSalesLine@43(VAR SalesHeader@1000 : Record 36;ItemNo@1002 : Code[20];RevaluedQuantity@1003 : Decimal;IsPartial@1004 : Boolean);
+    VAR
+      SalesLine@1001 : Record 37;
+    BEGIN
+      LibrarySCM.CreateSalesLine(SalesHeader,SalesLine,SalesLine.Type::Item,ItemNo,RevaluedQuantity);
+
+      IF IsPartial THEN
+        SalesLine.VALIDATE("Return Qty. to Receive",SalesLine.Quantity - 2);
+
+      IF SalesHeader."Document Type" = SalesHeader."Document Type"::"Return Order" THEN
+        SalesLine.VALIDATE("Qty. to Ship",0);
+      SalesLine.MODIFY(TRUE);
+    END;
+
+    PROCEDURE PostSalesDocument@19(DocumentType@1006 : Option;SalesDocumentNo@1005 : Code[20];Ship@1001 : Boolean;Invoice@1002 : Boolean;Receive@1004 : Boolean);
+    VAR
+      SalesHeader@1000 : Record 36;
+      SalesPost@1003 : Codeunit 80;
+    BEGIN
+      SalesHeader.GET(DocumentType,SalesDocumentNo);
+      SalesHeader.VALIDATE(Ship,Ship);
+      SalesHeader.VALIDATE(Invoice,Invoice);
+      SalesHeader.VALIDATE(Receive,Receive);
+      SalesPost.RUN(SalesHeader);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE PostOpenPurchaseOrder@9(VAR PurchaseHeader@1000 : Record 38);
+    BEGIN
+      PurchaseHeader.VALIDATE(
+        "Vendor Invoice No.",
+        LibraryUtility.GenerateRandomCode(PurchaseHeader.FIELDNO("Vendor Invoice No."),DATABASE::"Purchase Header"));
+      PurchaseHeader.MODIFY(TRUE);
+
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,TRUE,TRUE);
+    END;
+
+    LOCAL PROCEDURE CreateItemJournalBatch@25(VAR ItemJournalBatch@1000 : Record 233);
+    VAR
+      ItemJournalTemplate@1102601000 : Record 82;
+    BEGIN
+      LibrarySCM.CreateItemJournalBatch(ItemJournalBatch,
+        LibrarySCM.SelectItemJournalTemplate(ItemJournalTemplate.Type::Revaluation));
+      ItemJournalBatch.VALIDATE("No. Series",LibraryUtility.GetNoSeriesCode);
+      ItemJournalBatch.MODIFY(TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateRevalutionJournal@2(VAR Item@1000 : Record 27;VAR ItemJournalLine@1001 : Record 83);
+    VAR
+      ItemJournalBatch@1005 : Record 233;
+      CalculateInventoryValue@1004 : Report 5899;
+      CalculatePer@1003 : 'Item Ledger Entry,Item';
+      CalculationBase@1002 : ' ,Last Direct Unit Cost,Standard Cost - Assembly List,Standard Cost - Manufacturing';
+    BEGIN
+      CreateItemJournalBatch(ItemJournalBatch);
+      ItemJournalLine.VALIDATE("Journal Template Name",ItemJournalBatch."Journal Template Name");
+      ItemJournalLine.VALIDATE("Journal Batch Name",ItemJournalBatch.Name);
+      CalculateInventoryValue.InitializeRequest(WORKDATE,ItemJournalLine."Document No.",
+        CalculatePer::Item,FALSE,FALSE,TRUE,CalculationBase::" ",FALSE);
+      COMMIT;
+      CalculateInventoryValue.USEREQUESTFORM(FALSE);
+      CalculateInventoryValue.SetItemJnlLine(ItemJournalLine);
+      Item.SETRANGE("No.",Item."No.");
+      CalculateInventoryValue.SETTABLEVIEW(Item);
+      CalculateInventoryValue.RUNMODAL;
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE UpdateUnitCostToRevalue@3(JournalTemplateName@1002 : Text[10];JournalTemplateBatch@1003 : Text[10];ItemNo@1000 : Code[20];OldUnitCost@1004 : Decimal) : Decimal;
+    VAR
+      ItemJournalLine@1001 : Record 83;
+    BEGIN
+      ItemJournalLine.SETRANGE("Journal Template Name",JournalTemplateName);
+      ItemJournalLine.SETRANGE("Journal Batch Name",JournalTemplateBatch);
+      ItemJournalLine.SETRANGE("Item No.",ItemNo);
+      ItemJournalLine.FINDFIRST;
+      ItemJournalLine.VALIDATE("Unit Cost (Revalued)",OldUnitCost + RANDOM(50));
+      ItemJournalLine.MODIFY(TRUE);
+      EXIT(ItemJournalLine."Unit Cost (Revalued)");
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CalcPurchaseInvoiceCost@21(PurchaseOrderNo@1002 : Code[20];ItemNo@1003 : Code[20];UnitCost@1004 : Decimal;IsRevalued@1005 : Boolean) : Decimal;
+    VAR
+      PurchInvHeader@1001 : Record 122;
+      PurchInvLine@1000 : Record 123;
+    BEGIN
+      PurchInvHeader.SETRANGE("Order No.",PurchaseOrderNo);
+      IF NOT IsRevalued THEN
+        PurchInvHeader.FINDFIRST
+      ELSE
+        PurchInvHeader.FINDLAST;
+      PurchInvLine.SETRANGE("Document No.",PurchInvHeader."No.");
+      PurchInvLine.SETRANGE("No.",ItemNo);
+      PurchInvLine.FINDFIRST;
+      EXIT(PurchInvLine.Quantity * UnitCost);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CalcPurchaseReturnCost@30(PurchaseReturnOrderNo@1002 : Code[20];ItemNo@1003 : Code[20];UnitCost@1004 : Decimal) : Decimal;
+    VAR
+      PurchCrMemoHdr@1001 : Record 124;
+      PurchCrMemoLine@1000 : Record 125;
+    BEGIN
+      PurchCrMemoHdr.SETRANGE("Return Order No.",PurchaseReturnOrderNo);
+      PurchCrMemoHdr.FINDFIRST;
+      PurchCrMemoLine.SETRANGE("Document No.",PurchCrMemoHdr."No.");
+      PurchCrMemoLine.SETRANGE("No.",ItemNo);
+      PurchCrMemoLine.FINDFIRST;
+      EXIT(PurchCrMemoLine.Quantity * UnitCost);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CalcSalesInvoiceCost@31(SalesOrderNo@1002 : Code[20];ItemNo@1003 : Code[20];UnitCost@1004 : Decimal) : Decimal;
+    VAR
+      SalesInvoiceHeader@1001 : Record 112;
+      SalesInvoiceLine@1000 : Record 113;
+    BEGIN
+      SalesInvoiceHeader.SETRANGE("Order No.",SalesOrderNo);
+      SalesInvoiceHeader.FINDFIRST;
+      SalesInvoiceLine.SETRANGE("Document No.",SalesInvoiceHeader."No.");
+      SalesInvoiceLine.SETRANGE("No.",ItemNo);
+      SalesInvoiceLine.FINDLAST;
+      EXIT(SalesInvoiceLine.Quantity * UnitCost);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CalcSalesReturnCost@23(SalesReturnOrderNo@1002 : Code[20];ItemNo@1003 : Code[20];UnitCost@1004 : Decimal) : Decimal;
+    VAR
+      SalesCrMemoHeader@1001 : Record 114;
+      SalesCrMemoLine@1000 : Record 115;
+    BEGIN
+      SalesCrMemoHeader.SETRANGE("Return Order No.",SalesReturnOrderNo);
+      SalesCrMemoHeader.FINDFIRST;
+      SalesCrMemoLine.SETRANGE("Document No.",SalesCrMemoHeader."No.");
+      SalesCrMemoLine.SETRANGE("No.",ItemNo);
+      SalesCrMemoLine.FINDLAST;
+      EXIT(SalesCrMemoLine.Quantity * UnitCost);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CalcValueEntriesCostPostedToGL@85(ItemNo@1001 : Code[20];FilterOnEntryType@1003 : Boolean) : Decimal;
+    VAR
+      ValueEntry@1000 : Record 5802;
+      CostPostedGL@1002 : Decimal;
+    BEGIN
+      IF FilterOnEntryType THEN
+        ValueEntry.SETRANGE("Entry Type",ValueEntry."Entry Type"::Revaluation);
+      ValueEntry.SETRANGE("Item No.",ItemNo);
+      ValueEntry.FINDSET;
+      REPEAT
+        CostPostedGL += ValueEntry."Cost Posted to G/L";
+      UNTIL ValueEntry.NEXT = 0;
+      EXIT(CostPostedGL);
+    END;
+
+    [StrMenuHandler]
+    PROCEDURE CalcStdCostMenuHandler@22(Option@1000 : Text[1024];VAR Choice@1001 : Integer;Instruction@1002 : Text[1024]);
+    BEGIN
+      // Calculate Standard Cost for All Level.
+      Choice := 2;
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE VerifyInventoryToRevalue@7(ItemNo@1000 : Code[20]);
+    VAR
+      ItemLedgerEntry@1001 : Record 32;
+      ItemJournalLine@1003 : Record 83;
+      Inventory@1002 : Decimal;
+    BEGIN
+      ItemLedgerEntry.SETCURRENTKEY("Item No.");
+      ItemLedgerEntry.SETRANGE("Item No.",ItemNo);
+      ItemLedgerEntry.FINDSET;
+      REPEAT
+        Inventory += ItemLedgerEntry.Quantity
+      UNTIL ItemLedgerEntry.NEXT = 0;
+
+      ItemJournalLine.SETRANGE("Item No.",ItemNo);
+      ItemJournalLine.FINDFIRST;
+
+      Assert.AreEqual(Inventory,ItemJournalLine.Quantity,ErrorQtyMustBeEqual);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE VerifyValueEntryRevaluation@13(PurchaseDocumentNo@1007 : Code[20];ItemNo@1000 : Code[20];AdjustedRevaluationCost@1006 : Decimal;IsPartialPurchase@1002 : Boolean);
+    VAR
+      CostPostedGLRevalue@1003 : Decimal;
+      CalculatedCostPostedGLRevalue@1010 : Decimal;
+    BEGIN
+      CostPostedGLRevalue := CalcValueEntriesCostPostedToGL(ItemNo,TRUE);
+
+      IF IsPartialPurchase THEN
+        CalculatedCostPostedGLRevalue :=
+          CalcPurchaseInvoiceCost(PurchaseDocumentNo,ItemNo,AdjustedRevaluationCost,FALSE);
+
+      Assert.AreEqual(ABS(CostPostedGLRevalue),ABS(CalculatedCostPostedGLRevalue),ErrorCostMustBeEqual);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE VerifyValueEntry@11(PurchaseDocumentNo@1007 : Code[20];SalesDocumentNo@1008 : Code[20];ItemNo@1000 : Code[20];CostBeforeRevaluation@1004 : Decimal;CostAfterRevaluation@1005 : Decimal;AdjustedRevaluationCost@1006 : Decimal;IsPartialPurchase@1001 : Boolean;IsPurchaseAfterRevalue@1009 : Boolean;IsSalesReturn@1011 : Boolean;IsSalesPurchaseReturn@1012 : Boolean);
+    VAR
+      CostPostedGL@1003 : Decimal;
+      CalculatedCostPostedGL@1010 : Decimal;
+    BEGIN
+      VerifyValueEntryRevaluation(PurchaseDocumentNo,ItemNo,AdjustedRevaluationCost,IsPartialPurchase);
+
+      CostPostedGL := CalcValueEntriesCostPostedToGL(ItemNo,FALSE);
+      IF IsPartialPurchase THEN
+        CalculatedCostPostedGL :=
+          CalcPurchaseInvoiceCost(PurchaseDocumentNo,ItemNo,CostBeforeRevaluation,FALSE) -
+          CalcPurchaseInvoiceCost(PurchaseDocumentNo,ItemNo,AdjustedRevaluationCost,FALSE) +
+          CalcPurchaseInvoiceCost(PurchaseDocumentNo,ItemNo,CostAfterRevaluation,TRUE) -
+          CalcSalesInvoiceCost(SalesDocumentNo,ItemNo,CostAfterRevaluation);
+
+      IF IsPurchaseAfterRevalue THEN
+        CalculatedCostPostedGL :=
+          CalcPurchaseInvoiceCost(PurchaseDocumentNo,ItemNo,CostAfterRevaluation,TRUE) -
+          CalcSalesInvoiceCost(SalesDocumentNo,ItemNo,CostAfterRevaluation);
+
+      IF IsSalesReturn THEN
+        CalculatedCostPostedGL :=
+          CalcSalesReturnCost(SalesDocumentNo,ItemNo,CostAfterRevaluation);
+
+      IF IsSalesPurchaseReturn THEN
+        CalculatedCostPostedGL :=
+          CalcPurchaseReturnCost(PurchaseDocumentNo,ItemNo,CostAfterRevaluation) -
+          CalcSalesReturnCost(SalesDocumentNo,ItemNo,CostAfterRevaluation);
+
+      Assert.AreEqual(ABS(CostPostedGL),ABS(CalculatedCostPostedGL),ErrorCostMustBeEqual);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE VerifyUndoPurchaseReceiptError@16(PurchaseOrderNo@1000 : Code[20];ItemNo@1003 : Code[20]);
+    VAR
+      PurchRcptHeader@1002 : Record 120;
+      PurchRcptLine@1001 : Record 121;
+    BEGIN
+      PurchRcptHeader.SETRANGE("Order No.",PurchaseOrderNo);
+      PurchRcptHeader.FINDLAST;
+      PurchRcptLine.SETRANGE("Document No.",PurchRcptHeader."No.");
+      PurchRcptLine.SETRANGE("No.",ItemNo);
+      PurchRcptLine.FINDFIRST;
+      ASSERTERROR UndoPurchaseReceipt(PurchaseOrderNo,ItemNo,TRUE);
+      Assert.AreEqual(
+        STRSUBSTNO(UndoReceiptErrorMessage,PurchRcptLine."Line No."),ConvertMessage(GETLASTERRORTEXT),
+        ErrorGeneratedMustBeSame);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE VerifyUndoSaleRetReceiptError@28(SalesReturnOrderNo@1000 : Code[20];ItemNo@1003 : Code[20]);
+    VAR
+      ReturnReceiptHeader@1002 : Record 6660;
+      ReturnReceiptLine@1001 : Record 6661;
+    BEGIN
+      ReturnReceiptHeader.SETRANGE("Return Order No.",SalesReturnOrderNo);
+      ReturnReceiptHeader.FINDFIRST;
+      ReturnReceiptLine.SETRANGE("Document No.",ReturnReceiptHeader."No.");
+      ReturnReceiptLine.SETRANGE("No.",ItemNo);
+      ReturnReceiptLine.FINDFIRST;
+      ASSERTERROR UndoSalesReturnReceipt(SalesReturnOrderNo,ItemNo);
+      Assert.AreEqual(
+        STRSUBSTNO(UndoSalesReturnErrorMessage),ConvertMessage(GETLASTERRORTEXT),
+        ErrorGeneratedMustBeSame);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE ConvertMessage@18(ErrorMessage@1000 : Text[1024]) : Text[1024];
+    VAR
+      NewLine@1001 : Text[1];
+    BEGIN
+      // Remove New Line Character from Error Message. Value important for test.
+      NewLine[1] := 13;
+      EXIT(DELCHR(ErrorMessage,'=',NewLine));
+    END;
+
+    [ConfirmHandler]
+    PROCEDURE ConfirmHandler@12(ConfirmText@1000 : Text[1024];VAR Confirm@1001 : Boolean);
+    BEGIN
+      Confirm := TRUE;
+    END;
+
+    BEGIN
+    {
+      Test for Inventory Costing:
+        1. Test Revaluation Partial Purchase Receive and Partial Invoice.
+        2. Test Revaluation Purchase Receipt and Undo Receipt.
+        3. Test Revaluation Sales Receipt Undo Return Receipt.
+        4. Test Revaluation Sales Return and Purchase Return.
+        5. Test Revaluation Partial Purchase Receive
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,250 @@
+OBJECT Codeunit 50315 Cancel Before Payment
+{
+  OBJECT-PROPERTIES
+  {
+    Date=04.03.15;
+    Time=18:08:57;
+    Modified=Yes;
+    Version List=T0018;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text001@1000000002 : TextConst 'ENU="Cancelation without prepayment switched %1 lines to ""Status Return Order"" = ""open"""';
+      Text003@1000000004 : TextConst 'ENU=Cancelation without prepayment has been performed for the complete sales order %1.';
+
+    PROCEDURE CancelBeforePayment@1000000024(SalesHeaderV@1000000007 : Record 36;VAR resultMessageR@1000000006 : Text[250]) : Boolean;
+    VAR
+      salesLinesToCancelL@1000000001 : TEMPORARY Record 37;
+      CancelAllSalesLinesL@1000000004 : Boolean;
+      SalesLineL@1000000003 : Record 37;
+      SIIFillLogL@1000000000 : Codeunit 50123;
+      CancellationModeL@1000000002 : ' ,ManualRequestCancel,ManualConfirmCancel';
+      FPCManagementL@1000000005 : Codeunit 50003;
+      SIISetupL@1000000008 : Record 50140;
+    BEGIN
+      //T0018-02 04.11.14 tec-cs ++++++++++++++++++++++++++
+
+      resultMessageR := '';
+
+      //
+      // check preconditions on sales order
+      //
+
+      // step 1.1) the order must be in status "open" or "pending prepayment"
+      IF (SalesHeaderV.Status <> SalesHeaderV.Status::"Pending Prepayment") AND
+         (SalesHeaderV.Status <> SalesHeaderV.Status::Open) THEN
+      BEGIN
+        EXIT(FALSE);
+      END;
+
+      // step 1.3) no payments must be received
+      IF SalesHeaderV."Payment received" THEN BEGIN
+        EXIT(FALSE);
+      END;
+
+      // step 1.2) no payments must exist
+      IF PaymentEntriesFound(SalesHeaderV, FALSE) THEN BEGIN
+        EXIT(FALSE);
+      END;
+
+      CancelBeforePayment_GetLines(SalesHeaderV, salesLinesToCancelL);
+
+      IF salesLinesToCancelL.ISEMPTY THEN EXIT(FALSE);
+
+      // check, if all lines are affected
+      //
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type", SalesHeaderV."Document Type");
+      SalesLineL.SETRANGE("Document No.", SalesHeaderV."No.");
+      SalesLineL.SETRANGE(Type, SalesLineL.Type::Item);
+
+      IF SalesLineL.COUNT = salesLinesToCancelL.COUNT THEN BEGIN
+        CancelAllSalesLinesL := TRUE;
+      END;
+      //
+
+      IF CancelAllSalesLinesL THEN BEGIN
+        // step 2
+        SalesHeaderV.SetCancellationMode(CancellationModeL::ManualRequestCancel);
+        SalesHeaderV.MagentoCancel;
+        SalesHeaderV.MODIFY;
+
+        // step 3
+        FPCManagementL.ConfirmCancelOrder(SalesHeaderV, FALSE);
+
+        // mark header and lines as "finished"
+        SalesHeaderV."Status Return Order" := SalesHeaderV."Status Return Order"::finished;
+        SalesHeaderV.MODIFY;
+
+        salesLinesToCancelL.RESET;
+        IF salesLinesToCancelL.FINDSET THEN
+          REPEAT
+            SalesLineL.GET(
+              salesLinesToCancelL."Document Type",
+              salesLinesToCancelL."Document No.",
+              salesLinesToCancelL."Line No.");
+            SalesLineL."Status Return Order" := SalesLineL."Status Return Order"::finished;
+            SalesLineL.MODIFY;
+          UNTIL salesLinesToCancelL.NEXT = 0;
+
+        resultMessageR := STRSUBSTNO(Text003, SalesHeaderV."No.");
+
+      END ELSE BEGIN
+        //... switch "Return Status Code" in Header and in affected lines to "open"
+        SalesHeaderV."Status Return Order" := SalesHeaderV."Status Return Order"::open;
+        SalesHeaderV.MODIFY;
+
+        salesLinesToCancelL.RESET;
+        IF salesLinesToCancelL.FINDSET THEN
+          REPEAT
+            SalesLineL.GET(
+              salesLinesToCancelL."Document Type",
+              salesLinesToCancelL."Document No.",
+              salesLinesToCancelL."Line No.");
+            SalesLineL."Status Return Order" := SalesLineL."Status Return Order"::open;
+            SalesLineL.MODIFY;
+          UNTIL salesLinesToCancelL.NEXT = 0;
+
+        resultMessageR := STRSUBSTNO(Text001, SalesLineL.COUNT);
+
+      END;
+      //T0018 29.07.14 tec-cs -----------------------------
+
+      EXIT(TRUE);
+      //T0018-02 04.11.14 tec-cs --------------------------
+    END;
+
+    PROCEDURE "--- locals ---"@1000000000();
+    BEGIN
+    END;
+
+    LOCAL PROCEDURE CancelBeforePayment_GetLines@1000000010(SalesHeaderV@1000000000 : Record 36;VAR salesLinesToCancelR@1000000001 : TEMPORARY Record 37) : Boolean;
+    VAR
+      SalesLineL@1000000002 : Record 37;
+    BEGIN
+      //T0018 04.11.14 tec-cs ++++++++++++++++++++++++++
+
+      // collects all saleslines that can be canceled via "cancelation before payment"
+
+      // check each cancelation-sales-line
+      //
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type", SalesHeaderV."Document Type");
+      SalesLineL.SETRANGE("Document No.", SalesHeaderV."No.");
+      SalesLineL.SETRANGE(Type, SalesLineL.Type::Item);
+
+      // step 1.7) return type must be "cancel"
+      SalesLineL.SETRANGE("Return Type", SalesLineL."Return Type"::Cancelation);
+
+      // step 1.6) prevention discount must be "declined" or "not offered" for all sales lines
+      SalesLineL.SETFILTER("Customer Prevention", '%1|%2',
+        SalesLineL."Customer Prevention"::"Not offered",
+        SalesLineL."Customer Prevention"::Declined);
+
+      // step 1.4)
+      SalesLineL.SETRANGE("Quantity Shipped", 0);
+
+      // step 1.8) Status Return Order = Open or empty
+      SalesLineL.SETFILTER("Status Return Order", '%1|%2',
+        SalesLineL."Status Return Order"::" ",
+        SalesLineL."Status Return Order"::open);
+
+      SalesLineL.SETFILTER("Return Reason Code", '<>%1', '');
+
+      IF SalesLineL.FINDSET THEN BEGIN
+        REPEAT
+          // step 1.5)
+          IF NOT ParcelEntriesFound(SalesLineL) THEN BEGIN
+            salesLinesToCancelR := SalesLineL;
+            salesLinesToCancelR.INSERT;
+          END;
+        UNTIL SalesLineL.NEXT = 0;
+      END;
+
+      salesLinesToCancelR.RESET;
+
+      EXIT(salesLinesToCancelR.FINDFIRST);
+      //T0018 04.11.14 tec-cs --------------------------
+    END;
+
+    LOCAL PROCEDURE PaymentEntriesFound@1000000001(SalesHeaderV@1000000000 : Record 36;withErrorsV@1000000002 : Boolean) : Boolean;
+    VAR
+      eBayNavCXMLLogL@1000000001 : Record 5096060;
+    BEGIN
+      //T0018 29.07.14 tec-cs ++++++++++++++++++++++++++
+      eBayNavCXMLLogL.RESET;
+      eBayNavCXMLLogL.SETRANGE("Source No.", SalesHeaderV."No.");
+      eBayNavCXMLLogL.SETRANGE("Source Type", eBayNavCXMLLogL."Source Type"::Payment);
+      IF NOT eBayNavCXMLLogL.ISEMPTY THEN BEGIN
+        IF withErrorsV THEN BEGIN
+          eBayNavCXMLLogL.FINDFIRST;
+          eBayNavCXMLLogL.FIELDERROR("Source Type");
+        END;
+        EXIT(TRUE);
+      END;
+
+      EXIT(FALSE);
+      //T0018 29.07.14 tec-cs --------------------------
+    END;
+
+    LOCAL PROCEDURE ParcelEntriesFound@1000000002(salesLineV@1000000000 : Record 37) : Boolean;
+    VAR
+      PurchasingL@1000000005 : Record 5721;
+      ParcelStatusHistoryL@1000000003 : Record 80013;
+      SalesTrackingActionL@1000000002 : Record 50201;
+      ignoreThisParcelL@1000000004 : Boolean;
+      ParcelStatusHistoryMgtL@1000000001 : Codeunit 80011;
+    BEGIN
+      //T0018 29.07.14 tec-cs ++++++++++++++++++++++++++
+
+      // look for parcels
+      ParcelStatusHistoryL.RESET;
+      ParcelStatusHistoryL.SETRANGE("Document Type", salesLineV."Document Type");
+      ParcelStatusHistoryL.SETRANGE("Document No.", salesLineV."Document No.");
+      ParcelStatusHistoryL.SETRANGE("Document Line No.", salesLineV."Line No.");
+      IF ParcelStatusHistoryL.FINDSET THEN BEGIN
+        REPEAT
+          // some special parcels should be ignored
+          ignoreThisParcelL := FALSE;
+
+          PurchasingL.GET(salesLineV."Purchasing Code");
+
+
+          IF ParcelStatusHistoryMgtL.CheckActionValues(SalesTrackingActionL.Type::Reservation,
+                                                    PurchasingL."Sales Tracking Code",SalesTrackingActionL,ParcelStatusHistoryL) THEN
+              ignoreThisParcelL := TRUE;
+
+          IF NOT ignoreThisParcelL THEN EXIT(TRUE);
+        UNTIL ParcelStatusHistoryL.NEXT = 0;
+      END;
+
+      EXIT(FALSE);
+      //T0018 29.07.14 tec-cs --------------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation Tectura & Home24 NAV Team  |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+
+      T0018-02    04.11.14  tec-cs    redesign to be called from codeunit 50313 (T0080)
+                                      restructured cancelation functions in own codeunits (split T0018 and T0019)
+    }
+    END.
+  }
+}
+

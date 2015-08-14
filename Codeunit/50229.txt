@@ -1,0 +1,559 @@
+OBJECT Codeunit 50229 Costing Sales Returns II
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02.09.13;
+    Time=14:59:54;
+    Version List=HME0513;
+  }
+  PROPERTIES
+  {
+    Subtype=Test;
+    OnRun=BEGIN
+            isInitialized := FALSE;
+            RANDOMIZE(1);  // Seed RANDOM function.
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Assert@1009 : Codeunit 50200;
+      LibrarySCM@1010 : Codeunit 50210;
+      LibraryFinance@1102601000 : Codeunit 50207;
+      isInitialized@1000 : Boolean;
+      ErrAmountsMustBeSame@1001 : TextConst 'ENU=Sales Amounts must be same.';
+      ErrVATApplication@1002 : TextConst 'ENU=Failure- VAT must apply to Amount- Bug 173552 already logged.';
+
+    LOCAL PROCEDURE Initialize@4();
+    VAR
+      BackupMgt@1001 : Codeunit 50201;
+    BEGIN
+      IF isInitialized THEN
+        EXIT;
+
+      // Setup Demonstration data.
+      BackupMgt.DefaultFixture;
+
+      LibraryFinance.InitializeGeneralPostingSetup;
+      LibraryFinance.InitializeVATPostingSetup;
+
+      isInitialized := TRUE;
+      COMMIT;
+    END;
+
+    [Test]
+    PROCEDURE SalesReturnItemAndCharge@31();
+    VAR
+      SalesHeader@1001 : Record 36;
+      SalesLine@1007 : Record 37;
+      ItemCharge@1006 : Record 5800;
+      ItemNo@1000 : Code[20];
+      SalesOrderNo@1005 : Code[20];
+      CustomerNo@1011 : Code[20];
+      DocumentType@1003 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order';
+      ItemCostingMethod@1008 : 'FIFO,LIFO,Specific,Average,Standard';
+      Type@1002 : ' ,G/L Account,Item,Resource,Fixed Asset,Charge (Item)';
+      Qty@1004 : Decimal;
+    BEGIN
+      // 1. Setup: Create required Sales Setups.
+      Initialize;
+      CreateItemWithInventory(ItemNo,Qty,ItemCostingMethod::FIFO);
+      CreateSalesSetup(CustomerNo,SalesOrderNo,Qty,ItemNo,'',FALSE);
+
+      // 2. Exercise: Create Sales Return Order with Item and negative Item Charge.
+      LibrarySCM.CreateSalesHeader(SalesHeader,DocumentType::"Return Order",CustomerNo);
+      CreateSalesLine(SalesHeader,SalesLine,Type::Item,ItemNo,Qty - 1,0);  // Unit Price - 0, as it useful only for Charge.
+      ItemCharge.FINDFIRST;
+      CreateSalesLine(SalesHeader,SalesLine,Type::"Charge (Item)",ItemCharge."No.",RANDOM(1),-RANDOM(10));
+      CreateItemChargeAssignment(SalesHeader."No.",SalesOrderNo,SalesLine."Line No.",FALSE);
+      LibrarySCM.PostSalesHeader(SalesHeader,TRUE,TRUE);
+      LibrarySCM.AdjustCostItemEntries(ItemNo,'');
+
+      // 3. Verify: Verify Item Ledger Entry and Customer Ledger Entry.
+      VerifySalesAmount(SalesOrderNo,SalesHeader."No.",CustomerNo,TRUE,FALSE);
+    END;
+
+    [Test]
+    PROCEDURE SalesReturnItemTwice@2();
+    VAR
+      SalesHeader@1007 : Record 36;
+      SalesLine@1006 : Record 37;
+      ItemNo@1004 : Code[20];
+      SalesOrderNo@1003 : Code[20];
+      CustomerNo@1009 : Code[20];
+      DocumentType@1002 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order';
+      ItemCostingMethod@1005 : 'FIFO,LIFO,Specific,Average,Standard';
+      Type@1001 : ' ,G/L Account,Item,Resource,Fixed Asset,Charge (Item)';
+      Qty@1000 : Decimal;
+    BEGIN
+      // 1. Setup: Create required Sales Setups.
+      Initialize;
+      CreateItemWithInventory(ItemNo,Qty,ItemCostingMethod::FIFO);
+      CreateSalesSetup(CustomerNo,SalesOrderNo,Qty,ItemNo,'',FALSE);
+
+      // 2. Exercise: Create Sales Return Order for Item with postive and negative quantity.
+      LibrarySCM.CreateSalesHeader(SalesHeader,DocumentType::"Return Order",CustomerNo);
+      CreateSalesLine(SalesHeader,SalesLine,Type::Item,ItemNo,Qty - 1,0);  // Unit Price - 0, as it useful only for Charge.
+      CreateSalesLine(SalesHeader,SalesLine,Type::Item,ItemNo,-Qty + 1,0);
+      LibrarySCM.PostSalesHeader(SalesHeader,TRUE,TRUE);
+      LibrarySCM.AdjustCostItemEntries(ItemNo,'');
+
+      // 3. Verify: Verify Item Ledger Entry and Customer Ledger Entry.
+      VerifySalesAmount(SalesOrderNo,SalesHeader."No.",CustomerNo,FALSE,FALSE);
+    END;
+
+    [Test]
+    PROCEDURE SalesReturnDiffItems@15();
+    VAR
+      SalesHeader@1008 : Record 36;
+      SalesLine@1007 : Record 37;
+      ItemNo@1006 : Code[20];
+      ItemNo2@1009 : Code[20];
+      SalesOrderNo@1005 : Code[20];
+      CustomerNo@1004 : Code[20];
+      DocumentType@1003 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order';
+      ItemCostingMethod@1001 : 'FIFO,LIFO,Specific,Average,Standard';
+      Type@1002 : ' ,G/L Account,Item,Resource,Fixed Asset,Charge (Item)';
+      Qty@1000 : Decimal;
+    BEGIN
+      // 1. Setup: Create required Sales Setups.
+      Initialize;
+      CreateItemWithInventory(ItemNo,Qty,ItemCostingMethod::FIFO);
+      CreateItemWithInventory(ItemNo2,Qty,ItemCostingMethod::Average);
+      CreateSalesSetup(CustomerNo,SalesOrderNo,Qty,ItemNo,ItemNo2,TRUE);
+
+      // 2. Exercise: Create Sales Return Order for different Items with postive and negative quantity.
+      LibrarySCM.CreateSalesHeader(SalesHeader,DocumentType::"Return Order",CustomerNo);
+      CreateSalesLine(SalesHeader,SalesLine,Type::Item,ItemNo,-Qty + 1,0);  // Unit Price - 0, as it useful only for Charge.
+      UpdateNegativeUnitPrice(SalesLine,ItemNo);  // Updating Unit Price to a negative value to facilitate Posting.
+      CreateSalesLine(SalesHeader,SalesLine,Type::Item,ItemNo2,Qty - 1,0);
+      LibrarySCM.PostSalesHeader(SalesHeader,TRUE,TRUE);
+      LibrarySCM.AdjustCostItemEntries('ItemNo|ItemNo2','');
+
+      // 3. Verify: Verify Item Ledger Entry and Customer Ledger Entry.
+      VerifySalesAmount(SalesOrderNo,SalesHeader."No.",CustomerNo,FALSE,FALSE);
+    END;
+
+    [Test]
+    PROCEDURE SalesReturnChargeMoveLineAvg@17();
+    VAR
+      ItemCostingMethod@1001 : 'FIFO,LIFO,Specific,Average,Standard';
+    BEGIN
+      MoveNegativeLinesReturnCharge(ItemCostingMethod::Average);
+    END;
+
+    [Test]
+    PROCEDURE SalesReturnChargeMoveLineFIFO@22();
+    VAR
+      ItemCostingMethod@1001 : 'FIFO,LIFO,Specific,Average,Standard';
+    BEGIN
+      MoveNegativeLinesReturnCharge(ItemCostingMethod::FIFO);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE MoveNegativeLinesReturnCharge@20(ItemCostingMethod@1013 : 'FIFO,LIFO,Specific,Average,Standard');
+    VAR
+      SalesHeader@1012 : Record 36;
+      SalesHeader2@1011 : Record 36;
+      SalesLine@1010 : Record 37;
+      ItemCharge@1004 : Record 5800;
+      ItemNo@1008 : Code[20];
+      SalesOrderNo@1007 : Code[20];
+      CustomerNo@1006 : Code[20];
+      DocumentType@1005 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order';
+      Qty@1002 : Decimal;
+      ToDocType@1001 : ',,Order,Invoice,Return Order,Credit Memo';
+      FromDocType@1000 : ',,Order,Invoice,Return Order,Credit Memo';
+      Type@1003 : ' ,G/L Account,Item,Resource,Fixed Asset,Charge (Item)';
+    BEGIN
+      // 1. Setup: Create required Sales Setups.
+      Initialize;
+      CreateItemWithInventory(ItemNo,Qty,ItemCostingMethod);
+      CreateSalesSetup(CustomerNo,SalesOrderNo,Qty,ItemNo,'',FALSE);
+
+      // 2. Exercise: Create Sales Return Order with Item (negative entry) and Item Charge. Move Negative Item line to new Sales Order.
+      // Post Sales Return Order with Item Charge alone.
+      LibrarySCM.CreateSalesHeader(SalesHeader,DocumentType::"Return Order",CustomerNo);
+      CreateSalesLine(SalesHeader,SalesLine,Type::Item,ItemNo,-Qty + 1,0);  // Unit Price - 0, as it useful only for Charge.
+      ItemCharge.FINDFIRST;
+      CreateSalesLine(SalesHeader,SalesLine,Type::"Charge (Item)",ItemCharge."No.",RANDOM(1),RANDOM(10));
+      CreateItemChargeAssignment(SalesHeader."No.",SalesOrderNo,SalesLine."Line No.",FALSE);
+      MoveNegativeLines(SalesHeader,SalesHeader2,FromDocType::"Return Order",ToDocType::Order);
+      LibrarySCM.PostSalesHeader(SalesHeader,TRUE,TRUE);
+      LibrarySCM.PostSalesHeader(SalesHeader2,TRUE,TRUE);
+      LibrarySCM.AdjustCostItemEntries(ItemNo,'');
+
+      // 3. Verify: Verify Item Ledger Entry and Customer Ledger Entry.
+      VerifySalesAmount(SalesOrderNo,SalesHeader."No.",CustomerNo,TRUE,TRUE);
+    END;
+
+    [Test]
+    PROCEDURE SalesReturnItemMoveLineFIFO@28();
+    VAR
+      SalesHeader@1007 : Record 36;
+      SalesHeader2@1008 : Record 36;
+      SalesLine@1006 : Record 37;
+      ItemNo@1004 : Code[20];
+      SalesOrderNo@1003 : Code[20];
+      CustomerNo@1009 : Code[20];
+      DocumentType@1002 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order';
+      ItemCostingMethod@1005 : 'FIFO,LIFO,Specific,Average,Standard';
+      ToDocType@1011 : ',,Order,Invoice,Return Order,Credit Memo';
+      FromDocType@1010 : ',,Order,Invoice,Return Order,Credit Memo';
+      Type@1001 : ' ,G/L Account,Item,Resource,Fixed Asset,Charge (Item)';
+      Qty@1000 : Decimal;
+    BEGIN
+      // 1. Setup: Create required Sales Setups.
+      Initialize;
+      CreateItemWithInventory(ItemNo,Qty,ItemCostingMethod::FIFO);
+      CreateSalesSetup(CustomerNo,SalesOrderNo,Qty,ItemNo,'',FALSE);
+
+      // 2. Exercise: Create Sales Return Order for Item with postive and negative quantity. Move Negative Item line to new Sales Order.
+      // Post Sales Return Order with Positive Item line.
+      LibrarySCM.CreateSalesHeader(SalesHeader,DocumentType::"Return Order",CustomerNo);
+      CreateSalesLine(SalesHeader,SalesLine,Type::Item,ItemNo,Qty - 1,0);  // Unit Price - 0, as it useful only for Charge.
+      CreateSalesLine(SalesHeader,SalesLine,Type::Item,ItemNo,-Qty + 1,0);
+      MoveNegativeLines(SalesHeader,SalesHeader2,FromDocType::"Return Order",ToDocType::Order);
+      LibrarySCM.PostSalesHeader(SalesHeader,TRUE,TRUE);
+      LibrarySCM.PostSalesHeader(SalesHeader2,TRUE,TRUE);
+      LibrarySCM.AdjustCostItemEntries(ItemNo,'');
+
+      // 3. Verify: Verify Item Ledger Entry and Customer Ledger Entry.
+      VerifySalesAmount(SalesOrderNo,SalesHeader."No.",CustomerNo,FALSE,FALSE);
+    END;
+
+    [Test]
+    PROCEDURE SalesReturnDiffItemsMoveLine@23();
+    VAR
+      SalesHeader@1008 : Record 36;
+      SalesHeader2@1010 : Record 36;
+      SalesLine@1007 : Record 37;
+      ItemNo@1006 : Code[20];
+      ItemNo2@1009 : Code[20];
+      SalesOrderNo@1005 : Code[20];
+      CustomerNo@1004 : Code[20];
+      DocumentType@1003 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order';
+      ItemCostingMethod@1001 : 'FIFO,LIFO,Specific,Average,Standard';
+      Type@1002 : ' ,G/L Account,Item,Resource,Fixed Asset,Charge (Item)';
+      ToDocType@1012 : ',,Order,Invoice,Return Order,Credit Memo';
+      FromDocType@1011 : ',,Order,Invoice,Return Order,Credit Memo';
+      Qty@1000 : Decimal;
+    BEGIN
+      // 1. Setup: Create required Sales Setups.
+      Initialize;
+      CreateItemWithInventory(ItemNo,Qty,ItemCostingMethod::FIFO);
+      CreateItemWithInventory(ItemNo2,Qty,ItemCostingMethod::Average);
+      CreateSalesSetup(CustomerNo,SalesOrderNo,Qty,ItemNo,ItemNo2,TRUE);
+
+      // 2. Exercise: Create Sales Return Order for different Items with postive and negative quantity.
+      LibrarySCM.CreateSalesHeader(SalesHeader,DocumentType::"Return Order",CustomerNo);
+      CreateSalesLine(SalesHeader,SalesLine,Type::Item,ItemNo,-Qty + 1,0);  // Unit Price - 0, as it useful only for Charge.
+      CreateSalesLine(SalesHeader,SalesLine,Type::Item,ItemNo2,Qty - 1,0);
+      MoveNegativeLines(SalesHeader,SalesHeader2,FromDocType::"Return Order",ToDocType::Order);
+      LibrarySCM.PostSalesHeader(SalesHeader,TRUE,TRUE);
+      LibrarySCM.PostSalesHeader(SalesHeader2,TRUE,TRUE);
+      LibrarySCM.AdjustCostItemEntries('ItemNo|ItemNo2','');
+
+      // 3. Verify: Verify Item Ledger Entry and Customer Ledger Entry.
+      VerifySalesAmount(SalesOrderNo,SalesHeader."No.",CustomerNo,FALSE,FALSE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateItemWithInventory@24(VAR ItemNo@1002 : Code[20];VAR Qty@1001 : Decimal;ItemCostingMethod@1000 : 'FIFO,LIFO,Specific,Average,Standard');
+    BEGIN
+      ItemNo := CreateItem(ItemCostingMethod);
+      Qty := RANDOM(10) + 10;
+      UpdateItemInventory(ItemNo,Qty + 50);
+    END;
+
+    LOCAL PROCEDURE CreateItem@6(ItemCostingMethod@1003 : 'FIFO,LIFO,Specific,Average,Standard') : Code[20];
+    VAR
+      Item@1000 : Record 27;
+      GeneralPostingSetup@1001 : Record 252;
+      VATPostingSetup@1002 : Record 325;
+    BEGIN
+      LibrarySCM.CreateItem(Item);
+      LibraryFinance.FindGeneralPostingSetup(GeneralPostingSetup);
+      LibraryFinance.FindVATPostingSetup(VATPostingSetup);
+      Item.VALIDATE("Gen. Prod. Posting Group",GeneralPostingSetup."Gen. Prod. Posting Group");
+      Item.VALIDATE("VAT Prod. Posting Group",VATPostingSetup."VAT Prod. Posting Group");
+      Item.VALIDATE("Costing Method",ItemCostingMethod);
+      Item.VALIDATE("Unit Price",RANDOM(10));
+      Item.MODIFY(TRUE);
+      EXIT(Item."No.");
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE UpdateItemInventory@25(ItemNo@1004 : Code[20];Qty@1005 : Decimal);
+    VAR
+      ItemJournalTemplate@1001 : Record 82;
+      ItemJournalBatch@1000 : Record 233;
+      ItemJournalLine@1003 : Record 83;
+      ItemJournalTemplateType@1002 : 'Item,Transfer,Phys. Inventory,Revaluation,Consumption,Output,Capacity,Prod.Order';
+    BEGIN
+      // Create Item Journal to populate Item Quantity.
+      ItemJournalTemplate.GET(LibrarySCM.SelectItemJournalTemplate(ItemJournalTemplateType::Item));
+      LibrarySCM.SelectItemJournalBatchName(ItemJournalBatch,ItemJournalTemplateType::Item,ItemJournalTemplate.Name);
+      LibrarySCM.CreateItemJournalLine(
+        ItemJournalLine,ItemJournalBatch."Journal Template Name",
+        ItemJournalBatch.Name,ItemJournalLine."Entry Type"::Purchase,ItemNo,Qty);
+      ItemJournalLine.MODIFY(TRUE);
+      LibrarySCM.PostItemJournalLine(ItemJournalBatch."Journal Template Name",ItemJournalBatch.Name);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateSalesSetup@16(VAR CustomerNo@1001 : Code[20];VAR SalesOrderNo@1003 : Code[20];Qty@1002 : Decimal;ItemNo@1000 : Code[20];ItemNo2@1009 : Code[20];MoreItems@1008 : Boolean);
+    VAR
+      SalesHeader@1004 : Record 36;
+      SalesLine@1005 : Record 37;
+      DocumentType@1006 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order';
+      Type@1007 : ' ,G/L Account,Item,Resource,Fixed Asset,Charge (Item)';
+    BEGIN
+      // Create and Post Sales Order.
+      UpdateSalesReceivablesSetup;
+      CustomerNo := LibrarySCM.SelectCustomer;
+      LibrarySCM.CreateSalesHeader(SalesHeader,DocumentType::Order,CustomerNo);
+      LibrarySCM.CreateSalesLine(SalesHeader,SalesLine,Type::Item,ItemNo,Qty);
+      IF MoreItems THEN
+        LibrarySCM.CreateSalesLine(SalesHeader,SalesLine,Type::Item,ItemNo2,Qty);
+      LibrarySCM.PostSalesHeader(SalesHeader,TRUE,TRUE);
+      SalesOrderNo := SalesHeader."No.";
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE UpdateSalesReceivablesSetup@8();
+    VAR
+      SalesReceivablesSetup@1000 : Record 311;
+    BEGIN
+      LibrarySCM.SetCreditWarningsToNoWarnings;
+      LibrarySCM.SetStockoutWarning(FALSE);
+      SalesReceivablesSetup.GET;
+      SalesReceivablesSetup.VALIDATE("Exact Cost Reversing Mandatory",FALSE);
+      SalesReceivablesSetup.VALIDATE("Return Receipt on Credit Memo",TRUE);
+      SalesReceivablesSetup.MODIFY(TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateSalesLine@26(VAR SalesHeader@1000 : Record 36;VAR SalesLine@1001 : Record 37;Type@1005 : ' ,G/L Account,Item,Resource,Fixed Asset,Charge (Item)';No@1002 : Code[20];Qty@1003 : Decimal;UnitPrice@1004 : Decimal);
+    VAR
+      ApplyFromItemEntry@1006 : Boolean;
+      Charge@1007 : Boolean;
+    BEGIN
+      IF (Qty > 0) AND (Type = Type::Item) THEN
+        ApplyFromItemEntry := TRUE;
+      LibrarySCM.CreateSalesLine(SalesHeader,SalesLine,Type,No,Qty);
+      IF Type = Type::"Charge (Item)" THEN
+        Charge := TRUE;
+      UpdateSalesLine(SalesLine,No,UnitPrice,ApplyFromItemEntry,Charge);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE UpdateSalesLine@1(VAR SalesLine@1003 : Record 37;ItemNo@1001 : Code[20];UnitPrice@1007 : Decimal;ApplyFromItemEntry@1005 : Boolean;ItemCharge@1006 : Boolean);
+    VAR
+      ItemLedgerEntry@1002 : Record 32;
+    BEGIN
+      IF ApplyFromItemEntry THEN BEGIN
+        ItemLedgerEntry.SETRANGE("Item No.",ItemNo);
+        ItemLedgerEntry.SETRANGE("Document Type",ItemLedgerEntry."Document Type"::"Sales Shipment");
+        ItemLedgerEntry.FINDFIRST;
+        SalesLine.VALIDATE("Appl.-from Item Entry",ItemLedgerEntry."Entry No.");
+      END;
+      SalesLine.VALIDATE("Qty. to Ship",0);  // Value important for Test.
+      IF ItemCharge THEN
+        SalesLine.VALIDATE("Unit Price",UnitPrice);
+      SalesLine.MODIFY(TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE UpdateNegativeUnitPrice@13(VAR SalesLine@1000 : Record 37;ItemNo@1001 : Code[20]);
+    VAR
+      Item@1002 : Record 27;
+    BEGIN
+      Item.GET(ItemNo);
+      SalesLine.VALIDATE("Unit Price",-Item."Unit Price");
+      SalesLine.VALIDATE("Qty. to Ship",0);
+      SalesLine.MODIFY(TRUE);
+    END;
+
+    LOCAL PROCEDURE CreateItemChargeAssignment@5(SalesReturnOrderNo@1000 : Code[20];SalesOrderNo@1005 : Code[20];ChargeLineNo@1002 : Integer;DocTypeCreditMemo@1003 : Boolean);
+    VAR
+      SalesLine@1007 : Record 37;
+      ItemChargeAssignmentSales@1001 : Record 5809;
+    BEGIN
+      IF DocTypeCreditMemo THEN
+        SalesLine.GET(SalesLine."Document Type"::"Credit Memo",SalesReturnOrderNo,ChargeLineNo)
+      ELSE
+        SalesLine.GET(SalesLine."Document Type"::"Return Order",SalesReturnOrderNo,ChargeLineNo);
+      ItemChargeAssignmentSales.VALIDATE("Document Type",SalesLine."Document Type");
+      ItemChargeAssignmentSales.VALIDATE("Document No.",SalesLine."Document No.");
+      ItemChargeAssignmentSales.VALIDATE("Document Line No.",SalesLine."Line No.");
+      ItemChargeAssignmentSales.VALIDATE("Item Charge No.",SalesLine."No.");
+      ItemChargeAssignmentSales.VALIDATE("Unit Cost",SalesLine."Unit Price");
+
+      AssignItemChargeToShipment(ItemChargeAssignmentSales,SalesOrderNo);
+      UpdateItemChargeQtyToAssign(
+        ItemChargeAssignmentSales."Document No.",SalesLine.Quantity,SalesLine."Line No.",DocTypeCreditMemo);
+    END;
+
+    LOCAL PROCEDURE AssignItemChargeToShipment@10(VAR ItemChargeAssignmentSales@1002 : Record 5809;SalesOrderNo@1003 : Code[20]);
+    VAR
+      SalesShipmentLine@1001 : Record 111;
+      ItemChargeAssgntSales@1000 : Codeunit 5807;
+    BEGIN
+      SalesShipmentLine.SETRANGE("Order No.",SalesOrderNo);
+      SalesShipmentLine.FINDFIRST;
+      ItemChargeAssgntSales.CreateShptChargeAssgnt(SalesShipmentLine,ItemChargeAssignmentSales);
+    END;
+
+    LOCAL PROCEDURE UpdateItemChargeQtyToAssign@14(DocumentNo@1001 : Code[20];QtyToAssign@1002 : Decimal;DocLineNo@1003 : Integer;DocTypeCreditMemo@1004 : Boolean);
+    VAR
+      ItemChargeAssignmentSales@1000 : Record 5809;
+    BEGIN
+      ItemChargeAssignmentSales.SETRANGE("Document No.",DocumentNo);
+      IF DocTypeCreditMemo THEN BEGIN
+        ItemChargeAssignmentSales.SETRANGE("Document Type",ItemChargeAssignmentSales."Document Type"::"Credit Memo");
+        ItemChargeAssignmentSales.SETRANGE("Document Line No.",DocLineNo);
+      END ELSE
+        ItemChargeAssignmentSales.SETRANGE("Document Type",ItemChargeAssignmentSales."Document Type"::"Return Order");
+      ItemChargeAssignmentSales.FINDFIRST;
+      ItemChargeAssignmentSales.VALIDATE("Qty. to Assign",QtyToAssign);
+      ItemChargeAssignmentSales.MODIFY(TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE MoveNegativeLines@18(VAR SalesHeader@1002 : Record 36;VAR SalesHeader2@1003 : Record 36;FromDocType@1000 : Option;ToDocType@1001 : Option);
+    VAR
+      CopyDocumentMgt@1004 : Codeunit 6620;
+    BEGIN
+      CopyDocumentMgt.SetProperties(TRUE,FALSE,TRUE,TRUE,TRUE,FALSE,FALSE);
+      SalesHeader2."Document Type" := CopyDocumentMgt.SalesHeaderDocType(ToDocType);
+      CopyDocumentMgt.CopySalesDoc(FromDocType,SalesHeader."No.",SalesHeader2);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE VerifySalesAmount@7(SalesOrderNo@1000 : Code[20];SalesReturnOrderNo@1001 : Code[20];CustomerNo@1003 : Code[20];WithCharge@1004 : Boolean;OnlyCharge@1005 : Boolean);
+    VAR
+      SalesCrMemoHeader@1002 : Record 114;
+    BEGIN
+      SalesCrMemoHeader.SETRANGE("Return Order No.",SalesReturnOrderNo);
+      SalesCrMemoHeader.FINDFIRST;
+
+      IF WithCharge THEN
+        VerifyItemLedgerShipment(SalesCrMemoHeader."No.",SalesOrderNo);
+
+      IF NOT OnlyCharge THEN
+        VerifyItemLedgerReturnReceipt(SalesReturnOrderNo);
+
+      VerifyCustLedgerEntry(SalesCrMemoHeader."No.",CustomerNo,FALSE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE VerifyItemLedgerShipment@12(PostedCreditMemoNo@1000 : Code[20];SalesOrderNo@1002 : Code[20]);
+    VAR
+      SalesShipmentLine@1009 : Record 111;
+      SalesCrMemoLine@1008 : Record 115;
+      ItemLedgerEntry@1007 : Record 32;
+      CalcSalesAmountWithCharge@1003 : Decimal;
+    BEGIN
+      // Verify Sales Amount (Actual) from Sales Shipment line after Item Charge has been applied to it.
+      SalesCrMemoLine.SETRANGE("Document No.",PostedCreditMemoNo);
+      SalesCrMemoLine.SETRANGE(Type,SalesCrMemoLine.Type::"Charge (Item)");
+      SalesCrMemoLine.FINDFIRST;
+      SalesShipmentLine.SETRANGE("Order No.",SalesOrderNo);
+      SalesShipmentLine.FINDFIRST;
+      CalcSalesAmountWithCharge :=
+        SalesShipmentLine.Quantity * SalesShipmentLine."Unit Price" - SalesCrMemoLine.Quantity * SalesCrMemoLine."Unit Price";
+
+      ItemLedgerEntry.SETRANGE("Document No.",SalesShipmentLine."Document No.");
+      ItemLedgerEntry.FINDFIRST;
+      ItemLedgerEntry.CALCFIELDS("Sales Amount (Actual)");
+
+      Assert.AreEqual(ItemLedgerEntry."Sales Amount (Actual)",CalcSalesAmountWithCharge,ErrAmountsMustBeSame);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE VerifyItemLedgerReturnReceipt@9(SalesReturnOrderNo@1002 : Code[20]);
+    VAR
+      ItemLedgerEntry@1004 : Record 32;
+      ReturnReceiptHeader@1008 : Record 6660;
+      ReturnReceiptLine@1011 : Record 6661;
+      CalcSalesAmount@1010 : Decimal;
+      ExpectedSalesAmount@1009 : Decimal;
+    BEGIN
+      // Verify Sales Amount (Actual) from Sales Return Receipt lines.
+      ReturnReceiptHeader.SETRANGE("Return Order No.",SalesReturnOrderNo);
+      ReturnReceiptHeader.FINDFIRST;
+      ReturnReceiptLine.SETRANGE("Document No.",ReturnReceiptHeader."No.");
+      ReturnReceiptLine.SETRANGE(Type,ReturnReceiptLine.Type::Item);
+      ReturnReceiptLine.FINDSET;
+      REPEAT
+        CalcSalesAmount += ReturnReceiptLine.Quantity * ReturnReceiptLine."Unit Price";
+      UNTIL ReturnReceiptLine.NEXT = 0;
+
+      ItemLedgerEntry.SETRANGE("Document No.",ReturnReceiptHeader."No.");
+      ItemLedgerEntry.FINDSET;
+      REPEAT
+        ItemLedgerEntry.CALCFIELDS("Sales Amount (Actual)");
+        ExpectedSalesAmount += ItemLedgerEntry."Sales Amount (Actual)";
+      UNTIL ItemLedgerEntry.NEXT = 0;
+
+      Assert.AreEqual(ABS(ExpectedSalesAmount),ABS(CalcSalesAmount),ErrAmountsMustBeSame);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE VerifyCustLedgerEntry@11(PostedCreditMemoNo@1003 : Code[20];CustomerNo@1002 : Code[20];DocTypeCrMemo@1000 : Boolean);
+    VAR
+      CustLedgerEntry@1004 : Record 21;
+    BEGIN
+      // Verify Credit Memo Line in Customer Ledger Entry for Amount.
+      CustLedgerEntry.SETRANGE("Document No.",PostedCreditMemoNo);
+      CustLedgerEntry.FINDFIRST;
+      CustLedgerEntry.CALCFIELDS(Amount);
+
+      Assert.AreEqual(
+        CustLedgerEntry.Amount,-CalcTotalCustLedgerAmount(PostedCreditMemoNo,CustomerNo,DocTypeCrMemo),ErrAmountsMustBeSame);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CalcTotalCustLedgerAmount@3(PostedCreditMemoNo@1001 : Code[20];CustomerNo@1000 : Code[20];DocTypeCrMemo@1002 : Boolean) : Decimal;
+    VAR
+      Customer@1010 : Record 18;
+      SalesCrMemoLine@1008 : Record 115;
+      TotalAmountIncVAT@1005 : Decimal;
+    BEGIN
+      Customer.GET(CustomerNo);
+      SalesCrMemoLine.SETRANGE("Document No.",PostedCreditMemoNo);
+      IF DocTypeCrMemo THEN
+        SalesCrMemoLine.SETFILTER("Sell-to Customer No.",'<>''''');
+      SalesCrMemoLine.FINDSET;
+      REPEAT
+        TotalAmountIncVAT +=
+          SalesCrMemoLine.Quantity * SalesCrMemoLine."Unit Price" +
+          SalesCrMemoLine.Quantity * SalesCrMemoLine."Unit Price" * (SalesCrMemoLine."VAT %" / 100);
+      UNTIL SalesCrMemoLine.NEXT = 0;
+      EXIT(TotalAmountIncVAT)
+    END;
+
+    BEGIN
+    {
+      Test for Costing Returns:
+        1. Sales Return Order for Item (Costing Method:FIFO) and Item (Charge).
+           Check Item Ledger Entry and Customer Ledger Entry.
+        2. Sales Return Order for Item (Costing Method:FIFO, Postive and Negative entry).
+           Check Item Ledger Entry and Customer Ledger Entry.
+        3. Sales Return Order for Two Items (Costing Method:FIFO and Average, Postive and Negative entry)
+           Check Item Ledger Entry and Customer Ledger Entry.
+        4. Sales Return Order for Item (Costing Method:Average, Negative entry) and Item (Charge), Move Negative Lines to New Sales Order.
+           Check Item Ledger Entry and Customer Ledger Entry.
+        5. Sales Return Order for Item (Costing Method:FIFO, Negative entry) and Item (Charge), Move Negative Lines to New Sales Order.
+           Check Item Ledger Entry and Customer Ledger Entry.
+        6. Sales Return Order for Item (Costing Method:FIFO, Postive and Negative entry), Move Negative Lines to New Sales Order.
+           Check Item Ledger Entry and Customer Ledger Entry.
+        7. Sales Return Order for Two Items (Costing Method:FIFO and Average, Postive and Negative entry). Move Negative Lines and
+           Check Item Ledger Entry and Customer Ledger Entry.
+    }
+    END.
+  }
+}
+

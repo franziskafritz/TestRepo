@@ -1,0 +1,154 @@
+OBJECT Codeunit 50011 INVOIC Import Interface
+{
+  OBJECT-PROPERTIES
+  {
+    Date=27.07.15;
+    Time=14:24:14;
+    Modified=Yes;
+    Version List=chrmu,DYN0022,H4479;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=VAR
+            LT_PurchRcptLine@1000000000 : Record 121;
+          BEGIN
+            // DYN0022 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+            PurchHeader.RESET;
+            PurchHeader.SETRANGE("Document Type",PurchHeader."Document Type"::Invoice);
+            PurchHeader.SETRANGE(Import,TRUE);
+            IF PurchHeader.FIND('-') THEN REPEAT
+              LT_PurchRcptLine.CheckPurchInvLines(PurchHeader);
+              COMMIT;
+            UNTIL PurchHeader.NEXT = 0;
+            // DYN0022 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+            ImpFrmMgt.SetInterface('INVOIC');
+            ImpFrmMgt.RUN;
+
+            // DYN0019 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+            COMMIT;
+            PostInvoices;
+            // DYN0019 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      PurchHeader@1000000005 : Record 38;
+      PurchLine@1000000004 : Record 39;
+      ImpFrmMgt@1000000003 : Codeunit 50009;
+      PurchPost@1000000002 : Codeunit 90;
+      ReleasePurchDoc@1000000001 : Codeunit 415;
+
+    PROCEDURE PostInvoices@1000000000();
+    VAR
+      LT_PurchHeader@1000000005 : Record 38;
+      LT_TotalPurchLine@1000000004 : Record 39;
+      LT_TotalPurchLineLCY@1000000003 : Record 39;
+      L_AutomPosted@1000000002 : Boolean;
+      L_VATAmt@1000000001 : Decimal;
+      L_VatText@1000000000 : Text[30];
+    BEGIN
+      // DYN0022 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+      PurchHeader.RESET;
+      PurchHeader.SETRANGE("Document Type",PurchHeader."Document Type"::Invoice);
+      PurchHeader.SETRANGE(Import,TRUE);
+      IF PurchHeader.FIND('-') THEN REPEAT
+        IF PurchHeader."Buy-from Vendor No." = '' THEN BEGIN
+          PurchHeader.Import := FALSE;
+          PurchHeader.MODIFY;
+        END;
+      UNTIL PurchHeader.NEXT = 0;
+      // DYN0022 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+      // DYN0019 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+      PurchHeader.RESET;
+      PurchHeader.SETRANGE("Document Type",PurchHeader."Document Type"::Invoice);
+      PurchHeader.SETRANGE(Import,TRUE);
+      IF PurchHeader.FIND('-') THEN REPEAT
+        COMMIT;
+        L_AutomPosted := FALSE;
+        PurchLine.RESET;
+        PurchLine.SETRANGE("Document Type",PurchHeader."Document Type");
+        PurchLine.SETRANGE("Document No.",PurchHeader."No.");
+        PurchLine.SETFILTER(Quantity,'<>0');
+        PurchLine.SETFILTER("Status Code",'<>%1','');
+        L_AutomPosted := PurchLine.ISEMPTY;
+
+        // DYN0021 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        IF L_AutomPosted THEN BEGIN
+
+          // DYN0022 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+          //original PurchPost.SumPurchLines(PurchHeader,0,LT_TotalPurchLine,LT_TotalPurchLineLCY,L_VATAmt,L_VatText);
+          LT_PurchHeader.COPY(PurchHeader);
+          PurchPost.SumPurchLines(LT_PurchHeader,0,LT_TotalPurchLine,LT_TotalPurchLineLCY,L_VATAmt,L_VatText);
+          CLEAR(PurchPost);
+          // DYN0022 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+          IF LT_TotalPurchLine."Amount Including VAT" <> PurchHeader."REB Gross Invoice Amount" THEN
+            L_AutomPosted := FALSE;
+        // DYN0021 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+          IF L_AutomPosted THEN BEGIN
+            IF PurchHeader.Status = PurchHeader.Status::Open THEN
+              IF ReleasePurchDoc.RUN(PurchHeader) THEN;
+            IF PurchHeader.Status <> PurchHeader.Status::Released THEN
+              L_AutomPosted := FALSE;
+
+        // DYN0021 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+          END;
+        END;
+        // DYN0021 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+        IF PurchHeader."Autom. Posted" <> L_AutomPosted THEN BEGIN
+          PurchHeader."Autom. Posted" := L_AutomPosted;
+          PurchHeader.MODIFY;
+        END;
+
+        // DYN0021 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        //original END;
+        // DYN0021 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+      UNTIL PurchHeader.NEXT = 0;
+
+      PurchHeader.SETRANGE(Status,PurchHeader.Status::Released);
+      PurchHeader.SETRANGE("Autom. Posted",TRUE);
+      IF PurchHeader.FIND('-') THEN REPEAT
+        COMMIT;
+        CLEAR(PurchPost);
+        PurchPost.SetPostingDate(FALSE,FALSE,0D);
+        IF NOT PurchPost.RUN(PurchHeader) THEN BEGIN
+          //H4479 27.07.15 TST +++++++++++++++++++++++++++++
+          PurchHeader.GET(PurchHeader."Document Type",PurchHeader."No.");
+          //H4479 27.07.15 TST -----------------------------
+          PurchHeader."Autom. Posted" := FALSE;
+          PurchHeader.MODIFY;
+          COMMIT;
+        END;
+      UNTIL PurchHeader.NEXT = 0;
+      // DYN0019 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+    END;
+
+    BEGIN
+    {
+      DYN0019     20.06.13 eich      post invoice automated whem price is correct
+      DYN0021     23.09.13 eich      check invoice amount
+      DYN0022     22.10.13 eich      check shipment again
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+      H0924       03.04.14 DMA       Control Posting Dates, this one is in Import Framework setup
+      H4479       27.07.15 TST       Get PurchHeader after chyanged by Release
+    }
+    END.
+  }
+}
+

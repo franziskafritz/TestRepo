@@ -1,0 +1,807 @@
+OBJECT Codeunit 50701 Library - Sales
+{
+  OBJECT-PROPERTIES
+  {
+    Date=19.03.15;
+    Time=12:00:00;
+    Version List=#HME3886,T0028;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      LibrarySCM@1000000001 : Codeunit 50210;
+      FPCManagement@1000000002 : Codeunit 50003;
+      SeparTxt@1000000004 : TextConst 'ENU=";"';
+
+    PROCEDURE CheckReleaseSalesOrder@1000000038(VAR SalesHeader@1000000000 : Record 36);
+    VAR
+      ReleaseSalesDocument@1000000001 : Codeunit 414;
+    BEGIN
+      IF SalesHeader.Status <> SalesHeader.Status::Released THEN
+        ReleaseSalesDocument.PerformManualRelease(SalesHeader);
+    END;
+
+    PROCEDURE CreatePurchDocument@1000000055(VAR SalesHeader@1000000001 : Record 36);
+    VAR
+      BatchPostDoc@1000000000 : Record 50043;
+    BEGIN
+      // H3886  19.03.15  MM +++++++++++++++
+      IF NOT PurchOrderRequired(SalesHeader."No.") THEN
+        EXIT;
+
+      CheckEDIVendor(SalesHeader."No.");
+
+      BatchPostDoc.CreatePurchOrder(SalesHeader);
+      RunBatchPostAction(SalesHeader."No.",BatchPostDoc."Action Type"::"Create Purch. Order");
+      // H3886  19.03.15  MM ---------------
+    END;
+
+    PROCEDURE CreateReturnOrderFromOpen@1000000002(DocumentNo@1000000000 : Code[20]);
+    VAR
+      SalesHeader@1000000002 : Record 36;
+      FPCManagement@1000000001 : Codeunit 50003;
+    BEGIN
+      WITH SalesHeader DO BEGIN
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("No.",DocumentNo);
+        FINDFIRST;
+
+        FPCManagement.CreateReturnOrder("No.",0); // 0: Sales Order.
+      END;
+    END;
+
+    PROCEDURE CreateReturnOrderFromArchived@1000000003(DocumentNo@1000000000 : Code[20]);
+    VAR
+      SalesHeaderArchive@1000000002 : Record 5107;
+      FPCManagement@1000000001 : Codeunit 50003;
+    BEGIN
+      WITH SalesHeaderArchive DO BEGIN
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("No.",DocumentNo);
+        FINDFIRST;
+
+        FillArchSalesLine("No.");
+        FPCManagement.CreateReturnOrder("No.",1); // 1: Archived Sales Order.
+      END;
+    END;
+
+    PROCEDURE CreateReturnDocument@1000000065(DocumentNo@1000000000 : Code[20];OrderType@1000000003 : Option);
+    VAR
+      SalesHeaderArchive@1000000001 : Record 5107;
+      FPCManagement@1000000002 : Codeunit 50003;
+    BEGIN
+      WITH SalesHeaderArchive DO BEGIN
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("No.",DocumentNo);
+        FINDFIRST;
+
+        FillArchSalesLine("No.");
+        FPCManagement.CreateReturnOrder("No.",OrderType);
+      END;
+    END;
+
+    PROCEDURE CreateReturnFollowOnOrder@1000000005(DocumentNo@1000000001 : Code[20]);
+    VAR
+      SalesHeader@1000000002 : Record 36;
+    BEGIN
+      SalesHeader.SETRANGE("Document Type",SalesHeader."Document Type"::"Return Order");
+      SalesHeader.SETRANGE("External Document No.",DocumentNo);
+      SalesHeader.FINDFIRST;
+
+      // T0028 29.07.14 tec-cs +++++++++++++++++++++++++++++
+      FPCManagement.CreateFollowUpSalesOrder(SalesHeader);
+      // FPCManagement.CreateFollowUpSalesOrder(SalesHeader, FALSE);
+      // T0028 29.07.14 tec-cs -----------------------------
+    END;
+
+    PROCEDURE SendPurchEmail@1000000000(DocumentNo@1000000000 : Code[20]);
+    VAR
+      BatchPostDoc@1000000001 : Record 50043;
+    BEGIN
+      RunBatchPostAction(DocumentNo,BatchPostDoc."Action Type"::"Purch. EMail");
+    END;
+
+    PROCEDURE ShipSalesDocument@1000000022(VAR SalesHeader@1000000000 : Record 36);
+    BEGIN
+      SalesHeader.FIND;
+      FillQtyToSalesLine(SalesHeader."No.");
+      LibrarySCM.PostSalesHeader(SalesHeader,TRUE,FALSE);
+    END;
+
+    PROCEDURE InvoiceSalesDocument@1000000045(VAR SalesHeader@1000000000 : Record 36);
+    BEGIN
+      // H3886  19.03.15  MM +++++++++++++++
+      LibrarySCM.PostSalesHeader3(SalesHeader,TRUE,TRUE);
+      // H3886  19.03.15  MM ---------------
+    END;
+
+    PROCEDURE PostSalesDocument@1000000029(VAR SalesHeader@1000000000 : Record 36);
+    BEGIN
+      SalesHeader.FIND;
+      FillQtyToSalesLine(SalesHeader."No.");
+      LibrarySCM.PostSalesHeader(SalesHeader,TRUE,TRUE);
+    END;
+
+    PROCEDURE PostSalesReturnDocument@1000000021(DocumentNo@1000000000 : Code[20]);
+    VAR
+      SalesHeaderReturn@1000000001 : Record 36;
+    BEGIN
+      SalesHeaderReturn.GET(
+        SalesHeaderReturn."Document Type"::"Return Order",FindReturnSalesHeader(DocumentNo));
+      FillQtyToSalesLineReturn(SalesHeaderReturn."No.");
+      LibrarySCM.PostSalesHeader(SalesHeaderReturn,TRUE,TRUE);
+    END;
+
+    PROCEDURE CancelSalesLine@1000000006(DocumentNo@1000000000 : Code[20];LineNo@1000000001 : Decimal);
+    VAR
+      SalesLine@1000000002 : Record 37;
+      ChannelMgt@1000000003 : Codeunit 50093;
+    BEGIN
+      WITH SalesLine DO BEGIN
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("Document No.",DocumentNo);
+        SETRANGE("Line No.",LineNo);
+        SETRANGE(Type,Type::Item);
+        FINDFIRST;
+
+        IF ChannelMgt.CheckIfDropShipmentOrCrossDock(SalesLine) THEN
+          ChannelMgt.CancelDropShipment(SalesLine,FALSE)
+        ELSE
+          MagentoCancel(FALSE,FALSE);
+      END;
+    END;
+
+    PROCEDURE CancelSalesOrder@1000000007(DocumentNo@1000000000 : Code[20]);
+    BEGIN
+      CLEAR(FPCManagement);
+      FPCManagement.InitCancelWithoutInterfaces(DocumentNo,0);
+      FPCManagement.RUN;
+    END;
+
+    PROCEDURE ConfirmCancelOrder@1000000040(DocumentNo@1000000000 : Code[20]);
+    VAR
+      CancellationMode@1000000002 : ' ,ManualRequestCancel,ManualConfirmCancel';
+    BEGIN
+      CLEAR(FPCManagement);
+      FPCManagement.InitCancelWithoutInterfaces(DocumentNo,0);
+      FPCManagement.SetCancellationMode(CancellationMode::ManualConfirmCancel);
+      FPCManagement.RUN;
+    END;
+
+    PROCEDURE CancelOrderInterface@1000000036(SalesHeader@1000000000 : Record 36);
+    VAR
+      CancellationMode@1000000001 : ' ,ManualRequestCancel,ManualConfirmCancel';
+    BEGIN
+      SalesHeader.SetCancellationMode(CancellationMode::ManualRequestCancel);
+      SalesHeader.MagentoCancel;
+    END;
+
+    PROCEDURE CreateRHDExportHeader@1000000018(DocumentNo@1000000001 : Code[20]);
+    VAR
+      PurchLine@1000000000 : Record 39;
+      RHDPurchInterfaceMgt@1000000002 : Codeunit 50156;
+    BEGIN
+      WITH PurchLine DO BEGIN
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("Document No.",GetFirstPurchOrderNo(DocumentNo));
+        FINDSET;
+        REPEAT
+          VALIDATE("Order Status Code",'30');
+          MODIFY(TRUE);
+
+          RHDPurchInterfaceMgt.TriggerRhenusInterface(PurchLine,0); // Create WEA File for the PO Line.
+        UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE CreateDHLProactiveFile@1000000024(SalesHeader@1000000001 : Record 36;StatusCode@1000000000 : Text[20];StatusCode2@1000000008 : Text[20]);
+    VAR
+      FilePath@1000000007 : Text[250];
+      FileName@1000000006 : Text[50];
+      TextLine@1000000005 : Text[1024];
+      tBigText@1000000004 : BigText;
+      CR@1000000003 : Char;
+      LF@1000000002 : Char;
+    BEGIN
+      CR := 13;
+      LF := 10;
+      FilePath := GetImportFilePath('EASYLOG');
+      FileName := CreateTimestampFileName;
+
+      CLEAR(TextLine);
+      tBigText.ADDTEXT(TextLine + FORMAT(CR) + FORMAT(LF));
+      TextLine := TextLine + '621268405901GC' + SeparTxt;
+      TextLine := TextLine + 'DPEED' + SeparTxt;
+      TextLine := TextLine + '80' + SeparTxt;
+      TextLine :=
+        TextLine + FORMAT(CURRENTDATETIME,0,'<year4>-<month,2>-<day,2> <Hours24,2>:<Minutes,2>:<Seconds,2>') + SeparTxt;
+      TextLine := TextLine + SeparTxt;
+      TextLine := TextLine + SalesHeader."Ship-to Country/Region Code" + SeparTxt;
+      TextLine := TextLine + SeparTxt;
+      TextLine := TextLine + SeparTxt;
+      TextLine := TextLine + FORMAT(RANDOM(1000000000)) + SeparTxt;
+      TextLine := TextLine + FORMAT(CURRENTDATETIME,0,'<year4><month,2><day,2>') + SeparTxt;
+      TextLine := TextLine + SeparTxt;
+      TextLine := TextLine + SeparTxt;
+      TextLine := TextLine + StatusCode + SeparTxt;
+      TextLine := TextLine + StatusCode2 + SeparTxt;
+      TextLine := TextLine + SeparTxt;
+      TextLine := TextLine + SeparTxt;
+      TextLine := TextLine + SeparTxt;
+      TextLine := TextLine + SalesHeader."No." + SeparTxt;
+      TextLine := TextLine + SeparTxt;
+      TextLine := TextLine + SeparTxt;
+      TextLine := TextLine + SalesHeader."Ship-to Name" + SeparTxt;
+      TextLine := TextLine + SeparTxt;
+      TextLine := TextLine + SeparTxt;
+      TextLine := TextLine + SeparTxt;
+      TextLine := TextLine + SeparTxt;
+      TextLine := TextLine + '0000000000000' + SeparTxt;
+      TextLine := TextLine + SeparTxt;
+      TextLine := TextLine + SeparTxt;
+      TextLine := TextLine + SeparTxt;
+      TextLine := TextLine + '0' + SeparTxt;
+
+      tBigText.ADDTEXT(TextLine + FORMAT(CR) + FORMAT(LF));
+      FileConvertToANSI(FilePath,FileName,tBigText);
+    END;
+
+    PROCEDURE CreateDPDScanInfoFile@1000000030(StatusCode@1000000000 : Text[20];TrackingNo@1000000008 : Text[14]);
+    VAR
+      FilePath@1000000007 : Text[250];
+      FileName@1000000006 : Text[50];
+      TextLine@1000000005 : Text[1024];
+      tBigText@1000000004 : BigText;
+      CR@1000000003 : Char;
+      LF@1000000002 : Char;
+    BEGIN
+      // H1921  12.03.15  MM +++++++++++++++
+      CR := 13;
+      LF := 10;
+      FilePath := GetImportFilePath('DPD');
+      FileName := CreateTimestampFileNameExt('.dpd');
+
+      CLEAR(TextLine);
+      tBigText.ADDTEXT('DPD Header;' + FORMAT(CR) + FORMAT(LF));
+      TextLine := TextLine + TrackingNo + SeparTxt;
+      TextLine := TextLine + StatusCode + SeparTxt;
+      TextLine := TextLine + '0182' + SeparTxt;
+      TextLine := TextLine + FORMAT(CURRENTDATETIME,0,'<year4><month,2><day,2><Hours24,2><Minutes,2><Seconds,2>') + SeparTxt;
+      TextLine := TextLine + ';556;327;;;;;;;;;;;31152;BUTZ;;;;;;;;;;;;;';
+
+      tBigText.ADDTEXT(TextLine + FORMAT(CR) + FORMAT(LF));
+      FileConvertToANSI(FilePath,FileName,tBigText);
+      // H1921  12.03.15  MM ---------------
+    END;
+
+    PROCEDURE ConvertCurrency@1000000023(Amount@1000000000 : Decimal;FromCur@1000000001 : Code[10];ToCur@1000000002 : Code[10];ConversionDate@1000000003 : Date) NewAmount : Decimal;
+    VAR
+      CurrencyExchangeRate@1000000004 : Record 330;
+      CurrencyExchangeRate2@1000000005 : Record 330;
+    BEGIN
+      // Converts an Amount from one currency to another.
+      // A blank currency code means LCY.
+      NewAmount := Amount;
+
+      // Convert to LCY.
+      IF FromCur <> '' THEN BEGIN
+        FindExchRate(CurrencyExchangeRate,FromCur,ConversionDate);
+        NewAmount := NewAmount * CurrencyExchangeRate."Relational Exch. Rate Amount" / CurrencyExchangeRate."Exchange Rate Amount";
+      END;
+
+      // Convert into new currency.
+      IF ToCur <> '' THEN BEGIN
+        FindExchRate(CurrencyExchangeRate2,ToCur,ConversionDate);
+        NewAmount := NewAmount * CurrencyExchangeRate2."Exchange Rate Amount" / CurrencyExchangeRate2."Relational Exch. Rate Amount";
+      END;
+    END;
+
+    PROCEDURE GetSalesOrderNoSeries@1000000057() : Code[10];
+    VAR
+      SalesRecievablesSetup@1000000001 : Record 311;
+    BEGIN
+      SalesRecievablesSetup.GET;
+      EXIT(SalesRecievablesSetup."Order Nos.");
+    END;
+
+    PROCEDURE GetImportFilePath@1000000026(InterfaceCode@1000000003 : Code[10]) : Text[250];
+    VAR
+      FPCInterfaceSetup@1000000001 : Record 50014;
+      FilePath@1000000002 : Text[250];
+    BEGIN
+      FPCInterfaceSetup.GET(InterfaceCode);
+
+      FilePath := FPCInterfaceSetup."Import Folder";
+      IF COPYSTR(FilePath,STRLEN(FilePath),1) <> '\' THEN
+        FilePath := FilePath + '\';
+
+      EXIT(FilePath);
+    END;
+
+    PROCEDURE GetExportFilePath@1000000031(InterfaceCode@1000000003 : Code[10]) : Text[250];
+    VAR
+      FPCInterfaceSetup@1000000001 : Record 50014;
+      FilePath@1000000002 : Text[250];
+    BEGIN
+      FPCInterfaceSetup.GET(InterfaceCode);
+
+      FilePath := FPCInterfaceSetup."Export Folder";
+      IF COPYSTR(FilePath,STRLEN(FilePath),1) <> '\' THEN
+        FilePath := FilePath + '\';
+
+      EXIT(FilePath);
+    END;
+
+    PROCEDURE GetArchiveFilePath@1000000034(InterfaceCode@1000000003 : Code[10]) : Text[250];
+    VAR
+      FPCInterfaceSetup@1000000001 : Record 50014;
+      FilePath@1000000002 : Text[250];
+    BEGIN
+      FPCInterfaceSetup.GET(InterfaceCode);
+
+      FilePath := FPCInterfaceSetup."Archive Root Folder";
+      IF COPYSTR(FilePath,STRLEN(FilePath),1) <> '\' THEN
+        FilePath := FilePath + '\';
+
+      EXIT(FilePath);
+    END;
+
+    LOCAL PROCEDURE CreateTimestampFileName@1000000043() : Text[50];
+    BEGIN
+      // H1921  12.03.15  MM +++++++++++++++
+      EXIT(CreateTimestampFileNameExt('.txt'));
+      // H1921  12.03.15  MM ---------------
+    END;
+
+    LOCAL PROCEDURE CreateTimestampFileNameExt@1000000016(Ext@1000000000 : Text[30]) : Text[50];
+    BEGIN
+      // H1921  12.03.15  MM +++++++++++++++
+      EXIT(FORMAT(CURRENTDATETIME,0,'<Year4><Month,2><Day,2><Hours24,2><Minutes,2><Seconds,2><Thousands,3>') + Ext);
+      // H1921  12.03.15  MM ---------------
+    END;
+
+    PROCEDURE GetFirstPurchOrderNo@1000000060(DocumentNo@1000000000 : Code[20]) : Code[20];
+    BEGIN
+      EXIT(GetPurchOrderNoByLine(DocumentNo,0));
+    END;
+
+    PROCEDURE GetPurchOrderNoByLine@1000000008(DocumentNo@1000000000 : Code[20];LineNo@1000000002 : Integer) : Code[20];
+    VAR
+      SalesLine@1000000001 : Record 37;
+    BEGIN
+      WITH SalesLine DO BEGIN
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("Document No.",DocumentNo);
+        SETRANGE(Type,Type::Item);
+        IF LineNo > 0 THEN
+          SETRANGE("Line No.",LineNo);
+        FINDFIRST;
+
+        IF "Org Purchase Order No." <> '' THEN
+          EXIT("Org Purchase Order No.");
+
+        EXIT("Org Special Order Purchase No.");
+      END;
+    END;
+
+    PROCEDURE GetFollowOnOrderNo@1000000039(DocumentNo@1000000000 : Code[20]) : Code[20];
+    VAR
+      SalesHeader@1000000001 : Record 36;
+    BEGIN
+      WITH SalesHeader DO BEGIN
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("External Document No.",DocumentNo);
+        SETRANGE("No. Series",GetSalesOrderNoSeries);
+        FINDFIRST;
+
+        EXIT("No.");
+      END;
+    END;
+
+    PROCEDURE GetNextDPDTrackingNo@1000000044() : Text[14];
+    VAR
+      DPDSetup@1000000000 : Record 50221;
+      TrackingNo@1000000002 : Text[14];
+    BEGIN
+      // H1921  12.03.15  MM +++++++++++++++
+      DPDSetup.GET;
+      TrackingNo := INCSTR(DPDSetup."Last Used Parcel No.");
+      DPDSetup."Last Used Parcel No." := TrackingNo;
+      DPDSetup.MODIFY(TRUE);
+
+      EXIT(TrackingNo);
+      // H1921  12.03.15  MM ---------------
+    END;
+
+    PROCEDURE RefreshPayoutSheet@1000000004();
+    VAR
+      NAVPayoutSheet@1000000000 : Record 50078;
+    BEGIN
+      NAVPayoutSheet.NAVAuszahlungssheetErstellen;
+    END;
+
+    PROCEDURE CheckEDIVendor@1000000009(DocumentNo@1000000000 : Code[20]);
+    VAR
+      SalesLine@1000000003 : Record 37;
+      EDIPartnerCode@1000000002 : Code[20];
+    BEGIN
+      WITH SalesLine DO BEGIN
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("Document No.",DocumentNo);
+        SETRANGE(Type,Type::Item);
+        FINDSET;
+        REPEAT
+          EDIPartnerCode := GetEDIPartner("No.");
+          IF EDIPartnerCode <> '' THEN
+            ModifyEDIPartner(EDIPartnerCode);
+
+        UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE PurchOrderRequired@1000000020(SalesOrderNo@1000000000 : Code[20]) : Boolean;
+    VAR
+      SalesLine@1000000001 : Record 37;
+    BEGIN
+      WITH SalesLine DO BEGIN
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("Document No.",SalesOrderNo);
+        FINDSET;
+        REPEAT
+          IF "Drop Shipment" OR "Special Order" THEN
+            EXIT(TRUE);
+        UNTIL NEXT = 0;
+      END;
+
+      EXIT(FALSE);
+    END;
+
+    LOCAL PROCEDURE GetEDIPartner@1000000011(ItemNo@1000000002 : Code[20]) : Code[20];
+    VAR
+      EDIPartner@1000000000 : Record 82851;
+    BEGIN
+      WITH EDIPartner DO BEGIN
+        SETCURRENTKEY("Partner Type","Partner No.");
+        SETRANGE("Partner Type","Partner Type"::Vendor);
+        SETRANGE("Partner No.",GetVendorNo(ItemNo));
+        IF FINDFIRST THEN
+          EXIT(Code);
+      END;
+
+      EXIT('');
+    END;
+
+    PROCEDURE GetVendorNo@1000000012(ItemNo@1000000003 : Code[20]) : Code[20];
+    VAR
+      Item@1000000000 : Record 27;
+    BEGIN
+      Item.GET(ItemNo);
+      EXIT(Item."Vendor No.");
+    END;
+
+    PROCEDURE ChangeVendorChannel@1000000017(VendorNo@1000000000 : Code[20];WebshopCode@1000000003 : Code[10];ChannelCode@1000000002 : Code[10]);
+    VAR
+      VendChannelPerCountry@1000000001 : Record 50094;
+      VendChannelPerCountry2@1000000004 : Record 50094;
+    BEGIN
+      WITH VendChannelPerCountry DO BEGIN
+        SETRANGE("Vendor No.",VendorNo);
+        SETRANGE("Webshop Code",WebshopCode);
+        IF FINDSET THEN
+          REPEAT
+            IF "Purchasing Code" <> ChannelCode THEN BEGIN
+              VendChannelPerCountry2 := VendChannelPerCountry;
+              VendChannelPerCountry2.RENAME("Vendor No.","Webshop Code",ChannelCode);
+            END;
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE ChangeChannel@1000000019(SalesHeader@1000000000 : Record 36;ChannelFrom@1000000001 : Code[10];ChannelTo@1000000002 : Code[10]);
+    VAR
+      ChannelMgt@1000000004 : Codeunit 50093;
+    BEGIN
+      AssignNewChannelToSalesLine(SalesHeader,ChannelFrom,ChannelTo);
+      ChannelMgt.MakeChangeChannel(SalesHeader);
+    END;
+
+    PROCEDURE AssignNewChannelToSalesLine@1000000027(SalesHeader@1000000000 : Record 36;ChannelFrom@1000000001 : Code[10];ChannelTo@1000000002 : Code[10]);
+    VAR
+      SalesLine@1000000003 : Record 37;
+    BEGIN
+      WITH SalesLine DO BEGIN
+        SETRANGE("Document Type",SalesHeader."Document Type");
+        SETRANGE("Document No.",SalesHeader."No.");
+        SETRANGE("Purchasing Code",ChannelFrom);
+        SETRANGE(Type,Type::Item);
+        SETFILTER(Quantity,'<>0');
+        FINDSET;
+        REPEAT
+          "New Purchasing Code" := ChannelTo;
+          MODIFY(TRUE);
+        UNTIL NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE FindGLAcc@1000000014() : Code[20];
+    VAR
+      GLAcc@1000000000 : Record 15;
+    BEGIN
+      WITH GLAcc DO BEGIN
+        SETRANGE(Blocked,FALSE);
+        SETRANGE("Account Type","Account Type"::Posting);
+        SETRANGE("Gen. Posting Type","Gen. Posting Type"::" ");
+        SETRANGE("Direct Posting",TRUE);
+        SETFILTER("Gen. Bus. Posting Group",'%1','');
+        SETFILTER("Gen. Prod. Posting Group",'%1','');
+        SETFILTER("VAT Prod. Posting Group",'%1','');
+        FINDFIRST;
+
+        EXIT("No.");
+      END;
+    END;
+
+    LOCAL PROCEDURE FindSourceCode@1000000015() : Code[10];
+    VAR
+      SourceCode@1000000000 : Record 230;
+    BEGIN
+      SourceCode.NEXT(RANDOM(SourceCode.COUNT));
+      EXIT(SourceCode.Code);
+    END;
+
+    PROCEDURE FindExchRate@1000000025(VAR CurrencyExchangeRate@1000000000 : Record 330;Currency@1000000001 : Code[10];ConversionDate@1000000002 : Date);
+    BEGIN
+      // Returns the Exchange Rate for a specified Currency at a specified Date. If multiple Exchange Rates exists it picks the late
+      CurrencyExchangeRate.SETRANGE("Currency Code",Currency);
+      CurrencyExchangeRate.SETRANGE("Starting Date",0D,ConversionDate);
+      CurrencyExchangeRate.FINDLAST;
+    END;
+
+    PROCEDURE FindNoSeries@1000000041(NoSeriesCode@1000000000 : Code[10]) : Boolean;
+    VAR
+      NoSeriesLine@1000000001 : Record 309;
+    BEGIN
+      NoSeriesLine.SETRANGE("Series Code",NoSeriesCode);
+      EXIT(NOT NoSeriesLine.ISEMPTY);
+    END;
+
+    PROCEDURE CreateNoSeries@1000000042(NoSeriesCode@1000000004 : Code[10]);
+    VAR
+      NoSeries@1000000003 : Record 308;
+      NoSeriesLine@1000000006 : Record 309;
+      LibraryUtility@1000000005 : Codeunit 50206;
+    BEGIN
+      NoSeries.INIT;
+      NoSeries.VALIDATE(Code,NoSeriesCode);
+      NoSeries.VALIDATE("Default Nos.",TRUE);
+      NoSeries.VALIDATE("Manual Nos.",TRUE);
+      NoSeries.VALIDATE("Date Order",FALSE);
+      NoSeries.INSERT(TRUE);
+
+      LibraryUtility.CreateNoSeriesLine(NoSeriesLine,NoSeries.Code,'000000001','999999999');
+    END;
+
+    LOCAL PROCEDURE ModifyEDIPartner@1000000010(EDIPartnerCode@1000000000 : Code[20]);
+    VAR
+      EDIPartnerDocType@1000000001 : Record 82852;
+    BEGIN
+      WITH EDIPartnerDocType DO BEGIN
+        SETRANGE("Partner Code",EDIPartnerCode);
+        SETRANGE("Document Direction","Document Direction"::Outbound);
+        SETRANGE("Document Type",'ORDERS');
+        IF FINDSET THEN
+          REPEAT
+            VALIDATE(Active,TRUE);
+            MODIFY(TRUE);
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE FillQtyToSalesLine@1000000066(DocumentNo@1000000003 : Code[20]);
+    VAR
+      SalesLine@1000000000 : Record 37;
+    BEGIN
+      WITH SalesLine DO BEGIN
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("Document No.",DocumentNo);
+        FINDSET;
+        REPEAT
+          VALIDATE("Qty. to Ship",1);
+          VALIDATE("Qty. to Invoice",1);
+          MODIFY(TRUE);
+        UNTIL NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE FillQtyToSalesLineReturn@1000000028(DocumentNo@1000000003 : Code[20]);
+    VAR
+      SalesLine@1000000000 : Record 37;
+    BEGIN
+      WITH SalesLine DO BEGIN
+        SETRANGE("Document Type","Document Type"::"Return Order");
+        SETRANGE("Document No.",DocumentNo);
+        SETFILTER(Quantity,'<>0');
+        FINDSET;
+        REPEAT
+          VALIDATE("Return Qty. to Receive",1);
+          VALIDATE("Qty. to Invoice",1);
+          MODIFY(TRUE);
+        UNTIL NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE FillArchSalesLine@1000000070(DocumentNo@1000000001 : Code[20]);
+    VAR
+      SalesLineArchive@1000000000 : Record 5108;
+      ReturnReason@1000000002 : Record 6635;
+    BEGIN
+      WITH SalesLineArchive DO BEGIN
+        SETRANGE("Document No.",DocumentNo);
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE(Type,Type::Item);
+        SETFILTER("Line Status",'<>%1','CANCELED');
+        SETFILTER("Return Type",'%1',"Return Type"::" ");
+        FINDSET;
+        REPEAT
+          ReturnReason.SETRANGE("Return Type",ReturnReason."Return Type"::Return);
+          ReturnReason.NEXT(RANDOM(ReturnReason.COUNT));
+          "Return Type" := "Return Type"::Return;
+          "Return Reason Code" := ReturnReason.Code;
+          "Customer Prevention" := "Customer Prevention"::Declined;
+          MODIFY(TRUE);
+        UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE FillSalesLineWithReturn@1000000001(DocumentNo@1000000000 : Code[20];ReturnType@1000000003 : Option;CustomerPreventionV@1000000006 : Option;PrevDiscPct@1000000005 : Decimal);
+    VAR
+      SalesLine@1000000002 : Record 37;
+      ReturnReason@1000000001 : Record 6635;
+    BEGIN
+      WITH SalesLine DO BEGIN
+        SETRANGE("Document No.",DocumentNo);
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE(Type,Type::Item);
+        SETFILTER("Line Status",'<>%1','CANCELED');
+        FINDSET;
+        REPEAT
+          ReturnReason.SETRANGE("Return Type",ReturnType);
+          ReturnReason.NEXT(RANDOM(ReturnReason.COUNT));
+          VALIDATE("Return Type",ReturnType);
+          VALIDATE("Return Reason Code",ReturnReason.Code);
+          VALIDATE("Customer Prevention",CustomerPreventionV);
+          IF PrevDiscPct <> 0 THEN
+            VALIDATE("Prevention discount (%)",PrevDiscPct);
+          MODIFY(TRUE);
+        UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE FindReturnSalesHeader@1000000037(DocumentNo@1000000000 : Code[20]) : Code[20];
+    VAR
+      SalesHeaderReturn@1000000001 : Record 36;
+    BEGIN
+      WITH SalesHeaderReturn DO BEGIN
+        SETRANGE("Document Type","Document Type"::"Return Order");
+        SETRANGE("External Document No.",DocumentNo);
+        IF FINDFIRST THEN
+          EXIT("No.");
+
+        EXIT('');
+      END;
+    END;
+
+    LOCAL PROCEDURE SetBatchPostDocFilter@1000000032(VAR BatchPostDoc@1000000000 : Record 50043;DocumentNo@1000000001 : Code[20];ActionType@1000000002 : Option);
+    BEGIN
+      BatchPostDoc.SETRANGE("Document No.",DocumentNo);
+      BatchPostDoc.SETRANGE("Action Type",ActionType);
+    END;
+
+    LOCAL PROCEDURE RunBatchPostAction@1000000050(DocumentNo@1000000001 : Code[20];ActionType@1000000002 : Option);
+    VAR
+      BatchPostDoc@1000000000 : Record 50043;
+      BatchAutomProcess@1000000003 : Codeunit 50031;
+    BEGIN
+      SetBatchPostDocFilter(BatchPostDoc,DocumentNo,ActionType);
+      IF BatchPostDoc.FINDFIRST THEN BEGIN
+        BatchAutomProcess.SetBatchLine(BatchPostDoc);
+        BatchAutomProcess.Code;
+      END;
+    END;
+
+    PROCEDURE FileConvertToANSI@1000000033(pFilePath@1000000001 : Text[250];pFileName@1000000000 : Text[250];tBigText@1000000006 : BigText) : Boolean;
+    VAR
+      UTFStream@1000000005 : Automation "{2A75196C-D9EB-4129-B803-931327F72D5C} 2.8:{00000566-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.8 Library'.Stream";
+      sSubText@1000000002 : Text[1024];
+      iPos@1000000003 : Integer;
+      iLength@1000000004 : Integer;
+    BEGIN
+      IF NOT CREATE(UTFStream) THEN
+        EXIT(FALSE);
+
+      UTFStream.Open;
+      UTFStream.Charset('us-ascii');
+      UTFStream.LineSeparator := 10;
+
+      iPos := 1;
+      iLength := tBigText.LENGTH;
+      REPEAT
+        sSubText := '';
+        tBigText.GETSUBTEXT(sSubText,iPos,1024);
+        iPos := iPos + 1024;
+        UTFStream.WriteText(sSubText);
+      UNTIL iPos >= iLength;
+
+      UTFStream.SaveToFile(pFilePath + pFileName);
+      UTFStream.Close;
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE TrimSpaces@1000000013(String@1000000000 : Text[1024]) Result : Text[1024];
+    BEGIN
+      Result := DELCHR(String,'<'); // Delete leading space chars.
+      Result := DELCHR(String,'>'); // Delete trailing space chars.
+    END;
+
+    PROCEDURE CreateCountryRegion@1000000035(VAR CountryRegionR@1000000000 : Record 9);
+    VAR
+      LibraryUtilityL@1000000001 : Codeunit 50206;
+    BEGIN
+      //H1754  03.11.14  ABR  +++++++++++++++++++++++++++++++++++++++
+      CountryRegionR.INIT;
+      CountryRegionR.VALIDATE(Code,
+        LibraryUtilityL.GenerateRandomCode(
+          CountryRegionR.FIELDNO(Code),
+          DATABASE::"Country/Region"));
+      CountryRegionR.INSERT(TRUE);
+      //H1754  03.11.14  ABR  ---------------------------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation Tectura & Home24 NAV Team  |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+
+      T0028       29.07.14  tec-cs    apply SIIMessage-Filters to triggered messaged
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      H0844       06.02.14  MM        Testautomation: Main business processes - Channel 7
+      H0584       26.03.14 HCN        Various field changes incorporated
+      H0939       14.03.14  MM        Testautomation: Main business cases - Channel 3
+      H0587       22.07.14 HCN        Redesign Cancellation Process: Function "SetSalesReceivablesSetup" deleted
+      H1276       04.09.14  MM        Testautomation: Main business cases - Channel 11
+      H1754       03.11.14  ABR        Changed Function Property "FindReturnSalesHeader" to Global and added Function
+      H1541       28.11.14  MM        Testautomation: Cover Rhenus Interface
+      H1917       11.12.14  MM        Testing: Add Channel Change to the RHD Interface
+      H1918       23.12.14  MM        Testing: Extend RHD Interface to all counties
+      H1920       23.02.15  MM        Testing: Add Channel 3 (Crossdock) to RHD Interface
+      H2170       23.02.15  MM        AutoTesting: Change Order import approach
+      H1921       12.03.15  MM        Testing: Cover WHS LF
+      H3886       19.03.15  MM        Automated tests fails when we have order with different Vendors
+    }
+    END.
+  }
+}
+

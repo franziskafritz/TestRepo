@@ -1,0 +1,1391 @@
+OBJECT Codeunit 50096 Automated Inventory Batch
+{
+  OBJECT-PROPERTIES
+  {
+    Date=29.05.15;
+    Time=10:34:30;
+    Modified=Yes;
+    Version List=HME4305;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=VAR
+            xRecRefL@1000000003 : RecordRef;
+            RecRefL@1000000002 : RecordRef;
+            ChangeLogMgmtL@1000000001 : Codeunit 423;
+            StartParameterL@1000000004 : Integer;
+          BEGIN
+            InvLogHeader.LOCKTABLE;
+            //H4052 14.04.15 TST +++++++++++++++++++++++++++++
+            CLEARLASTERROR;
+            //H4052 14.04.15 TST -----------------------------
+
+            IF "Parameter String" = '' THEN BEGIN
+              IF NOT InvLogHeader."Simulated Phys. Inventory" THEN
+                IF CheckCalender() THEN
+                  EXIT;
+              CreateInvLogHeader();
+            END ELSE BEGIN
+              InvLogHeader.RESET;
+              EVALUATE(StartParameterL,"Parameter String");
+              InvLogHeader.GET(StartParameterL);
+              IF NOT InvLogHeader."Simulated Phys. Inventory" THEN
+                IF CheckCalender() THEN
+                  EXIT;
+            END;
+
+            Code();
+
+            //H4052 14.04.15 TST +++++++++++++++++++++++++++++
+            IF GETLASTERRORTEXT <> '' THEN BEGIN
+              InvLogHeader.Errortext := COPYSTR(GETLASTERRORTEXT,1,250);
+              InvLogHeader.Status := InvLogHeader.Status::Error;
+              InvLogHeader.MODIFY;
+            END ELSE IF InvLogHeader.Errortext = '' THEN BEGIN
+              InvLogHeader.Status := InvLogHeader.Status::Finished;
+              InvLogHeader.MODIFY;
+            END;
+            //H4052 14.04.15 TST -----------------------------
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      InventorySetup@1000000000 : Record 50336;
+      TextHME001@1000000002 : TextConst 'ENU=Inv. posting %1';
+      FPCGeneralSetup@1000000007 : Record 50055;
+      DialogG@1000000004 : Dialog;
+      TextHME002@1000000005 : TextConst 'ENU=Automated Inventory Processing';
+      TextHME003@1000000006 : TextConst 'ENU=Automated Inventory %1 finished successfully';
+      TextHME004@1000000008 : TextConst 'ENU=All %1 %2-records will now be deleted !\Do you really want to continue ?';
+      TextHME005@1000000009 : TextConst 'ENU=%1 "%2"-records has/have been found.\Do you want to delete them ?';
+      TextHME006@1000000010 : TextConst 'ENU=Execution of function aborted.';
+      TextHME007@1000000011 : TextConst 'ENU=%1 "%2"-records has/have been deleted now.';
+      InvLogHeader@1000000012 : Record 50208;
+      InvLogLine@1000000013 : Record 50209;
+      ExcelBuf@1000000015 : TEMPORARY Record 370;
+      PrinttoExcel@1000000014 : Boolean;
+      TextHME008@1000000023 : TextConst 'DEU=Mandant;ENU=Company Name';
+      TextHME009@1000000021 : TextConst 'DEU=Berichtsname;ENU=Report Name';
+      TextHME010@1000000016 : TextConst 'ENU=Posted Phys. Inventory Order Lines';
+      TextHME011@1000000020 : TextConst 'DEU=Benutzer-ID;ENU=User ID';
+      TextHME012@1000000019 : TextConst 'DEU=Datum;ENU=Date';
+      TextHME013@1000000017 : TextConst 'DEU=Periodenfilter;ENU=Period Filter';
+      PostInvOrderHeader@1000000018 : Record 5005354;
+      PostInvOrderLine@1000000022 : Record 5005355;
+      TextHME014@1000000024 : TextConst 'ENU=Amount';
+      TextHME015@1000000025 : TextConst 'ENU="PostPhysInvLines "';
+      GeneralMgt@1000000026 : Codeunit 11501;
+      LF@1000000027 : Char;
+      TextHME016@1000000028 : TextConst 'ENU=Quaterly Inventory Statistics';
+      MonthName@1000000029 : ARRAY [3] OF Text[30];
+      TextHME017@1000000034 : TextConst 'ENU=Total';
+      TextHME020@1000000030 : TextConst 'ENU=Lines';
+      TextHME021@1000000031 : TextConst 'ENU=Recorded Amount';
+      TextHME022@1000000032 : TextConst 'ENU=Expected Amount';
+      TextHME023@1000000033 : TextConst 'ENU=Difference';
+      TextHME024@1000000035 : TextConst 'ENU=All Lines';
+      TextHME025@1000000036 : TextConst 'ENU=Lines without Difference';
+      TextHME026@1000000037 : TextConst 'ENU=Lines Pos. Difference';
+      TextHME027@1000000038 : TextConst 'ENU=Lines Neg. Difference';
+      TextHME028@1000000039 : TextConst 'ENU=Total Difference';
+      MonthStartDate@1000000040 : ARRAY [3] OF Date;
+      i@1000000041 : Integer;
+      Cell@1000000042 : ARRAY [3,4,4] OF Decimal;
+      CSVFile@1000000044 : File;
+      Filename@1000000043 : Text[1024];
+      TextHME029@1000000045 : TextConst 'ENU=%1 was finished by %2.';
+      PhysInvOrderHeader@1000000001 : Record 5005350;
+      PhysInvOrderLine@1000000046 : Record 5005351;
+      TextHME030@1000000047 : TextConst 'ENU=SimPhysInvLines';
+      TextHME031@1000000048 : TextConst 'ENU=Simulated Phys. Inventory Order Lines';
+      j@1000000003 : Integer;
+      Location@1000000049 : Record 14;
+      TextHME032@1000000050 : TextConst 'ENU=No location marked for phys. inventory.';
+      TextHME033@1000000051 : TextConst 'ENU=%1 missing in %2 %3.';
+      ValueEntry@1000000052 : Record 5802;
+
+    PROCEDURE Code@1000000006();
+    VAR
+      InvLogLineL@1000000000 : Record 50209;
+      LocationL@1000000001 : Record 14;
+      PhysInvOrderHeaderL@1000000002 : Record 5005350;
+      PostCostToGL@1000000003 : Report 50164;
+    BEGIN
+      IF GUIALLOWED THEN
+        DialogG.OPEN('#1##############################################\'+
+                     '#2##############################################\'+
+                     '#3##############################################\'+
+                     '#4##############################################');
+
+      InvLogHeader.Status := InvLogHeader.Status::"In Process";
+      InvLogHeader.MODIFY(TRUE);
+
+      IF GUIALLOWED THEN
+        DialogG.UPDATE(1,TextHME002);
+
+      //H4052 14.04.15 TST +++++++++++++++++++++++++++++
+      CLEARLASTERROR;
+      //H4052 14.04.15 TST -----------------------------
+
+      CLEAR(Location);
+      IF CheckInvLogLine(InvLogLine,InvLogLine."Process Type"::"Check Locations",InvLogHeader."No.",
+                         Location.Code,InvLogLine.Type::General,'') THEN BEGIN
+        UpdateCreateInLogLine(InvLogLine,InvLogLine."Process Type"::"Check Locations",'',InvLogLine.Type::General,InvLogHeader."No.",'')
+      ;
+        IF GUIALLOWED THEN
+          DialogG.UPDATE(2,'Check Locations');
+        CheckLocations();
+        //H4052 14.04.15 TST +++++++++++++++++++++++++++++
+        IF GETLASTERRORTEXT = '' THEN
+          InvLogLine.Status := InvLogLine.Status::Finished
+        ELSE BEGIN
+          InvLogHeader.Status := InvLogHeader.Status::Error;
+          InvLogHeader.Errortext := GETLASTERRORTEXT;
+          InvLogHeader.MODIFY(TRUE);
+          InvLogLine.Status := InvLogLine.Status::Error;
+          CLEARLASTERROR;
+        END;
+        //H4052 14.04.15 TST -----------------------------
+        InvLogLine."Timestamp Stop" := CURRENTDATETIME;
+        InvLogLine.MODIFY(TRUE);
+      END;
+
+      IF CheckInvLogLine(InvLogLine,InvLogLine."Process Type"::"Get Inv. Setup",InvLogHeader."No.",Location.Code
+                         ,InvLogLine.Type::General,'') THEN BEGIN
+        UpdateCreateInLogLine(InvLogLine,InvLogLine."Process Type"::"Get Inv. Setup",'',InvLogLine.Type::General,InvLogHeader."No.",'');
+        IF GUIALLOWED THEN
+          DialogG.UPDATE(2,'Get Inventory Setup');
+        InventorySetup.GET;
+        //H4052 14.04.15 TST +++++++++++++++++++++++++++++
+        IF GETLASTERRORTEXT = '' THEN
+          InvLogLine.Status := InvLogLine.Status::Finished
+        ELSE BEGIN
+          InvLogHeader.Status := InvLogHeader.Status::Error;
+          InvLogHeader.Errortext := GETLASTERRORTEXT;
+          InvLogHeader.MODIFY(TRUE);
+          InvLogLine.Status := InvLogLine.Status::Error;
+          CLEARLASTERROR;
+        END;
+        //H4052 14.04.15 TST -----------------------------
+        InvLogLine."Timestamp Stop" := CURRENTDATETIME;
+        InvLogLine.MODIFY(TRUE);
+      END ELSE
+        InventorySetup.GET; //Restart
+
+
+      IF CheckInvLogLine(InvLogLine,InvLogLine."Process Type"::"Set Inv. Setup",InvLogHeader."No.",Location.Code
+                         ,InvLogLine.Type::General,'') THEN BEGIN
+        UpdateCreateInLogLine(InvLogLine,InvLogLine."Process Type"::"Set Inv. Setup",'',InvLogLine.Type::General,InvLogHeader."No.",'');
+        IF GUIALLOWED THEN
+          DialogG.UPDATE(2,'Check Inventory Setup');
+        CheckInventorySetup();
+        //H4052 14.04.15 TST +++++++++++++++++++++++++++++
+        IF GETLASTERRORTEXT = '' THEN
+          InvLogLine.Status := InvLogLine.Status::Finished
+        ELSE BEGIN
+          InvLogHeader.Status := InvLogHeader.Status::Error;
+          InvLogHeader.Errortext := GETLASTERRORTEXT;
+          InvLogHeader.MODIFY(TRUE);
+          InvLogLine.Status := InvLogLine.Status::Error;
+          CLEARLASTERROR;
+        END;
+        //H4052 14.04.15 TST -----------------------------
+        InvLogLine."Timestamp Stop" := CURRENTDATETIME;
+        InvLogLine.MODIFY(TRUE);
+      END;
+
+      IF CheckInvLogLine(InvLogLine,InvLogLine."Process Type"::"Update Inv. Setup",InvLogHeader."No.",Location.Code
+                         ,InvLogLine.Type::General,'') THEN BEGIN
+        UpdateCreateInLogLine(InvLogLine,InvLogLine."Process Type"::"Update Inv. Setup",'',InvLogLine.Type::General
+                              ,InvLogHeader."No.",'');
+        IF GUIALLOWED THEN
+          DialogG.UPDATE(2,'Update Inventory Setup');
+        UpdateInventorySetup();
+        //H4052 14.04.15 TST +++++++++++++++++++++++++++++
+        IF GETLASTERRORTEXT = '' THEN
+          InvLogLine.Status := InvLogLine.Status::Finished
+        ELSE BEGIN
+          InvLogHeader.Status := InvLogHeader.Status::Error;
+          InvLogHeader.Errortext := GETLASTERRORTEXT;
+          InvLogHeader.MODIFY(TRUE);
+          InvLogLine.Status := InvLogLine.Status::Error;
+          CLEARLASTERROR;
+        END;
+        //H4052 14.04.15 TST -----------------------------
+        InvLogLine."Timestamp Stop" := CURRENTDATETIME;
+        InvLogLine.MODIFY(TRUE);
+      END;
+
+      COMMIT;
+
+      IF CheckInvLogLine(InvLogLine,InvLogLine."Process Type"::"Check Inv. Header",InvLogHeader."No.",Location.Code
+                         ,InvLogLine.Type::General,'') THEN BEGIN
+        UpdateCreateInLogLine(InvLogLine,InvLogLine."Process Type"::"Check Inv. Header",'',InvLogLine.Type::General
+                              ,InvLogHeader."No.",'');
+        IF GUIALLOWED THEN
+          DialogG.UPDATE(2,'Check Existing Inventory Order Header');
+        CheckExistPhysInvtOrderHeader();
+        //H4052 14.04.15 TST +++++++++++++++++++++++++++++
+        IF GETLASTERRORTEXT = '' THEN
+          InvLogLine.Status := InvLogLine.Status::Finished
+        ELSE BEGIN
+          InvLogHeader.Status := InvLogHeader.Status::Error;
+          InvLogHeader.Errortext := GETLASTERRORTEXT;
+          InvLogHeader.MODIFY(TRUE);
+          InvLogLine.Status := InvLogLine.Status::Error;
+          CLEARLASTERROR;
+        END;
+        //H4052 14.04.15 TST -----------------------------
+        InvLogLine."Timestamp Stop" := CURRENTDATETIME;
+        InvLogLine.MODIFY(TRUE);
+      END;
+
+      COMMIT;
+
+      Location.RESET;
+      Location.SETFILTER("Branch Code",'<>%1','');
+      Location.SETRANGE("Phys. Inventory Location",TRUE);
+      Location.SETFILTER("WH24 Identifier",'<>%1','');
+      IF Location.FINDSET THEN REPEAT
+        IF Location."Phys. Inventory Filetype" = Location."Phys. Inventory Filetype"::BMP THEN
+          IF CheckInvLogLine(InvLogLine,InvLogLine."Process Type"::"Import BMP",InvLogHeader."No.",Location.Code
+                             ,InvLogLine.Type::"Location Code",'') THEN BEGIN
+            PhysInvOrderHeaderL.RESET;
+            PhysInvOrderHeaderL.SETRANGE("Location Code",Location.Code);
+            IF PhysInvOrderHeaderL.ISEMPTY THEN BEGIN
+              UpdateCreateInLogLine(InvLogLine,InvLogLine."Process Type"::"Import BMP",Location.Code
+                                    ,InvLogLine.Type::"Location Code",InvLogHeader."No.",'');
+              IF GUIALLOWED THEN
+                DialogG.UPDATE(2,'Import BMP');
+              ImportBMP();
+              //H4052 14.04.15 TST +++++++++++++++++++++++++++++
+              IF GETLASTERRORTEXT = '' THEN
+                InvLogLine.Status := InvLogLine.Status::Finished
+              ELSE BEGIN
+                InvLogHeader.Status := InvLogHeader.Status::Error;
+                InvLogHeader.Errortext := GETLASTERRORTEXT;
+                InvLogHeader.MODIFY(TRUE);
+                InvLogLine.Status := InvLogLine.Status::Error;
+                CLEARLASTERROR;
+              END;
+              //H4052 14.04.15 TST -----------------------------
+              InvLogLine."Timestamp Stop" := CURRENTDATETIME;
+              InvLogLine.MODIFY(TRUE);
+              COMMIT;
+            END;
+          END;
+        IF Location."Phys. Inventory Filetype" = Location."Phys. Inventory Filetype"::CSV THEN
+          IF CheckInvLogLine(InvLogLine,InvLogLine."Process Type"::"Import CSV",InvLogHeader."No.",Location.Code
+                             ,InvLogLine.Type::"Location Code",'') THEN BEGIN
+            UpdateCreateInLogLine(InvLogLine,InvLogLine."Process Type"::"Import CSV",Location.Code
+                                  ,InvLogLine.Type::"Location Code",InvLogHeader."No.",'');
+            IF GUIALLOWED THEN
+              DialogG.UPDATE(2,'Import CSV');
+            ImportCSV();
+            //H4052 14.04.15 TST +++++++++++++++++++++++++++++
+            IF GETLASTERRORTEXT = '' THEN
+              InvLogLine.Status := InvLogLine.Status::Finished
+            ELSE BEGIN
+              InvLogHeader.Status := InvLogHeader.Status::Error;
+              InvLogHeader.Errortext := GETLASTERRORTEXT;
+              InvLogHeader.MODIFY(TRUE);
+              InvLogLine.Status := InvLogLine.Status::Error;
+              CLEARLASTERROR;
+            END;
+            //H4052 14.04.15 TST -----------------------------
+            InvLogLine."Timestamp Stop" := CURRENTDATETIME;
+            InvLogLine.MODIFY(TRUE);
+          END;
+
+        COMMIT;
+
+        IF CheckInvLogLine(InvLogLine,InvLogLine."Process Type"::"Start CYCC",InvLogHeader."No.",Location.Code
+                           ,InvLogLine.Type::"Location Code",'') THEN BEGIN
+          UpdateCreateInLogLine(InvLogLine,InvLogLine."Process Type"::"Start CYCC",Location.Code
+                                ,InvLogLine.Type::"Location Code",InvLogHeader."No.",'');
+          IF GUIALLOWED THEN
+            DialogG.UPDATE(2,'Start CYCC');
+          StartCYCC();
+          //H4052 14.04.15 TST +++++++++++++++++++++++++++++
+          IF GETLASTERRORTEXT = '' THEN
+            InvLogLine.Status := InvLogLine.Status::Finished
+          ELSE BEGIN
+            InvLogHeader.Status := InvLogHeader.Status::Error;
+            InvLogHeader.Errortext := GETLASTERRORTEXT;
+            InvLogHeader.MODIFY(TRUE);
+            InvLogLine.Status := InvLogLine.Status::Error;
+            CLEARLASTERROR;
+          END;
+          //H4052 14.04.15 TST -----------------------------
+          InvLogLine."Timestamp Stop" := CURRENTDATETIME;
+          InvLogLine.MODIFY(TRUE);
+          COMMIT;
+        END;
+
+        IF CheckInvLogLine(InvLogLine,InvLogLine."Process Type"::"Update Prices",InvLogHeader."No.",Location.Code
+                           ,InvLogLine.Type::"Location Code",'') THEN BEGIN
+          UpdateCreateInLogLine(InvLogLine,InvLogLine."Process Type"::"Update Prices",Location.Code
+                                ,InvLogLine.Type::"Location Code",InvLogHeader."No.",'');
+          IF GUIALLOWED THEN
+            DialogG.UPDATE(2,'Update Prices');
+          UpdatePrices();
+          //H4052 14.04.15 TST +++++++++++++++++++++++++++++
+          IF GETLASTERRORTEXT = '' THEN
+            InvLogLine.Status := InvLogLine.Status::Finished
+          ELSE BEGIN
+            InvLogHeader.Status := InvLogHeader.Status::Error;
+            InvLogHeader.Errortext := GETLASTERRORTEXT;
+            InvLogHeader.MODIFY(TRUE);
+            InvLogLine.Status := InvLogLine.Status::Error;
+            CLEARLASTERROR;
+          END;
+          //H4052 14.04.15 TST -----------------------------
+          InvLogLine."Timestamp Stop" := CURRENTDATETIME;
+          InvLogLine.MODIFY(TRUE);
+          COMMIT;
+        END;
+        IF NOT InvLogHeader."Simulated Phys. Inventory" THEN BEGIN
+          IF CheckInvLogLine(InvLogLine,InvLogLine."Process Type"::"Post Inv. Orders",InvLogHeader."No.",Location.Code
+                             ,InvLogLine.Type::"Location Code",'') THEN BEGIN
+          UpdateCreateInLogLine(InvLogLine,InvLogLine."Process Type"::"Post Inv. Orders",Location.Code
+                                ,InvLogLine.Type::"Location Code",InvLogHeader."No.",'');
+            IF GUIALLOWED THEN
+              DialogG.UPDATE(2,'Post Inventory Orders');
+            PostInventoryOrders();
+            //H4052 14.04.15 TST +++++++++++++++++++++++++++++
+            IF GETLASTERRORTEXT = '' THEN
+              InvLogLine.Status := InvLogLine.Status::Finished
+            ELSE BEGIN
+              InvLogHeader.Status := InvLogHeader.Status::Error;
+              InvLogHeader.Errortext := GETLASTERRORTEXT;
+              InvLogHeader.MODIFY(TRUE);
+              InvLogLine.Status := InvLogLine.Status::Error;
+              CLEARLASTERROR;
+            END;
+            //H4052 14.04.15 TST -----------------------------
+            InvLogLine."Timestamp Stop" := CURRENTDATETIME;
+            InvLogLine.MODIFY(TRUE);
+            COMMIT;
+          END;
+        END;
+        InvLogLineL.RESET;
+        InvLogLineL.SETRANGE("Log Header No.",InvLogHeader."No.");
+        InvLogLineL.SETRANGE(ID,Location.Code);
+        InvLogLineL.SETRANGE(Status,InvLogLineL.Status::Finished);
+        InvLogLineL.SETRANGE("Process Type",InvLogLineL."Process Type"::"Post Inv. Orders");
+        IF NOT InvLogLineL.ISEMPTY THEN BEGIN
+          LocationL := Location;
+          LocationL."Phys. Inventory Location" := FALSE;
+          LocationL.MODIFY;
+        END;
+      UNTIL Location.NEXT = 0;
+      CLEAR(Location);
+
+      //H4263 19.05.15 TST +++++++++++++++++++++++++++++
+      IF ValueEntry.FINDLAST THEN BEGIN
+        InvLogHeader."Last Value Entry No." := ValueEntry."Entry No.";
+        InvLogHeader.MODIFY(TRUE);
+        COMMIT;
+      END;
+      //H4263 19.05.15 TST -----------------------------
+
+      IF CheckInvLogLine(InvLogLine,InvLogLine."Process Type"::"Create Archive",InvLogHeader."No.",Location.Code
+                         ,InvLogLine.Type::General,'') THEN BEGIN
+        UpdateCreateInLogLine(InvLogLine,InvLogLine."Process Type"::"Create Archive",'',InvLogLine.Type::General,InvLogHeader."No.",'');
+        IF GUIALLOWED THEN
+          DialogG.UPDATE(2,'Create Archive');
+        CreateArchive();
+        //H4052 14.04.15 TST +++++++++++++++++++++++++++++
+        IF GETLASTERRORTEXT = '' THEN
+          InvLogLine.Status := InvLogLine.Status::Finished
+        ELSE BEGIN
+          InvLogHeader.Status := InvLogHeader.Status::Error;
+          InvLogHeader.Errortext := GETLASTERRORTEXT;
+          InvLogHeader.MODIFY(TRUE);
+          InvLogLine.Status := InvLogLine.Status::Error;
+          CLEARLASTERROR;
+        END;
+        //H4052 14.04.15 TST -----------------------------
+        InvLogLine."Timestamp Stop" := CURRENTDATETIME;
+        InvLogLine.MODIFY(TRUE);
+        COMMIT;
+      END;
+
+      IF CheckInvLogLine(InvLogLine,InvLogLine."Process Type"::"Create CSV",InvLogHeader."No.",Location.Code,
+                         InvLogLine.Type::General,'') THEN BEGIN
+        UpdateCreateInLogLine(InvLogLine,InvLogLine."Process Type"::"Create CSV",'',InvLogLine.Type::General,InvLogHeader."No.",'');
+        IF GUIALLOWED THEN
+          DialogG.UPDATE(2,'Create csv');
+        CreateCSV();
+        //H4052 14.04.15 TST +++++++++++++++++++++++++++++
+        IF GETLASTERRORTEXT = '' THEN
+          InvLogLine.Status := InvLogLine.Status::Finished
+        ELSE BEGIN
+          InvLogHeader.Status := InvLogHeader.Status::Error;
+          InvLogHeader.Errortext := GETLASTERRORTEXT;
+          InvLogHeader.MODIFY(TRUE);
+          InvLogLine.Status := InvLogLine.Status::Error;
+          CLEARLASTERROR;
+        END;
+        //H4052 14.04.15 TST -----------------------------
+        InvLogLine."Timestamp Stop" := CURRENTDATETIME;
+        InvLogLine.MODIFY(TRUE);
+        COMMIT;
+      END;
+
+      IF CheckInvLogLine(InvLogLine,InvLogLine."Process Type"::"Send CSV",InvLogHeader."No.",Location.Code,
+                         InvLogLine.Type::General,'') THEN BEGIN
+        UpdateCreateInLogLine(InvLogLine,InvLogLine."Process Type"::"Send CSV",'',InvLogLine.Type::General,InvLogHeader."No.",'');
+        IF GUIALLOWED THEN
+          DialogG.UPDATE(2,'Send csv');
+        SendCSV();
+        //H4052 14.04.15 TST +++++++++++++++++++++++++++++
+        IF GETLASTERRORTEXT = '' THEN
+          InvLogLine.Status := InvLogLine.Status::Finished
+        ELSE BEGIN
+          InvLogHeader.Status := InvLogHeader.Status::Error;
+          InvLogHeader.Errortext := GETLASTERRORTEXT;
+          InvLogHeader.MODIFY(TRUE);
+          InvLogLine.Status := InvLogLine.Status::Error;
+          CLEARLASTERROR;
+        END;
+        //H4052 14.04.15 TST -----------------------------
+        InvLogLine."Timestamp Stop" := CURRENTDATETIME;
+        InvLogLine.MODIFY(TRUE);
+      END;
+
+      //H4263 19.05.15 TST +++++++++++++++++++++++++++++
+      IF CheckInvLogLine(InvLogLine,InvLogLine."Process Type"::"Adjust Cost",InvLogHeader."No.",Location.Code,
+                         InvLogLine.Type::General,'') THEN BEGIN
+        UpdateCreateInLogLine(InvLogLine,InvLogLine."Process Type"::"Adjust Cost",'',InvLogLine.Type::General,InvLogHeader."No.",'');
+        IF GUIALLOWED THEN
+          DialogG.UPDATE(2,'Adjust Cost');
+        REPORT.RUNMODAL(795,FALSE);
+        IF GETLASTERRORTEXT = '' THEN
+          InvLogLine.Status := InvLogLine.Status::Finished
+        ELSE BEGIN
+          InvLogHeader.Status := InvLogHeader.Status::Error;
+          InvLogHeader.Errortext := GETLASTERRORTEXT;
+          InvLogHeader.MODIFY(TRUE);
+          InvLogLine.Status := InvLogLine.Status::Error;
+          CLEARLASTERROR;
+        END;
+        InvLogLine."Timestamp Stop" := CURRENTDATETIME;
+        InvLogLine.MODIFY(TRUE);
+        COMMIT;
+      END;
+
+      IF InvLogHeader."Last Value Entry No." <> 0 THEN
+        IF CheckInvLogLine(InvLogLine,InvLogLine."Process Type"::"Post Cost to GL",InvLogHeader."No.",Location.Code,
+                           InvLogLine.Type::General,'') THEN BEGIN
+          UpdateCreateInLogLine(InvLogLine,InvLogLine."Process Type"::"Post Cost to GL",'',InvLogLine.Type::General,
+                                InvLogHeader."No.",'');
+          IF GUIALLOWED THEN
+            DialogG.UPDATE(2,'Post Cost to GL');
+          CLEAR(PostCostToGL);
+          PostCostToGL.SetValueEntryNos(FORMAT(InvLogHeader."First Value Entry No.") + '..' +
+                                        FORMAT(InvLogHeader."Last Value Entry No."));
+          PostCostToGL.USEREQUESTFORM(FALSE);
+          PostCostToGL.RUNMODAL;
+
+          IF GETLASTERRORTEXT = '' THEN
+            InvLogLine.Status := InvLogLine.Status::Finished
+          ELSE BEGIN
+            InvLogHeader.Status := InvLogHeader.Status::Error;
+            InvLogHeader.Errortext := GETLASTERRORTEXT;
+            InvLogHeader.MODIFY(TRUE);
+            InvLogLine.Status := InvLogLine.Status::Error;
+            CLEARLASTERROR;
+          END;
+          InvLogLine."Timestamp Stop" := CURRENTDATETIME;
+          InvLogLine.MODIFY(TRUE);
+          COMMIT;
+        END;
+      //H4263 19.05.15 TST -----------------------------
+
+      IF GUIALLOWED THEN
+        DialogG.CLOSE;
+
+      IF GUIALLOWED THEN
+        MESSAGE(TextHME003,FORMAT(InventorySetup."Posting Date Phys. Inventory"));
+    END;
+
+    PROCEDURE CreateInvLogHeader@1000000010() : Integer;
+    VAR
+      InvLogHeaderL@1000000000 : Record 50208;
+    BEGIN
+      CLEAR(InvLogHeaderL);
+      IF InvLogHeaderL.FINDLAST THEN;
+
+      InvLogHeader.RESET;
+      InvLogHeader."No." := InvLogHeaderL."No." + 1;
+      InvLogHeader.INSERT(TRUE);
+      EXIT(InvLogHeader."No.");
+    END;
+
+    LOCAL PROCEDURE CheckInventorySetup@1000000002();
+    VAR
+      LocationL@1000000000 : Record 14;
+    BEGIN
+      InventorySetup.TESTFIELD("Folder (Out)");
+      InventorySetup.TESTFIELD("Max. Price Variation");
+      InventorySetup.TESTFIELD("Folder (Out)");
+      InventorySetup.TESTFIELD("Inventory Order Mail Code");
+    END;
+
+    LOCAL PROCEDURE CheckExistPhysInvtOrderHeader@1000000016();
+    VAR
+      PhysInventoryOrderHeaderL@1000000001 : Record 5005350;
+      PhysInventoryOrderHeader2L@1000000004 : Record 5005350;
+      PhysInvtRecordingHeaderL@1000000003 : Record 5005352;
+      PhysInvtRecordingHeader2L@1000000005 : Record 5005352;
+      PhysInvtOrderReopenL@1000000000 : Codeunit 5005357;
+      PhysInvtRecReopenL@1000000006 : Codeunit 5005353;
+      NoOfPhysInvtOrderHeadersL@1000000002 : Integer;
+      DeleteExistingOrderL@1000000007 : Boolean;
+    BEGIN
+      // CheckExistPhysInvtOrderHeader
+      CLEAR(PhysInventoryOrderHeaderL);
+      PhysInventoryOrderHeaderL.SETCURRENTKEY("Posting Date","Location Code");
+      //H4070 17.04.15 TST +++++++++++++++++++++++++++++
+      //PhysInventoryOrderHeaderL.SETRANGE("Posting Date",InventorySetup."Posting Date Phys. Inventory");
+      //H4070 17.04.15 TST -----------------------------
+      NoOfPhysInvtOrderHeadersL := PhysInventoryOrderHeaderL.COUNT;
+      IF (NoOfPhysInvtOrderHeadersL > 0) THEN BEGIN
+        DeleteExistingOrderL := FALSE;
+        IF GUIALLOWED THEN BEGIN
+          IF CONFIRM(TextHME005,FALSE,
+                     NoOfPhysInvtOrderHeadersL,
+                    //H4070 17.04.15 TST +++++++++++++++++++++++++++++
+                     PhysInventoryOrderHeaderL.TABLECAPTION)
+                    //H4070 17.04.15 TST +++++++++++++++++++++++++++++
+          THEN BEGIN
+            IF CONFIRM(TextHME004,FALSE,
+                      //H4070 17.04.15 TST +++++++++++++++++++++++++++++
+                       PhysInventoryOrderHeaderL.TABLECAPTION)
+                      //H4070 17.04.15 TST +++++++++++++++++++++++++++++
+
+            THEN DeleteExistingOrderL := TRUE;
+          END;
+        END ELSE
+          DeleteExistingOrderL := TRUE;
+        IF DeleteExistingOrderL THEN BEGIN
+          IF PhysInventoryOrderHeaderL.FIND('-') THEN BEGIN
+            REPEAT
+              PhysInventoryOrderHeader2L := PhysInventoryOrderHeaderL;
+              IF (PhysInventoryOrderHeaderL.Status = PhysInventoryOrderHeaderL.Status::Finished) THEN BEGIN
+                CLEAR(PhysInvtOrderReopenL);
+                PhysInvtOrderReopenL.RUN(PhysInventoryOrderHeader2L);
+              END;
+              CLEAR(PhysInvtRecordingHeaderL);
+              PhysInvtRecordingHeaderL.SETCURRENTKEY("Order No.","Recording No.");
+              PhysInvtRecordingHeaderL.SETRANGE("Order No.",PhysInventoryOrderHeaderL."No.");
+              IF PhysInvtRecordingHeaderL.FIND('-') THEN BEGIN
+                REPEAT
+                  IF (PhysInvtRecordingHeaderL.Status = PhysInvtRecordingHeaderL.Status::Finished) THEN BEGIN
+                    CLEAR(PhysInvtRecReopenL);
+                    PhysInvtRecReopenL.RUN(PhysInvtRecordingHeaderL);
+                  END;
+                UNTIL PhysInvtRecordingHeaderL.NEXT = 0;
+              END;
+              PhysInventoryOrderHeader2L.DELETE(TRUE);
+            UNTIL PhysInventoryOrderHeaderL.NEXT = 0;
+          END;
+          IF GUIALLOWED THEN
+            MESSAGE(TextHME007,
+                    NoOfPhysInvtOrderHeadersL,
+                    //H4070 17.04.15 TST +++++++++++++++++++++++++++++
+                    PhysInventoryOrderHeaderL.TABLECAPTION);
+                    //H4070 17.04.15 TST +++++++++++++++++++++++++++++
+        END ELSE BEGIN
+          ERROR(TextHME006);
+        END;
+      END;
+      COMMIT;
+    END;
+
+    LOCAL PROCEDURE UpdateInventorySetup@1000000000();
+    BEGIN
+      //H2200 25.02.15 TST +++++++++++++++++++++++++++++
+      IF (NOT InvLogHeader."Simulated Phys. Inventory") OR (InventorySetup."Posting Date Phys. Inventory" = 0D) THEN
+      //H2200 25.02.15 TST -----------------------------
+        InventorySetup."Posting Date Phys. Inventory" := CALCDATE('<-CM-1D>',WORKDATE);
+      InventorySetup."Description Phys. Inventory" := STRSUBSTNO(TextHME001,
+                                                      FORMAT(InventorySetup."Posting Date Phys. Inventory",0,'<Month Text> <Year4>'));
+      InventorySetup.MODIFY;
+      InvLogHeader."Posting Date" :=InventorySetup."Posting Date Phys. Inventory";
+      InvLogHeader."Description Phys. Inventory" := InventorySetup."Description Phys. Inventory";
+      InvLogHeader.MODIFY(TRUE);
+    END;
+
+    LOCAL PROCEDURE CheckLocations@1000000044();
+    VAR
+      LocationL@1000000000 : Record 14;
+    BEGIN
+      LocationL.RESET;
+      LocationL.SETRANGE("Phys. Inventory Location",TRUE);
+      IF NOT LocationL.FINDFIRST THEN BEGIN
+        InvLogHeader.Errortext := TextHME032;
+        InvLogHeader.MODIFY;
+        COMMIT;
+        ERROR(TextHME032);
+      END;
+
+      REPEAT
+        IF LocationL."Branch Code" = '' THEN BEGIN
+          InvLogHeader.Errortext := STRSUBSTNO(TextHME033,LocationL.FIELDCAPTION("Branch Code"),
+                                               LocationL.TABLECAPTION, LocationL.Code);
+          InvLogHeader.MODIFY;
+          COMMIT;
+          ERROR(STRSUBSTNO(TextHME033,LocationL.FIELDCAPTION("Branch Code"),
+                                               LocationL.TABLECAPTION, LocationL.Code));
+        END;
+        IF LocationL."WH24 Identifier" = '' THEN BEGIN
+          InvLogHeader.Errortext := STRSUBSTNO(TextHME033,LocationL.FIELDCAPTION("WH24 Identifier"),
+                                               LocationL.TABLECAPTION, LocationL.Code);
+          InvLogHeader.MODIFY;
+          COMMIT;
+          ERROR(STRSUBSTNO(TextHME033,LocationL.FIELDCAPTION("WH24 Identifier"),
+                                               LocationL.TABLECAPTION, LocationL.Code));
+        END;
+        IF LocationL."Phys. Inventory Filename" = '' THEN BEGIN
+          InvLogHeader.Errortext := STRSUBSTNO(TextHME033,LocationL.FIELDCAPTION("Phys. Inventory Filename"),
+                                               LocationL.TABLECAPTION, LocationL.Code);
+          InvLogHeader.MODIFY;
+          COMMIT;
+          ERROR(STRSUBSTNO(TextHME033,LocationL.FIELDCAPTION("Phys. Inventory Filename"),
+                                               LocationL.TABLECAPTION, LocationL.Code));
+        END;
+      UNTIL LocationL.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE StartCYCC@1000000004();
+    VAR
+      CYCCL@1000000000 : Codeunit 50163;
+    BEGIN
+      CYCCL.SetSuppressMessage();
+      CYCCL.PostCycleCount(InvLogHeader."No.",Location);
+    END;
+
+    LOCAL PROCEDURE UpdatePrices@1000000007();
+    VAR
+      InventoryOrderLineL@1000000000 : Record 5005351;
+      InventoryOrderHeaderL@1000000001 : Record 5005350;
+    BEGIN
+      IF GUIALLOWED THEN
+        DialogG.UPDATE(3,InventoryOrderHeaderL.TABLECAPTION);
+      InventoryOrderHeaderL.RESET;
+      InventoryOrderHeaderL.SETRANGE("Inventory Log Header No.",InvLogHeader."No.");
+      InventoryOrderHeaderL.SETRANGE("Location Code",Location.Code);
+
+      IF InventoryOrderHeaderL.FINDSET THEN REPEAT
+        IF GUIALLOWED THEN
+          DialogG.UPDATE(4,InventoryOrderHeaderL."No.");
+        InventoryOrderLineL.SETRANGE("Document No.",InventoryOrderHeaderL."No.");
+        InventoryOrderLineL.SETFILTER("Price Variation",'>%1',InventorySetup."Max. Price Variation");
+        IF InventoryOrderLineL.FINDFIRST THEN
+          InventoryOrderLineL.CopyMDBPricetoUnitCost();
+      UNTIL InventoryOrderHeaderL.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE PostInventoryOrders@1000000008();
+    VAR
+      InventoryOrderHeaderL@1000000000 : Record 5005350;
+      PhysInvtOrderPostL@1000000001 : Codeunit 5005359;
+      InventoryOrderHeaderToPostL@1000000002 : Record 5005350;
+    BEGIN
+      IF GUIALLOWED THEN
+        DialogG.UPDATE(3,InventoryOrderHeaderL.TABLECAPTION);
+      InventoryOrderHeaderL.RESET;
+      InventoryOrderHeaderL.SETRANGE("Inventory Log Header No.",InvLogHeader."No.");
+      InventoryOrderHeaderL.SETRANGE("Simulated Phys. Inventory",FALSE);
+      InventoryOrderHeaderL.SETRANGE("Location Code",Location.Code);
+
+      IF InventoryOrderHeaderL.FINDSET THEN REPEAT
+        IF GUIALLOWED THEN
+          DialogG.UPDATE(4,InventoryOrderHeaderL."No.");
+        CLEAR(PhysInvtOrderPostL);
+        InventoryOrderHeaderToPostL := InventoryOrderHeaderL;
+        PhysInvtOrderPostL.RUN(InventoryOrderHeaderToPostL);
+        COMMIT;
+      UNTIL InventoryOrderHeaderL.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE CreateCSV@1000000012();
+    BEGIN
+      IF GUIALLOWED THEN
+        DialogG.UPDATE(3,PostInvOrderHeader.TABLECAPTION);
+
+      LF := 10;
+
+      IF InvLogHeader."Simulated Phys. Inventory" THEN BEGIN
+        PhysInvOrderHeader.RESET;
+        PhysInvOrderHeader.SETCURRENTKEY("Posting Date","Location Code");
+        PhysInvOrderHeader.SETRANGE("Posting Date",CALCDATE('<-CQ>',InvLogHeader."Posting Date"),
+                                                    CALCDATE('<CQ>',InvLogHeader."Posting Date"));
+        PhysInvOrderHeader.SETRANGE("Simulated Phys. Inventory",TRUE);
+        ExportSimInvOrderLines();
+      END ELSE BEGIN
+        PostInvOrderHeader.RESET;
+        PostInvOrderHeader.SETCURRENTKEY("Location Code","Posting Date",Cancelled);
+        PostInvOrderHeader.SETRANGE("Posting Date",CALCDATE('<-CQ>',InvLogHeader."Posting Date"),
+                                                    CALCDATE('<CQ>',InvLogHeader."Posting Date"));
+        PostInvOrderHeader.SETRANGE(Cancelled,FALSE);
+
+        ExportInvOrderLines();
+        ExportStatistics();
+      END;
+    END;
+
+    PROCEDURE CheckInvLogLine@1000000021(VAR InvLogLineO@1000000005 : Record 50209;ProcessTypeV@1000000000 : ' ,Get Inv. Setup,Set Inv. Setup,Get FPC Setup,Check FPC Setup,Check Inv. Header,Update Inv. Setup,Update DD Setup,Start Inbound,Import BMP,Empty RET,Import CSV,Start CYCC,Restore DD Setup,Update Prices,Post Inv. Orders,Close Periods,Create CSV,Send CSV,Create Archive,Check Locations,Stop Webservice,Start Webservice,Stop Job Queue Entry,Start Job Queue Entry,Adjust Cost,Post Cost to GL';InvLogHeaderNoV@1000000002 : Integer;IDV@1000000003 : Code[10];TypeV@1000000004 : 'General,Location Code,Report,Codeunit,Page';ServiceNameV@1000000001 : Text[240]) : Boolean;
+    BEGIN
+      InvLogLineO.RESET;
+      InvLogLineO.SETRANGE("Log Header No.",InvLogHeaderNoV);
+      InvLogLineO.SETRANGE("Process Type",ProcessTypeV);
+      InvLogLineO.SETRANGE(ID,IDV);
+      InvLogLineO.SETRANGE(Type,TypeV);
+      InvLogLineO.SETRANGE(Status,InvLogLineO.Status::Finished);
+      InvLogLineO.SETRANGE("Service Name",ServiceNameV);
+      EXIT(InvLogLineO.ISEMPTY);
+    END;
+
+    PROCEDURE UpdateCreateInLogLine@1000000022(VAR InvLogLineO@1000000005 : Record 50209;ProcessTypeV@1000000000 : ' ,Get Inv. Setup,Set Inv. Setup,Get FPC Setup,Check FPC Setup,Check Inv. Header,Update Inv. Setup,Update DD Setup,Start Inbound,Import BMP,Empty RET,Import CSV,Start CYCC,Restore DD Setup,Update Prices,Post Inv. Orders,Close Periods,Create CSV,Send CSV,Create Archive,Check Locations,Stop Webservice,Start Webservice,Stop Job Queue Entry,Start Job Queue Entry,Adjust Cost,Post Cost to GL';IDV@1000000002 : Code[10];TypeV@1000000004 : 'General,Location Code,Report,Codeunit,Page';InvLogHeaderNoV@1000000003 : Integer;ServiceNameV@1000000006 : Text[240]);
+    VAR
+      InvLogLineL@1000000001 : Record 50209;
+    BEGIN
+      InvLogLineO.RESET;
+      InvLogLineO.SETRANGE("Log Header No.",InvLogHeaderNoV);
+      InvLogLineO.SETRANGE("Process Type",ProcessTypeV);
+      //H4052 14.04.15 TST +++++++++++++++++++++++++++++
+      InvLogLineO.SETFILTER(Status,'<%1',InvLogLineO.Status::Finished);
+      //H4052 14.04.15 TST -----------------------------
+      InvLogLineO.SETRANGE(ID,IDV);
+      InvLogLineO.SETRANGE(Type,TypeV);
+      InvLogLineO.SETRANGE("Service Name",ServiceNameV);
+      IF NOT InvLogLineO.FINDLAST THEN BEGIN
+        InvLogLineO.RESET;
+        InvLogLineO.INIT;
+        InvLogLineO."Log Header No." := InvLogHeaderNoV;
+        InvLogLineL.RESET;
+        InvLogLineL.SETRANGE("Log Header No.",InvLogHeaderNoV);
+        IF InvLogLineL.FINDLAST THEN
+          InvLogLineO."Line No." := InvLogLineL."Line No." + 10000
+        ELSE
+          InvLogLineO."Line No." := 10000;
+        InvLogLineO.ID := IDV;
+        InvLogLineO.Type := TypeV;
+        InvLogLineO."Process Type" := ProcessTypeV;
+        InvLogLineO."Timestamp Start" := CURRENTDATETIME;
+        InvLogLineO."Service Name" := ServiceNameV;
+        //H4052 14.04.15 TST +++++++++++++++++++++++++++++
+        InvLogLineO.Status := InvLogLineO.Status::"In Process";
+        //H4052 14.04.15 TST -----------------------------
+        InvLogLineO.INSERT(TRUE);
+      END;
+    END;
+
+    LOCAL PROCEDURE ExportInvOrderLines@1000000011();
+    VAR
+      CSVFileL@1000000003 : File;
+      FilenameL@1000000002 : Text[1024];
+      PostingDateTextL@1000000001 : Text[30];
+      ExportLineL@1000000000 : Text[1024];
+    BEGIN
+      IF PostInvOrderHeader.FINDSET THEN BEGIN
+        IF GUIALLOWED THEN
+          DialogG.UPDATE(4,PostInvOrderHeader."No.");
+        FilenameL := InventorySetup."Folder (Out)";
+
+        PostingDateTextL:=  FORMAT(DATE2DMY(InvLogHeader."Posting Date",1))+
+                            FORMAT(DATE2DMY(InvLogHeader."Posting Date",2))+
+                            FORMAT(DATE2DMY(InvLogHeader."Posting Date",3));
+
+        FilenameL := FilenameL+ TextHME015 + PostingDateTextL +'.csv';
+        InvLogHeader."Attachement 1" := FilenameL;
+        InvLogHeader.MODIFY(TRUE);
+
+        CLEAR(CSVFileL);
+        CSVFileL.TEXTMODE(TRUE);
+        CSVFileL.CREATE(FilenameL);
+
+        ExportLineL := TextHME010;
+        CSVFileL.WRITE(ExportLineL);
+        ExportLineL := TextHME008;
+        CSVFileL.WRITE(ExportLineL);
+        ExportLineL := TextHME011 + ';' + USERID;
+        CSVFileL.WRITE(ExportLineL);
+        ExportLineL := TextHME012 + ';' + FORMAT(TODAY);
+        CSVFileL.WRITE(ExportLineL);
+        ExportLineL := TextHME013 +';' +
+                       PostInvOrderHeader.GETFILTER("Posting Date");
+        CSVFileL.WRITE(ExportLineL);
+        CSVFileL.WRITE(LF);
+        // Headline
+        ExportLineL := PostInvOrderLine.FIELDCAPTION("Document No.") +';'+
+                     PostInvOrderLine.FIELDCAPTION("Item No.") +';'+
+                     PostInvOrderLine.FIELDCAPTION("Location Code") +';'+
+                     PostInvOrderLine.FIELDCAPTION(Description) +';'+
+                     PostInvOrderLine.FIELDCAPTION("Unit Amount") +';'+
+                     PostInvOrderLine.FIELDCAPTION("Unit Cost") +';'+
+                     PostInvOrderLine.FIELDCAPTION("Qty. Expected (Base)") +';'+
+                     PostInvOrderLine.FIELDCAPTION("Qty. Recorded (Base)") +';'+
+                     PostInvOrderLine.FIELDCAPTION("Pos. Qty. (Base)") +';'+
+                     PostInvOrderLine.FIELDCAPTION("Neg. Qty. (Base)") +';'+
+                     PostInvOrderLine.FIELDCAPTION("Quantity (Base)") +';'+
+                     TextHME014 +';'+
+                     PostInvOrderLine.FIELDCAPTION("Without difference") +';'+
+                     PostInvOrderLine.FIELDCAPTION("Item Category Code") +';'+
+                     PostInvOrderLine.FIELDCAPTION("MDB Repository Net Purch Price") +';'+
+                     PostInvOrderLine.FIELDCAPTION("Price Variation") +';'+
+                     PostInvOrderLine.FIELDCAPTION("Posting Date");
+        CSVFileL.WRITE(ExportLineL);
+        REPEAT
+          PostInvOrderLine.SETRANGE("Document No.",PostInvOrderHeader."No.");
+          IF PostInvOrderLine.FINDSET THEN REPEAT
+            ExportLineL := PostInvOrderLine."Document No." +';'+
+                           PostInvOrderLine."Item No." +';'+
+                           PostInvOrderLine."Location Code" +';'+
+                           GeneralMgt.Ascii2Ansi(PostInvOrderLine.Description) +';'+
+                           FORMAT(PostInvOrderLine."Unit Amount") +';'+
+                           FORMAT(PostInvOrderLine."Unit Cost") +';'+
+                           FORMAT(PostInvOrderLine."Qty. Expected (Base)") +';'+
+                           FORMAT(PostInvOrderLine."Qty. Recorded (Base)") +';'+
+                           FORMAT(PostInvOrderLine."Pos. Qty. (Base)") +';'+
+                           FORMAT(PostInvOrderLine."Neg. Qty. (Base)") +';'+
+                           FORMAT(PostInvOrderLine."Pos. Qty. (Base)"-PostInvOrderLine."Neg. Qty. (Base)") +';'+
+                           FORMAT(PostInvOrderLine."Unit Cost"*
+                               (PostInvOrderLine."Pos. Qty. (Base)"-PostInvOrderLine."Neg. Qty. (Base)")) +';'+
+                           FORMAT(PostInvOrderLine."Without difference") +';'+
+                           GeneralMgt.Ascii2Ansi(PostInvOrderLine."Item Category Code") +';'+
+                           FORMAT(PostInvOrderLine."MDB Repository Net Purch Price") +';'+
+                           FORMAT(PostInvOrderLine."Price Variation") +';'+
+                           FORMAT(PostInvOrderHeader."Posting Date");
+            CSVFileL.WRITE(ExportLineL);
+          UNTIL PostInvOrderLine.NEXT = 0;
+        UNTIL PostInvOrderHeader.NEXT = 0;
+          CSVFileL.CLOSE;
+      END;
+    END;
+
+    LOCAL PROCEDURE ExportSimInvOrderLines@1000000003();
+    VAR
+      CSVFileL@1000000003 : File;
+      FilenameL@1000000002 : Text[1024];
+      PostingDateTextL@1000000001 : Text[30];
+      ExportLineL@1000000000 : Text[1024];
+    BEGIN
+      IF PhysInvOrderHeader.FINDSET THEN BEGIN
+        IF GUIALLOWED THEN
+          DialogG.UPDATE(4,PhysInvOrderHeader."No.");
+        FilenameL := InventorySetup."Folder (Out)";
+        PostingDateTextL:=  FORMAT(DATE2DMY(InvLogHeader."Posting Date",1))+
+                            FORMAT(DATE2DMY(InvLogHeader."Posting Date",2))+
+                            FORMAT(DATE2DMY(InvLogHeader."Posting Date",3));
+
+        FilenameL := FilenameL+ TextHME030 + PostingDateTextL +'.csv';
+        InvLogHeader."Attachement 1" := FilenameL;
+        InvLogHeader.MODIFY(TRUE);
+
+        CLEAR(CSVFileL);
+        CSVFileL.TEXTMODE(TRUE);
+        CSVFileL.CREATE(FilenameL);
+
+        ExportLineL := TextHME031;
+        CSVFileL.WRITE(ExportLineL);
+        ExportLineL := TextHME008;
+        CSVFileL.WRITE(ExportLineL);
+        ExportLineL := TextHME011 + ';' + USERID;
+        CSVFileL.WRITE(ExportLineL);
+        ExportLineL := TextHME012 + ';' + FORMAT(TODAY);
+        CSVFileL.WRITE(ExportLineL);
+        ExportLineL := TextHME013 +';' +
+                       PhysInvOrderHeader.GETFILTER("Posting Date");
+        CSVFileL.WRITE(ExportLineL);
+        CSVFileL.WRITE(LF);
+        // Headline
+        ExportLineL := PhysInvOrderLine.FIELDCAPTION("Document No.") +';'+
+                     PhysInvOrderLine.FIELDCAPTION("Item No.") +';'+
+                     PhysInvOrderLine.FIELDCAPTION("Location Code") +';'+
+                     PhysInvOrderLine.FIELDCAPTION(Description) +';'+
+                     PhysInvOrderLine.FIELDCAPTION("Unit Amount") +';'+
+                     PhysInvOrderLine.FIELDCAPTION("Unit Cost") +';'+
+                     PhysInvOrderLine.FIELDCAPTION("Qty. Expected (Base)") +';'+
+                     PhysInvOrderLine.FIELDCAPTION("Qty. Recorded (Base)") +';'+
+                     PhysInvOrderLine.FIELDCAPTION("Pos. Qty. (Base)") +';'+
+                     PhysInvOrderLine.FIELDCAPTION("Neg. Qty. (Base)") +';'+
+                     PhysInvOrderLine.FIELDCAPTION("Quantity (Base)") +';'+
+                     TextHME014 +';'+
+                     PhysInvOrderLine.FIELDCAPTION("Without difference") +';'+
+                     PhysInvOrderLine.FIELDCAPTION("Item Category Code") +';'+
+                     PhysInvOrderLine.FIELDCAPTION("MDB Repository Net Purch Price") +';'+
+                     PhysInvOrderLine.FIELDCAPTION("Price Variation") +';'+
+                     PhysInvOrderHeader.FIELDCAPTION("Posting Date");
+        CSVFileL.WRITE(ExportLineL);
+        REPEAT
+          PhysInvOrderLine.SETRANGE("Document No.",PhysInvOrderHeader."No.");
+          IF PhysInvOrderLine.FINDSET THEN REPEAT
+            ExportLineL := PhysInvOrderLine."Document No." +';'+
+                           PhysInvOrderLine."Item No." +';'+
+                           PhysInvOrderLine."Location Code" +';'+
+                           GeneralMgt.Ascii2Ansi(PhysInvOrderLine.Description) +';'+
+                           FORMAT(PhysInvOrderLine."Unit Amount") +';'+
+                           FORMAT(PhysInvOrderLine."Unit Cost") +';'+
+                           FORMAT(PhysInvOrderLine."Qty. Expected (Base)") +';'+
+                           FORMAT(PhysInvOrderLine."Qty. Recorded (Base)") +';'+
+                           FORMAT(PhysInvOrderLine."Pos. Qty. (Base)") +';'+
+                           FORMAT(PhysInvOrderLine."Neg. Qty. (Base)") +';'+
+                           FORMAT(PhysInvOrderLine."Pos. Qty. (Base)"-PhysInvOrderLine."Neg. Qty. (Base)") +';'+
+                           FORMAT(PhysInvOrderLine."Unit Cost"*
+                               (PhysInvOrderLine."Pos. Qty. (Base)"-PhysInvOrderLine."Neg. Qty. (Base)")) +';'+
+                           FORMAT(PhysInvOrderLine."Without difference") +';'+
+                           GeneralMgt.Ascii2Ansi(PhysInvOrderLine."Item Category Code") +';'+
+                           FORMAT(PhysInvOrderLine."MDB Repository Net Purch Price") +';'+
+                           FORMAT(PhysInvOrderLine."Price Variation") +';'+
+                           FORMAT(PhysInvOrderHeader."Posting Date");
+            CSVFileL.WRITE(ExportLineL);
+          UNTIL PhysInvOrderLine.NEXT = 0;
+        UNTIL PhysInvOrderHeader.NEXT = 0;
+          CSVFileL.CLOSE;
+      END;
+    END;
+
+    LOCAL PROCEDURE ExportStatistics@1000000017();
+    VAR
+      PostingDateTextL@1000000001 : Text[30];
+      ExportLineL@1000000000 : Text[1024];
+      PostInvOrderHeaderL@1000000005 : Record 5005354;
+      Total@1000000002 : ARRAY [3] OF Decimal;
+    BEGIN
+      IF PostInvOrderHeader.FINDSET THEN BEGIN
+        IF GUIALLOWED THEN
+          DialogG.UPDATE(4,PostInvOrderHeader."No.");
+        Filename := InventorySetup."Folder (Out)";
+        PostingDateTextL:=  FORMAT(DATE2DMY(InvLogHeader."Posting Date",1))+
+                            FORMAT(DATE2DMY(InvLogHeader."Posting Date",2))+
+                            FORMAT(DATE2DMY(InvLogHeader."Posting Date",3));
+
+        Filename := Filename+ TextHME016 + PostingDateTextL +'.csv';
+        InvLogHeader."Attachement 2" := Filename;
+        InvLogHeader.MODIFY(TRUE);
+
+        CLEAR(CSVFile);
+        CLEAR(Total);
+        CSVFile.TEXTMODE(TRUE);
+        CSVFile.CREATE(Filename);
+
+        ExportLineL := ';' + TextHME016;
+        CSVFile.WRITE(ExportLineL);
+        ExportLineL := ';' + TextHME008 + ';' + COMPANYNAME;
+        CSVFile.WRITE(ExportLineL);
+        ExportLineL := ';' + TextHME011 + ';' + USERID;
+        CSVFile.WRITE(ExportLineL);
+        ExportLineL := ';' + TextHME012 + ';' + FORMAT(TODAY);
+        CSVFile.WRITE(ExportLineL);
+        ExportLineL := ';' + TextHME013 +';' +
+                       PostInvOrderHeader.GETFILTER("Posting Date");
+        CSVFile.WRITE(ExportLineL);
+        CSVFile.WRITE(LF);
+
+        //Headline months
+        MonthStartDate[1] := CALCDATE('<-CQ>',InvLogHeader."Posting Date");
+        MonthStartDate[2] := CALCDATE('<-CQ+1M>',InvLogHeader."Posting Date");
+        MonthStartDate[3] := CALCDATE('<CQ>',InvLogHeader."Posting Date");
+        FOR i := 1 TO 3 DO
+          MonthName[i] := FORMAT(MonthStartDate[i],0,'<month text> <year,2>');
+
+        ExportLineL := ';;;;;' + MonthName[1] + ';;;;;' + MonthName[2] + ';;;;;' + MonthName[3] + ';;;' + TextHME017;
+        CSVFile.WRITE(ExportLineL);
+
+        // Headline Description
+        ExportLineL := ';;;' + TextHME020 + ';' + TextHME021 + ';' + TextHME022 + ';' + TextHME023 + ';;' +
+                               TextHME020 + ';' + TextHME021 + ';' + TextHME022 + ';' + TextHME023 + ';;' +
+                               TextHME020 + ';' + TextHME021 + ';' + TextHME022 + ';' + TextHME023 + ';;';
+        CSVFile.WRITE(ExportLineL);
+
+        // Locations
+        Location.RESET;
+        Location.SETFILTER("Phys. Inventory Filetype",'<>0');
+        IF Location.FINDSET THEN REPEAT
+          PostInvOrderHeader.SETRANGE("Location Code",Location.Code);
+          IF PostInvOrderHeader.FINDFIRST THEN BEGIN
+            CLEAR(Cell);
+            PostInvOrderHeaderL.COPYFILTERS(PostInvOrderHeader);
+            FOR i := 1 TO 3 DO BEGIN
+              PostInvOrderHeaderL.SETRANGE("Posting Date",MonthStartDate[i],CALCDATE('<CM>',MonthStartDate[i]));
+              IF PostInvOrderHeaderL.FINDSET THEN REPEAT
+                UpdateCell(PostInvOrderHeaderL."No.");
+              UNTIL PostInvOrderHeaderL.NEXT = 0;
+              Total[i] += Cell[i,1,4];
+            END;
+
+            WriteCells(Location.Code);
+          END;
+        UNTIL Location.NEXT = 0;
+
+        ExportLineL := ';;' + TextHME028 + ';;;;' + FORMAT(Total[1]) + ';;;;;' + FORMAT(Total[2]) + ';;;;;' +
+                         FORMAT(Total[3]) + ';;' + FORMAT(Total[1] + Total[2] + Total[3]);
+        CSVFile.WRITE(ExportLineL);
+      END;
+    END;
+
+    LOCAL PROCEDURE UpdateCell@1000000023(PostedInventoryOrderNoV@1000000001 : Code[20]);
+    VAR
+      PostedPhysInvtOrderLineL@1000000000 : Record 5005355;
+      PostedPhysInvtOrderLine2L@1000000016 : Record 5005355;
+    BEGIN
+      PostedPhysInvtOrderLineL.RESET;
+      PostedPhysInvtOrderLineL.SETRANGE("Document No.", PostedInventoryOrderNoV);
+      IF PostedPhysInvtOrderLineL.FIND('-') THEN REPEAT
+        IF NOT PostedPhysInvtOrderLineL.EmptyLine THEN BEGIN
+          Cell[i,1,1] := Cell[i,1,1] + 1; // NoAllLines
+          Cell[i,1,3] :=                  // ExpAmountAllLines
+            Cell[i,1,3] +
+            PostedPhysInvtOrderLineL."Qty. Expected (Base)" * PostedPhysInvtOrderLineL."Unit Amount";
+          Cell[i,1,2] :=                  //RecAmountAllLines
+            Cell[i,1,2] +
+            PostedPhysInvtOrderLineL."Qty. Recorded (Base)" * PostedPhysInvtOrderLineL."Unit Amount";
+          Cell[i,1,4] :=                  // DiffAmountAllLines
+            Cell[i,1,4] +
+            (PostedPhysInvtOrderLineL."Qty. Recorded (Base)" - PostedPhysInvtOrderLineL."Qty. Expected (Base)") *
+              PostedPhysInvtOrderLineL."Unit Amount";
+          CASE PostedPhysInvtOrderLineL."Entry Type" OF
+            PostedPhysInvtOrderLineL."Entry Type"::"Positive Adjmt.":
+              BEGIN
+                IF PostedPhysInvtOrderLineL."Quantity (Base)" = 0 THEN BEGIN
+                  Cell[i,2,1] := Cell[i,2,1] +1; // NoCorrectLines
+                  Cell[i,2,3] :=                 //ExpAmountCorrectLines
+                    Cell[i,2,3] +
+                    PostedPhysInvtOrderLineL."Qty. Expected (Base)" * PostedPhysInvtOrderLineL."Unit Amount";
+                  Cell[i,2,2] :=                 //RecAmountCorrectLines
+                    Cell[i,2,2] +
+                    PostedPhysInvtOrderLineL."Qty. Recorded (Base)" * PostedPhysInvtOrderLineL."Unit Amount";
+                END ELSE BEGIN
+                  Cell[i,3,1] := Cell[i,3,1] +1; // NoPosDiffLines
+                  Cell[i,3,3] :=                 //ExpAmountPosDiffLines
+                    Cell[i,3,3] +
+                    PostedPhysInvtOrderLineL."Qty. Expected (Base)" * PostedPhysInvtOrderLineL."Unit Amount";
+                  Cell[i,3,2] :=               // RecAmountPosDiffLines
+                    Cell[i,3,2] +
+                    PostedPhysInvtOrderLineL."Qty. Recorded (Base)" * PostedPhysInvtOrderLineL."Unit Amount";
+                  Cell[i,3,4] :=               // DiffAmountPosDiffLines
+                    Cell[i,3,4] +
+                    PostedPhysInvtOrderLineL."Quantity (Base)" * PostedPhysInvtOrderLineL."Unit Amount";
+                END;
+              END;
+            PostedPhysInvtOrderLineL."Entry Type"::"Negative Adjmt.":
+              BEGIN
+                Cell[i,4,1] := Cell[i,4,1] +1;  // NoNegDiffLines
+                Cell[i,4,3] :=                  // ExpAmountNegDiffLines
+                  Cell[i,4,3] +
+                  PostedPhysInvtOrderLineL."Qty. Expected (Base)" * PostedPhysInvtOrderLineL."Unit Amount";
+                Cell[i,4,2] :=                  // RecAmountNegDiffLines
+                  Cell[i,4,2] +
+                  PostedPhysInvtOrderLineL."Qty. Recorded (Base)" * PostedPhysInvtOrderLineL."Unit Amount";
+                Cell[i,4,4] :=                  // DiffAmountNegDiffLines
+                  Cell[i,4,4] +
+                  PostedPhysInvtOrderLineL."Quantity (Base)" * PostedPhysInvtOrderLineL."Unit Amount";
+              END;
+          END;
+        END;
+      UNTIL PostedPhysInvtOrderLineL.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE WriteCells@1000000032(LocationCodeV@1000000000 : Code[10]);
+    VAR
+      ExportLineL@1000000001 : Text[1024];
+    BEGIN
+      ExportLineL := ';;' + TextHME024 + ';' +
+                     FORMAT(Cell[1,1,1]) + ';' + FORMAT(Cell[1,1,2]) + ';' +FORMAT(Cell[1,1,3]) + ';' + FORMAT(Cell[1,1,4])+';;' +
+                     FORMAT(Cell[2,1,1]) + ';' + FORMAT(Cell[2,1,2]) + ';' +FORMAT(Cell[2,1,3]) + ';' + FORMAT(Cell[2,1,4])+';;' +
+                     FORMAT(Cell[3,1,1]) + ';' + FORMAT(Cell[3,1,2]) + ';' +FORMAT(Cell[3,1,3]) + ';' + FORMAT(Cell[3,1,4])+';;' +
+                     FORMAT(Cell[1,1,4] + Cell[2,1,4] + Cell[3,1,4]);
+      CSVFile.WRITE(ExportLineL);
+
+      ExportLineL := ';' + LocationCodeV + ';' + TextHME025 + ';' +
+                     FORMAT(Cell[1,2,1]) + ';' + FORMAT(Cell[1,2,2]) + ';' +FORMAT(Cell[1,2,3]) + ';' + FORMAT(Cell[1,2,4])+';;' +
+                     FORMAT(Cell[2,2,1]) + ';' + FORMAT(Cell[2,2,2]) + ';' +FORMAT(Cell[2,2,3]) + ';' + FORMAT(Cell[2,2,4])+';;' +
+                     FORMAT(Cell[3,2,1]) + ';' + FORMAT(Cell[3,2,2]) + ';' +FORMAT(Cell[3,2,3]) + ';' + FORMAT(Cell[3,2,4])+';;';
+      CSVFile.WRITE(ExportLineL);
+
+      ExportLineL := ';;' + TextHME026 + ';' +
+                     FORMAT(Cell[1,3,1]) + ';' + FORMAT(Cell[1,3,2]) + ';' +FORMAT(Cell[1,3,3]) + ';' + FORMAT(Cell[1,3,4])+';;' +
+                     FORMAT(Cell[2,3,1]) + ';' + FORMAT(Cell[2,3,2]) + ';' +FORMAT(Cell[2,3,3]) + ';' + FORMAT(Cell[2,3,4])+';;' +
+                     FORMAT(Cell[3,3,1]) + ';' + FORMAT(Cell[3,3,2]) + ';' +FORMAT(Cell[3,3,3]) + ';' + FORMAT(Cell[3,3,4])+';;' +
+                     FORMAT(Cell[1,3,4] + Cell[2,3,4] + Cell[3,3,4]);
+      CSVFile.WRITE(ExportLineL);
+
+      ExportLineL := ';;' + TextHME027 + ';' +
+                     FORMAT(Cell[1,4,1]) + ';' + FORMAT(Cell[1,4,2]) + ';' +FORMAT(Cell[1,4,3]) + ';' + FORMAT(Cell[1,4,4])+';;' +
+                     FORMAT(Cell[2,4,1]) + ';' + FORMAT(Cell[2,4,2]) + ';' +FORMAT(Cell[2,4,3]) + ';' + FORMAT(Cell[2,4,4])+';;' +
+                     FORMAT(Cell[3,4,1]) + ';' + FORMAT(Cell[3,4,2]) + ';' +FORMAT(Cell[3,4,3]) + ';' + FORMAT(Cell[3,4,4])+';;' +
+                     FORMAT(Cell[1,4,4] + Cell[2,4,4] + Cell[3,4,4]);
+      CSVFile.WRITE(ExportLineL);
+
+
+      CSVFile.WRITE(LF);
+    END;
+
+    LOCAL PROCEDURE SendCSV@1000000013();
+    VAR
+      AdminMailQueueLogL@1000000000 : Record 50093;
+      AdminMailQueueLog2L@1000000001 : Record 50093;
+      AdminMaiQueueCodeL@1000000002 : Record 50118;
+      AdminMailQueueTextL@1000000004 : Record 50095;
+    BEGIN
+      AdminMaiQueueCodeL.GET(InventorySetup."Inventory Order Mail Code");
+      AdminMailQueueLogL.INIT;
+      AdminMailQueueLogL."Creating Date/Time" := CURRENTDATETIME;
+      AdminMailQueueLogL."Mail Code" := AdminMaiQueueCodeL."Mail Code";
+      AdminMailQueueLogL."Mail Type" := AdminMaiQueueCodeL."Mail Type";
+      AdminMailQueueLogL.Sender := AdminMaiQueueCodeL."Mail Sender";
+      AdminMailQueueLogL.Subject := InventorySetup."Description Phys. Inventory";
+      AdminMailQueueLogL."Is HTML" := AdminMaiQueueCodeL."Mail HTML";
+
+
+      AdminMailQueueLogL."Attachement 1" := InvLogHeader."Attachement 1";
+      AdminMailQueueLogL."Attachement 2" := InvLogHeader."Attachement 2";
+
+
+      IF AdminMailQueueLog2L.FINDLAST THEN;
+      AdminMailQueueLogL."Entry No." := AdminMailQueueLog2L."Entry No." +1;
+
+      AdminMailQueueLogL.INSERT;
+
+      AdminMailQueueTextL.INIT;
+      AdminMailQueueTextL."Attached to Entry No." := AdminMailQueueLogL."Entry No.";
+      AdminMailQueueTextL."Line No." := 10000;
+      IF InvLogHeader."Simulated Phys. Inventory" THEN
+        AdminMailQueueTextL.Textline := STRSUBSTNO(TextHME029,InvLogHeader.FIELDCAPTION("Simulated Phys. Inventory"),USERID)
+      ELSE
+        AdminMailQueueTextL.Textline := STRSUBSTNO(TextHME029,InventorySetup."Description Phys. Inventory",USERID);
+      AdminMailQueueTextL.INSERT;
+
+      AdminMailQueueLogL.Status := AdminMailQueueLogL.Status::Unprocessed;
+      AdminMailQueueLogL.MODIFY;
+    END;
+
+    LOCAL PROCEDURE CreateArchive@1000000005();
+    VAR
+      PhysInvOrderHeaderL@1000000002 : Record 5005350;
+      PhysInvOrderLineL@1000000001 : Record 5005351;
+      PostedPhysInvOrderHeaderL@1000000003 : Record 5005354;
+      PostedPhysInvOrderLineL@1000000000 : Record 5005355;
+      PhysInvArchiveL@1000000004 : Record 50318;
+    BEGIN
+      IF InvLogHeader."Simulated Phys. Inventory" THEN BEGIN
+        PhysInvOrderHeaderL.RESET;
+        PhysInvOrderLineL.RESET;
+        PhysInvOrderHeaderL.SETRANGE("Inventory Log Header No.",InvLogHeader."No.");
+        IF PhysInvOrderHeaderL.FINDSET THEN REPEAT
+          PhysInvOrderLineL.SETRANGE("Document No.",PhysInvOrderHeaderL."No.");
+          IF PhysInvOrderLineL.FINDSET THEN REPEAT
+            PhysInvArchiveL.INIT;
+            PhysInvArchiveL."Phys. Inv.  Header Code" := PhysInvOrderLineL."Document No.";
+            PhysInvArchiveL."Location Code" := PhysInvOrderLineL."Location Code";
+            PhysInvArchiveL."Line No." := PhysInvOrderLineL."Line No.";
+            PhysInvArchiveL."Item No." := PhysInvOrderLineL."Item No.";
+            PhysInvArchiveL."Qty. Expected (Base)" := PhysInvOrderLineL."Qty. Expected (Base)";
+            PhysInvArchiveL."Qty. Recorded (Base)" := PhysInvOrderLineL."Qty. Recorded (Base)";
+            PhysInvArchiveL."Pos. Qty. (Base)" := PhysInvOrderLineL."Pos. Qty. (Base)";
+            PhysInvArchiveL."Neg. Qty. (Base)" := PhysInvOrderLineL."Neg. Qty. (Base)";
+            PhysInvArchiveL."Unit Cost" := PhysInvOrderLineL."Unit Cost";
+            IF PhysInvArchiveL.INSERT(TRUE) THEN;
+          UNTIL PhysInvOrderLineL.NEXT = 0;
+        UNTIL PhysInvOrderHeaderL.NEXT = 0;
+      END ELSE BEGIN
+        PostedPhysInvOrderHeaderL.RESET;
+        PostedPhysInvOrderLineL.RESET;
+        PostedPhysInvOrderHeaderL.SETRANGE("Inventory Log Header No.",InvLogHeader."No.");
+        IF PostedPhysInvOrderHeaderL.FINDSET THEN REPEAT
+          PostedPhysInvOrderLineL.SETRANGE("Document No.",PostedPhysInvOrderHeaderL."No.");
+          IF PostedPhysInvOrderLineL.FINDSET THEN REPEAT
+            PhysInvArchiveL.INIT;
+            PhysInvArchiveL."Phys. Inv.  Header Code" := PostedPhysInvOrderLineL."Document No.";
+            PhysInvArchiveL."Location Code" := PostedPhysInvOrderLineL."Location Code";
+            PhysInvArchiveL."Line No." := PostedPhysInvOrderLineL."Line No.";
+            PhysInvArchiveL."Item No." := PostedPhysInvOrderLineL."Item No.";
+            PhysInvArchiveL."Qty. Expected (Base)" := PostedPhysInvOrderLineL."Qty. Expected (Base)";
+            PhysInvArchiveL."Qty. Recorded (Base)" := PostedPhysInvOrderLineL."Qty. Recorded (Base)";
+            PhysInvArchiveL."Pos. Qty. (Base)" := PostedPhysInvOrderLineL."Pos. Qty. (Base)";
+            PhysInvArchiveL."Neg. Qty. (Base)" := PostedPhysInvOrderLineL."Neg. Qty. (Base)";
+            PhysInvArchiveL."Unit Cost" := PostedPhysInvOrderLineL."Unit Cost";
+            IF PhysInvArchiveL.INSERT(TRUE) THEN;
+          UNTIL PostedPhysInvOrderLineL.NEXT = 0;
+        UNTIL PostedPhysInvOrderHeaderL.NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE ImportCSV@1000000014();
+    VAR
+      FileL@1000000002 : File;
+      LineL@1000000006 : Text[1024];
+      ItemL@1000000007 : Record 27;
+      PosL@1000000005 : Integer;
+      InventoryRecordingInL@1000000004 : Record 50813;
+    BEGIN
+      //H2128,H1794 21.01.15 TST +++++++++++++++++++++++++++++
+      FileL.TEXTMODE := TRUE;
+      FileL.OPEN(Location."Phys. Inventory Filename");
+
+      WHILE FileL.POS < FileL.LEN DO BEGIN
+        j +=1;
+        // Einlesen von Zeile
+        FileL.READ(LineL);
+        CLEAR(InventoryRecordingInL);
+        InventoryRecordingInL.INIT;
+        InventoryRecordingInL."Location Code" := Location.Code;
+
+        PosL := STRPOS(LineL,';');
+
+        IF PosL >0 THEN BEGIN
+          InventoryRecordingInL."No." := COPYSTR(LineL,1,PosL-1);
+
+          IF ItemL.GET(InventoryRecordingInL."No.") THEN BEGIN
+            InventoryRecordingInL.Description:=ItemL.Description;
+            InventoryRecordingInL."Description 2":=ItemL."Description 2";
+          END ELSE BEGIN
+            InventoryRecordingInL."Error Code":='404';
+            InventoryRecordingInL."Error Description":='Unkown Item';
+            InventoryRecordingInL."Trans. Status" := InventoryRecordingInL."Trans. Status"::error;
+          END;
+
+          EVALUATE(InventoryRecordingInL."Confirmed Inventory",COPYSTR(LineL,PosL+1,STRLEN(LineL) - PosL));
+
+          InventoryRecordingInL."Trans. Status" := InventoryRecordingInL."Trans. Status"::new;
+          InventoryRecordingInL."Record ID" := 'CSV';
+          InventoryRecordingInL.Bestandsart:= 'V';
+          InventoryRecordingInL."Entry Date":=TODAY;
+          InventoryRecordingInL."Entry Time":=TIME;
+          InventoryRecordingInL."File Name":=GETFILENAME(Location."Phys. Inventory Filename");
+          InventoryRecordingInL."Branch Code" := Location."Branch Code";
+          InventoryRecordingInL.Company := Location."WH24 Identifier";
+          InventoryRecordingInL.INSERT;
+        END;
+      END;
+      //H2128,H1794 21.01.15 TST -----------------------------
+    END;
+
+    LOCAL PROCEDURE ImportBMP@1000000027();
+    VAR
+      FileL@1000000003 : File;
+      LineL@1000000002 : Text[1024];
+      ItemL@1000000001 : Record 27;
+      PosL@1000000006 : Integer;
+      InventoryRecordingInL@1000000005 : Record 50813;
+      LastInventoryRecordingInL@1000000004 : Record 50813;
+    BEGIN
+      //H2128,H1794 21.01.15 TST +++++++++++++++++++++++++++++
+      FileL.TEXTMODE := TRUE;
+      FileL.OPEN(Location."Phys. Inventory Filename");
+      WHILE FileL.POS < FileL.LEN DO BEGIN
+        j +=1;
+        // Einlesen von Zeile
+        FileL.READ(LineL);
+        IF (COPYSTR(LineL,1,3) = 'BMP') AND
+           (DELCHR(COPYSTR(LineL,4,4),'=',' ') = Location."WH24 Identifier") AND
+           //H4193 07.05.15 TST +++++++++++++++++++++++++++++
+           ((DELCHR(COPYSTR(LineL,8,6),'=',' ') = Location."Branch Code") OR
+           (DELCHR(COPYSTR(LineL,8,6),'=',' ') = Location."Alternative Branch Code")) AND
+           //H4193 07.05.15 TST -----------------------------
+           (NOT Location."Rhenus Crossdock Location") THEN BEGIN
+          CLEAR(InventoryRecordingInL);
+          InventoryRecordingInL.INIT;
+          InventoryRecordingInL."Location Code" := Location.Code;
+          InventoryRecordingInL."No." := COPYSTR(LineL,14,20);
+          IF ItemL.GET(InventoryRecordingInL."No.") THEN BEGIN
+            InventoryRecordingInL.Description:=ItemL.Description;
+            InventoryRecordingInL."Description 2":=ItemL."Description 2";
+          END ELSE BEGIN
+            InventoryRecordingInL."Error Code":='404';
+            InventoryRecordingInL."Error Description":='Unkown Item';
+            InventoryRecordingInL."Trans. Status" := InventoryRecordingInL."Trans. Status"::error;
+          END;
+          EVALUATE(InventoryRecordingInL."Confirmed Inventory",COPYSTR(LineL,44,5));
+          EVALUATE(InventoryRecordingInL."RHE Quantity",COPYSTR(LineL,44,5));
+          InventoryRecordingInL.Bestandsart:=COPYSTR(LineL,54,1);
+          InventoryRecordingInL."Record ID":='BMP';
+          InventoryRecordingInL.Company := DELCHR(COPYSTR(LineL,4,4),'=',' ');
+          InventoryRecordingInL."Branch Code":=DELCHR(COPYSTR(LineL,8,6),'=',' ');
+          InventoryRecordingInL."Entry Date":=TODAY;
+          InventoryRecordingInL."Entry Time":=TIME;
+          InventoryRecordingInL."File Name":=GETFILENAME(Location."Phys. Inventory Filename");
+          InventoryRecordingInL.Company := Location."WH24 Identifier";
+          IF ((NOT Location."Is Unsellable Location") AND ((InventoryRecordingInL.Bestandsart = 'V') OR
+              (InventoryRecordingInL.Bestandsart = 'W')))
+            OR (Location."Is Unsellable Location" AND (InventoryRecordingInL.Bestandsart = 'N')) THEN
+            InventoryRecordingInL.INSERT;
+        END;
+      END;
+      //H2128,H1794 21.01.15 TST -----------------------------
+    END;
+
+    PROCEDURE GETFILENAME@41(TxtV@1000000000 : Text[1000]) : Text[50];
+    BEGIN
+      EXIT(
+        REVSTR(
+          COPYSTR(
+            REVSTR(TxtV),1,STRPOS(REVSTR(TxtV),'\')-1)));
+    END;
+
+    PROCEDURE REVSTR@35(paStringV@1108300000 : Text[1024]) : Text[1024];
+    VAR
+      LengthL@1108300001 : Integer;
+      iL@1108300002 : Integer;
+      CodeL@1108300003 : Text[1024];
+      RevCodeL@1108300004 : Text[1024];
+      OKL@1000 : Boolean;
+    BEGIN
+      //Text wird gedreht
+
+      CodeL := paStringV;
+      OKL := TRUE;
+      FOR iL := 1 TO STRLEN(paStringV) DO BEGIN
+        IF  OKL THEN BEGIN
+          RevCodeL := RevCodeL + COPYSTR(CodeL,STRLEN(CodeL),1);
+          CodeL := DELSTR(CodeL,STRLEN(CodeL),1);
+          IF STRLEN(CodeL) = 0 THEN
+            OKL := FALSE;
+        END;
+      END;
+      EXIT(RevCodeL);
+    END;
+
+    PROCEDURE CheckCalender@1000000001() : Boolean;
+    VAR
+      PhysInvSetupL@1000000000 : Record 50336;
+      CalendarMgmtL@1000000001 : Codeunit 7600;
+      DescriptionL@1000000002 : Text[30];
+    BEGIN
+      PhysInvSetupL.GET;
+      EXIT(CalendarMgmtL.CheckDateStatus(PhysInvSetupL."Base Calender",TODAY,DescriptionL));
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+
+      H1794       21.01.15 TST       - Redesign, old Comments removed
+      H2128       11.02.15 TST       - Bugfix: remove filter on "active Item"
+      H2200       25.02.15 TST       - Enable individual posting date for simulated phys. inventory
+      H4052       14.04.15 TST       - Extend Status in Pyhs. Inventory Log.
+      H4070       17.04.15 TST       - Delete all not posted Phys. Inventory Orders
+      H4193       07.05.15 TST       - Handle "Alternative Branch Code"
+      H4263       19.05.15 TST       - Post Cost to GL
+      H4270       21.05.15 JM        BUG: In Admin Mail Queue the "entry no" must not be set in "auto increment"
+      H4305       29.06.15 ARI       Rollback of Project H4270
+    }
+    END.
+  }
+}
+

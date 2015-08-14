@@ -1,0 +1,509 @@
+OBJECT Codeunit 6086001 Approval Functions (WS)
+{
+  OBJECT-PROPERTIES
+  {
+    Date=06.09.13;
+    Time=01:00:00;
+    Version List=DCW13.70.00.3.50;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 454=m,
+                TableData 455=rim;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text001@161024013 : TextConst 'DEU=Sie haben keine Berechtigung, diesen Beleg abzuweisen.;ENU=You are not allowed to reject this document.';
+      Text002@161024012 : TextConst 'DEU=Sie haben keine Berechtigung, diesen Beleg freizugeben.;ENU=You are not allowed to approve this document.';
+      NSTLanguageId@161024015 : Integer;
+      Text003@161024014 : TextConst 'DEU=Sie haben nicht die Berechtigung, diesen Beleg weiterzuleiten.;ENU=You are not allowed to forward this document.';
+      Text004@161024016 : TextConst 'DEU=Sie haben nicht die Berechtigung, diesen Beleg auf "Abwarten" zu setzen;ENU=You are not allowed to put this document on hold.';
+      Text005@161024017 : TextConst 'DEU=Sie haben nicht die Berechtigung, diesen Beleg von "Abwarten" zurÅckzusetzen.;ENU=You are not allowed to remove this document from on hold.';
+      Text006@161024018 : TextConst 'DEU=Ihr Freigabelimit erlaubt es Ihnen nicht, diesen %1 weiterzuleiten.;ENU=Your approval limit does not allow you to forward this %1.';
+
+    PROCEDURE AddDocumentLine@161024019(DocumentType@161024012 : Integer;DocumentNo@161024013 : Code[20];VAR NewLineNo@161024015 : Integer);
+    VAR
+      PurchLine@161024014 : Record 39;
+    BEGIN
+      PurchLine.SETRANGE("Document Type",DocumentType);
+      PurchLine.SETRANGE("Document No.",DocumentNo);
+      IF PurchLine.FINDLAST THEN
+        NewLineNo := PurchLine."Line No." + 10000
+      ELSE
+        NewLineNo := 10000;
+
+      PurchLine.INIT;
+      PurchLine.VALIDATE("Document Type",DocumentType);
+      PurchLine.VALIDATE("Document No.",DocumentNo);
+      PurchLine."Line No." := NewLineNo;
+      PurchLine.INSERT(TRUE);
+    END;
+
+    PROCEDURE DeleteDocumentLine@161024020(DocumentType@161024012 : Integer;DocumentNo@161024013 : Code[20];LineNo@161024015 : Integer);
+    VAR
+      PurchLine@161024014 : Record 39;
+    BEGIN
+      PurchLine.GET(DocumentType,DocumentNo,LineNo);
+      PurchLine.DELETE(TRUE);
+    END;
+
+    PROCEDURE AddDocumentFile@1160040001(SourceType@1160040000 : Integer;SourceNo@1160040001 : Code[20];Description@1160040002 : Text[80];Username@1160040003 : Code[50];FileExt@1160040004 : Text[30];VAR DocumentNo@1160040005 : Code[20];VAR FullFilename@1160040006 : Text[1024]);
+    VAR
+      Document@1160040007 : Record 6085590;
+      FileSystem@1160040008 : Codeunit 6085584;
+      Path@1160040009 : Text[1024];
+    BEGIN
+      Document.INSERT(TRUE);
+      Document."Created Doc. Type" := DATABASE::"Purchase Header";
+      Document."Created Doc. Subtype" := SourceType;
+      Document."Created Doc. ID" := SourceNo;
+      Document.Description := Description;
+      Document."File Extension" := FileExt;
+      Document."File Type" := Document."File Type"::Miscellaneous;
+      Document."Imported by" := Username;
+      Document.MODIFY(TRUE);
+
+      DocumentNo := Document."No.";
+      FullFilename := Document.GetMiscFileName;
+
+      Path := FileSystem.GetFilePath(FullFilename);
+      IF NOT FileSystem.DirectoryExists(Path) THEN
+        FileSystem.CreateDirectory(Path);
+    END;
+
+    PROCEDURE DeleteDocumentFile@1160040000(DocumentNo@1160040000 : Code[20]);
+    VAR
+      Document@1160040001 : Record 6085590;
+    BEGIN
+      Document.GET(DocumentNo);
+      Document.DELETE(TRUE);
+    END;
+
+    PROCEDURE AddApprCmtLine@161024012(DocumentType@161024012 : Integer;DocumentNo@161024013 : Code[20];_UserID@161024014 : Code[20];DateAndTime@161024015 : DateTime;Comment@161024016 : Text[1024]);
+    VAR
+      ApprovalCmtLine@161024017 : Record 455;
+    BEGIN
+      WHILE Comment <> '' DO BEGIN
+        CLEAR(ApprovalCmtLine);
+        ApprovalCmtLine."Table ID" := DATABASE::"Purchase Header";
+        ApprovalCmtLine."Document Type" := DocumentType;
+        ApprovalCmtLine."Document No." := DocumentNo;
+        ApprovalCmtLine.Comment := COPYSTR(Comment,1,MAXSTRLEN(ApprovalCmtLine.Comment));
+        Comment := COPYSTR(Comment,MAXSTRLEN(ApprovalCmtLine.Comment)+1);
+        ApprovalCmtLine.INSERT(TRUE);
+
+        ApprovalCmtLine."Date and Time" := DateAndTime;
+        ApprovalCmtLine."User ID" := _UserID;
+        ApprovalCmtLine.MODIFY;
+      END;
+    END;
+
+    PROCEDURE Approve@161024013(DocumentType@161024012 : Integer;DocumentNo@161024013 : Code[20];ApproverId@161024014 : Code[20];VAR NextDocumentType@161024015 : Integer;VAR NextDocumentNo@161024016 : Code[20];VAR NextApproverId@161024019 : Code[20]);
+    VAR
+      ApprovalEntry@161024017 : Record 454;
+      PurchHeader@161024021 : Record 38;
+      DCApprovalMgnt@161024020 : Codeunit 6085722;
+      WebUserFunc@161024018 : Codeunit 6086002;
+    BEGIN
+      FilterApprovalEntry(ApprovalEntry,DocumentType,DocumentNo,ApproverId);
+      IF NOT ApprovalEntry.FINDFIRST THEN
+        ApprovalEntry.SETFILTER("Approver ID",DCApprovalMgnt.GetApprovalSharingToUserFilter(ApproverId));
+
+      IF NOT ApprovalEntry.FINDFIRST THEN
+        ERROR(Text002);
+
+      ApproveApprovalRequest(ApprovalEntry,ApproverId);
+
+      PurchHeader.GET(DocumentType,DocumentNo);
+      PurchHeader."On Hold" := '';
+      PurchHeader.MODIFY(TRUE);
+
+      NextApproverId := DCApprovalMgnt.GetNextApprover(PurchHeader);
+
+      GetNextDocId(NextDocumentType,NextDocumentNo,ApproverId);
+
+      WebUserFunc.UpdateWebUserCompany(ApproverId);
+    END;
+
+    PROCEDURE Reject@161024014(DocumentType@161024012 : Integer;DocumentNo@161024013 : Code[20];ApproverId@161024014 : Code[20];VAR NextDocumentType@161024015 : Integer;VAR NextDocumentNo@161024016 : Code[20]);
+    VAR
+      ApprovalEntry@161024018 : Record 454;
+      PurchHeader@161024019 : Record 38;
+      WebUserFunc@161024017 : Codeunit 6086002;
+      DCApprovalMgnt@161024020 : Codeunit 6085722;
+      WebSearchMgnt@161024021 : Codeunit 6085748;
+    BEGIN
+      FilterApprovalEntry(ApprovalEntry,DocumentType,DocumentNo,ApproverId);
+      IF NOT ApprovalEntry.FINDFIRST THEN
+        ApprovalEntry.SETFILTER("Approver ID",DCApprovalMgnt.GetApprovalSharingToUserFilter(ApproverId));
+
+      IF NOT ApprovalEntry.FINDFIRST THEN
+        ERROR(Text001);
+
+      RejectApprovalRequest(ApprovalEntry,ApproverId);
+
+      PurchHeader.GET(DocumentType,DocumentNo);
+      PurchHeader."On Hold" := '';
+      PurchHeader.MODIFY(TRUE);
+
+      WebSearchMgnt.UpdateWebSearchFromAppvlEntry(ApprovalEntry,ApprovalEntry."Approver ID");
+      WebSearchMgnt.UpdateWebSearchFromAppvlEntry(ApprovalEntry,ApproverId);
+
+      GetNextDocId(NextDocumentType,NextDocumentNo,ApproverId);
+
+      WebUserFunc.UpdateWebUserCompany(ApproverId);
+    END;
+
+    PROCEDURE Delegate@161024015(DocumentType@161024012 : Integer;DocumentNo@161024013 : Code[20];ApproverId@161024014 : Code[20];DelegateToUserId@161024017 : Code[20];DelegateAction@161024026 : Integer;VAR NextDocumentType@161024015 : Integer;VAR NextDocumentNo@161024016 : Code[20]);
+    VAR
+      ApprovalEntry@161024019 : Record 454;
+      Language@161024025 : Record 8;
+      PurchHeader@161024020 : Record 38;
+      DCApprovalMgnt@161024021 : Codeunit 6085722;
+      WebUserFunc@161024018 : Codeunit 6086002;
+    BEGIN
+      FilterApprovalEntry(ApprovalEntry,DocumentType,DocumentNo,ApproverId);
+      IF NOT ApprovalEntry.FINDFIRST THEN
+        ApprovalEntry.SETFILTER("Approver ID",DCApprovalMgnt.GetApprovalSharingToUserFilter(ApproverId));
+
+      IF NOT ApprovalEntry.FINDFIRST THEN
+        ERROR(Text006);
+
+      ActivateDefaultLanguage;
+
+      DCApprovalMgnt.DelegateApprovalRequest2(ApprovalEntry,DelegateAction,DelegateToUserId,ApproverId);
+
+      PurchHeader.GET(DocumentType,DocumentNo);
+      PurchHeader."On Hold" := '';
+      PurchHeader.MODIFY(TRUE);
+
+      GLOBALLANGUAGE := NSTLanguageId;
+
+      GetNextDocId(NextDocumentType,NextDocumentNo,ApproverId);
+
+      WebUserFunc.UpdateWebUserCompany(ApproverId);
+    END;
+
+    PROCEDURE PutOnHold@161024021(DocumentType@161024014 : Integer;DocumentNo@161024013 : Code[20];ApproverId@161024012 : Code[20]);
+    VAR
+      ApprovalEntry@161024015 : Record 454;
+      PurchHeader@161024016 : Record 38;
+      ApprovalCmtLine@161024017 : Record 455;
+      DCApprovalMgnt@161024018 : Codeunit 6085722;
+    BEGIN
+      FilterApprovalEntry(ApprovalEntry,DocumentType,DocumentNo,ApproverId);
+      IF NOT ApprovalEntry.FINDFIRST THEN
+        ApprovalEntry.SETFILTER("Approver ID",DCApprovalMgnt.GetApprovalSharingToUserFilter(ApproverId));
+
+      IF NOT ApprovalEntry.FINDFIRST THEN
+        ERROR(Text004);
+
+      PurchHeader.GET(DocumentType,DocumentNo);
+      PurchHeader."On Hold" := 'WEB';
+      PurchHeader.MODIFY(TRUE);
+    END;
+
+    PROCEDURE RemoveOnHold@161024026(DocumentType@161024014 : Integer;DocumentNo@161024013 : Code[20];ApproverId@161024012 : Code[20]);
+    VAR
+      ApprovalEntry@161024015 : Record 454;
+      PurchHeader@161024016 : Record 38;
+      ApprovalCmtLine@161024017 : Record 455;
+      DCApprovalMgnt@161024018 : Codeunit 6085722;
+    BEGIN
+      FilterApprovalEntry(ApprovalEntry,DocumentType,DocumentNo,ApproverId);
+      IF NOT ApprovalEntry.FINDFIRST THEN
+        ApprovalEntry.SETFILTER("Approver ID",DCApprovalMgnt.GetApprovalSharingToUserFilter(ApproverId));
+
+      IF NOT ApprovalEntry.FINDFIRST THEN
+        ERROR(Text005);
+
+      PurchHeader.GET(DocumentType,DocumentNo);
+      PurchHeader."On Hold" := '';
+      PurchHeader.MODIFY(TRUE);
+    END;
+
+    PROCEDURE SetOutOfOffice@161024025(ApproverId@161024012 : Code[20];ForwardToApproverId@161024015 : Code[20];FromDate@161024013 : Date;ToDate@161024014 : Date);
+    VAR
+      DCApprovalMgnt@161024017 : Codeunit 6085722;
+    BEGIN
+      DCApprovalMgnt.SetOutOfOffice(ApproverId,ForwardToApproverId,FromDate,ToDate);
+    END;
+
+    PROCEDURE GetOutOfOffice@161024024(ApproverId@161024014 : Code[20];VAR ForwardToApproverId@161024015 : Code[20];VAR ForwardToApproverName@161024016 : Text[80];VAR FromDate@161024013 : Date;VAR ToDate@161024012 : Date) : Boolean;
+    VAR
+      UserSetup@161024019 : Record 91;
+      Purchaser@161024018 : Record 13;
+      DCApprovalMgnt@161024017 : Codeunit 6085722;
+    BEGIN
+      IF NOT DCApprovalMgnt.GetOutOfOffice(ApproverId,ForwardToApproverId,FromDate,ToDate) THEN BEGIN
+        IF UserSetup.GET(ApproverId) THEN
+          ForwardToApproverId := UserSetup."Approver ID";
+      END;
+
+      IF UserSetup.GET(ForwardToApproverId) THEN
+        IF Purchaser.GET(UserSetup."Salespers./Purch. Code") THEN;
+
+      IF Purchaser.Name <> '' THEN
+        ForwardToApproverName := Purchaser.Name
+      ELSE
+        ForwardToApproverName := Purchaser.Code;
+    END;
+
+    PROCEDURE GetNextApprover@161024027(DocumentType@161024017 : Integer;DocumentNo@161024016 : Code[20];ApproverId@161024015 : Code[20]) NextApproverId : Code[50];
+    VAR
+      ApprovalEntry@161024013 : Record 454;
+      AdvAppvlMgnt@161024014 : Codeunit 6085746;
+      DCApprovalMgnt@161024018 : Codeunit 6085722;
+    BEGIN
+      FilterApprovalEntry(ApprovalEntry,DocumentType,DocumentNo,ApproverId);
+      IF NOT ApprovalEntry.FINDFIRST THEN
+        ApprovalEntry.SETFILTER("Approver ID",DCApprovalMgnt.GetApprovalSharingToUserFilter(ApproverId));
+
+      IF NOT ApprovalEntry.FINDFIRST THEN
+        ERROR(Text002);
+
+      NextApproverId := AdvAppvlMgnt.CalcNextApprover(ApprovalEntry,ApproverId);
+    END;
+
+    LOCAL PROCEDURE FilterApprovalEntry@161024016(VAR ApprovalEntry@161024013 : Record 454;DocumentType@161024015 : Integer;DocumentNo@161024014 : Code[20];ApproverId@161024012 : Code[20]) : Boolean;
+    BEGIN
+      ApprovalEntry.SETCURRENTKEY("Table ID","Document Type","Document No.");
+      ApprovalEntry.SETRANGE("Table ID",DATABASE::"Purchase Header");
+      ApprovalEntry.SETRANGE("Document Type",DocumentType);
+      ApprovalEntry.SETRANGE("Document No.",DocumentNo);
+      ApprovalEntry.SETRANGE("Approver ID",ApproverId);
+      ApprovalEntry.SETRANGE(Status,ApprovalEntry.Status::Open);
+      EXIT(ApprovalEntry.FINDFIRST);
+    END;
+
+    LOCAL PROCEDURE GetNextDocId@161024018(VAR DocumentType@161024013 : Integer;VAR DocumentNo@161024012 : Code[20];ApproverId@161024016 : Code[20]);
+    VAR
+      PurchHeader@161024015 : Record 38;
+      DCApprovalMgnt@161024014 : Codeunit 6085722;
+    BEGIN
+      DCApprovalMgnt.FilterPurchHeaderForApprover(-1,ApproverId,PurchHeader);
+      PurchHeader.SETRANGE("Document Type",DocumentType);
+      PurchHeader.SETFILTER("No.",'>%1',DocumentNo);
+      IF PurchHeader.FINDFIRST THEN BEGIN
+        DocumentType := PurchHeader."Document Type";
+        DocumentNo := PurchHeader."No.";
+        EXIT;
+      END;
+
+      PurchHeader.SETFILTER("No.",'<%1',DocumentNo);
+      IF PurchHeader.FINDFIRST THEN BEGIN
+        DocumentType := PurchHeader."Document Type";
+        DocumentNo := PurchHeader."No.";
+        EXIT;
+      END;
+
+      IF DocumentType = PurchHeader."Document Type"::Invoice THEN
+        PurchHeader.SETRANGE("Document Type",PurchHeader."Document Type"::"Credit Memo")
+      ELSE
+        PurchHeader.SETRANGE("Document Type",PurchHeader."Document Type"::Invoice);
+
+      PurchHeader.SETRANGE("No.");
+      IF PurchHeader.FINDFIRST THEN BEGIN
+        DocumentType := PurchHeader."Document Type";
+        DocumentNo := PurchHeader."No.";
+        EXIT;
+      END;
+
+      DocumentType := 0;
+      DocumentNo := '';
+    END;
+
+    LOCAL PROCEDURE ApproveApprovalRequest@5(ApprovalEntry@1000 : Record 454;_UserId@161024012 : Code[20]) : Boolean;
+    VAR
+      SalesHeader@1003 : Record 36;
+      PurchaseHeader@1004 : Record 38;
+      ApprovalSetup@1006 : Record 452;
+      NextApprovalEntry@1005 : Record 454;
+      ReleaseSalesDoc@1001 : Codeunit 414;
+      ReleasePurchaseDoc@1002 : Codeunit 415;
+      ApprovalMgtNotification@1007 : Codeunit 440;
+      AdvApprovalMgnt@161024014 : Codeunit 6085746;
+      DCApprovalMgnt@161024013 : Codeunit 6085722;
+    BEGIN
+      IF ApprovalEntry."Table ID" <> 0 THEN BEGIN
+        DCApprovalMgnt.OnBeforeApproveApprovalRequest(ApprovalEntry,_UserId);
+        ApprovalEntry.Status := ApprovalEntry.Status::Approved;
+        ApprovalEntry."Last Date-Time Modified" := CREATEDATETIME(TODAY,TIME);
+        ApprovalEntry."Last Modified By ID" := _UserId;
+        ApprovalEntry.MODIFY;
+        DCApprovalMgnt.OnAfterApproveApprovalRequest(ApprovalEntry,_UserId);
+        NextApprovalEntry.SETCURRENTKEY("Table ID","Document Type","Document No.");
+        NextApprovalEntry.SETRANGE("Table ID",ApprovalEntry."Table ID");
+        NextApprovalEntry.SETRANGE("Document Type",ApprovalEntry."Document Type");
+        NextApprovalEntry.SETRANGE("Document No.",ApprovalEntry."Document No.");
+        NextApprovalEntry.SETFILTER(Status,'%1|%2',NextApprovalEntry.Status::Created,NextApprovalEntry.Status::Open);
+        WHILE NextApprovalEntry.FINDFIRST AND (NextApprovalEntry."Approver ID" = _UserId) DO BEGIN
+          NextApprovalEntry.Status := ApprovalEntry.Status::Approved;
+          NextApprovalEntry."Last Date-Time Modified" := CREATEDATETIME(TODAY,TIME);
+          NextApprovalEntry."Last Modified By ID" := _UserId;
+          NextApprovalEntry.MODIFY;
+        END;
+
+        IF NextApprovalEntry.FIND('-') THEN BEGIN
+          IF NextApprovalEntry.Status = NextApprovalEntry.Status::Open THEN
+            EXIT(FALSE)
+          ELSE BEGIN
+            NextApprovalEntry.Status := NextApprovalEntry.Status::Open;
+            NextApprovalEntry."Date-Time Sent for Approval" := CREATEDATETIME(TODAY,TIME);
+            NextApprovalEntry."Last Date-Time Modified" := CREATEDATETIME(TODAY,TIME);
+            NextApprovalEntry."Last Modified By ID" := _UserId;
+            NextApprovalEntry.MODIFY;
+            IF ApprovalSetup.GET THEN
+              IF ApprovalSetup.Approvals THEN BEGIN
+                IF ApprovalEntry."Table ID" = DATABASE::"Sales Header" THEN BEGIN
+                  IF SalesHeader.GET(NextApprovalEntry."Document Type",NextApprovalEntry."Document No.") THEN
+                    ApprovalMgtNotification.SendSalesApprovalsMail(SalesHeader,NextApprovalEntry);
+                END ELSE
+                  IF PurchaseHeader.GET(NextApprovalEntry."Document Type",NextApprovalEntry."Document No.") THEN
+                    ApprovalMgtNotification.SendPurchaseApprovalsMail(PurchaseHeader,NextApprovalEntry);
+                END;
+            EXIT(FALSE);
+          END;
+        END ELSE BEGIN
+          IF PurchaseHeader.GET(ApprovalEntry."Document Type",ApprovalEntry."Document No.") THEN
+            ReleasePurchaseDoc.RUN(PurchaseHeader);
+          EXIT(TRUE);
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE RejectApprovalRequest@8(ApprovalEntry@1000 : Record 454;_UserId@161024013 : Code[20]);
+    VAR
+      ApprovalSetup@1008 : Record 452;
+      SalesHeader2@1007 : Record 36;
+      PurchaseHeader2@1003 : Record 38;
+      SalesHeader@1006 : Record 36;
+      PurchaseHeader@1005 : Record 38;
+      ReleaseSalesDoc@1004 : Codeunit 414;
+      ReleasePurchaseDoc@1001 : Codeunit 415;
+      AppManagement@1009 : Codeunit 440;
+      ApprovalsManagement@161024012 : Codeunit 439;
+      SendMail@1002 : Boolean;
+    BEGIN
+      IF ApprovalEntry."Table ID" = DATABASE::"Purchase Header" THEN BEGIN
+        ApprovalSetup.GET;
+        ApprovalEntry.Status := ApprovalEntry.Status::Rejected;
+        ApprovalEntry."Last Date-Time Modified" := CREATEDATETIME(TODAY,TIME);
+        ApprovalEntry."Last Modified By ID" := _UserId;
+        ApprovalEntry.MODIFY;
+        IF ApprovalSetup.Rejections THEN
+          ApprovalsManagement.SendRejectionMail(ApprovalEntry,AppManagement);
+        ApprovalEntry.SETCURRENTKEY("Table ID","Document Type","Document No.","Sequence No.");
+        ApprovalEntry.SETRANGE("Table ID",ApprovalEntry."Table ID");
+        ApprovalEntry.SETRANGE("Document Type",ApprovalEntry."Document Type");
+        ApprovalEntry.SETRANGE("Document No.",ApprovalEntry."Document No.");
+        ApprovalEntry.SETFILTER(Status,'<>%1&<>%2',ApprovalEntry.Status::Canceled,ApprovalEntry.Status::Rejected);
+        WHILE ApprovalEntry.FINDFIRST AND (ApprovalEntry."Approver ID" = _UserId) DO BEGIN
+          ApprovalEntry.Status := ApprovalEntry.Status::Rejected;
+          ApprovalEntry."Last Date-Time Modified" := CREATEDATETIME(TODAY,TIME);
+          ApprovalEntry."Last Modified By ID" := _UserId;
+          ApprovalEntry.MODIFY;
+        END;
+
+        IF ApprovalEntry.FIND('-') THEN
+          REPEAT
+            SendMail := FALSE;
+            IF (ApprovalEntry.Status = ApprovalEntry.Status::Open) OR
+               (ApprovalEntry.Status = ApprovalEntry.Status::Approved) THEN
+              SendMail := TRUE;
+
+            ApprovalEntry.Status := ApprovalEntry.Status::Rejected;
+            ApprovalEntry."Last Date-Time Modified" := CREATEDATETIME(TODAY,TIME);
+            ApprovalEntry."Last Modified By ID" := _UserId;
+            ApprovalEntry.MODIFY;
+            IF ApprovalSetup.Rejections AND SendMail THEN
+              ApprovalsManagement.SendRejectionMail(ApprovalEntry,AppManagement);
+          UNTIL ApprovalEntry.NEXT = 0;
+        IF ApprovalSetup.Rejections THEN
+          AppManagement.SendMail;
+        PurchaseHeader.SETCURRENTKEY("Document Type","No.");
+        PurchaseHeader.SETRANGE("Document Type",ApprovalEntry."Document Type");
+        PurchaseHeader.SETRANGE("No.",ApprovalEntry."Document No.");
+        IF PurchaseHeader.FIND('-') THEN
+          ReleasePurchaseDoc.Reopen(PurchaseHeader);
+      END;
+    END;
+
+    PROCEDURE GetTotalDocumentAmount@161024017(DocumentType@161024012 : Integer;DocumentNo@161024013 : Code[20];VAR AmountExclVAT@161024014 : Decimal;VAR AmountInclVAT@161024015 : Decimal);
+    VAR
+      PurchHeader@161024018 : Record 38;
+      PurchLine@161024017 : Record 39;
+      TempVATAmountLine0@161024016 : TEMPORARY Record 290;
+    BEGIN
+      PurchHeader.GET(DocumentType,DocumentNo);
+      PurchLine.SetPurchHeader(PurchHeader);
+      PurchLine.CalcVATAmountLines(1,PurchHeader,PurchLine,TempVATAmountLine0);
+
+      AmountExclVAT := 0;
+      AmountInclVAT := 0;
+
+      IF TempVATAmountLine0.FINDFIRST THEN
+        REPEAT
+          AmountExclVAT := AmountExclVAT + TempVATAmountLine0."Amount Including VAT" - TempVATAmountLine0."VAT Amount";
+          AmountInclVAT := AmountInclVAT + TempVATAmountLine0."Amount Including VAT";
+        UNTIL TempVATAmountLine0.NEXT = 0;
+    END;
+
+    PROCEDURE GetDocumentPermissions@161024023(DocumentType@161024015 : Integer;DocumentNo@161024014 : Code[20];ApproverId@161024023 : Code[20];VAR AllowView@161024013 : Boolean;VAR AllowEditLines@161024016 : Boolean;VAR AllowAddComment@161024017 : Boolean;VAR AllowAttachFiles@161024018 : Boolean;VAR AllowApprove@161024019 : Boolean;VAR AllowReject@161024020 : Boolean;VAR AllowForward@161024021 : Boolean;VAR AllowPutOnHold@161024022 : Boolean);
+    VAR
+      ApprovalEntry@161024025 : Record 454;
+      PurchHeader@161024026 : Record 38;
+      WebDocSearch@161024012 : Record 6086005;
+      WebUser@161024024 : Record 6086001;
+      DCApprovalMgnt@161024028 : Codeunit 6085722;
+    BEGIN
+      IF NOT WebUser.GET(ApproverId) THEN
+        EXIT;
+
+      FilterApprovalEntry(ApprovalEntry,DocumentType,DocumentNo,ApproverId);
+      IF NOT ApprovalEntry.FINDFIRST THEN
+        ApprovalEntry.SETFILTER("Approver ID",DCApprovalMgnt.GetApprovalSharingToUserFilter(ApproverId));
+
+      IF ApprovalEntry.FINDFIRST THEN BEGIN
+        AllowView := TRUE;
+        AllowEditLines := WebUser."Can Edit Posting Lines";
+        AllowAddComment := TRUE;
+        AllowAttachFiles := TRUE;
+        AllowApprove := TRUE;
+        AllowReject := TRUE;
+        AllowForward := TRUE;
+        AllowPutOnHold := TRUE;
+      END ELSE BEGIN
+        IF DocumentType = PurchHeader."Document Type"::Invoice THEN
+          WebDocSearch.SETRANGE(Type,WebDocSearch.Type::"Purchase Invoice")
+        ELSE
+          WebDocSearch.SETRANGE(Type,WebDocSearch.Type::"Purchase Credit Memo");
+        WebDocSearch.SETRANGE("No.",DocumentNo);
+        WebDocSearch.SETRANGE("User ID",ApproverId);
+        IF NOT WebDocSearch.ISEMPTY THEN
+          AllowView := TRUE;
+      END;
+    END;
+
+    LOCAL PROCEDURE ActivateDefaultLanguage@161024022();
+    VAR
+      DCSetup@161024012 : Record 6085573;
+      Language@161024013 : Record 8;
+    BEGIN
+      DCSetup.GET;
+      DCSetup.TESTFIELD("Default Language Code");
+      Language.GET(DCSetup."Default Language Code");
+      Language.TESTFIELD("Windows Language ID");
+      NSTLanguageId := GLOBALLANGUAGE;
+      GLOBALLANGUAGE := Language."Windows Language ID";
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

@@ -1,0 +1,1529 @@
+OBJECT Codeunit 50501 MP Posting Mgt
+{
+  OBJECT-PROPERTIES
+  {
+    Date=01.04.15;
+    Time=10:51:07;
+    Modified=Yes;
+    Version List=T0088,HME3958;
+  }
+  PROPERTIES
+  {
+    TableNo=36;
+    Permissions=TableData 21=rm,
+                TableData 112=ri,
+                TableData 113=ri,
+                TableData 114=ri,
+                TableData 115=ri;
+    OnRun=BEGIN
+            //T0060 02.03.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+            SalesPost(Rec);
+            //T0060 02.03.15 CC-GH ---------------------------------------------------
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      GMPSalesHeaderPostingsNo@1100409003 : Record 50504;
+      CRMemoHeader@1000000003 : Record 36;
+      GMPPostingInfo@1000000007 : Record 50505;
+      GobalRecInit@1100409006 : Boolean;
+      GMPSalesHeaderPostingsNoExist@1100409004 : Boolean;
+      PurePurchaseOrder@1100409000 : Boolean;
+      TextT0080@1100409001 : TextConst 'DEU=Kreditor %1 ist nicht als Marktplatzpartner angelegt!;ENU=Vendor %1 needs to be created as market place partner!';
+      TextTEC001@1000000000 : TextConst 'ENU=It is not allowed to Mix Market Place in %1 %2';
+      TextTEC002@1000000002 : TextConst 'DEU=Mîchten Sie %1 gelîschte Rechnung drucken?;ENU=Do you want to print %1 deleted invoices?';
+      TextTEC003@1000000001 : TextConst 'DEU=Mîchten Sie %1 gelîchte Gutschrift drucken?;ENU=Do you want to print %2 deleted credit memo?';
+      TextTEC004@1100409005 : TextConst 'ENU=The Market Place Posting Data are not Checked. Please inform Your System Administrator';
+      TextTEC005@1000000006 : TextConst 'DEU=Sie kînnen das Feld %1 nicht Ñndern, da die %2 %3 als %4 %5 hat und dem Beleg der Art %6 bereits die %7 %8 fÅr Marktplatzpartner %9 zugewiesen wurde.;ENU="You can not change the %1 field because %2 %3 has %4 = %5 and the %6 has already been assigned %7 %8 for Market Place Partner %9."';
+      TextTEC006@1000000004 : TextConst 'ENU=shall be 0. It is not possible to ship Charge Line for Marketplace';
+      TextTEC007@1000000005 : TextConst 'ENU=It not possible to Ship and Invoice at the same Time for Marketplace Lines in %1 %2 .';
+      WritePostingInfo@1000000008 : Boolean;
+      TextTEC008@1000000009 : TextConst 'ENU=shall be 0. It is not possible to receipt Charge Line for Marketplace';
+
+    PROCEDURE CheckMPLinesInPurchOrders@1100409000(PurchaseHeaderV@1100409000 : Record 38) CleanMarketPlaceO : Boolean;
+    VAR
+      PurchaseLineMPL@1100409001 : Record 39;
+      PurchaseLineL@1100409002 : Record 39;
+    BEGIN
+      //T0070 01.10.14 TEC-SH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Check all purchase order lines (clean market place order)
+      PurePurchaseOrder := FALSE;
+
+      PurchaseLineMPL.RESET;
+      PurchaseLineMPL.SETRANGE("Document Type",PurchaseHeaderV."Document Type");
+      PurchaseLineMPL.SETRANGE("Document No.",PurchaseHeaderV."No.");
+      PurchaseLineMPL.SETFILTER(Type,'<>%1',PurchaseLineL.Type::" ");
+      PurchaseLineMPL.SETRANGE("Market Place",TRUE);
+      IF PurchaseLineMPL.FINDFIRST THEN BEGIN
+         PurchaseLineL.RESET;
+         PurchaseLineL.SETRANGE("Document Type",PurchaseHeaderV."Document Type");
+         PurchaseLineL.SETRANGE("Document No.",PurchaseHeaderV."No.");
+         PurchaseLineL.SETFILTER(Type,'<>%1',PurchaseLineL.Type::" ");
+         PurchaseLineL.SETRANGE("Market Place",FALSE);
+         IF PurchaseLineL.FINDFIRST THEN BEGIN
+           EXIT(FALSE);
+         END ELSE BEGIN
+           PurePurchaseOrder := TRUE;
+           EXIT(TRUE);
+         END;
+      END ELSE BEGIN
+        EXIT(TRUE);
+      END;
+      //T0070 01.10.14 TEC-SH --------------------------------------------------
+    END;
+
+    PROCEDURE GetNoSeriesMarketPlace@1100409001(VAR PurchaseHeaderR@1100409000 : Record 38);
+    VAR
+      MPSetupL@1100409001 : Record 50502;
+      NoSeriesMgtL@1100409002 : Codeunit 396;
+    BEGIN
+      //T0070 14.10.14 TEC-SH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Transfed Market Partner No. Series to Purchase Header
+      CheckMPLinesInPurchOrders(PurchaseHeaderR);
+      IF PurePurchaseOrder THEN BEGIN
+
+        IF PurchaseHeaderR.Receive THEN BEGIN
+          //H1309 30.10.14 TEC-SH ++++++++++++++++++++++++++++++++++++++++++++++++++
+          PurchaseHeaderR.Invoice := TRUE;
+          //H1309 30.10.14 TEC-SH --------------------------------------------------
+          IF MPSetupL.GET(PurchaseHeaderR."Buy-from Vendor No.") THEN BEGIN
+            MPSetupL.TESTFIELD("Posted Receipt Nos.");
+            PurchaseHeaderR."Receiving No. Series" := MPSetupL."Posted Receipt Nos.";
+          END ELSE BEGIN
+            ERROR(TextT0080,PurchaseHeaderR."Buy-from Vendor No.");
+          END;
+        END;
+        IF PurchaseHeaderR.Ship THEN BEGIN
+          //H1309 30.10.14 TEC-SH ++++++++++++++++++++++++++++++++++++++++++++++++++
+          PurchaseHeaderR.Invoice := TRUE;
+          //H1309 30.10.14 TEC-SH --------------------------------------------------
+          IF MPSetupL.GET(PurchaseHeaderR."Buy-from Vendor No.") THEN BEGIN
+            MPSetupL.TESTFIELD(MPSetupL."Posted Return Shpt. Nos.");
+            PurchaseHeaderR."Return Shipment No. Series" := MPSetupL."Posted Return Shpt. Nos.";
+          END ELSE BEGIN
+            ERROR(TextT0080,PurchaseHeaderR."Buy-from Vendor No.");
+          END;
+        END;
+        IF PurchaseHeaderR.Invoice THEN BEGIN
+          IF MPSetupL.GET(PurchaseHeaderR."Buy-from Vendor No.") THEN BEGIN
+            MPSetupL.TESTFIELD(MPSetupL."Posted Invoice Nos.");
+            PurchaseHeaderR."Posting No. Series" := MPSetupL."Posted Invoice Nos.";
+            //H1309 30.10.14 TEC-SH ++++++++++++++++++++++++++++++++++++++++++++++++++
+            PurchaseHeaderR."Vendor Invoice No." := NoSeriesMgtL.GetNextNo(PurchaseHeaderR."Posting No. Series",
+            PurchaseHeaderR."Posting Date",TRUE);
+            //Invoice No. ans vendor invoice no. need to be the same:
+            PurchaseHeaderR."Posting No." := PurchaseHeaderR."Vendor Invoice No.";
+            //H1309 30.10.14 TEC-SH --------------------------------------------------
+          END ELSE BEGIN
+            ERROR(TextT0080,PurchaseHeaderR."Buy-from Vendor No.");
+          END;
+        END;
+      END;
+      //T0070 01.10.14 TEC-SH --------------------------------------------------
+    END;
+
+    PROCEDURE CheckMPLinesInSalesOrder@1000000000(VAR SalesHeaderR@1000000000 : Record 36) : Boolean;
+    VAR
+      SaleslineL@1000000001 : Record 37;
+      MarketPlacePartnerL@1000000003 : Record 50502;
+      SalesLineCheckL@1000000004 : Record 37;
+      IsMarketPlaceL@1000000002 : Boolean;
+    BEGIN
+      //T0078 15.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Check if is pure Invoice
+      IF SalesHeaderR.Ship THEN BEGIN
+        SaleslineL.RESET;
+        SaleslineL.SETRANGE("Document Type", SalesHeaderR."Document Type");
+        SaleslineL.SETRANGE("Document No.", SalesHeaderR."No.");
+        SaleslineL.SETRANGE(Type, SaleslineL.Type::"Charge (Item)");
+        SaleslineL.SETRANGE("Market Place",TRUE);
+        SaleslineL.SETFILTER(SaleslineL."Qty. to Ship",'<>%1',0); // To Ship
+        IF SaleslineL.FINDFIRST THEN BEGIN
+          SaleslineL.FIELDERROR(SaleslineL."Qty. to Ship", TextTEC006);
+        END;
+      END;
+
+      //H3958 02.04.15 CC-GH
+      IF SalesHeaderR.Receive THEN BEGIN
+        SaleslineL.RESET;
+        SaleslineL.SETRANGE("Document Type", SalesHeaderR."Document Type");
+        SaleslineL.SETRANGE("Document No.", SalesHeaderR."No.");
+        SaleslineL.SETRANGE(Type, SaleslineL.Type::"Charge (Item)");
+        SaleslineL.SETRANGE("Market Place",TRUE);
+        SaleslineL.SETFILTER("Return Qty. to Receive",'<>%1',0); // To Receipt
+        IF SaleslineL.FINDFIRST THEN BEGIN
+          SaleslineL.FIELDERROR(SaleslineL."Return Qty. to Receive", TextTEC008);
+        END;
+      END;
+      //H3958 02.04.15 CC-GH
+
+      IF NOT SalesHeaderR.Invoice THEN
+        EXIT;
+
+      SaleslineL.RESET;
+      SaleslineL.SETRANGE("Document Type", SalesHeaderR."Document Type");
+      SaleslineL.SETRANGE("Document No.", SalesHeaderR."No.");
+      SaleslineL.SETFILTER(Type,'<>%1',SaleslineL.Type::" "); // Without Text Lines
+      SaleslineL.SETRANGE("Market Place",TRUE);
+      SaleslineL.SETFILTER("Qty. to Invoice",'<>%1',0); // To Invoice
+      IF SaleslineL.FINDFIRST THEN BEGIN
+        // Atleast One Markte Place Line exist
+        //T0060 25.02.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+        IF (SalesHeaderR.Receive) THEN BEGIN
+          // Not allowed to receive Line Only because Check will be fault
+          SalesLineCheckL.RESET;
+          SalesLineCheckL.SETRANGE("Document Type", SalesHeaderR."Document Type");
+          SalesLineCheckL.SETRANGE("Document No.", SalesHeaderR."No.");
+          SalesLineCheckL.SETFILTER(Type,'<>%1',SaleslineL.Type::" "); // Without Text Lines
+          SalesLineCheckL.SETRANGE("Qty. to Invoice", 0);
+          SalesLineCheckL.SETFILTER("Return Qty. to Receive", '<>%1', 0); // Receive only
+          IF SalesLineCheckL.FINDFIRST THEN BEGIN
+            SalesLineCheckL.TESTFIELD("Qty. to Invoice", SalesLineCheckL."Return Qty. to Receive");
+          END;
+        END;
+        IF (SalesHeaderR.Ship) THEN
+          ERROR(TextTEC007, SalesHeaderR."Document Type", SalesHeaderR."No.");
+        //T0060 25.02.15 CC-GH ---------------------------------------------------
+        IsMarketPlaceL := TRUE;
+        MarketPlacePartnerL.GET(SaleslineL."Vendor No.");
+        // Check if Non Markte Place Lines exists
+        SalesLineCheckL.RESET;
+        SalesLineCheckL.SETRANGE("Document Type", SalesHeaderR."Document Type");
+        SalesLineCheckL.SETRANGE("Document No.", SalesHeaderR."No.");
+        SalesLineCheckL.SETFILTER(Type,'<>%1',SaleslineL.Type::" "); // Without Text Lines
+        SalesLineCheckL.SETRANGE("Market Place",FALSE);
+        SalesLineCheckL.SETFILTER("Qty. to Invoice",'<>%1',0); // To Invoice
+        IF NOT SalesLineCheckL.ISEMPTY THEN
+          ERROR(TextTEC001, SalesHeaderR."Document Type", SalesHeaderR."No.");
+        // Check if Market Place with other Vendors
+        SalesLineCheckL.RESET;
+        SalesLineCheckL.SETRANGE("Document Type", SalesHeaderR."Document Type");
+        SalesLineCheckL.SETRANGE("Document No.", SalesHeaderR."No.");
+        SalesLineCheckL.SETFILTER(Type,'<>%1',SaleslineL.Type::" "); // Without Text Lines
+        SalesLineCheckL.SETRANGE("Market Place",TRUE);
+        SalesLineCheckL.SETFILTER("Qty. to Invoice",'<>%1',0); // To Invoice
+        SalesLineCheckL.SETFILTER("Vendor No.",'<>%1', MarketPlacePartnerL."Market Place Partner");
+        IF NOT SalesLineCheckL.ISEMPTY THEN
+          ERROR(TextTEC001, SalesHeaderR."Document Type", SalesHeaderR."No.");
+        // Is Pure Invoice of one MP Vendor
+        GMPSalesHeaderPostingsNoExist :=  GMPSalesHeaderPostingsNo.GET(
+          SalesHeaderR."Document Type",
+          SalesHeaderR."No.",
+          MarketPlacePartnerL."Market Place Partner");
+        IF NOT GMPSalesHeaderPostingsNoExist THEN BEGIN
+          GMPSalesHeaderPostingsNo.INIT;
+          GMPSalesHeaderPostingsNo."Document Type" := SalesHeaderR."Document Type";
+          GMPSalesHeaderPostingsNo."No." := SalesHeaderR."No.";
+          GMPSalesHeaderPostingsNo."Market Partner No." := MarketPlacePartnerL."Market Place Partner";
+          CASE SalesHeaderR."Document Type" OF
+            SalesHeaderR."Document Type"::"Credit Memo",
+            SalesHeaderR."Document Type"::"Return Order":
+              BEGIN
+                GMPSalesHeaderPostingsNo."Posting No. Series" := MarketPlacePartnerL."Posted Cred. Memo Nos. (Sales)";
+              END
+            ELSE
+              BEGIN
+                GMPSalesHeaderPostingsNo."Posting No. Series" := MarketPlacePartnerL."Posted Invoice Nos. (Sales)";
+              END;
+          END;
+        END;
+      END ELSE BEGIN
+        // Is Pure Home24 Posting
+        IsMarketPlaceL := FALSE;
+        MarketPlacePartnerL.INIT;
+        MarketPlacePartnerL."Market Place Partner" := '';
+        GMPSalesHeaderPostingsNo.INIT;
+        GMPSalesHeaderPostingsNo."Document Type" := SalesHeaderR."Document Type";
+        GMPSalesHeaderPostingsNo."No." := SalesHeaderR."No.";
+        GMPSalesHeaderPostingsNo."Market Partner No." := MarketPlacePartnerL."Market Place Partner";
+        GMPSalesHeaderPostingsNoExist := FALSE;
+      END;
+      GobalRecInit := TRUE;
+      EXIT(IsMarketPlaceL);
+      //T0078 15.10.14 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE MPDeleteSalesHeader@1000000001(SalesHeaderV@1000000001 : Record 36;VAR SalesInvHeaderTmpR@1000000002 : TEMPORARY Record 112;VAR SalesCrMemoHeaderTmpR@1000000003 : TEMPORARY Record 114);
+    VAR
+      MPSalesHeaderPostingsNoL@1000000000 : Record 50504;
+    BEGIN
+      //T0078 15.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Delete Table 50504 MP Sales Header Postings No. and Handel Not Posted Doc.
+      MPSalesHeaderPostingsNoL.RESET;
+      MPSalesHeaderPostingsNoL.SETRANGE("Document Type", SalesHeaderV."Document Type");
+      MPSalesHeaderPostingsNoL.SETRANGE("No.", SalesHeaderV."No.");
+      IF MPSalesHeaderPostingsNoL.FINDSET(TRUE) THEN BEGIN
+        REPEAT
+          DeleteMPPostNo(SalesHeaderV, MPSalesHeaderPostingsNoL,
+            SalesInvHeaderTmpR,
+            SalesCrMemoHeaderTmpR);
+          MPSalesHeaderPostingsNoL.DELETE;
+        UNTIL MPSalesHeaderPostingsNoL.NEXT = 0;
+      END;
+      //T0078 15.10.14 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE MPPrintDelDoc@1000000002(SalesHeaderV@1000000000 : Record 36;VAR SalesInvHeaderTmpR@1000000002 : Record 112;VAR SalesCrMemoHeaderTmpR@1000000001 : Record 114);
+    VAR
+      SalesInvHeaderL@1100409000 : Record 112;
+      SalesCRMemoHeaderL@1100409001 : Record 114;
+      RecCountL@1100409002 : Integer;
+    BEGIN
+      //T0078 15.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // print Deletet Documents - List of No defined by Temp Records
+      IF SalesInvHeaderTmpR.FINDSET THEN BEGIN
+        RecCountL := 0;
+        SalesInvHeaderL.CLEARMARKS;
+        REPEAT
+          SalesInvHeaderL := SalesInvHeaderTmpR;
+          SalesInvHeaderL.MARK(TRUE);
+          RecCountL += 1;
+        UNTIL SalesInvHeaderTmpR.NEXT = 0;
+        SalesInvHeaderL.MARKEDONLY(TRUE);
+        IF CONFIRM(
+          TextTEC002,TRUE,
+          RecCountL)
+        THEN BEGIN
+          SalesInvHeaderL.PrintRecords(TRUE);
+        END;
+      END;
+      IF SalesCrMemoHeaderTmpR.FINDSET THEN BEGIN
+        RecCountL := 0;
+        SalesCrMemoHeaderTmpR.CLEARMARKS;
+        REPEAT
+          SalesCRMemoHeaderL := SalesCrMemoHeaderTmpR;
+          SalesCRMemoHeaderL.MARK(TRUE);
+          RecCountL += 1;
+        UNTIL SalesCrMemoHeaderTmpR.NEXT = 0;
+        SalesCRMemoHeaderL.MARKEDONLY(TRUE);
+        IF CONFIRM(
+          TextTEC003,TRUE,
+          RecCountL)
+        THEN BEGIN
+          SalesCRMemoHeaderL.PrintRecords(TRUE);
+        END;
+      END;
+      //T0078 15.10.14 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE TestDeleteMPPostNO@19(SalesHeaderV@1000000000 : Record 36;MPSalesHeaderPostingsNoV@1000 : Record 50504;VAR SalesInvHeaderR@1002 : Record 112;VAR SalesCrMemoHeaderR@1003 : Record 114;VAR SourceCodeR@1000000003 : Record 230);
+    VAR
+      SourceCodeSetupL@1000000001 : Record 242;
+    BEGIN
+      //T0078 16.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Init Sales Invoice Header or Sales CR-Memo if Postuing No ist used for Markte Partner
+
+      CLEAR(SalesInvHeaderR);
+      CLEAR(SalesCrMemoHeaderR);
+      // SalesSetup.GET;
+
+      SourceCodeSetupL.GET;
+      SourceCodeSetupL.TESTFIELD("Deleted Document");
+      SourceCodeR.GET(SourceCodeSetupL."Deleted Document");
+
+      IF (MPSalesHeaderPostingsNoV."Posting No. Series" <> '') AND
+         ((SalesHeaderV."Document Type" IN
+            [SalesHeaderV."Document Type"::Order,SalesHeaderV."Document Type"::Invoice]) AND
+          (MPSalesHeaderPostingsNoV."Posting No." <> '') OR
+          (SalesHeaderV."Document Type" = SalesHeaderV."Document Type"::Invoice) AND
+          (SalesHeaderV."No. Series" = MPSalesHeaderPostingsNoV."Posting No. Series"))
+      THEN BEGIN
+        SalesInvHeaderR.TRANSFERFIELDS(SalesHeaderV);
+        IF MPSalesHeaderPostingsNoV."Posting No." <> '' THEN
+          SalesInvHeaderR."No." := MPSalesHeaderPostingsNoV."Posting No.";
+        IF MPSalesHeaderPostingsNoV."Document Type" = MPSalesHeaderPostingsNoV."Document Type"::Invoice THEN BEGIN
+          SalesInvHeaderR."Pre-Assigned No. Series" := SalesHeaderV."No. Series";
+          SalesInvHeaderR."Pre-Assigned No." := SalesHeaderV."No.";
+        END ELSE BEGIN
+          SalesInvHeaderR."Pre-Assigned No. Series" := '';
+          SalesInvHeaderR."Pre-Assigned No." := '';
+          SalesInvHeaderR."Order No. Series" := SalesHeaderV."No. Series";
+          SalesInvHeaderR."Order No." := SalesHeaderV."No.";
+        END;
+        SalesInvHeaderR."Posting Date" := TODAY;
+        SalesInvHeaderR."User ID" := USERID;
+        SalesInvHeaderR."Source Code" := SourceCodeR.Code;
+      END;
+
+      IF (MPSalesHeaderPostingsNoV."Posting No. Series" <> '') AND
+         ((SalesHeaderV."Document Type" IN [SalesHeaderV."Document Type"::"Return Order",SalesHeaderV."Document Type"::"Credit Memo"])
+      AND
+          (MPSalesHeaderPostingsNoV."Posting No." <> '') OR
+          (SalesHeaderV."Document Type" = SalesHeaderV."Document Type"::"Credit Memo") AND
+          (SalesHeaderV."No. Series" = SalesHeaderV."Posting No. Series"))
+      THEN BEGIN
+        SalesCrMemoHeaderR.TRANSFERFIELDS(SalesHeaderV);
+        IF MPSalesHeaderPostingsNoV."Posting No." <> '' THEN
+          SalesCrMemoHeaderR."No." := MPSalesHeaderPostingsNoV."Posting No.";
+        SalesCrMemoHeaderR."Pre-Assigned No. Series" := SalesHeaderV."No. Series";
+        SalesCrMemoHeaderR."Pre-Assigned No." := SalesHeaderV."No.";
+        SalesCrMemoHeaderR."Posting Date" := TODAY;
+        SalesCrMemoHeaderR."User ID" := USERID;
+        SalesCrMemoHeaderR."Source Code" := SourceCodeR.Code;
+      END;
+
+      //T0078 16.10.14 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE DeleteMPPostNo@18(SalesHeaderV@1000 : Record 36;MPSalesHeaderPostingsNoV@1000000000 : Record 50504;VAR SalesInvHeaderTmpR@1002 : TEMPORARY Record 112;VAR SalesCrMemoHeaderTmpR@1003 : TEMPORARY Record 114);
+    VAR
+      SalesInvHeaderL@1000000002 : Record 112;
+      SalesInvLineL@1000000003 : Record 113;
+      SalesCrMemoHeaderL@1000000004 : Record 114;
+      SalesCrMemoLineL@1000000005 : Record 115;
+      SourceCodeL@1000000001 : Record 230;
+    BEGIN
+      //T0078 16.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Create Deletet Doc's if needed -> Store Header into Tmp Table
+      TestDeleteMPPostNO(
+        SalesHeaderV, MPSalesHeaderPostingsNoV, SalesInvHeaderL,SalesCrMemoHeaderL, SourceCodeL);
+
+      IF SalesInvHeaderL."No." <> '' THEN BEGIN
+        SalesInvHeaderL.INSERT;
+        SalesInvLineL.INIT;
+        SalesInvLineL."Document No." := SalesInvHeaderL."No.";
+        SalesInvLineL."Line No." := 10000;
+        SalesInvLineL.Description := SourceCodeL.Description;
+        SalesInvLineL.INSERT;
+        SalesInvHeaderTmpR := SalesInvHeaderL;
+        SalesInvHeaderTmpR.INSERT;
+      END;
+
+      IF SalesCrMemoHeaderL."No." <> '' THEN BEGIN
+        SalesCrMemoHeaderL.INSERT;
+        SalesCrMemoLineL.INIT;
+        SalesCrMemoLineL."Document No." := SalesCrMemoHeaderL."No.";
+        SalesCrMemoLineL."Line No." := 10000;
+        SalesCrMemoLineL.Description := SourceCodeL.Description;
+        SalesCrMemoLineL.INSERT;
+        SalesCrMemoHeaderTmpR := SalesCrMemoHeaderL;
+        SalesCrMemoHeaderTmpR.INSERT;
+      END;
+      //T0078 16.10.14 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE CheckMPPostNoDate@1000000003(SalesHeaderV@1000000000 : Record 36);
+    VAR
+      MPSalesHeaderPostingsNoL@1000000001 : Record 50504;
+    BEGIN
+      //T0078 16.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Check if Posting Date can be changed for All Market Partner
+      MPSalesHeaderPostingsNoL.RESET;
+      MPSalesHeaderPostingsNoL.SETRANGE("Document Type",SalesHeaderV."Document Type");
+      MPSalesHeaderPostingsNoL.SETRANGE("No.", SalesHeaderV."No.");
+      IF MPSalesHeaderPostingsNoL.FINDSET THEN BEGIN
+        REPEAT
+          TestNoSeriesDate(
+            MPSalesHeaderPostingsNoL."Posting No.",MPSalesHeaderPostingsNoL."Posting No. Series",
+            MPSalesHeaderPostingsNoL.FIELDCAPTION("Posting No."),MPSalesHeaderPostingsNoL.FIELDCAPTION("Posting No. Series"),
+            MPSalesHeaderPostingsNoL);
+        UNTIL MPSalesHeaderPostingsNoL.NEXT = 0;
+      END;
+
+      //T0078 16.10.14 TEC-GH --------------------------------------------------
+    END;
+
+    LOCAL PROCEDURE TestNoSeriesDate@40(NoV@1000 : Code[20];NoSeriesCodeV@1001 : Code[10];NoCaptV@1002 : Text[1024];NoSeriesCaptV@1004 : Text[1024];MPSalesHeaderPostingsNoV@1000000000 : Record 50504);
+    VAR
+      SalesHeaderL@1000000001 : Record 36;
+      NoSeriesL@1005 : Record 308;
+    BEGIN
+      //T0078 16.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Check if Posting Date can be changed for one Market Partner
+      IF (NoV <> '') AND (NoSeriesCodeV <> '') THEN BEGIN
+        NoSeriesL.GET(NoSeriesCodeV);
+        IF NoSeriesL."Date Order" THEN BEGIN
+          ERROR(
+            TextTEC005,
+            SalesHeaderL.FIELDCAPTION("Posting Date"),NoSeriesCaptV,NoSeriesCodeV,
+            NoSeriesL.FIELDCAPTION("Date Order"),NoSeriesL."Date Order",MPSalesHeaderPostingsNoV."Document Type",
+            NoCaptV,NoV,MPSalesHeaderPostingsNoV."Market Partner No.");
+        END;
+      END;
+      //T0078 16.10.14 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE NewActualPostingNo@1100409002(VAR SalesHeaderR@1100409000 : Record 36;VAR ModifyHeaderR@1100409001 : Boolean;IsMarketPlaceV@1100409002 : Boolean);
+    VAR
+      NoSeriesMgtL@1100409003 : Codeunit 396;
+    BEGIN
+      //T0078 23.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Generate Posting No for Markte Place Partner
+      // !! Assume that CheckMPLinesInSalesOrder has been run previous
+      IF NOT SalesHeaderR.Invoice THEN
+        EXIT;
+
+      IF IsMarketPlaceV THEN BEGIN
+        IF NOT GobalRecInit OR
+           (SalesHeaderR."Document Type" <> GMPSalesHeaderPostingsNo."Document Type") OR
+           (SalesHeaderR."No." <> GMPSalesHeaderPostingsNo."No.")
+        THEN
+          ERROR(TextTEC004);
+
+        IF SalesHeaderR.Invoice AND (GMPSalesHeaderPostingsNo."Posting No." = '') THEN BEGIN
+          IF (SalesHeaderR."No. Series" <> '') OR
+             (SalesHeaderR."Document Type" IN
+               [SalesHeaderR."Document Type"::Order,SalesHeaderR."Document Type"::"Return Order"])
+          THEN
+            GMPSalesHeaderPostingsNo.TESTFIELD("Posting No. Series");
+          IF (SalesHeaderR."No. Series" <> GMPSalesHeaderPostingsNo."Posting No. Series") OR
+             (SalesHeaderR."Document Type" IN
+               [SalesHeaderR."Document Type"::Order,SalesHeaderR."Document Type"::"Return Order"])
+          THEN BEGIN
+            GMPSalesHeaderPostingsNo."Posting No." :=
+              NoSeriesMgtL.GetNextNo(GMPSalesHeaderPostingsNo."Posting No. Series",SalesHeaderR."Posting Date",TRUE);
+            ModifyHeaderR := TRUE;
+            //T0088 09.01.15 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+            IF WritePostingInfo THEN BEGIN
+              GMPPostingInfo."Document No" := GMPSalesHeaderPostingsNo."Posting No.";
+              GMPPostingInfo.TESTFIELD("Table ID");
+              GMPPostingInfo.TESTFIELD("Document No");
+              GMPPostingInfo.RESET;
+              GMPPostingInfo.SETRECFILTER;
+              IF GMPPostingInfo.ISEMPTY THEN BEGIN
+                GMPPostingInfo.INSERT;
+              END ELSE BEGIN
+                GMPPostingInfo.MODIFY;
+              END;
+            END;
+            //T0088 09.01.15 TEC-GH --------------------------------------------------
+
+          END;
+        END;
+      END ELSE BEGIN
+        IF SalesHeaderR.Invoice AND (SalesHeaderR."Posting No." = '') THEN BEGIN
+          IF (SalesHeaderR."No. Series" <> '') OR
+             (SalesHeaderR."Document Type" IN
+               [SalesHeaderR."Document Type"::Order,SalesHeaderR."Document Type"::"Return Order"])
+          THEN
+            SalesHeaderR.TESTFIELD("Posting No. Series");
+          IF (SalesHeaderR."No. Series" <> SalesHeaderR."Posting No. Series") OR
+             (SalesHeaderR."Document Type" IN
+               [SalesHeaderR."Document Type"::Order,SalesHeaderR."Document Type"::"Return Order"])
+          THEN BEGIN
+            SalesHeaderR."Posting No." := NoSeriesMgtL.GetNextNo(SalesHeaderR."Posting No. Series",SalesHeaderR."Posting Date",TRUE);
+            ModifyHeaderR := TRUE;
+          END;
+        END;
+      END;
+
+      //T0078 23.10.14 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE GetActualPostingNo@1100409003(VAR SalesHeaderR@1100409000 : Record 36;IsMarketPlaceV@1100409002 : Boolean) ActualPostingNoO : Code[20];
+    VAR
+      NoSeriesMgtL@1100409003 : Codeunit 396;
+    BEGIN
+      //T0078 23.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Return Posting No for Makret Partner or Home24;
+      // !! Assume that CheckMPLinesInSalesOrder has been run previous
+      ActualPostingNoO := SalesHeaderR."Posting No.";  // Home24 is Default
+      IF NOT SalesHeaderR.Invoice THEN
+        EXIT;
+
+      IF IsMarketPlaceV THEN BEGIN
+        IF NOT GobalRecInit OR
+           (SalesHeaderR."Document Type" <> GMPSalesHeaderPostingsNo."Document Type") OR
+           (SalesHeaderR."No." <> GMPSalesHeaderPostingsNo."No.")
+        THEN
+          EXIT;
+        ActualPostingNoO := GMPSalesHeaderPostingsNo."Posting No.";
+      END;
+
+      //T0078 23.10.14 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE GetActualPostingNoSeries@1100409004(VAR SalesHeaderR@1100409000 : Record 36;IsMarketPlaceV@1100409002 : Boolean) ActualPostingNoSeriesO : Code[10];
+    VAR
+      NoSeriesMgtL@1100409003 : Codeunit 396;
+    BEGIN
+      //T0078 23.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Return Posting No Series for Markte Place Partner or HOME24
+      // !! Assume that CheckMPLinesInSalesOrder has been run previous
+      ActualPostingNoSeriesO := SalesHeaderR."Posting No. Series"; // HOME24 is Default
+      IF NOT SalesHeaderR.Invoice THEN
+        EXIT;
+
+      IF IsMarketPlaceV THEN BEGIN
+        IF NOT GobalRecInit OR
+           (SalesHeaderR."Document Type" <> GMPSalesHeaderPostingsNo."Document Type") OR
+           (SalesHeaderR."No." <> GMPSalesHeaderPostingsNo."No.")
+        THEN
+          EXIT;
+
+        ActualPostingNoSeriesO := GMPSalesHeaderPostingsNo."Posting No. Series";
+      END;
+      //T0078 23.10.14 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE GetActualMarketPlacePartner@1100409005(VAR SalesHeaderR@1100409000 : Record 36;IsMarketPlaceV@1100409002 : Boolean) ActualMarketPlacePartnerO : Code[20];
+    VAR
+      NoSeriesMgtL@1100409003 : Codeunit 396;
+    BEGIN
+      //T0078 23.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Return Posting No Series for Markte Place Partner or HOME24
+      // !! Assume that CheckMPLinesInSalesOrder has been run previous
+      ActualMarketPlacePartnerO := ''; // HOME24 is Default
+      IF NOT SalesHeaderR.Invoice THEN
+        EXIT;
+
+      IF IsMarketPlaceV THEN BEGIN
+        IF NOT GobalRecInit OR
+           (SalesHeaderR."Document Type" <> GMPSalesHeaderPostingsNo."Document Type") OR
+           (SalesHeaderR."No." <> GMPSalesHeaderPostingsNo."No.")
+        THEN
+          EXIT;
+
+        ActualMarketPlacePartnerO := GMPSalesHeaderPostingsNo."Market Partner No.";
+      END;
+      //T0078 23.10.14 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE ModifyMPPostNo@1000000004(VAR SalesHeaderR@1000000002 : Record 36;IsMarketPlaceV@1000000000 : Boolean);
+    BEGIN
+      //T0078 24.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Write Posting No. to Database
+      // Assume that CheckMPLinesInSalesOrder has been run previous
+      IF NOT SalesHeaderR.Invoice THEN
+        EXIT;
+
+      IF IsMarketPlaceV THEN BEGIN
+        IF NOT GobalRecInit OR
+           (SalesHeaderR."Document Type" <> GMPSalesHeaderPostingsNo."Document Type") OR
+           (SalesHeaderR."No." <> GMPSalesHeaderPostingsNo."No.")
+        THEN
+          ERROR(TextTEC004);
+        IF GMPSalesHeaderPostingsNoExist THEN BEGIN
+          GMPSalesHeaderPostingsNo.MODIFY;
+        END ELSE BEGIN
+          GMPSalesHeaderPostingsNo.INSERT;
+        END;
+        //T0088 09.01.15 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+        IF WritePostingInfo THEN BEGIN
+          GMPPostingInfo.TESTFIELD("Table ID");
+          GMPPostingInfo.TESTFIELD("Document No");
+          GMPPostingInfo.RESET;
+          GMPPostingInfo.SETRECFILTER;
+          IF GMPPostingInfo.ISEMPTY THEN BEGIN
+            GMPPostingInfo.INSERT;
+          END ELSE BEGIN
+            GMPPostingInfo.MODIFY;
+          END;
+        END;
+        //T0088 09.01.15 TEC-GH --------------------------------------------------
+      END;
+      //T0078 24.10.14 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE CleanUpMPPostNo@1000000005(VAR SalesHeaderR@1000000001 : Record 36;IsMarketPlaceV@1000000000 : Boolean);
+    BEGIN
+      //T0078 24.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Transfer Posting No to Last Postiung No. (Cleanup after Posting)
+      // Assume that CheckMPLinesInSalesOrder has been run previous
+      IF NOT SalesHeaderR.Invoice THEN
+        EXIT;
+
+      IF IsMarketPlaceV THEN BEGIN
+        IF NOT GobalRecInit OR
+           (SalesHeaderR."Document Type" <> GMPSalesHeaderPostingsNo."Document Type") OR
+           (SalesHeaderR."No." <> GMPSalesHeaderPostingsNo."No.")
+        THEN
+          ERROR(TextTEC004);
+        SalesHeaderR."Last Posting No." := GMPSalesHeaderPostingsNo."Posting No.";
+        GMPSalesHeaderPostingsNo."Last Posting No." := GMPSalesHeaderPostingsNo."Posting No.";
+        GMPSalesHeaderPostingsNo."Posting No." := '';
+        GMPSalesHeaderPostingsNo.MODIFY;
+      END;
+      //T0078 24.10.14 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE CheckMPLinesInSalesLine@1000000007(VAR SalesLineR@1000000000 : Record 37;IsMarketPlaceV@1000000006 : Boolean;InvoiceV@1000000007 : Boolean);
+    BEGIN
+      //T0078 24.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Check if is pure Invoice
+      IF SalesLineR.Type = SalesLineR.Type::" " THEN
+        EXIT;
+
+      IF SalesLineR."Prepayment Line" THEN
+        EXIT; // Reduce Preypayment will not be testet
+
+      IF NOT InvoiceV THEN
+        EXIT;
+
+      IF SalesLineR."Qty. to Invoice" = 0 THEN
+        EXIT;
+
+      IF IsMarketPlaceV THEN BEGIN
+        IF NOT GobalRecInit OR
+           (SalesLineR."Document Type" <> GMPSalesHeaderPostingsNo."Document Type") OR
+           (SalesLineR."Document No." <> GMPSalesHeaderPostingsNo."No.")
+        THEN
+          ERROR(TextTEC004);
+        SalesLineR.TESTFIELD("Market Place",TRUE);
+        SalesLineR.TESTFIELD("Vendor No.",GMPSalesHeaderPostingsNo."Market Partner No.");
+      END ELSE BEGIN
+        SalesLineR.TESTFIELD("Market Place",FALSE);
+      END;
+      //T0078 24.10.14 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE MPHandelRebateAll@1000000010(VAR SalesHeaderR@1000000001 : Record 36;IsMarketPlaceV@1000000000 : Boolean);
+    VAR
+      SalesLine2InvoiceL@1000000002 : Record 37;
+      SalesLineRebateL@1000000003 : Record 37;
+      SalesLineTmpL@1000000004 : TEMPORARY Record 37;
+      SalesHeaderTmpL@1100409000 : Record 36;
+      MPGeneralSetup@1000000009 : Record 50500;
+      ReleaseSalesDocL@1000000005 : Codeunit 414;
+      SalesPostPrepayments@1100409001 : Codeunit 442;
+      PrePaymentTotalL@1000000006 : Decimal;
+      RebateTotalL@1000000007 : Decimal;
+      PreventionTotalL@1000000008 : Decimal;
+    BEGIN
+      //T0078 30.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Check All MP Item Lines to invoice for Rebate
+      IF NOT SalesHeaderR.Invoice THEN
+        EXIT;
+
+      IF NOT IsMarketPlaceV THEN
+        EXIT;
+
+      SalesLineTmpL.RESET;
+      SalesLineTmpL.DELETEALL;
+
+      //T0088 09.12.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      MPGeneralSetup.GET;
+      MPGeneralSetup.TESTFIELD("Item Charge Pre. Pay. Reb.");
+      MPGeneralSetup.TESTFIELD("Item Charge Shop Vouch.");
+      MPGeneralSetup.TESTFIELD("Item Charge Prevent. Reb.");
+      PrePaymentTotalL := 0;
+      RebateTotalL := 0;
+      PreventionTotalL := 0;
+      //T0088 09.12.14 TEC-GH --------------------------------------------------
+
+      SalesLine2InvoiceL.RESET;
+      SalesLine2InvoiceL.SETRANGE("Document Type",SalesHeaderR."Document Type");
+      SalesLine2InvoiceL.SETRANGE("Document No.", SalesHeaderR."No.");
+      SalesLine2InvoiceL.SETRANGE(Type, SalesLine2InvoiceL.Type::Item);
+      SalesLine2InvoiceL.SETFILTER("Qty. to Invoice",'<>%1', 0);
+      IF SalesLine2InvoiceL.FINDSET THEN BEGIN
+        REPEAT
+          SalesLineRebateL.RESET;
+          SalesLineRebateL.SETRANGE("Document Type",SalesLine2InvoiceL."Document Type");
+          SalesLineRebateL.SETRANGE("Document No.",SalesLine2InvoiceL."Document No.");
+          SalesLineRebateL.SETRANGE(Type, SalesLineRebateL.Type::"Charge (Item)");
+          SalesLineRebateL.SETRANGE("Parent ID",SalesLine2InvoiceL.ID);
+          SalesLineRebateL.SETRANGE("Market Place",TRUE);
+          SalesLineRebateL.SETFILTER("Line Amount", '<%1',0);
+          IF SalesLineRebateL.FINDFIRST THEN BEGIN
+            SalesLineTmpL := SalesLine2InvoiceL;
+            SalesLineTmpL.INSERT;
+            //T0088 09.12.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+            REPEAT
+              CASE SalesLineRebateL."No." OF
+                MPGeneralSetup."Item Charge Pre. Pay. Reb.":
+                  PrePaymentTotalL -= SalesLineRebateL."Line Amount";
+                MPGeneralSetup."Item Charge Shop Vouch.":
+                  RebateTotalL -= SalesLineRebateL."Line Amount";
+                MPGeneralSetup."Item Charge Prevent. Reb.":
+                  PreventionTotalL -= SalesLineRebateL."Line Amount";
+                ELSE
+                  RebateTotalL -= SalesLineRebateL."Line Amount";
+              END;
+            UNTIL SalesLineRebateL.NEXT = 0;
+            //T0088 09.12.14 TEC-GH --------------------------------------------------
+          END;
+        UNTIL SalesLine2InvoiceL.NEXT =0;
+      END;
+      IF SalesLineTmpL.FINDSET THEN BEGIN
+        //T0088 09.12.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+        WritePostingInfo := (PrePaymentTotalL <> 0) OR (PreventionTotalL <> 0) OR
+          (RebateTotalL <> 0);
+        IF WritePostingInfo THEN BEGIN
+          GMPPostingInfo.INIT;
+          CASE SalesHeaderR."Document Type" OF
+            SalesHeaderR."Document Type"::Order, SalesHeaderR."Document Type"::Invoice:
+              BEGIN
+                GMPPostingInfo."Table ID" := DATABASE::"Sales Invoice Header";
+              END;
+            SalesHeaderR."Document Type"::"Return Order", SalesHeaderR."Document Type"::"Credit Memo":
+              BEGIN
+                //T0060,T0088 02.03.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+                GMPPostingInfo."Table ID" := DATABASE::"Sales Cr.Memo Header";
+                //T0060,T0088 02.03.15 CC-GH ---------------------------------------------------
+              END;
+            ELSE
+              SalesHeaderR.FIELDERROR("Document Type");
+          END;
+          IF GMPSalesHeaderPostingsNo."Posting No." <> '' THEN BEGIN
+            GMPPostingInfo."Document No" := GMPSalesHeaderPostingsNo."Posting No.";
+          END ELSE IF SalesHeaderR."Posting No." <> '' THEN BEGIN
+            GMPPostingInfo."Document No" := SalesHeaderR."Posting No.";
+          END ELSE BEGIN
+            SalesHeaderR.FIELDERROR("Posting No.");
+          END;
+          GMPPostingInfo."External Doc No" := SalesHeaderR."External Document No.";
+          GMPPostingInfo."Prepayment Discount Amount" := PrePaymentTotalL;
+          GMPPostingInfo."Voucher Amount" := RebateTotalL;
+          GMPPostingInfo."Good Will Amount" := PreventionTotalL;
+          GMPPostingInfo."Credit Memo Code" := '';
+        END;
+        //T0088 09.12.14 TEC-GH --------------------------------------------------
+
+        //T0078 19.11.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+        SalesHeaderTmpL := SalesHeaderR; // Save Header Values
+        //T0078 19.11.14 TEC-GH --------------------------------------------------
+
+        // Reopen Sales Header
+        ReleaseSalesDocL.Reopen(SalesHeaderR);
+
+        //T0078 20.11.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+        // Set Posting flags Back to
+        SalesHeaderR.Ship := SalesHeaderTmpL.Ship;
+        SalesHeaderR.Invoice := SalesHeaderTmpL.Invoice;
+        SalesHeaderR.Receive := SalesHeaderTmpL.Receive;
+        //T0078 20.11.14 TEC-GH --------------------------------------------------
+
+        // Modify Lines and Create CR - Lines
+        REPEAT
+          SalesLine2InvoiceL.GET(SalesLineTmpL."Document Type", SalesLineTmpL."Document No.", SalesLineTmpL."Line No.");
+          MPHandelRebate(SalesHeaderR,SalesLine2InvoiceL,IsMarketPlaceV);
+        UNTIL SalesLineTmpL.NEXT =0;
+        //T0088 09.01.15 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+        IF WritePostingInfo THEN BEGIN
+          GMPPostingInfo.TESTFIELD("Table ID");
+          GMPPostingInfo.TESTFIELD("Document No");
+          GMPPostingInfo.RESET;
+          GMPPostingInfo.SETRECFILTER;
+          IF GMPPostingInfo.ISEMPTY THEN BEGIN
+            GMPPostingInfo.INSERT;
+          END ELSE BEGIN
+            GMPPostingInfo.MODIFY;
+          END;
+        END;
+        //T0088 09.01.15 TEC-GH --------------------------------------------------
+        // Release Sales Header again
+        ReleaseSalesDocL.RUN(SalesHeaderR);
+
+        //T0078 19.11.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+        // Set Posting flags Back to
+        SalesHeaderR.Ship := SalesHeaderTmpL.Ship;
+        SalesHeaderR.Invoice := SalesHeaderTmpL.Invoice;
+        SalesHeaderR.Receive := SalesHeaderTmpL.Receive;
+        //T0078 19.11.14 TEC-GH --------------------------------------------------
+
+      END;
+      //T0078 30.10.14 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE MPHandelRebate@1100409006(VAR SalesHeaderR@1100409000 : Record 36;VAR SalesLineR@1100409001 : Record 37;IsMarketPlaceV@1100409002 : Boolean);
+    VAR
+      SalesLineRebateL@1100409003 : Record 37;
+      ItemChargeAssignSalesTmpL@1000000000 : TEMPORARY Record 5809;
+    BEGIN
+      //T0078 24.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Check Rebate Lines and Transfer to Credit Memo
+      IF SalesLineR.Type <> SalesLineR.Type::Item THEN
+        EXIT; // Nur Item Lines
+
+      IF NOT SalesHeaderR.Invoice THEN
+        EXIT;
+
+      IF SalesLineR."Qty. to Invoice" = 0 THEN
+        EXIT;
+
+      IF NOT IsMarketPlaceV THEN
+        EXIT;
+
+      SalesLineRebateL.RESET;
+      SalesLineRebateL.SETRANGE("Document Type",SalesLineR."Document Type");
+      SalesLineRebateL.SETRANGE("Document No.",SalesLineR."Document No.");
+      SalesLineRebateL.SETRANGE(Type, SalesLineRebateL.Type::"Charge (Item)");
+      SalesLineRebateL.SETRANGE("Parent ID",SalesLineR.ID);
+      SalesLineRebateL.SETRANGE("Market Place",TRUE);
+      SalesLineRebateL.SETFILTER("Line Amount", '<%1',0);
+      IF SalesLineRebateL.FINDSET THEN BEGIN
+        InitItemChargeAssignment(SalesLineR, ItemChargeAssignSalesTmpL);
+        InitMPCRMemoHeader(SalesHeaderR);
+        REPEAT
+          CreateCRMemoLine(SalesLineRebateL, SalesLineR, SalesHeaderR, ItemChargeAssignSalesTmpL);
+          SalesLineRebateL.VALIDATE(Quantity,0);
+          SalesLineRebateL.MODIFY;
+        UNTIL SalesLineRebateL.NEXT = 0;
+      END;
+      //T0078 24.10.14 TEC-GH --------------------------------------------------
+    END;
+
+    LOCAL PROCEDURE InitMPCRMemoHeader@1000000006(VAR SalesHeaderR@1000000000 : Record 36);
+    VAR
+      SalesSetupL@1000000001 : Record 311;
+      DocDimL@1000000003 : Record 357;
+      DefDimL@1100409001 : Record 352;
+      PaymentTermsL@1100409000 : Record 3;
+      DimMgtL@1000000002 : Codeunit 408;
+      NoSeriesMgtL@1000000004 : Codeunit 396;
+    BEGIN
+      //T0078 27.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Create a new CR Memo header / Invoice if not defined
+      IF CRMemoHeader."No." <> '' THEN
+        EXIT; // Is created
+
+      CRMemoHeader.INIT;
+      CRMemoHeader := SalesHeaderR;
+      CASE SalesHeaderR."Document Type" OF
+        SalesHeaderR."Document Type"::Order, SalesHeaderR."Document Type"::Invoice:
+          CRMemoHeader."Document Type" := CRMemoHeader."Document Type"::"Credit Memo";
+        SalesHeaderR."Document Type"::"Return Order", SalesHeaderR."Document Type"::"Credit Memo":
+          CRMemoHeader."Document Type" := CRMemoHeader."Document Type"::Invoice;
+        ELSE
+          SalesHeaderR.FIELDERROR("Document Type");
+      END;
+      CRMemoHeader."No." := '';
+      CRMemoHeader.Status := CRMemoHeader.Status::Open;
+      CRMemoHeader."Shipping No." := '';
+      CRMemoHeader."Posting No." := '';
+      CRMemoHeader."Last Shipping No." := '';
+      CRMemoHeader."Last Posting No." := '';
+      CRMemoHeader."Prepayment No." := '';
+      CRMemoHeader."Last Prepayment No." := '';
+      CRMemoHeader."Prepmt. Cr. Memo No." := '';
+      CRMemoHeader."Last Prepmt. Cr. Memo No." := '';
+      CRMemoHeader."No. Printed" := 0;
+      CRMemoHeader."Return Receipt No." := '';
+      CRMemoHeader."Last Return Receipt No." := '';
+
+      SalesSetupL.GET;
+      //T0078 07.01.15 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      CRMemoHeader."Is MP Home24 CR/Inv" := TRUE;
+      //T0078 07.01.15 TEC-GH --------------------------------------------------
+
+      CRMemoHeader."Shipping No. Series" := SalesSetupL."Posted Shipment Nos.";
+      CRMemoHeader."Return Receipt No. Series" := SalesSetupL."Posted Return Receipt Nos.";
+      SalesHeaderR."Date of Creation" := TODAY;
+      SalesHeaderR."Date of Last Modification" := TODAY;
+      CRMemoHeader."Is Market Place" := FALSE;
+      CRMemoHeader."Market Place Partner Code" := ''; // For Home24
+      // Check SalesHeaderR."Pmt. Discount Date"
+      IF NOT PaymentTermsL.GET(SalesHeaderR."Payment Terms Code") THEN BEGIN
+        PaymentTermsL.INIT;
+      END;
+      IF NOT PaymentTermsL."Calc. Pmt. Disc. on Cr. Memos" THEN BEGIN
+        IF CRMemoHeader."Payment Discount %" <> 0 THEN BEGIN
+          CRMemoHeader.VALIDATE("Payment Discount %",0);
+        END;
+        IF CRMemoHeader."Pmt. Discount Date" <> 0D THEN BEGIN
+          CRMemoHeader.VALIDATE("Pmt. Discount Date", 0D);
+        END;
+      END;
+
+      //T0088 08.01.15 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      CASE CRMemoHeader."Document Type" OF
+        CRMemoHeader."Document Type"::"Credit Memo":
+          BEGIN
+            CRMemoHeader."No. Series" := SalesSetupL."Credit Memo Nos.";
+            CRMemoHeader."Posting No. Series" := SalesSetupL."Posted Credit Memo Nos.";
+            CRMemoHeader."Applies-to Doc. Type" := CRMemoHeader."Applies-to Doc. Type"::Invoice;
+            IF GMPSalesHeaderPostingsNo."Posting No." <> '' THEN BEGIN
+              CRMemoHeader."Applies-to Doc. No." := GMPSalesHeaderPostingsNo."Posting No."
+            END ELSE BEGIN
+              CRMemoHeader."Applies-to Doc. No." := SalesHeaderR."Posting No.";
+            END;
+          END;
+        CRMemoHeader."Document Type"::Invoice:
+          BEGIN
+            CRMemoHeader."No. Series" := SalesSetupL."Invoice Nos.";;
+            CRMemoHeader."Posting No. Series" := SalesSetupL."Posted Invoice Nos.";
+            CRMemoHeader."Applies-to Doc. Type" := CRMemoHeader."Applies-to Doc. Type"::"Credit Memo";
+            IF GMPSalesHeaderPostingsNo."Posting No." <> '' THEN BEGIN
+              CRMemoHeader."Applies-to Doc. No." := GMPSalesHeaderPostingsNo."Posting No."
+            END ELSE BEGIN
+              CRMemoHeader."Applies-to Doc. No." := SalesHeaderR."Posting No.";
+            END;
+            //T0088 09.12.14 TEC-GH --------------------------------------------------
+          END;
+        ELSE
+          CRMemoHeader.FIELDERROR("Document Type");
+      END;
+      //T0088 08.01.15 TEC-GH --------------------------------------------------
+
+      CRMemoHeader.INSERT(TRUE);
+      //T0088 09.12.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF (CRMemoHeader."No. Series" <> CRMemoHeader."Posting No. Series")
+      THEN BEGIN
+        CRMemoHeader."Posting No." := NoSeriesMgtL.GetNextNo(CRMemoHeader."Posting No. Series",CRMemoHeader."Posting Date",TRUE);
+        CRMemoHeader.MODIFY;
+        IF WritePostingInfo THEN BEGIN
+          GMPPostingInfo."Credit Memo Code" := CRMemoHeader."Posting No.";
+        END;
+      END ELSE BEGIN
+        IF WritePostingInfo THEN BEGIN
+          GMPPostingInfo."Credit Memo Code" := CRMemoHeader."No.";
+        END;
+      END;
+      //T0088 09.12.14 TEC-GH --------------------------------------------------
+
+      // Transfer Dimension's
+      DocDimL.RESET;
+      DocDimL.SETRANGE("Table ID", DATABASE::"Sales Header");
+      DocDimL.SETRANGE("Document Type", SalesHeaderR."Document Type");
+      DocDimL.SETRANGE("Document No.", SalesHeaderR."No.");
+      DocDimL.SETRANGE("Line No.", 0); // Header
+      DimMgtL.MoveDocDimToDocDim(DocDimL, DATABASE::"Sales Header",CRMemoHeader."No.", CRMemoHeader."Document Type", 0);
+      //T0078 08.01.15 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Transfer MP Dimension
+      IF SalesHeaderR."Market Place Partner Code" <> '' THEN BEGIN
+        DefDimL.RESET;
+        DefDimL.SETRANGE("Table ID", DATABASE::Vendor);
+        DefDimL.SETRANGE("No.",SalesHeaderR."Market Place Partner Code");
+        IF DefDimL.FINDSET THEN BEGIN
+          REPEAT
+            IF NOT DocDimL.GET(
+              DATABASE::"Sales Header",
+              CRMemoHeader."Document Type",
+              CRMemoHeader."No.",
+              0,
+              DocDimL."Dimension Code")
+            THEN BEGIN
+              DocDimL.INIT;
+              DocDimL."Table ID" := DATABASE::"Sales Header";
+              DocDimL."Document Type" := CRMemoHeader."Document Type";
+              DocDimL."Document No." := CRMemoHeader."No.";
+              DocDimL."Line No." := 0;
+              DocDimL."Dimension Code" := DocDimL."Dimension Code";
+              DocDimL."Dimension Value Code" := DocDimL."Dimension Value Code";
+              DocDimL.INSERT;
+            END;
+          UNTIL DefDimL.NEXT = 0;
+        END;
+      END;
+      //T0078 08.01.15 TEC-GH --------------------------------------------------
+
+      // Transfer Comments
+
+      //T0078 27.10.14 TEC-GH --------------------------------------------------
+    END;
+
+    LOCAL PROCEDURE CreateCRMemoLine@1000000008(VAR FromSalesLineRebateR@1000000000 : Record 37;VAR MasterSalesLineR@1000000001 : Record 37;VAR SalesHeaderR@1000000002 : Record 36;VAR TemplItemChargeAssignmentR@1100409000 : Record 5809);
+    VAR
+      ToSaleslineL@1100409001 : Record 37;
+      ToItemChargeAssignmentL@1100409004 : Record 5809;
+      DocDimL@1100409003 : Record 357;
+      CurrencyL@1000000004 : Record 4;
+      BatchSalesPostHeaderL@1100409005 : Record 50225;
+      DimMgtL@1100409002 : Codeunit 408;
+      ItemChargeAssgntSalesL@1000000005 : Codeunit 5807;
+      UnitCostL@1000000003 : Decimal;
+      TriggeredByL@1100409007 : ' ,Scanning Job,Parcel Status,ADD Filled';
+    BEGIN
+      //T0078 27.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Create a CR Memo Line
+      ToSaleslineL.INIT;
+      ToSaleslineL := FromSalesLineRebateR;
+
+      ToSaleslineL."Qty. Shipped Not Invoiced" := 0;
+      ToSaleslineL."Quantity Shipped" := 0;
+      ToSaleslineL."Quantity Invoiced" := 0;
+      ToSaleslineL."Qty. Shipped Not Invd. (Base)" := 0;
+      ToSaleslineL."Qty. Shipped (Base)" := 0;
+      ToSaleslineL."Qty. Invoiced (Base)" := 0;
+      ToSaleslineL."Shipped Not Invoiced" := 0;
+      ToSaleslineL."Shipped Not Invoiced (LCY)" :=0;
+
+      ToSaleslineL."Document Type" := CRMemoHeader."Document Type";
+      ToSaleslineL."Document No." := CRMemoHeader."No.";
+      ToSaleslineL.VALIDATE("Prepayment %",0); // NO Preayment on CR-Memo
+      ToSaleslineL.VALIDATE("Unit Price", -ToSaleslineL."Unit Price"); // Change Sign
+      ToSaleslineL.InitOutstanding;
+      //T0060,T0078 25.02.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      ToSaleslineL."Qty. to Ship" := 0;
+      ToSaleslineL."Qty. to Ship (Base)" := 0;
+      ToSaleslineL."Return Qty. to Receive" := 0;
+      ToSaleslineL."Return Qty. to Receive (Base)" := 0;
+      CASE ToSaleslineL."Document Type" OF
+        ToSaleslineL."Document Type"::"Credit Memo",
+        ToSaleslineL."Document Type"::"Return Order":
+          ToSaleslineL.InitQtyToReceive;
+        ELSE
+          ToSaleslineL.InitQtyToShip;
+      END;
+      //T0060 25.02.15 CC-GH ---------------------------------------------------
+      ToSaleslineL."Market Place" := FALSE;
+      ToSaleslineL.INSERT(TRUE);
+
+      // Transfer Dimensions
+      DocDimL.RESET;
+      DocDimL.SETRANGE("Table ID", DATABASE::"Sales Line");
+      DocDimL.SETRANGE("Document Type", MasterSalesLineR."Document Type");
+      DocDimL.SETRANGE("Document No.", MasterSalesLineR."Document No.");
+      DocDimL.SETRANGE("Line No.", MasterSalesLineR."Line No."); // Header
+      DimMgtL.MoveDocDimToDocDim(DocDimL, DATABASE::"Sales Line",CRMemoHeader."No.", CRMemoHeader."Document Type",
+        ToSaleslineL."Line No.");
+
+      IF SalesHeaderR."Currency Code" = '' THEN
+        CurrencyL.InitRoundingPrecision
+      ELSE BEGIN
+        SalesHeaderR.TESTFIELD("Currency Factor");
+        CurrencyL.GET(SalesHeaderR."Currency Code");
+        CurrencyL.TESTFIELD("Amount Rounding Precision");
+      END;
+
+      // Create Item Charge Assigment
+      IF (ToSaleslineL."Inv. Discount Amount" = 0) AND
+        (ToSaleslineL."Line Discount Amount" = 0) AND
+         (NOT SalesHeaderR."Prices Including VAT")
+      THEN BEGIN
+        UnitCostL := ToSaleslineL."Unit Price"
+      END ELSE BEGIN
+        IF SalesHeaderR."Prices Including VAT" THEN BEGIN
+          UnitCostL :=
+            ROUND(
+              (ToSaleslineL."Line Amount" - ToSaleslineL."Inv. Discount Amount") / ToSaleslineL.Quantity
+                / (1 + ToSaleslineL."VAT %" / 100),
+              CurrencyL."Unit-Amount Rounding Precision")
+        END ELSE BEGIN
+          UnitCostL :=
+            ROUND(
+              (ToSaleslineL."Line Amount" - ToSaleslineL."Inv. Discount Amount") / ToSaleslineL.Quantity,
+              CurrencyL."Unit-Amount Rounding Precision");
+        END;
+      END;
+
+      ToItemChargeAssignmentL.INIT;
+      ToItemChargeAssignmentL."Document Type" := ToSaleslineL."Document Type";
+      ToItemChargeAssignmentL."Document No." := ToSaleslineL."Document No.";
+      ToItemChargeAssignmentL."Document Line No." := ToSaleslineL."Line No.";
+      ToItemChargeAssignmentL."Line No." := 10000;
+      ToItemChargeAssignmentL."Item Charge No." := ToSaleslineL."No.";
+      ToItemChargeAssignmentL."Item No." := MasterSalesLineR."No.";
+      ToItemChargeAssignmentL.Description := ToSaleslineL.Description;
+      ToItemChargeAssignmentL."Qty. to Assign" := ToSaleslineL.Quantity;
+      ToItemChargeAssignmentL."Unit Cost" := UnitCostL;
+      ToItemChargeAssignmentL."Amount to Assign" := ROUND(ToSaleslineL.Quantity*UnitCostL, CurrencyL."Amount Rounding Precision");
+      ToItemChargeAssignmentL."Applies-to Doc. Type" := TemplItemChargeAssignmentR."Applies-to Doc. Type";
+      ToItemChargeAssignmentL."Applies-to Doc. No." := TemplItemChargeAssignmentR."Applies-to Doc. No.";
+      ToItemChargeAssignmentL."Applies-to Doc. Line No." := TemplItemChargeAssignmentR."Applies-to Doc. Line No.";
+      ToItemChargeAssignmentL."Applies-to Doc. Line Amount" := TemplItemChargeAssignmentR."Applies-to Doc. Line Amount";
+      ToItemChargeAssignmentL."Line Status" := '';
+      ToItemChargeAssignmentL."Cancelation Amount" := 0;
+      ToItemChargeAssignmentL.INSERT;
+
+      // Insert Into Post
+      BatchSalesPostHeaderL.InsertNewRecord(
+        ToSaleslineL,
+        SalesHeaderR."Posting Date",
+        BatchSalesPostHeaderL."Posting Type"::"Receive+Invoice",
+        TriggeredByL::" ",
+        'MARKETPL',
+      //T0082 25.11.14 tec-sh    +++++++++++++++++++++++++++++++++++
+      //  'H24REBATE');
+        'H24REBATE',
+        FALSE);
+      //T0082 25.11.14 tec-sh    -----------------------------------
+      //T0078 27.10.14 TEC-GH --------------------------------------------------
+    END;
+
+    LOCAL PROCEDURE InitItemChargeAssignment@1000000009(VAR SalesLineR@1000000000 : Record 37;VAR TemplItemChargeAssignmentR@1000000001 : Record 5809);
+    VAR
+      SalesShipmentLineL@1100409000 : Record 111;
+      ReturnReceiptLineL@1100409001 : Record 6661;
+      SalesHeaderL@1100409002 : Record 36;
+    BEGIN
+      //T0078 27.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Return Assignment to first Shipemtn or Receipt line
+      CASE SalesLineR."Document Type" OF
+        SalesLineR."Document Type"::Order:
+          BEGIN
+            SalesLineR.TESTFIELD("Quantity Shipped"); // Has to be shiped before
+            SalesShipmentLineL.RESET;
+            SalesShipmentLineL.SETCURRENTKEY("Order No.", "Order Line No.");
+            SalesShipmentLineL.SETRANGE("Order No.", SalesLineR."Document No.");
+            SalesShipmentLineL.SETRANGE("Order Line No.", SalesLineR."Line No.");
+            SalesShipmentLineL.SETFILTER(Quantity,'<>0');
+            SalesShipmentLineL.FINDFIRST;
+            TemplItemChargeAssignmentR."Applies-to Doc. Type" := TemplItemChargeAssignmentR."Applies-to Doc. Type"::Shipment;
+            TemplItemChargeAssignmentR."Applies-to Doc. No." := SalesShipmentLineL."Document No.";
+            TemplItemChargeAssignmentR."Applies-to Doc. Line No." := SalesShipmentLineL."Line No.";
+            TemplItemChargeAssignmentR."Applies-to Doc. Line Amount" := ABS(SalesShipmentLineL."Item Charge Base Amount");
+          END;
+        SalesLineR."Document Type"::"Return Order":
+          BEGIN
+            ReturnReceiptLineL.RESET;
+            ReturnReceiptLineL.SETCURRENTKEY("Return Order No.", "Return Order Line No.");
+            ReturnReceiptLineL.SETRANGE("Return Order No.", SalesLineR."Document No.");
+            ReturnReceiptLineL.SETRANGE("Return Order Line No.", SalesLineR."Line No.");
+            ReturnReceiptLineL.SETFILTER(Quantity,'<>0');
+            //T0060, T0078 25.02.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+            IF ReturnReceiptLineL.FINDFIRST THEN BEGIN
+            //T0060, T0078 25.02.15 CC-GH ---------------------------------------------------
+              TemplItemChargeAssignmentR."Applies-to Doc. Type" := TemplItemChargeAssignmentR."Applies-to Doc. Type"::"Return Receipt";
+              TemplItemChargeAssignmentR."Applies-to Doc. No." := ReturnReceiptLineL."Document No.";
+              TemplItemChargeAssignmentR."Applies-to Doc. Line No." := ReturnReceiptLineL."Line No.";
+              TemplItemChargeAssignmentR."Applies-to Doc. Line Amount" := ABS(ReturnReceiptLineL."Item Charge Base Amount");
+            //T0060 25.02.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+            END ELSE BEGIN // Not Posted will be posted with actual Post
+              SalesHeaderL.GET(SalesLineR."Document Type", SalesLineR."Document No.");
+              SalesHeaderL.TESTFIELD("Return Receipt No.");
+              TemplItemChargeAssignmentR."Applies-to Doc. Type" := TemplItemChargeAssignmentR."Applies-to Doc. Type"::"Return Receipt";
+              TemplItemChargeAssignmentR."Applies-to Doc. No." := SalesHeaderL."Return Receipt No.";
+              TemplItemChargeAssignmentR."Applies-to Doc. Line No." := SalesLineR."Line No.";
+              IF (SalesLineR.Quantity <> 0) THEN BEGIN
+                TemplItemChargeAssignmentR."Applies-to Doc. Line Amount" :=
+                  ABS(ROUND(SalesLineR."Line Amount" / SalesLineR.Quantity * SalesLineR."Return Qty. to Receive"));
+              END ELSE BEGIN
+                TemplItemChargeAssignmentR."Applies-to Doc. Line Amount" := 0;
+              END;
+            END;
+            //T0060 25.02.15 CC-GH ---------------------------------------------------
+          END;
+        ELSE
+          SalesLineR.FIELDERROR("Document Type");
+      END;
+      //T0078 27.10.14 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE FillQtyToInvoice@1100409007(PurchaseLineV@1100409000 : Record 39);
+    BEGIN
+      //H1309 30.10.14 TEC-SH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF PurePurchaseOrder THEN BEGIN
+        PurchaseLineV."Qty. to Invoice"       := PurchaseLineV."Qty. to Receive";
+        PurchaseLineV."Qty. to Invoice (Base)" :=PurchaseLineV."Qty. to Receive (Base)";
+      END;
+      //H1309 30.10.14 TEC-SH --------------------------------------------------
+    END;
+
+    PROCEDURE InsertShippingSalesBatch@1000000011(SalesHeaderR@1000000000 : Record 36);
+    VAR
+      SalesLineL@1000000001 : Record 37;
+      BatchSalesPostHeaderL@1000000002 : Record 50225;
+      TypeL@1000000003 : 'Ship,Invoice';
+      TriggeredByL@1000000004 : ' ,Scanning Job,Parcel Status,ADD Filled';
+    BEGIN
+      //H3799,T0082 03.03.15 ARI ++++++++++++++++++++++++++++++++++++++++++++++++++
+
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type",SalesHeaderR."Document Type");
+      SalesLineL.SETRANGE("Document No.",SalesHeaderR."No.");
+      SalesLineL.SETRANGE(Type,SalesLineL.Type::Item);
+      SalesLineL.SETFILTER(SalesLineL."Qty. to Ship",'<>%1',0);
+      IF SalesLineL.FIND('-') THEN BEGIN
+        REPEAT
+          IF (SalesLineL."Quantity Shipped" < SalesLineL.Quantity) THEN BEGIN
+            BatchSalesPostHeaderL.InsertNewRecord(SalesLineL,DT2DATE(SalesLineL."Actual Delivery Date"),
+                                                  TypeL::Ship,TriggeredByL::"ADD Filled",'','',TRUE);
+          END;
+        UNTIL SalesLineL.NEXT = 0;
+      END;
+
+      //H3799,T0082 03.03.15 ARI --------------------------------------------------
+    END;
+
+    PROCEDURE InsertInvoiceSalesBatch@1000000015(SalesHeaderR@1000000000 : Record 36);
+    VAR
+      SalesLineL@1000000001 : Record 37;
+      BatchSalesPostHeaderL@1000000002 : Record 50225;
+      TypeL@1000000003 : 'Ship,Invoice';
+      TriggeredByL@1000000004 : ' ,Scanning Job,Parcel Status,ADD Filled';
+    BEGIN
+      //H3799,T0082 03.03.15 ARI ++++++++++++++++++++++++++++++++++++++++++++++++++
+
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type",SalesHeaderR."Document Type");
+      SalesLineL.SETRANGE("Document No.",SalesHeaderR."No.");
+      SalesLineL.SETRANGE(Type,SalesLineL.Type::Item);
+      SalesLineL.SETFILTER(SalesLineL."Qty. to Invoice",'<>%1',0);
+      IF SalesLineL.FIND('-') THEN BEGIN
+        REPEAT
+          IF (SalesLineL."Quantity Invoiced" < SalesLineL.Quantity) THEN BEGIN
+            BatchSalesPostHeaderL.InsertNewRecord(SalesLineL,DT2DATE(SalesLineL."Actual Delivery Date"),
+                                                  TypeL::Invoice,TriggeredByL::"ADD Filled",'','',TRUE);
+          END;
+        UNTIL SalesLineL.NEXT = 0;
+      END;
+
+      //H3799,T0082 03.03.15 ARI --------------------------------------------------
+    END;
+
+    PROCEDURE PostSalesBatchShip@1000000012(SalesHeaderR@1100409000 : Record 36);
+    VAR
+      JobQueueL@1000000008 : Record 472;
+      BatchPostDocumentL@1000000007 : Record 50043;
+      SalesPostYesNoL@1000000004 : Codeunit 82;
+      SalesBatchPostShipmentL@1000000003 : Codeunit 50266;
+      SalesBatchPostInvoiceL@1000000002 : Codeunit 50267;
+    BEGIN
+      //T0082 26.11.14 TEC-SH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      SalesBatchPostShipmentL.DefDocumentNo(SalesHeaderR."No.");
+      SalesBatchPostShipmentL.RUN(JobQueueL);
+      //T0082 26.11.14 TEC-SH --------------------------------------------------
+    END;
+
+    PROCEDURE PostSalesBatchInvoice@1100409008(SalesHeaderR@1100409000 : Record 36);
+    VAR
+      JobQueueL@1000000008 : Record 472;
+      BatchPostDocumentL@1000000007 : Record 50043;
+      SalesPostYesNoL@1000000004 : Codeunit 82;
+      SalesBatchPostShipmentL@1000000003 : Codeunit 50266;
+      SalesBatchPostInvoiceL@1000000002 : Codeunit 50267;
+    BEGIN
+      //T0082 26.11.14 TEC-SH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      SalesBatchPostInvoiceL.DefDocumentNo(SalesHeaderR."No.");
+      SalesBatchPostInvoiceL.RUN(JobQueueL);
+      //T0082 26.11.14 TEC-SH --------------------------------------------------
+    END;
+
+    PROCEDURE DoSalesPostbyBatch@1000000013(SalesHeaderV@1000000000 : Record 36) : Boolean;
+    VAR
+      MPGeneralSetupL@1000000001 : Record 50500;
+    BEGIN
+      //T0082 08.02.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Return true if Posting shall be done by Sales Batch
+      MPGeneralSetupL.GET;
+      IF NOT MPGeneralSetupL."Sales Post By Batch" THEN
+        EXIT(FALSE);
+
+      CASE SalesHeaderV."Document Type" OF
+        SalesHeaderV."Document Type"::Order:
+          EXIT(TRUE);
+        SalesHeaderV."Document Type"::"Return Order":
+          EXIT(FALSE);
+        SalesHeaderV."Document Type"::Invoice:
+          EXIT(FALSE);
+        SalesHeaderV."Document Type"::"Credit Memo":
+          EXIT(FALSE);
+        ELSE
+          EXIT(FALSE);
+      END;
+
+      //T0082 08.02.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+    END;
+
+    PROCEDURE InitAutoApply@1100409009(VAR SalesHeaderR@1100409000 : Record 36;VAR ModifyHeader@1100409006 : Boolean);
+    VAR
+      CustLedgerEntryL@1100409001 : Record 21;
+      ApplyingCustLedgEntryL@1100409003 : Record 21;
+      CustEntrySetApplIDL@1100409002 : Codeunit 101;
+      AppliedAmountL@1100409004 : Decimal;
+      PmtDiscAmountL@1100409005 : Decimal;
+    BEGIN
+      //T0078 07.01.15 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF (SalesHeaderR."Is MP Home24 CR/Inv")  AND (SalesHeaderR."Applies-to Doc. No." <> '') THEN BEGIN
+        CustLedgerEntryL.RESET;
+        CustLedgerEntryL.SETCURRENTKEY(CustLedgerEntryL."Customer No.");
+
+        CustLedgerEntryL.SETRANGE("Customer No.",SalesHeaderR."Bill-to Customer No.");
+        CustLedgerEntryL.SETRANGE(Open,TRUE);
+        CustLedgerEntryL.SETRANGE("On Hold",'');
+        CustLedgerEntryL.SETRANGE("Document Type",SalesHeaderR."Applies-to Doc. Type");
+        CustLedgerEntryL.SETRANGE("Document No.",SalesHeaderR."Applies-to Doc. No.");
+        IF CustLedgerEntryL.FINDFIRST THEN
+          EXIT;
+        SalesHeaderR."Applies-to Doc. No." := '';
+        ModifyHeader := TRUE;
+      END;
+      IF (SalesHeaderR."Applies-to Doc. No." <> '') OR (SalesHeaderR."Applies-to ID" <> '') THEN
+        EXIT;
+      IF SalesHeaderR."Is MP Home24 CR/Inv" THEN BEGIN
+        CustLedgerEntryL.RESET;
+        CustLedgerEntryL.SETCURRENTKEY(CustLedgerEntryL."Customer No.");
+
+        CustLedgerEntryL.SETRANGE("Customer No.",SalesHeaderR."Bill-to Customer No.");
+        CustLedgerEntryL.SETRANGE(Open,TRUE);
+        CustLedgerEntryL.SETRANGE("On Hold",'');
+        CustLedgerEntryL.SETRANGE("External Document No.",SalesHeaderR."External Document No.");
+        CASE SalesHeaderR."Document Type" OF
+          SalesHeaderR."Document Type"::Order,
+          SalesHeaderR."Document Type"::Invoice:
+            BEGIN
+              CustLedgerEntryL.SETRANGE(Positive,FALSE);
+            END;
+          SalesHeaderR."Document Type"::"Credit Memo",
+          SalesHeaderR."Document Type"::"Return Order":
+            BEGIN
+              CustLedgerEntryL.SETRANGE(Positive,TRUE);
+            END;
+          ELSE
+            EXIT;
+        END;
+        IF CustLedgerEntryL.FINDFIRST THEN BEGIN
+          CustLedgerEntryL.SETRANGE(Positive);
+          CustLedgerEntryL.SETFILTER("Applies-to ID",'<>%1','');
+          CLEAR(ApplyingCustLedgEntryL);
+          IF CustLedgerEntryL.FINDFIRST THEN BEGIN
+            // Set all to empty
+            CustEntrySetApplIDL.SetApplId(
+              CustLedgerEntryL,ApplyingCustLedgEntryL,0,0,SalesHeaderR."No.")
+          END;
+          CustLedgerEntryL.SETRANGE("Applies-to ID",'');
+          IF CustLedgerEntryL.FINDFIRST THEN BEGIN
+            SalesHeaderR."Applies-to ID" := SalesHeaderR."No.";
+            CustEntrySetApplIDL.SetApplId(
+              CustLedgerEntryL,ApplyingCustLedgEntryL,0,0,SalesHeaderR."Applies-to ID");
+            ModifyHeader := TRUE;
+          END;
+        END;
+      END;
+      //T0078 07.01.15 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE SalesPost@1000000016(VAR SalesHeaderR@1000000000 : Record 36);
+    VAR
+      SalesHeaderSaveL@1000000011 : Record 36;
+      SalesLineL@1000000001 : Record 37;
+      SalesLineTmpL@1000000002 : TEMPORARY Record 37;
+      MarketPlacePartnerL@1000000003 : Record 50502;
+      MarketPlacePartnerTmpL@1000000004 : TEMPORARY Record 50502;
+      SalesPostL@1000000008 : Codeunit 80;
+      HasHome24LinesL@1000000005 : Boolean;
+      HasMPPLinesL@1000000006 : Boolean;
+      SplitNeededL@1000000007 : Boolean;
+      CheckNeeded@1000000009 : Boolean;
+      CountMPP@1000000010 : Decimal;
+    BEGIN
+      //T0060 27.02.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Post Sales Dokument splitted by MPP
+      IF SalesHeaderR.Invoice THEN BEGIN
+        SalesLineL.RESET;
+        SalesLineL.SETRANGE("Document Type", SalesHeaderR."Document Type");
+        SalesLineL.SETRANGE("Document No.", SalesHeaderR."No.");
+        SalesLineL.SETFILTER("Qty. to Invoice",'<>0');
+        SalesLineL.SETRANGE(Type);
+        SalesLineL.SETRANGE("Market Place",FALSE);
+        HasHome24LinesL := SalesLineL.FINDFIRST;
+        SalesLineL.SETRANGE(Type, SalesLineL.Type::Item);
+        SalesLineL.SETRANGE("Market Place",TRUE);
+        HasMPPLinesL := SalesLineL.FINDSET;
+        IF HasMPPLinesL THEN BEGIN
+          CountMPP := 0;
+          MarketPlacePartnerTmpL.RESET;
+          MarketPlacePartnerTmpL.DELETEALL;
+          REPEAT
+            MarketPlacePartnerL.GET(SalesLineL."Vendor No.");
+            IF NOT MarketPlacePartnerTmpL.GET(MarketPlacePartnerL."Market Place Partner") THEN BEGIN
+              MarketPlacePartnerTmpL := MarketPlacePartnerL;
+              MarketPlacePartnerTmpL.INSERT;
+              CountMPP += 1;
+            END;
+          UNTIL SalesLineL.NEXT = 0;
+          SplitNeededL := HasHome24LinesL OR (CountMPP > 1);
+        END;
+        IF SplitNeededL THEN BEGIN
+          SalesLineTmpL.RESET;
+          SalesLineTmpL.DELETEALL;
+          SalesLineL.RESET;
+          SalesLineL.SETRANGE("Document Type", SalesHeaderR."Document Type");
+          SalesLineL.SETRANGE("Document No.", SalesHeaderR."No.");
+          SalesLineL.LOCKTABLE;
+          IF SalesLineL.FINDSET THEN BEGIN
+            REPEAT
+              SalesLineTmpL := SalesLineL;
+              IF ((SalesLineL."Qty. to Invoice" <> 0) AND SalesHeaderR.Invoice) OR
+                 ((SalesLineL."Qty. to Ship" <>0)  AND SalesHeaderR.Ship) OR
+                 ((SalesLineL."Return Qty. to Receive" <> 0) AND SalesHeaderR.Receive)
+              THEN BEGIN
+                SalesLineTmpL.INSERT;
+              END;
+            UNTIL SalesLineL.NEXT =0;
+          END;
+          SalesHeaderSaveL := SalesHeaderR;
+          IF MarketPlacePartnerTmpL.FINDSET THEN BEGIN
+            REPEAT
+              SalesHeaderR.Ship := SalesHeaderSaveL.Ship;
+              SalesHeaderR.Invoice := SalesHeaderSaveL.Invoice;
+              SalesHeaderR.Receive := SalesHeaderSaveL.Receive;
+              // Setup for actual MPP
+              SetUpLine(SalesHeaderR,TRUE,MarketPlacePartnerTmpL,SalesLineTmpL);
+              CLEAR(SalesPostL);
+              SalesPostL.RUN(SalesHeaderR);
+              IF SalesLineTmpL.ISEMPTY THEN // Nothing to post any more
+                EXIT;
+            UNTIL (MarketPlacePartnerTmpL.NEXT = 0);
+          END;
+          SalesHeaderR.Ship := SalesHeaderSaveL.Ship;
+          SalesHeaderR.Invoice := SalesHeaderSaveL.Invoice;
+          SalesHeaderR.Receive := SalesHeaderSaveL.Receive;
+          CLEAR(MarketPlacePartnerTmpL);
+          // Setup Remaing Lines
+          SetUpLine(SalesHeaderR,FALSE,MarketPlacePartnerTmpL,SalesLineTmpL);
+        END;
+      END;
+
+      // Default Post
+      CLEAR(SalesPostL);
+      SalesPostL.RUN(SalesHeaderR);
+      //T0060 27.02.15 CC-GH ---------------------------------------------------
+    END;
+
+    LOCAL PROCEDURE SetUpLine@1000000017(SalesHeaderV@1000000000 : Record 36;ForMarketplacePartnerV@1000000002 : Boolean;MarketplacePartnerV@1000000003 : Record 50502;VAR SalesLineTmpR@1000000004 : TEMPORARY Record 37);
+    VAR
+      SalesLineL@1000000001 : Record 37;
+      PostLineL@1000000005 : Boolean;
+    BEGIN
+      //T0060 27.02.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Setup Line for Posting
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type", SalesHeaderV."Document Type");
+      SalesLineL.SETRANGE("Document No.", SalesHeaderV."No.");
+      IF SalesLineL.FINDSET(TRUE) THEN BEGIN
+        REPEAT
+          IF ForMarketplacePartnerV THEN BEGIN
+            PostLineL := SalesLineL."Market Place" AND (SalesLineL.Type = SalesLineL.Type::Item) AND
+              (MarketplacePartnerV."Market Place Partner" = SalesLineL."Vendor No.");
+            IF PostLineL THEN BEGIN
+              PostLineL := SalesLineTmpR.GET(SalesLineL."Document Type", SalesLineL."Document No.", SalesLineL."Line No.");
+            END;
+          END ELSE BEGIN
+             PostLineL := SalesLineTmpR.GET(SalesLineL."Document Type", SalesLineL."Document No.", SalesLineL."Line No.");
+          END;
+          IF PostLineL THEN BEGIN
+            SalesLineL."Qty. to Invoice" := SalesLineTmpR."Qty. to Invoice";
+            SalesLineL."Qty. to Ship" := SalesLineTmpR."Qty. to Ship";
+            SalesLineL."Qty. to Invoice (Base)" := SalesLineTmpR."Qty. to Invoice (Base)";
+            SalesLineL."Qty. to Ship (Base)" := SalesLineTmpR."Qty. to Ship (Base)";
+            SalesLineL."Return Qty. to Receive" := SalesLineTmpR."Return Qty. to Receive";
+            SalesLineL."Return Qty. to Receive (Base)" := SalesLineTmpR."Return Qty. to Receive (Base)";
+            SalesLineL.MODIFY;
+            SalesLineTmpR.DELETE;
+          END ELSE BEGIN
+            SalesLineL."Qty. to Invoice" := 0;
+            SalesLineL."Qty. to Ship" := 0;
+            SalesLineL."Qty. to Invoice (Base)" := 0;
+            SalesLineL."Qty. to Ship (Base)" := 0;
+            SalesLineL."Return Qty. to Receive" := 0;
+            SalesLineL."Return Qty. to Receive (Base)" := 0;
+            SalesLineL.MODIFY;
+          END;
+        UNTIL SalesLineL.NEXT =0;
+      END;
+      //T0060 27.02.15 CC-GH ---------------------------------------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation Tectura & Home24 NAV Team  |
+      |                                            |
+      +--------------------------------------------+
+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      T0070       14.10.14  TEC-SH    function CheckMPLinesInPurchOrders (only clean market place orders are allowed)
+                                      Separate posted Receipt Invoice etc. by separate Nb. Series
+      T0078       15.10.14  TEC-GH    New functions
+      H1309       30.10.14  TEC-SH    Fill Vendor Invoice No. (purchase header)
+      T0082       26.11.14  TEC-SH    Post sales batch (new function PostPerSalesBatch)
+                                      added parameter in function T50225.InsertNewRecord
+                                      "ManualPostingV"  (Boolean to mark manual postings)
+      T0088       09.12.14  TEC-GH    Fill MP Posting Information
+      T0060       25.02.15  CC-GH     Allow receipt and Invoice for Marketplace
+      H3799       03.03.15  ARI       Hotfix T0082 - Dont Post with Workdate use ADD as Posting Date
+      H3958       01.04.15  CC-GH     Prevent receipt of Item Charge for Marketplace
+    }
+    END.
+  }
+}
+

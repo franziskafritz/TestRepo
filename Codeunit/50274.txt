@@ -1,0 +1,744 @@
+OBJECT Codeunit 50274 DPD SCANINFO Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=08.12.14;
+    Time=09:25:21;
+    Modified=Yes;
+    Version List=GOB,HME1845;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+            CASE GlobalRunType OF
+              GlobalRunType::ImportSCANINFO :
+                BEGIN
+                  ImportSCANINFO(GlobalFilename,GlobalDestinationFilename);
+                END;
+              GlobalRunType::ProcessSCANINFO :
+                BEGIN
+                  ProcessSCANINFO(GlobalEntryNo);
+                END;
+              GlobalRunType::ErrorSCANINFO :
+                BEGIN
+                  ErrorSCANINFO;
+                END;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      DPDSetup@1000000002 : Record 50221;
+      GlobalRunType@1000000000 : ' ,ImportSCANINFO,ProcessSCANINFO,ErrorSCANINFO';
+      GlobalEntryNo@1000000001 : Integer;
+      GlobalFilename@1000000004 : Text[1024];
+      GlobalDestinationFilename@1000000005 : Text[1024];
+      WasNewRecord@1000000003 : Boolean;
+      DPDJobQueueMgt@1000000006 : Codeunit 50273;
+
+    PROCEDURE InitImportSCANINFO@1000000001(p_Filename@1000000000 : Text[1024];p_DestinationFilename@1000000001 : Text[1024]);
+    BEGIN
+      CLEARALL;
+      GlobalRunType := GlobalRunType::ImportSCANINFO;
+      GlobalFilename := p_Filename;
+      GlobalDestinationFilename := p_DestinationFilename;
+    END;
+
+    PROCEDURE InitProcessSCANINFO@1000000000(p_EntryNo@1000000001 : Integer);
+    BEGIN
+      CLEARALL;
+      GlobalRunType := GlobalRunType::ProcessSCANINFO;
+      GlobalEntryNo := p_EntryNo;
+    END;
+
+    PROCEDURE InitErrorSCANINFO@1000000002(p_Filename@1000000000 : Text[1024]);
+    BEGIN
+      CLEARALL;
+      GlobalRunType := GlobalRunType::ErrorSCANINFO;
+      GlobalFilename := p_Filename;
+    END;
+
+    PROCEDURE ImportSCANINFO@1000000016(p_Filename@1000000000 : Text[1024];p_DestinationFilename@1000000003 : Text[1024]);
+    VAR
+      DPDScanInfoImpBuf@1000000001 : Record 50222;
+      TextLine@1000000002 : Text[1024];
+      FileReader@1000000004 : File;
+      IsFirstLine@1000000005 : Boolean;
+    BEGIN
+      CLEAR(FileReader);
+      CLEAR(TextLine);
+      IsFirstLine := TRUE;
+      FileReader.TEXTMODE(TRUE);
+      FileReader.WRITEMODE(FALSE);
+      FileReader.OPEN(p_Filename);
+      REPEAT
+        FileReader.READ(TextLine);
+        IF NOT IsFirstLine THEN BEGIN
+          WITH DPDScanInfoImpBuf DO BEGIN
+            INIT;
+            "Entry No." := DPDScanInfoImpBuf.GetNextEntryNo;
+            Status := DPDScanInfoImpBuf.Status::Unprocessed;
+            "Import Filename" := GetFileName(p_Filename);
+            PARCELNO := GetNextLineValue(TextLine,';');
+            SCAN_CODE := GetNextLineValue(TextLine,';');
+            DEPOT_CODE := GetNextLineValue(TextLine,';');
+            SCAN_DATE_TIME := GetNextLineValue(TextLine,';');
+            ROUTE := GetNextLineValue(TextLine,';');
+            TOUR := GetNextLineValue(TextLine,';');
+            SERVICE := GetNextLineValue(TextLine,';');
+            RCOUNTRYN := GetNextLineValue(TextLine,';');
+            RCOUNTRY := GetNextLineValue(TextLine,';');
+            CONSIGNEE_ZIP := GetNextLineValue(TextLine,';');
+            ADD_SERVICE_1 := GetNextLineValue(TextLine,';');
+            ADD_SERVICE_2 := GetNextLineValue(TextLine,';');
+            ADD_SERVICE_3 := GetNextLineValue(TextLine,';');
+            ADD_SERVICE_4 := GetNextLineValue(TextLine,';');
+            ADD_SERVICE_5 := GetNextLineValue(TextLine,';');
+            WEIGHT := GetNextLineValue(TextLine,';');
+            VOLUME := GetNextLineValue(TextLine,';');
+            POD_IMAGE_REF := GetNextLineValue(TextLine,';');
+            RECEIVER_NAME := GetNextLineValue(TextLine,';');
+            INFO_TEXT := GetNextLineValue(TextLine,';');
+            LOCATION := GetNextLineValue(TextLine,';');
+            MPSCREF1 := GetNextLineValue(TextLine,';');
+            MPSCREF2 := GetNextLineValue(TextLine,';');
+            MPSCREF3 := GetNextLineValue(TextLine,';');
+            MPSCREF4 := GetNextLineValue(TextLine,';');
+            CREF1 := GetNextLineValue(TextLine,';');
+            CREF2 := GetNextLineValue(TextLine,';');
+            CREF3 := GetNextLineValue(TextLine,';');
+            CREF4 := GetNextLineValue(TextLine,';');
+            CUSTOMER_REFERENCE := GetNextLineValue(TextLine,';');
+            DELISUSR := GetNextLineValue(TextLine,';');
+            INSERT(TRUE);
+          END;
+        END;
+        IsFirstLine := FALSE;
+      UNTIL FileReader.POS = FileReader.LEN;
+      FileReader.CLOSE;
+      CopyToArchiveAndErase(p_Filename,p_DestinationFilename);
+    END;
+
+    PROCEDURE ProcessSCANINFO@1000000003(p_EntryNo@1000000000 : Integer);
+    VAR
+      DPDSCANINFOImportBuffer@1000000001 : Record 50222;
+      ParcelStatusHistory@1000000002 : Record 80013;
+      ParcelStatusHistoryArchive@1000000003 : Record 50187;
+      UnknownTrackingNoError@1000000004 : TextConst 'ENU=Unknown Tracking No. %1';
+    BEGIN
+      WasNewRecord := FALSE;
+      DPDSCANINFOImportBuffer.GET(p_EntryNo);
+      DPDSCANINFOImportBuffer.TESTFIELD(Status,DPDSCANINFOImportBuffer.Status::Unprocessed);
+      DPDSetup.GET;
+      DPDSetup.TESTFIELD("Shipping Agent DPD");
+      ParcelStatusHistory.RESET;
+      ParcelStatusHistory.SETCURRENTKEY("Shipping Agent Code","Tracking Code","Piece Code");
+      ParcelStatusHistory.SETRANGE("Shipping Agent Code",DPDSetup."Shipping Agent DPD");
+      ParcelStatusHistory.SETRANGE("Tracking Code",DPDSCANINFOImportBuffer.PARCELNO);
+      ParcelStatusHistory.SETRANGE("Piece Code",'');
+      IF ParcelStatusHistory.FINDLAST THEN BEGIN
+        ParcelStatusHistory.TESTFIELD("Document No.");
+        ParcelStatusHistory.TESTFIELD("Document Line No.");
+      END ELSE BEGIN
+        ParcelStatusHistoryArchive.RESET;
+        ParcelStatusHistoryArchive.SETCURRENTKEY("Shipping Agent Code","Tracking Code","Piece Code");
+        ParcelStatusHistoryArchive.SETRANGE("Shipping Agent Code",DPDSetup."Shipping Agent DPD");
+        ParcelStatusHistoryArchive.SETRANGE("Tracking Code",DPDSCANINFOImportBuffer.PARCELNO);
+        ParcelStatusHistoryArchive.SETRANGE("Piece Code",'');
+        IF ParcelStatusHistoryArchive.FINDLAST THEN BEGIN
+          ParcelStatusHistoryArchive.TESTFIELD("Document No.");
+          ParcelStatusHistoryArchive.TESTFIELD("Document Line No.");
+          ParcelStatusHistory."Document Type" := ParcelStatusHistoryArchive."Document Type";
+          ParcelStatusHistory."Document No." := ParcelStatusHistoryArchive."Document No.";
+          ParcelStatusHistory."Document Line No." := ParcelStatusHistoryArchive."Document Line No.";
+        END ELSE
+          ERROR(UnknownTrackingNoError,DPDSCANINFOImportBuffer.PARCELNO);
+      END;
+      // Always Check for ADD_Service_1 because can be Status without Sub Status
+      CheckAndInsertParcelStatusRecs(
+        DPDSCANINFOImportBuffer,
+        ParcelStatusHistory."Document Type",
+        ParcelStatusHistory."Document No.",
+        ParcelStatusHistory."Document Line No.",
+        DPDSCANINFOImportBuffer.ADD_SERVICE_1);
+      // Check if 2. Additional Status Existing
+      IF DPDSCANINFOImportBuffer.ADD_SERVICE_2 <> '' THEN
+        CheckAndInsertParcelStatusRecs(
+          DPDSCANINFOImportBuffer,
+          ParcelStatusHistory."Document Type",
+          ParcelStatusHistory."Document No.",
+          ParcelStatusHistory."Document Line No.",
+          DPDSCANINFOImportBuffer.ADD_SERVICE_2);
+      // Check if 3. Additional Status Existing
+      IF DPDSCANINFOImportBuffer.ADD_SERVICE_3 <> '' THEN
+        CheckAndInsertParcelStatusRecs(
+          DPDSCANINFOImportBuffer,
+          ParcelStatusHistory."Document Type",
+          ParcelStatusHistory."Document No.",
+          ParcelStatusHistory."Document Line No.",
+          DPDSCANINFOImportBuffer.ADD_SERVICE_3);
+      // Check if 4. Additional Status Existing
+      IF DPDSCANINFOImportBuffer.ADD_SERVICE_4 <> '' THEN
+        CheckAndInsertParcelStatusRecs(
+          DPDSCANINFOImportBuffer,
+          ParcelStatusHistory."Document Type",
+          ParcelStatusHistory."Document No.",
+          ParcelStatusHistory."Document Line No.",
+          DPDSCANINFOImportBuffer.ADD_SERVICE_4);
+      // Check if 5. Additional Status Existing
+      IF DPDSCANINFOImportBuffer.ADD_SERVICE_5 <> '' THEN
+        CheckAndInsertParcelStatusRecs(
+          DPDSCANINFOImportBuffer,
+          ParcelStatusHistory."Document Type",
+          ParcelStatusHistory."Document No.",
+          ParcelStatusHistory."Document Line No.",
+          DPDSCANINFOImportBuffer.ADD_SERVICE_5);
+    END;
+
+    PROCEDURE ErrorSCANINFO@1000000005();
+    BEGIN
+      RENAME(GlobalFilename,GlobalFilename + '.error'); //RENAME(OldFIlename,newFilename)
+    END;
+
+    PROCEDURE CopyToArchiveAndErase@1000000023(p_SourceFilePath@1000000001 : Text[1024];p_DestinationFilePath@1000000000 : Text[1024]);
+    BEGIN
+      COPY(GlobalFilename,GlobalDestinationFilename);
+      ERASE(GlobalFilename);
+    END;
+
+    PROCEDURE CheckAndInsertParcelStatusRecs@1000000007(p_DPDSCANINFOImportBuffer@1000000000 : Record 50222;p_DocType@1000000002 : Integer;p_DocNo@1000000003 : Code[20];p_LineNo@1000000004 : Integer;p_SubStatus@1000000005 : Code[10]);
+    VAR
+      SalesHeader@1000000014 : Record 36;
+      SalesLine@1000000019 : Record 37;
+      SalesLine2@1000000012 : Record 37;
+      SalesLineTEMP@1000000006 : TEMPORARY Record 37;
+      SalesHeaderArchive@1000000021 : Record 5107;
+      SalesLineArchive@1000000007 : Record 5108;
+      SalesLineArchive2@1000000024 : Record 5108;
+      SalesLineArchiveTEMP@1000000023 : TEMPORARY Record 5108;
+      ParcelStatusCodes@1000000026 : Record 50188;
+      ParcelStatusHistory@1000000025 : Record 80013;
+      ParcelStatusHistoryArchive@1000000001 : Record 50187;
+      FPCGeneralSetup@1000000017 : Record 50055;
+      Purchasing@1000000018 : Record 5721;
+      NoSalesHeaderFoundError@1000000009 : TextConst 'ENU=No %1 or %2 found. Document Type %3. No. %4';
+      ParcelStatusHistoryMgmt@1000000010 : Codeunit 80011;
+      InterfaceProcessMgt@1000000016 : Codeunit 50087;
+      SalesPost@1000000015 : Codeunit 80;
+      RecRef@1000000008 : RecordRef;
+      ModifySalesLine@1000000013 : Boolean;
+      IsArchive@1000000020 : Boolean;
+      DHLParcelStatusHistory@1000000011 : Record 50021;
+      SalesOrderShipmentsDHL@1000000022 : Record 50020;
+      CreateIPL@1000000027 : Boolean;
+    BEGIN
+      SalesLineTEMP.DELETEALL;
+      SalesLineArchiveTEMP.DELETEALL;
+      IsArchive := FALSE;
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Interface Code DocData");
+      FPCGeneralSetup.TESTFIELD("Interface Code Dropshipment");
+      // Get associated Sales Lines
+      ParcelStatusHistory.RESET;
+      ParcelStatusHistory.SETCURRENTKEY("Document No.","Document Line No.","Document Type");
+      ParcelStatusHistory.SETRANGE("Document No.",p_DocNo);
+      ParcelStatusHistory.SETRANGE("Document Type",p_DocType);
+      ParcelStatusHistory.SETRANGE("Tracking Code",p_DPDSCANINFOImportBuffer.PARCELNO);
+      IF ParcelStatusHistory.FIND('-') THEN BEGIN
+        // Check if Document exists, Active or Archived Sales Doc
+        IF NOT SalesHeader.GET(p_DocType,p_DocNo) THEN BEGIN
+          SalesHeaderArchive.RESET;
+          SalesHeaderArchive.SETRANGE("Document Type",p_DocType);
+          SalesHeaderArchive.SETRANGE("No.",p_DocNo);
+          IF NOT SalesHeaderArchive.ISEMPTY THEN
+            IsArchive := TRUE
+          ELSE
+            ERROR(NoSalesHeaderFoundError,SalesHeader.TABLECAPTION,SalesHeaderArchive.TABLECAPTION,p_DocType,p_DocNo);
+        END;
+        // Add all Lines with the same Tracking Code and Sales Doc
+        REPEAT
+          // Fill Active Sales Lines with the same Doc./Tracking No.
+          IF NOT IsArchive THEN BEGIN
+            IF SalesLine.GET(
+               ParcelStatusHistory."Document Type",
+               ParcelStatusHistory."Document No.",
+               ParcelStatusHistory."Document Line No.")
+            THEN BEGIN
+              SalesLineTEMP.INIT;
+              SalesLineTEMP.TRANSFERFIELDS(SalesLine);
+              IF SalesLineTEMP.INSERT THEN;
+            END;
+          END ELSE BEGIN
+            // Fill Archived Sales Lines with the same Doc./Tracking No.
+            SalesLineArchive.RESET;
+            SalesLineArchive.SETRANGE("Document Type",p_DocType);
+            SalesLineArchive.SETRANGE("Document No.",p_DocNo);
+            SalesLineArchive.SETRANGE("Line No.",p_LineNo);
+            IF SalesLineArchive.FINDFIRST THEN BEGIN
+              SalesLineArchiveTEMP.INIT;
+              SalesLineArchiveTEMP.TRANSFERFIELDS(SalesLineArchive);
+              IF SalesLineArchiveTEMP.INSERT THEN;
+            END;
+          END;
+        UNTIL ParcelStatusHistory.NEXT = 0;
+        // Get other Sales Lines
+        IF NOT IsArchive THEN BEGIN
+          SalesLine.GET(p_DocType,p_DocNo,p_LineNo);
+          Purchasing.GET(SalesLine."Purchasing Code");
+          CASE Purchasing."Interface Code" OF
+            // If Docdata the add Status to all Docdata Lines
+            FPCGeneralSetup."Interface Code DocData" :
+              BEGIN
+                SalesLine2.RESET;
+                SalesLine2.SETRANGE("Document Type",SalesLine."Document Type");
+                SalesLine2.SETRANGE("Document No.",SalesLine."Document No.");
+                SalesLine2.SETRANGE(Type,SalesLine.Type::Item);
+                SalesLine2.SETRANGE("Purchasing Code",SalesLine."Purchasing Code");
+                IF SalesLine2.FINDSET THEN BEGIN
+                  REPEAT
+                    SalesLineTEMP.INIT;
+                    SalesLineTEMP.TRANSFERFIELDS(SalesLine2);
+                    IF SalesLineTEMP.INSERT THEN;
+                  UNTIL SalesLine2.NEXT = 0;
+                END;
+              END;
+            // If Dropship or corss dock then add Status for all Dropship/Cross dock Lines with same Vendor
+            //H1845,H1638 27.11.14 DMA +++++++++++++++++++++++++++++++
+            FPCGeneralSetup."Interface Code Dropshipment",
+            FPCGeneralSetup."Interface Code Crossdock" :
+              BEGIN
+                IF IsTheStatusForADDUpdate(p_DocType,p_DocNo,p_LineNo,
+                  p_DPDSCANINFOImportBuffer.PARCELNO,SalesLine."Purchasing Code",p_DPDSCANINFOImportBuffer.SCAN_CODE) THEN BEGIN
+                  SalesLine2.RESET;
+                  SalesLine2.SETRANGE("Document Type",SalesLine."Document Type");
+                  SalesLine2.SETRANGE("Document No.",SalesLine."Document No.");
+                  SalesLine2.SETFILTER("Line No.",'<>%1',SalesLine."Line No.");
+                  SalesLine2.SETRANGE(Type,SalesLine2.Type::Item);
+                  SalesLine2.SETRANGE("Purchasing Code",SalesLine."Purchasing Code");
+                  SalesLine2.SETRANGE("Vendor No.",SalesLine."Vendor No.");
+                  SalesLine2.SETFILTER(Quantity,'<>%1',0);
+                  IF SalesLine2.FINDSET THEN BEGIN
+                    REPEAT
+                      IF IsADDUpdateForLineAllowed(SalesLine2."Document Type",SalesLine2."Document No.",
+                        SalesLine2."Line No.") THEN BEGIN
+                        SalesLineTEMP.INIT;
+                        SalesLineTEMP.TRANSFERFIELDS(SalesLine2);
+                        IF SalesLineTEMP.INSERT THEN;
+                      END;
+                    UNTIL SalesLine2.NEXT = 0;
+                  END;
+                END;
+              END;
+            //H1845,H1638 27.11.14 DMA -------------------------------
+          END;
+        END ELSE BEGIN
+          SalesLineArchive.SETRANGE("Document Type",p_DocType);
+          SalesLineArchive.SETRANGE("Document No.",p_DocNo);
+          SalesLineArchive.SETRANGE("Line No.",p_LineNo);
+          SalesLineArchive.FINDFIRST;
+          Purchasing.GET(SalesLineArchive."Purchasing Code");
+          CASE Purchasing."Interface Code" OF
+            // If Docdata the add Status to all Docdata Lines
+            FPCGeneralSetup."Interface Code DocData" :
+              BEGIN
+                SalesLineArchive2.RESET;
+                SalesLineArchive2.SETRANGE("Document Type",SalesLineArchive."Document Type");
+                SalesLineArchive2.SETRANGE("Document No.",SalesLineArchive."Document No.");
+                SalesLineArchive2.SETRANGE(Type,SalesLineArchive.Type::Item);
+                SalesLineArchive2.SETRANGE("Purchasing Code",SalesLineArchive."Purchasing Code");
+                IF SalesLineArchive2.FINDSET THEN BEGIN
+                  REPEAT
+                    SalesLineArchiveTEMP.INIT;
+                    SalesLineArchiveTEMP.TRANSFERFIELDS(SalesLineArchive2);
+                    IF SalesLineArchiveTEMP.INSERT THEN;
+                  UNTIL SalesLineArchive2.NEXT = 0;
+                END;
+              END;
+            // If Dropship or corss dock then add Status for all Dropship/Cross dock Lines with same Vendor
+            //H1845,H1638 04.12.14 DMA +++++++++++++++++++++++++++++++++++
+            FPCGeneralSetup."Interface Code Dropshipment",
+            FPCGeneralSetup."Interface Code Crossdock" :
+              BEGIN
+                IF IsTheStatusForADDUpdate(p_DocType,p_DocNo,p_LineNo,
+                  p_DPDSCANINFOImportBuffer.PARCELNO,SalesLineArchive."Purchasing Code",p_DPDSCANINFOImportBuffer.SCAN_CODE) THEN BEGIN
+                  SalesLineArchive2.RESET;
+                  SalesLineArchive2.SETRANGE("Document Type",SalesLineArchive."Document Type");
+                  SalesLineArchive2.SETRANGE("Document No.",SalesLineArchive."Document No.");
+                  SalesLineArchive2.SETFILTER("Line No.",'<>%1',SalesLine."Line No.");
+                  SalesLineArchive2.SETRANGE(Type,SalesLineArchive2.Type::Item);
+                  SalesLineArchive2.SETRANGE("Purchasing Code",SalesLineArchive."Purchasing Code");
+                  SalesLineArchive2.SETRANGE("Vendor No.",SalesLineArchive."Vendor No.");
+                  SalesLineArchive2.SETFILTER(Quantity,'<>%1',0);
+                  IF SalesLineArchive2.FINDSET THEN BEGIN
+                    REPEAT
+                      IF IsADDUpdateForLineAllowed(SalesLineArchive2."Document Type",
+                        SalesLineArchive2."Document No.",SalesLineArchive2."Line No.") THEN BEGIN
+                        SalesLineArchiveTEMP.INIT;
+                        SalesLineArchiveTEMP.TRANSFERFIELDS(SalesLineArchive2);
+                      END;
+                      IF SalesLineArchiveTEMP.INSERT THEN;
+                    UNTIL SalesLineArchive2.NEXT = 0;
+                  END;
+                END;
+              END;
+            //H1845,H1638 04.12.14 DMA -----------------------------------
+
+          END;
+        END;
+        IF NOT IsArchive THEN BEGIN
+          SalesLineTEMP.RESET;
+          IF SalesLineTEMP.FINDSET THEN BEGIN
+            REPEAT
+              IF FPCGeneralSetup."Active Parcel Status History" IN
+                [FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+                 FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+                 FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History"]
+              THEN BEGIN
+                CLEAR(ParcelStatusHistoryMgmt);
+                ParcelStatusHistory.RESET;
+                ParcelStatusHistory.SETCURRENTKEY("Document No.","Document Line No.","Document Type");
+                ParcelStatusHistory.SETRANGE("Document No.",SalesLineTEMP."Document No.");
+                ParcelStatusHistory.SETRANGE("Document Line No.",SalesLineTEMP."Line No.");
+                ParcelStatusHistory.SETRANGE("Document Type",SalesLineTEMP."Document Type");
+                ParcelStatusHistory.SETRANGE("Shipping Agent Code",DPDSetup."Shipping Agent DPD");
+                ParcelStatusHistory.SETRANGE("Status Code",p_DPDSCANINFOImportBuffer.SCAN_CODE);
+                ParcelStatusHistory.SETRANGE("Status Sub Code",p_SubStatus);
+                ParcelStatusHistory.SETRANGE("Tracking Code",p_DPDSCANINFOImportBuffer.PARCELNO);
+                ParcelStatusHistory.SETRANGE("Timestamp Interface",GetDateTimeFromDPDTimeStamp(p_DPDSCANINFOImportBuffer.SCAN_DATE_TIME)
+      );
+                IF ParcelStatusHistory.ISEMPTY THEN BEGIN
+                  WasNewRecord := TRUE;
+                  RecRef.GETTABLE(SalesLineTEMP);
+                  ParcelStatusHistoryMgmt.SetDateTimeGlobal(GetDateTimeFromDPDTimeStamp(p_DPDSCANINFOImportBuffer.SCAN_DATE_TIME));
+                  ParcelStatusHistoryMgmt.FillHistoryByDocLine(
+                    RecRef,
+                    1,
+                    0,
+                    7,
+                    DPDSetup."Shipping Agent DPD",
+                    p_DPDSCANINFOImportBuffer.PARCELNO,
+                    '',
+                    p_DPDSCANINFOImportBuffer.SCAN_CODE,
+                    p_SubStatus,
+                    p_DPDSCANINFOImportBuffer.CUSTOMER_REFERENCE,
+                    0);
+                  IF ParcelStatusCodes.GET(DPDSetup."Shipping Agent DPD",p_DPDSCANINFOImportBuffer.SCAN_CODE,p_SubStatus) AND
+                     (ParcelStatusCodes."IPL Status Code to Create" <> '')
+                  THEN BEGIN
+                    CreateIPL := FALSE;
+                    IF ParcelStatusCodes."Check DPD POD" THEN BEGIN
+                      IF p_DPDSCANINFOImportBuffer.POD_IMAGE_REF <> '' THEN
+                        CreateIPL := TRUE;
+                    END ELSE
+                      CreateIPL := TRUE;
+                    IF CreateIPL THEN BEGIN
+                      DPDSetup.GET;
+                      DPDSetup.TESTFIELD("Interface Code DPD");
+                      FPCGeneralSetup.TESTFIELD("Trigger DPD");
+                      CLEAR(InterfaceProcessMgt);
+                      InterfaceProcessMgt.InsertInterfaceRecords(
+                        0,
+                        SalesLineTEMP."Document Type",
+                        SalesLineTEMP."Document No.",
+                        SalesLineTEMP."Line No.",
+                        DPDSetup."Interface Code DPD",
+                        ParcelStatusCodes."IPL Status Code to Create",
+                        FPCGeneralSetup."Trigger DPD");
+                      END;
+                  END;
+                END;
+              END;
+              IF FPCGeneralSetup."Active Parcel Status History" IN
+                [FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+                 FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+                 FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History"]
+              THEN BEGIN
+                DHLParcelStatusHistory.RESET;
+                DHLParcelStatusHistory.SETCURRENTKEY(
+                  "DHL Shipment Code",
+                  "Piece-Code (Identifier)",
+                  "Document Type",
+                  "Document No.",
+                  "Document Line No.");
+                DHLParcelStatusHistory.SETRANGE("DHL Shipment Code",p_DPDSCANINFOImportBuffer.PARCELNO);
+                DHLParcelStatusHistory.SETRANGE("Piece-Code (Identifier)",'');
+                DHLParcelStatusHistory.SETRANGE("Document Type",DHLParcelStatusHistory."Document Type"::Order);
+                DHLParcelStatusHistory.SETRANGE("Document No.",SalesLineTEMP."Document No.");
+                DHLParcelStatusHistory.SETRANGE("Document Line No.",SalesLineTEMP."Line No.");
+                DHLParcelStatusHistory.SETRANGE("Time Stamp",GetDateTimeFromDPDTimeStamp(p_DPDSCANINFOImportBuffer.SCAN_DATE_TIME));
+                DHLParcelStatusHistory.SETRANGE("Status Event",p_DPDSCANINFOImportBuffer.SCAN_CODE);
+                DHLParcelStatusHistory.SETRANGE("Status Code",p_SubStatus);
+                DHLParcelStatusHistory.SETRANGE("Shipment through",DHLParcelStatusHistory."Shipment through"::DocData);
+                DHLParcelStatusHistory.SETRANGE("Shipping Agent",DPDSetup."Shipping Agent DPD");
+                IF DHLParcelStatusHistory.ISEMPTY THEN BEGIN
+                  IF NOT SalesOrderShipmentsDHL.GET(p_DPDSCANINFOImportBuffer.PARCELNO,DPDSetup."Shipping Agent DPD") THEN BEGIN
+                    SalesOrderShipmentsDHL."DHL Shipment Number Code" := p_DPDSCANINFOImportBuffer.PARCELNO;
+                    SalesOrderShipmentsDHL."Shipping Agent Code" := DPDSetup."Shipping Agent DPD";
+                    SalesOrderShipmentsDHL."SO No." := SalesLineTEMP."Document No.";
+                    SalesOrderShipmentsDHL."Purchasing Code" := SalesLineTEMP."Purchasing Code";
+                    SalesOrderShipmentsDHL.INSERT;
+                  END;
+                  DHLParcelStatusHistory.INIT;
+                  DHLParcelStatusHistory."Entry No." := 0;
+                  DHLParcelStatusHistory."DHL Shipment Code" := p_DPDSCANINFOImportBuffer.PARCELNO;
+                  DHLParcelStatusHistory."Time Stamp" := GetDateTimeFromDPDTimeStamp(p_DPDSCANINFOImportBuffer.SCAN_DATE_TIME);
+                  DHLParcelStatusHistory."Status Event" := p_DPDSCANINFOImportBuffer.SCAN_CODE;
+                  DHLParcelStatusHistory."Status Code" := p_SubStatus;
+                  DHLParcelStatusHistory."Document No." := SalesLineTEMP."Document No.";
+                  DHLParcelStatusHistory."Document Type" := DHLParcelStatusHistory."Document Type"::Order;
+                  DHLParcelStatusHistory."Document Line No." := SalesLineTEMP."Line No.";
+                  DHLParcelStatusHistory."Import Time Stamp" := p_DPDSCANINFOImportBuffer."Insert Timestamp";
+                  DHLParcelStatusHistory."Time Difference" := DHLParcelStatusHistory."Time Stamp" -
+                    DHLParcelStatusHistory."Import Time Stamp";
+                  DHLParcelStatusHistory."Shipment through" := DHLParcelStatusHistory."Shipment through"::DocData;
+                  DHLParcelStatusHistory."Shipping Agent" := DPDSetup."Shipping Agent DPD";
+                  DHLParcelStatusHistory.INSERT(TRUE);
+                END;
+              END;
+            UNTIL SalesLineTEMP.NEXT = 0;
+          END;
+        END ELSE BEGIN
+          SalesLineArchiveTEMP.RESET;
+          IF SalesLineArchiveTEMP.FINDSET THEN BEGIN
+            REPEAT
+              IF FPCGeneralSetup."Active Parcel Status History" IN
+                [FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+                 FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+                 FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History"]
+              THEN BEGIN
+                CLEAR(ParcelStatusHistoryMgmt);
+                ParcelStatusHistoryArchive.RESET;
+                ParcelStatusHistoryArchive.SETCURRENTKEY("Document No.","Document Line No.","Document Type");
+                ParcelStatusHistoryArchive.SETRANGE("Document No.",SalesLineArchiveTEMP."Document No.");
+                ParcelStatusHistoryArchive.SETRANGE("Document Line No.",SalesLineArchiveTEMP."Line No.");
+                ParcelStatusHistoryArchive.SETRANGE("Document Type",SalesLineArchiveTEMP."Document Type");
+                ParcelStatusHistoryArchive.SETRANGE("Shipping Agent Code",DPDSetup."Shipping Agent DPD");
+                ParcelStatusHistoryArchive.SETRANGE("Status Code",p_DPDSCANINFOImportBuffer.SCAN_CODE);
+                ParcelStatusHistoryArchive.SETRANGE("Status Sub Code",p_SubStatus);
+                ParcelStatusHistoryArchive.SETRANGE("Tracking Code",p_DPDSCANINFOImportBuffer.PARCELNO);
+                ParcelStatusHistoryArchive.SETRANGE("Timestamp Interface",
+                  GetDateTimeFromDPDTimeStamp(p_DPDSCANINFOImportBuffer.SCAN_DATE_TIME));
+                IF ParcelStatusHistoryArchive.ISEMPTY THEN BEGIN
+                  WasNewRecord := TRUE;
+                  RecRef.GETTABLE(SalesLineArchiveTEMP);
+                  ParcelStatusHistoryMgmt.SetDateTimeGlobal(GetDateTimeFromDPDTimeStamp(p_DPDSCANINFOImportBuffer.SCAN_DATE_TIME));
+                  ParcelStatusHistoryMgmt.FillHistoryByDocLine(
+                    RecRef,
+                    1,
+                    0,
+                    7,
+                    DPDSetup."Shipping Agent DPD",
+                    p_DPDSCANINFOImportBuffer.PARCELNO,
+                    '',
+                    p_DPDSCANINFOImportBuffer.SCAN_CODE,
+                    p_SubStatus,
+                    p_DPDSCANINFOImportBuffer.CUSTOMER_REFERENCE,
+                    0);
+                END;
+              END;
+              IF FPCGeneralSetup."Active Parcel Status History" IN
+                [FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+                 FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+                 FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History"]
+              THEN BEGIN
+                DHLParcelStatusHistory.RESET;
+                DHLParcelStatusHistory.SETCURRENTKEY(
+                  "DHL Shipment Code",
+                  "Piece-Code (Identifier)",
+                  "Document Type",
+                  "Document No.",
+                  "Document Line No.");
+                DHLParcelStatusHistory.SETRANGE("DHL Shipment Code",p_DPDSCANINFOImportBuffer.PARCELNO);
+                DHLParcelStatusHistory.SETRANGE("Piece-Code (Identifier)",'');
+                DHLParcelStatusHistory.SETRANGE("Document Type",DHLParcelStatusHistory."Document Type"::Order);
+                DHLParcelStatusHistory.SETRANGE("Document No.",SalesLineArchiveTEMP."Document No.");
+                DHLParcelStatusHistory.SETRANGE("Document Line No.",SalesLineArchiveTEMP."Line No.");
+                DHLParcelStatusHistory.SETRANGE("Time Stamp",GetDateTimeFromDPDTimeStamp(p_DPDSCANINFOImportBuffer.SCAN_DATE_TIME));
+                DHLParcelStatusHistory.SETRANGE("Status Event",p_DPDSCANINFOImportBuffer.SCAN_CODE);
+                DHLParcelStatusHistory.SETRANGE("Status Code",p_SubStatus);
+                DHLParcelStatusHistory.SETRANGE("Shipment through",DHLParcelStatusHistory."Shipment through"::DocData);
+                DHLParcelStatusHistory.SETRANGE("Shipping Agent",DPDSetup."Shipping Agent DPD");
+                IF DHLParcelStatusHistory.ISEMPTY THEN BEGIN
+                  IF NOT SalesOrderShipmentsDHL.GET(p_DPDSCANINFOImportBuffer.PARCELNO,DPDSetup."Shipping Agent DPD") THEN BEGIN
+                    SalesOrderShipmentsDHL."DHL Shipment Number Code" := p_DPDSCANINFOImportBuffer.PARCELNO;
+                    SalesOrderShipmentsDHL."Shipping Agent Code" := DPDSetup."Shipping Agent DPD";
+                    SalesOrderShipmentsDHL."SO No." := SalesLineArchiveTEMP."Document No.";
+                    SalesOrderShipmentsDHL."Purchasing Code" := SalesLineArchiveTEMP."Purchasing Code";
+                    SalesOrderShipmentsDHL.INSERT;
+                  END;
+                  DHLParcelStatusHistory.INIT;
+                  DHLParcelStatusHistory."Entry No." := 0;
+                  DHLParcelStatusHistory."DHL Shipment Code" := p_DPDSCANINFOImportBuffer.PARCELNO;
+                  DHLParcelStatusHistory."Time Stamp" := GetDateTimeFromDPDTimeStamp(p_DPDSCANINFOImportBuffer.SCAN_DATE_TIME);
+                  DHLParcelStatusHistory."Status Event" := p_DPDSCANINFOImportBuffer.SCAN_CODE;
+                  DHLParcelStatusHistory."Status Code" := p_SubStatus;
+                  DHLParcelStatusHistory."Document No." := SalesLineArchiveTEMP."Document No.";
+                  DHLParcelStatusHistory."Document Type" := DHLParcelStatusHistory."Document Type"::Order;
+                  DHLParcelStatusHistory."Document Line No." := SalesLineArchiveTEMP."Line No.";
+                  DHLParcelStatusHistory."Import Time Stamp" := p_DPDSCANINFOImportBuffer."Insert Timestamp";
+                  DHLParcelStatusHistory."Time Difference" := DHLParcelStatusHistory."Time Stamp" -
+                    DHLParcelStatusHistory."Import Time Stamp";
+                  DHLParcelStatusHistory."Shipment through" := DHLParcelStatusHistory."Shipment through"::DocData;
+                  DHLParcelStatusHistory."Shipping Agent" := DPDSetup."Shipping Agent DPD";
+                  DHLParcelStatusHistory.INSERT(TRUE);
+                END;
+              END;
+            UNTIL SalesLineArchiveTEMP.NEXT = 0;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE GetDateTimeFromDPDTimeStamp@1000000012(p_DPDTimeStamp@1000000000 : Code[14]) r_TimeStamp : DateTime;
+    VAR
+      YearInt@1000000001 : Integer;
+      MonthInt@1000000002 : Integer;
+      DayInt@1000000003 : Integer;
+      HourInt@1000000005 : Integer;
+      MinuteInt@1000000004 : Integer;
+      SecondInt@1000000006 : Integer;
+      tempTime@1000000007 : Time;
+    BEGIN
+      r_TimeStamp := 0DT;
+      //YYYYMMDDhhmmss
+      EVALUATE(YearInt,COPYSTR(p_DPDTimeStamp,1,4));
+      EVALUATE(MonthInt,COPYSTR(p_DPDTimeStamp,5,2));
+      EVALUATE(DayInt,COPYSTR(p_DPDTimeStamp,7,2));
+      EVALUATE(tempTime,COPYSTR(p_DPDTimeStamp,9,6));
+      EXIT(CREATEDATETIME(DMY2DATE(DayInt,MonthInt,YearInt),tempTime));
+    END;
+
+    PROCEDURE GetWasNewRecord@1000000004() : Boolean;
+    BEGIN
+      EXIT(WasNewRecord);
+    END;
+
+    PROCEDURE GetFileName@1108200010(p_Path@1108200000 : Text[1024]) : Text[1024];
+    BEGIN
+      IF STRLEN(p_Path) <> 0 THEN BEGIN
+        IF STRPOS(p_Path,'\') <> 0 THEN
+          REPEAT
+            p_Path := COPYSTR(p_Path,STRPOS(p_Path,'\') + 1,STRLEN(p_Path));
+          UNTIL STRPOS(p_Path,'\') = 0;
+      END;
+      EXIT(p_Path);
+    END;
+
+    PROCEDURE GetNextLineValue@1000000009(VAR p_TextLine_Var@1000000000 : Text[1024];p_Separator@1000000002 : Text[1]) r_TextLineValue : Text[1024];
+    VAR
+      NoSeparatorError@1000000001 : TextConst 'ENU="There is no Separator in File %1. Expected Value ;"';
+    BEGIN
+      CASE STRPOS(p_TextLine_Var,p_Separator) OF
+        1 :
+          BEGIN
+            p_TextLine_Var := COPYSTR(p_TextLine_Var,2);
+            r_TextLineValue := '';
+          END;
+        0 :
+          BEGIN
+            ERROR(NoSeparatorError,GlobalFilename);
+          END;
+        ELSE BEGIN
+            r_TextLineValue := COPYSTR(p_TextLine_Var,1,STRPOS(p_TextLine_Var,p_Separator) - 1);
+            p_TextLine_Var := COPYSTR(p_TextLine_Var,STRPOS(p_TextLine_Var,p_Separator) + 1);
+          END;
+      END;
+    END;
+
+    PROCEDURE "*** HME **********************"@1000000008();
+    BEGIN
+    END;
+
+    PROCEDURE IsTheStatusForADDUpdate@1000000010(DocTypeV@1000000003 : Integer;DocNoV@1000000002 : Code[20];LineNoV@1000000001 : Integer;TrackingNoV@1000000006 : Text[40];PurchasingCodeV@1000000010 : Code[20];StatusCodeV@1000000012 : Code[10]) : Boolean;
+    VAR
+      ParcelStatusHistoryTmpL@1000000005 : TEMPORARY Record 80013;
+      ParcelStatusHistoryL@1000000013 : Record 80013;
+      DPDSetupL@1000000000 : Record 50221;
+      SalesTrackingActionL@1000000007 : Record 50201;
+      PurchasingL@1000000009 : Record 5721;
+      ParcelStatusHistoryMgmtL@1000000004 : Codeunit 80011;
+      ActionTypesL@1000000008 : 'Ship,,ADD,First Scan,EDD,,,,,,Update Return Order Status,Delivered';
+      IsStatusADDUpdate@1000000011 : Boolean;
+    BEGIN
+      //H1845 27.11.14 DMA +++++++++++++++++++++++++
+      DPDSetupL.GET;
+
+      IF PurchasingCodeV <> '' THEN
+        PurchasingL.GET(PurchasingCodeV);
+
+      ParcelStatusHistoryTmpL.INIT;
+      ParcelStatusHistoryTmpL."Document Type" := DocTypeV;
+      ParcelStatusHistoryTmpL."Document No." := DocNoV;
+      ParcelStatusHistoryTmpL."Document Line No." := LineNoV;
+      ParcelStatusHistoryTmpL."Tracking Code" := TrackingNoV;
+      ParcelStatusHistoryTmpL."Shipping Agent Code" := DPDSetupL."Shipping Agent DPD";
+      ParcelStatusHistoryTmpL."Status Code" := StatusCodeV;
+      EVALUATE(ParcelStatusHistoryTmpL."Used Interface", DPDSetupL."Interface Code DPD");
+      ParcelStatusHistoryTmpL.INSERT;
+
+      IsStatusADDUpdate := ParcelStatusHistoryMgmtL.CheckActionValues(
+                            ActionTypesL::ADD,
+                            PurchasingL."Sales Tracking Code",
+                            SalesTrackingActionL,
+                            ParcelStatusHistoryTmpL);
+
+      EXIT(IsStatusADDUpdate)
+      //H1845 27.11.14 DMA -------------------------
+    END;
+
+    PROCEDURE IsADDUpdateForLineAllowed@1000000013(DocTypeV@1000000003 : Integer;DocNoV@1000000002 : Code[20];LineNoV@1000000001 : Integer) : Boolean;
+    VAR
+      ParcelStatusHistoryTmpL@1000000005 : TEMPORARY Record 80013;
+      ParcelStatusHistoryL@1000000013 : Record 80013;
+      DPDSetupL@1000000000 : Record 50221;
+      SalesTrackingActionL@1000000007 : Record 50201;
+      PurchasingL@1000000009 : Record 5721;
+      ParcelStatusHistoryMgmtL@1000000004 : Codeunit 80011;
+      ActionTypesL@1000000008 : 'Ship,,ADD,First Scan,EDD,,,,,,Update Return Order Status,Delivered';
+      IsStatusADDUpdate@1000000011 : Boolean;
+    BEGIN
+      //H1845 27.11.14 DMA +++++++++++++++++++++++++
+      DPDSetupL.GET;
+
+      ParcelStatusHistoryL.RESET;
+      ParcelStatusHistoryL.SETCURRENTKEY("Document No.","Document Line No.","Document Type");
+      ParcelStatusHistoryL.SETRANGE("Document No.",DocNoV);
+      ParcelStatusHistoryL.SETRANGE("Document Type",DocTypeV);
+      ParcelStatusHistoryL.SETRANGE("Document Line No.",LineNoV);
+      ParcelStatusHistoryL.SETRANGE("Direction of Information",ParcelStatusHistoryL."Direction of Information"::Incoming);
+      ParcelStatusHistoryL.SETFILTER("Status Code",'<>%1',DPDSetupL."Allowed Status ADD Multi Upd.");
+      EXIT (ParcelStatusHistoryL.ISEMPTY);
+      //H1845 27.11.14 DMA -------------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------------+
+      |                   ¸  Copyright                   |
+      |       GOB Software & Systeme GmbH & Co. KG       |
+      +--------------------------------------------------+
+      |                      home24                      |
+      +--------------------------------------------------+
+
+      Project   Date        Consultant  Comment
+      ------------------------------------------------------
+      P1227     02.04.14    gob-rste    Object Created
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      H1638     16.10.14    DMA         Bugfix: DPD for MultiLine Orders - One Tracking applies for all lines,CODEREMOVE
+      H1845       27.11.14 DMA       DPD:Set ADD for lines without tracking information,CODECHANGE
+    }
+    END.
+  }
+}
+

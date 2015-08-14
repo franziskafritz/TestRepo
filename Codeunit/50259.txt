@@ -1,0 +1,2080 @@
+OBJECT Codeunit 50259 Create Sales Order Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=23.07.15;
+    Time=11:42:45;
+    Modified=Yes;
+    Version List=HME4042;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+            IF FunctionNo = 0 THEN
+              CreateSalesDocument(eBayNavCSalesHeaderG);
+            IF FunctionNo = 1 THEN
+              PostPrepayment(SalesHeaderG);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      DisableConfirms@1000000009 : Boolean;
+      DisableMessages@1000000008 : Boolean;
+      DisableDialogs@1000000007 : Boolean;
+      RecalculateInvoiceDiscount@1000000006 : Boolean;
+      LineDiscount@1000000005 : Decimal;
+      IgnoreKommControl@1000000002 : Boolean;
+      InvH24Mgt@1000000000 : Codeunit 50321;
+      TextHME001@1000000004 : TextConst 'ENU="The allowed Difference between Shop Amount %1 and NAV Order %2 is bigger than allowed in FPC Setup %3! "';
+      TextHME002@1000000003 : TextConst 'ENU=The allowed Difference between Shop Amount %1 and NAV Order %2 can not be arragend.';
+      FPCSetup@1000000010 : Record 50055;
+      eBayNavCSalesHeaderG@1000000012 : Record 5251571;
+      SalesHeaderG@1000000001 : Record 36;
+      FunctionNo@1000000011 : Integer;
+      Customer@1000000013 : Record 18;
+
+    PROCEDURE CreateSalesDocument@1119455007(VAR eBayNavCSalesHeaderR@1000000004 : Record 5251571);
+    VAR
+      SalesHeaderL@1000000000 : Record 36;
+      eBayNavCWebshopL@1119455003 : Record 5251553;
+      eBayNavCAccountL@1119455004 : Record 5251550;
+      ReleaseSalesDocumentL@1119455008 : Codeunit 414;
+      eBaySalesMgtL@1119455006 : Codeunit 5095806;
+      SalesPostPrepaymentsL@1170000000 : Codeunit 442;
+      SalesLineL@1000000002 : Record 37;
+      SalesLine2L@1000000010 : Record 37;
+      SalesLineTmpL@1000000006 : TEMPORARY Record 37;
+      PaymentMethodL@1000000016 : Record 289;
+      SIIFillLogCreateL@1000000013 : Codeunit 50169;
+      TotalOrderAmountL@1000000003 : Decimal;
+      OrderLineAmountL@1000000009 : Decimal;
+      OrderLineNoL@1000000008 : Integer;
+      iL@1000000007 : Integer;
+      InterfaceProcessMgtL@1000000005 : Codeunit 50087;
+      SalesHeader2L@1000000011 : Record 36;
+      FindDoubleOrdersL@1000000012 : Codeunit 50107;
+      MPDocMgtL@1000000015 : Codeunit 50500;
+      PaymentMethod2L@1000000001 : Record 289;
+    BEGIN
+      eBayNavCWebshopL.GET(eBayNavCSalesHeaderR."Webshop Code");
+      IF eBayNavCWebshopL."Create Orders Immediatley" THEN
+        EXIT;
+
+      ValidateOrder(eBayNavCSalesHeaderR);
+      CreateMasterDataFromOrder(eBayNavCSalesHeaderR);
+
+      // Erstellt aus einem NAVconnect VK-Beleg den finalen Standard VK-Beleg
+      eBayNavCAccountL.GET(eBayNavCWebshopL.Code, eBayNavCSalesHeaderR."Sell-to Account No.");
+
+      IF SalesHeaderG.GET(SalesHeaderG."Document Type"::Order,eBayNavCSalesHeaderR."No.") THEN
+        EXIT;
+
+      IF NOT Customer.GET(eBayNavCAccountL."Customer No.") THEN
+        EXIT;
+
+      // Als erstes den Kopfdatensatz anlegen
+      CreateSalesHeader(eBayNavCSalesHeaderR, SalesHeaderL);
+      CreateSalesHeaderDimensions(eBayNavCSalesHeaderR,SalesHeaderL);
+      ApplyShipToAddress(eBayNavCSalesHeaderR, SalesHeaderL);
+      ApplyBillToAddress(eBayNavCSalesHeaderR, SalesHeaderL);
+      ApplyPaymentMethod(eBayNavCSalesHeaderR, SalesHeaderL);
+      ApplyInvoiceDiscout(eBayNavCSalesHeaderR, SalesHeaderL);
+
+      SalesHeaderL.MODIFY(TRUE);
+
+      CreateSalesOrderComments(eBayNavCSalesHeaderR, SalesHeaderL);
+      CreateSalesLines(eBayNavCSalesHeaderR, SalesHeaderL);
+      SalesHeaderL.CheckOrderChannelModification;
+      SalesHeaderL.ConsolidateShippingAgent;
+
+      IF RecalculateInvoiceDiscount THEN BEGIN
+        eBaySalesMgtL.RechnungsrabattVerteilen(SalesHeaderL);
+      END;
+
+      FPCSetup.GET;
+      SalesLineTmpL.DELETEALL;
+
+      SalesLineL.SETRANGE("Document Type",SalesHeaderL."Document Type");
+      SalesLineL.SETRANGE("Document No.",SalesHeaderL."No.");
+      IF SalesLineL.FINDSET THEN
+        REPEAT
+          TotalOrderAmountL += SalesLineL."Line Amount" - SalesLineL."Inv. Discount Amount";
+        UNTIL SalesLineL.NEXT = 0;
+
+      IF ABS(TotalOrderAmountL - SalesHeaderL."Original Shop Amount") > FPCSetup."Max. Shop Rounding Difference" THEN
+        ERROR(TextHME001,SalesHeaderL."Original Shop Amount",TotalOrderAmountL,FPCSetup."Max. Shop Rounding Difference");
+
+      IF TotalOrderAmountL <> SalesHeaderL."Original Shop Amount" THEN BEGIN  //Reduce Line Amount
+
+        FOR iL := 1 TO ABS((TotalOrderAmountL - SalesHeaderL."Original Shop Amount")*100) DO BEGIN
+          //Fill Temporary Table
+          IF SalesLineTmpL.ISEMPTY THEN BEGIN
+            IF SalesLineL.FINDSET THEN
+              REPEAT
+                SalesLineTmpL := SalesLineL;
+                IF (SalesLineTmpL."Line Amount" <> 0) AND (SalesLineTmpL."Line Discount Amount" <> 0) THEN
+                  SalesLineTmpL.INSERT;
+              UNTIL SalesLineL.NEXT = 0;
+          END;
+
+          //Get Best Line
+          IF SalesLineTmpL.FINDSET THEN BEGIN
+            OrderLineAmountL := 0;
+            OrderLineNoL := 0;
+            REPEAT
+              IF SalesLineTmpL."Line Amount" > OrderLineAmountL THEN BEGIN
+                OrderLineAmountL := SalesLineTmpL."Line Amount";
+                OrderLineNoL := SalesLineTmpL."Line No.";
+              END;
+            UNTIL SalesLineTmpL.NEXT = 0;
+          END;
+
+          //Update Line Amount
+          IF (TotalOrderAmountL > SalesHeaderL."Original Shop Amount") AND (OrderLineNoL <> 0) THEN BEGIN  //Reduce Line Amount
+            SalesLine2L.GET(SalesHeaderL."Document Type",SalesHeaderL."No.",OrderLineNoL);
+            SalesLine2L.VALIDATE("Line Amount",SalesLine2L."Line Amount"-0.01);
+            SalesLine2L.MODIFY;
+
+            SalesLineTmpL.GET(SalesHeaderL."Document Type",SalesHeaderL."No.",OrderLineNoL);
+            SalesLineTmpL.DELETE;
+          END;
+
+          IF (TotalOrderAmountL < SalesHeaderL."Original Shop Amount") AND (OrderLineNoL <> 0) THEN BEGIN  //Increase Line Amount
+            SalesLine2L.GET(SalesHeaderL."Document Type",SalesHeaderL."No.",OrderLineNoL);
+            SalesLine2L.VALIDATE("Line Amount",SalesLine2L."Line Amount"+0.01);
+            SalesLine2L.MODIFY;
+
+            SalesLineTmpL.GET(SalesHeaderL."Document Type",SalesHeaderL."No.",OrderLineNoL);
+            SalesLineTmpL.DELETE;
+          END;
+
+        END;
+
+        IF RecalculateInvoiceDiscount THEN
+          eBaySalesMgtL.RechnungsrabattVerteilen(SalesHeaderL);
+
+        TotalOrderAmountL := 0;
+
+        SalesLineL.RESET;
+        SalesLineL.SETRANGE("Document Type",SalesHeaderL."Document Type");
+        SalesLineL.SETRANGE("Document No.",SalesHeaderL."No.");
+        IF SalesLineL.FINDSET THEN
+          REPEAT
+            TotalOrderAmountL += SalesLineL."Line Amount" - SalesLineL."Inv. Discount Amount";
+          UNTIL SalesLineL.NEXT = 0;
+        IF TotalOrderAmountL <> SalesHeaderL."Original Shop Amount" THEN
+          ERROR(TextHME002,SalesHeaderL."Original Shop Amount",TotalOrderAmountL,FPCSetup."Max. Shop Rounding Difference");
+      END;
+
+      FillOriginalAmountFields(SalesHeaderL);
+      MPDocMgtL.CheckAndHandlMPLines(SalesHeaderL);
+
+      FPCSetup.TESTFIELD("Status Open");
+      FPCSetup.TESTFIELD("Trigger NavC");
+      IF InterfaceProcessMgtL.TriggerActive(FPCSetup."Trigger NavC") THEN
+        InterfaceProcessMgtL.InsertInterfaceRecords(0,
+              SalesHeaderL."Document Type",
+              SalesHeaderL."No.",
+              0,
+              '',
+              FPCSetup."Status Open",
+              FPCSetup."Trigger NavC");
+
+      // Und den VK-Auftrag freigeben, sofern es sich nicht um VorkasseauftrÑge handelt
+
+      UpdateQty(SalesHeaderL);
+      CLEAR(ReleaseSalesDocumentL);
+      CLEAR(SalesPostPrepaymentsL);
+      IF (eBayNavCWebshopL."Release Order If Paid") THEN BEGIN
+        IF PaymentMethod2L.CheckReleaseifPaid(SalesHeaderL."Payment Method Code") THEN BEGIN
+
+          FPCSetup.TESTFIELD("Status Pick");
+          FPCSetup.TESTFIELD("Status Open");
+          FPCSetup.TESTFIELD("Interface Code Rhenus");
+          FPCSetup.TESTFIELD("Interface Code DocData");
+          FPCSetup.TESTFIELD("Interface Code Dropshipment");
+          FPCSetup.TESTFIELD("Interface Code Crossdock");
+          FPCSetup.TESTFIELD("Trigger NavC");
+
+          ReleaseSalesDocumentL.RUN(SalesHeaderL);
+
+          SalesHeader2L.GET(SalesHeaderL."Document Type",SalesHeaderL."No.");
+          IF NOT SalesHeader2L."Payment received" THEN BEGIN
+            SalesHeader2L."Payment received" := TRUE;
+            SalesHeader2L."Payment received from" := SalesHeader2L."Payment received from"::PaymentMethod;
+            SalesHeader2L."Payment received at" := TODAY;
+            SalesHeader2L.MODIFY;
+
+            //Trying to create two messages. One of them will not be created because of SII Message filters.
+            SIIFillLogCreateL.CreateOrderPicking(SalesHeader2L);
+            SIIFillLogCreateL.CreateOrderPickingPrepayment(SalesHeader2L);
+
+          END;
+
+          IF SalesHeader2L.Status = SalesHeader2L.Status::Released THEN BEGIN
+            IF InterfaceProcessMgtL.TriggerActive(FPCSetup."Trigger NavC") THEN BEGIN
+              InterfaceProcessMgtL.UpdateProcessLogForInterface(SalesHeader2L."No.",
+                0,
+                FPCSetup."Interface Code Rhenus",
+                FPCSetup."Status Open",
+                FPCSetup."Status Pick",
+                FPCSetup."Trigger NavC");
+              InterfaceProcessMgtL.UpdateProcessLogForInterface(SalesHeader2L."No.",
+                0,
+                FPCSetup."Interface Code DocData",
+                FPCSetup."Status Open",
+                FPCSetup."Status Pick",
+                FPCSetup."Trigger NavC");
+              InterfaceProcessMgtL.UpdateProcessLogForInterface(SalesHeader2L."No.",
+                0,
+                FPCSetup."Interface Code Dropshipment",
+                FPCSetup."Status Open",
+                FPCSetup."Status Pick",
+                FPCSetup."Trigger NavC");
+              InterfaceProcessMgtL.UpdateProcessLogForInterface(SalesHeader2L."No.",
+                0,
+                FPCSetup."Interface Code Crossdock",
+                FPCSetup."Status Open",
+                FPCSetup."Status Pick",
+                FPCSetup."Trigger NavC");
+            END;
+          END;
+        END ELSE BEGIN  // not CheckReleaseifPaid
+          // function PostPrepayment used as job queue
+          //IF GUIALLOWED THEN BEGIN
+            // jm tmp +2
+            //SetSalesHeader(SalesHeaderG);
+            //PostPrepayment(SalesHeaderG);
+          //END;
+          {
+
+          IF (SalesHeaderL."Prepayment %" <> 0) THEN BEGIN
+            SalesPostPrepaymentsL.Invoice(SalesHeaderL);
+            PaymentMethodL.GET(SalesHeaderL."Payment Method Code");
+            IF (SalesHeaderL.Status = SalesHeaderL.Status::"Pending Prepayment") AND
+              (PaymentMethodL."Reserve Item on pending Prepmt")
+            THEN BEGIN
+              FPCSetup.TESTFIELD("Status Pick");
+              FPCSetup.TESTFIELD("Status Reserve");
+              FPCSetup.TESTFIELD("Interface Code Rhenus");
+              FPCSetup.TESTFIELD("Trigger NavC");
+              IF InterfaceProcessMgtL.TriggerActive(FPCSetup."Trigger NavC") THEN BEGIN
+                InterfaceProcessMgtL.UpdateProcessLogForInterface(SalesHeaderL."No.",
+                    0,
+                    FPCSetup."Interface Code Rhenus",
+                    FPCSetup."Status Open",
+                    FPCSetup."Status Reserve",
+                    FPCSetup."Trigger NavC");
+              END;
+            END;
+          END;
+          }
+        END;
+      END;
+
+      FindDoubleOrdersL.IdentifyDoubleOrder(SalesHeaderL);
+
+      // Zu guter Letzt den NAVconnect Beleg kennzeichnen
+      eBayNavCSalesHeaderR."Sales Document rendered" := TRUE;
+      eBayNavCSalesHeaderR."Sales Document rendered at" := CURRENTDATETIME();
+      eBayNavCSalesHeaderR."Sales Document rendered by" := COPYSTR(USERID(), 1,
+                                                          MAXSTRLEN(eBayNavCSalesHeaderR."Sales Document rendered by"));
+      eBayNavCSalesHeaderR."Sales Document No." := SalesHeaderL."No.";
+      eBayNavCSalesHeaderR.MODIFY(TRUE);
+    END;
+
+    LOCAL PROCEDURE CreateSalesHeader@1119455031(VAR eBayNavCSalesHeaderR@1119455000 : Record 5251571;VAR SalesHeaderR@1119455001 : Record 36);
+    VAR
+      eBayNavCWebshopL@1119455002 : Record 5251553;
+      eBayNavCAccountL@1119455003 : Record 5251550;
+      CustomerAccountL@1000000000 : Record 18;
+    BEGIN
+      // Legt einen neuen VK-Kopf an und schreibt Einrichtungsdaten in diesen
+
+      eBayNavCWebshopL.GET(eBayNavCSalesHeaderR."Webshop Code");
+      eBayNavCAccountL.GET(eBayNavCSalesHeaderR."Webshop Code", eBayNavCSalesHeaderR."Sell-to Account No.");
+
+      SalesHeaderR.SetNoConfirm(TRUE);
+      SalesHeaderR.INIT();
+
+      CASE eBayNavCSalesHeaderR."Document Type" OF
+        eBayNavCSalesHeaderR."Document Type"::SalesOrder: SalesHeaderR."Document Type" := SalesHeaderR."Document Type"::Order;
+        eBayNavCSalesHeaderR."Document Type"::SalesQuote: SalesHeaderR."Document Type" := SalesHeaderR."Document Type"::Quote;
+      END;
+
+      IF eBayNavCWebshopL."Use Webshop Order No." THEN BEGIN
+        SalesHeaderR."No." := eBayNavCSalesHeaderR."No.";
+      END ELSE BEGIN
+        SalesHeaderR."No." := GetNewDocumentNoByShopCode(eBayNavCSalesHeaderR."Webshop Code", 2);
+      END;
+
+      SalesHeaderR.INSERT(TRUE);
+      SalesHeaderR.VALIDATE("Sell-to Customer No.", eBayNavCSalesHeaderR."Customer No.");
+      SalesHeaderR.VALIDATE("Bill-to Customer No.", eBayNavCSalesHeaderR."Customer No.");
+      SalesHeaderR.VALIDATE("Order Date", eBayNavCSalesHeaderR."Order Date");
+      SalesHeaderR.VALIDATE("Document Date", eBayNavCSalesHeaderR."Order Date");
+      SalesHeaderR.VALIDATE("Posting Date", eBayNavCSalesHeaderR."Order Date");
+      SalesHeaderR.VALIDATE("Prices Including VAT", NOT eBayNavCSalesHeaderR."Prices Excluding VAT");
+
+      // Externe Belegnr. Åbernehmen. Sofern vorhanden die Shop Auftragsnr. oder
+      // sonst die NAVconnect Belegnummer.
+
+      IF eBayNavCSalesHeaderR."External Document No." <> '' THEN BEGIN
+        SalesHeaderR.VALIDATE("External Document No.", eBayNavCSalesHeaderR."External Document No.");
+      END ELSE BEGIN
+        SalesHeaderR.VALIDATE("External Document No.", eBayNavCSalesHeaderR."No.");
+      END;
+
+      SalesHeaderR."Order Type" := eBayNavCSalesHeaderR."Order Type";
+      SalesHeaderR."Reference Order No." := eBayNavCSalesHeaderR."Reference Order No.";
+
+      IF COPYSTR(SalesHeaderR."No.",1,2) <> 'SO' THEN
+        SalesHeaderR."Sales Order Entry No." := COPYSTR (SalesHeaderR."No.",7);
+
+      SalesHeaderR.VALIDATE("Reason Code", eBayNavCWebshopL."Reason Code");
+      SalesHeaderR.VALIDATE("Address Code", eBayNavCWebshopL."Address Code");
+
+      // ZustÑndigkeitseinheit Åbernhmen
+      IF eBayNavCWebshopL."Responsibility Center" <> '' THEN BEGIN
+        SalesHeaderR.VALIDATE("Responsibility Center", eBayNavCWebshopL."Responsibility Center");
+      END;
+
+      // Ggf. den Auftrag bei Erstelung abschlie·en
+      IF (SalesHeaderR."Document Type" = SalesHeaderR."Document Type"::Order) AND
+         eBayNavCWebshopL."Complete Order with Creation"
+      THEN BEGIN
+        SalesHeaderR.VALIDATE(Completed, TRUE);
+      END;
+
+      //Zahlungspartner fÅllen
+      SalesHeaderR.VALIDATE("Payment Partner Type", eBayNavCSalesHeaderR."Payment Partner Type");
+      SalesHeaderR.VALIDATE("Payment Partner Entry No.", eBayNavCSalesHeaderR."Payment Partner Entry No.");
+
+      IF (eBayNavCSalesHeaderR."Currency Code" <> '') AND (eBayNavCSalesHeaderR."Currency Code" <> 'EUR') THEN
+        SalesHeaderR.VALIDATE("Currency Code",eBayNavCSalesHeaderR."Currency Code");
+
+      SalesHeaderR.VALIDATE("Language Code",eBayNavCSalesHeaderR."Language Code");
+      SalesHeaderR.VALIDATE("Is PackStation",eBayNavCSalesHeaderR."Is PackStation");
+      SalesHeaderR.VALIDATE("PackStation Customer No.",eBayNavCSalesHeaderR."PackStation Customer No.");
+      SalesHeaderR.VALIDATE("PackStation No.",eBayNavCSalesHeaderR."PackStation No.");
+      IF eBayNavCSalesHeaderR."Complete Delivery" THEN
+        SalesHeaderR."Shipping Advice" := SalesHeaderR."Shipping Advice"::Complete;
+
+      SalesHeaderR.VALIDATE("XML Kommissionierung",TRUE);
+      SalesHeaderR.VALIDATE("Website No.",eBayNavCSalesHeaderR."Website No.");
+      SalesHeaderR.VALIDATE("Original Shop Amount",eBayNavCSalesHeaderR."Invoice Amount");
+
+      IF IgnoreKommControl THEN
+        SalesHeaderR.VALIDATE("Ignore Komm. Control",IgnoreKommControl);
+    END;
+
+    LOCAL PROCEDURE CreateSalesHeaderDimensions@1119455010(VAR eBayNavCSalesHeaderR@1119455003 : Record 5251571;VAR salesHeaderR@1119455004 : Record 36);
+    VAR
+      eBayNavCSalesLine@1119455000 : Record 5251572;
+      eBayOnlineAccount@1119455002 : Record 5096097;
+      eBayOnlineQuoteArea@1119455005 : Record 5095900;
+      eBayOnlineQuote@1119455006 : Record 5095902;
+      eBayNaveBaySetup@1119455007 : Record 5096096;
+      eBayNavCWebsite@1119455008 : Record 5251554;
+      eBaySales@1119455001 : Codeunit 5095806;
+    BEGIN
+      // FÅgt die VK-Kopf Dimensionen ein
+
+      eBayNavCWebsite.GET(eBayNavCSalesHeaderR."Webshop Code", eBayNavCSalesHeaderR."Website No.");
+
+      eBayNavCSalesLine.SETRANGE("Webshop Code", eBayNavCSalesHeaderR."Webshop Code");
+      eBayNavCSalesLine.SETRANGE("Document No.", eBayNavCSalesHeaderR."No.");
+      eBayNavCSalesLine.SETFILTER("Processing of Order Account", '<>%1', '');
+
+      IF eBayNavCSalesLine.FINDSET() THEN BEGIN
+        eBayNaveBaySetup.GET();
+        eBayNavCSalesLine.CALCFIELDS("eBay Quote No.");
+
+        IF eBayOnlineQuote.GET(eBayNavCSalesLine."eBay Quote No.") THEN BEGIN
+          IF eBayOnlineAccount.GET(eBayOnlineQuote."Account Code") THEN BEGIN
+            salesHeaderR.VALIDATE("eBay Account", eBayOnlineQuote."Account Code");
+
+            IF eBayOnlineAccount."Dimension Value" <> '' THEN BEGIN
+              eBayNavCWebsite."Dimension Code f. Sales Orders" := eBayNaveBaySetup."Dimension Code for Accounts";
+              eBayNavCWebsite."Dimension V. f. Sales Orders" := eBayOnlineAccount."Dimension Value";
+            END;
+          END;
+
+          IF eBayOnlineQuoteArea.GET(eBayOnlineQuote.Area) THEN BEGIN
+             IF eBayOnlineQuoteArea."Dimension Value" <> '' THEN BEGIN
+               eBaySales.SchreibeDimensionInOrder(eBayNaveBaySetup."Dimension Code for Areas",
+                   eBayOnlineQuoteArea."Dimension Value",salesHeaderR);
+             END;
+           END;
+        END;
+      END;
+
+      eBayNavCSalesLine.RESET();
+
+      IF eBayNavCWebsite."Dimension V. f. Sales Orders" <> '' THEN BEGIN
+        eBaySales.SchreibeDimensionInOrder(eBayNavCWebsite."Dimension Code f. Sales Orders",
+            eBayNavCWebsite."Dimension V. f. Sales Orders",salesHeaderR);
+      END;
+
+      // zusÑtzliche Dimensionen
+      IF eBayNavCWebsite."Dim. Code f. Sales Orders 1" <> '' THEN BEGIN
+        eBaySales.SchreibeDimensionInOrder(eBayNavCWebsite."Dim. Code f. Sales Orders 1",eBayNavCSalesHeaderR."Dimension Value 1",
+            salesHeaderR);
+      END;
+
+      IF eBayNavCWebsite."Dim. Code f. Sales Orders 2" <> '' THEN BEGIN
+        eBaySales.SchreibeDimensionInOrder(eBayNavCWebsite."Dim. Code f. Sales Orders 2",eBayNavCSalesHeaderR."Dimension Value 2",
+          salesHeaderR);
+      END;
+
+      salesHeaderR.InitOrderDimValue;
+    END;
+
+    LOCAL PROCEDURE ApplyShipToAddress@1119455027(VAR eBayNavCSalesHeaderR@1119455001 : Record 5251571;VAR SalesHeaderR@1119455000 : Record 36);
+    VAR
+      shipToAddress@1119455003 : Record 222;
+      eBayNavCAccount@1119455002 : Record 5251550;
+    BEGIN
+      // Schreibt die Lief. an Adresse in den VK-Kopf
+
+      eBayNavCAccount.GET(eBayNavCSalesHeaderR."Webshop Code", eBayNavCSalesHeaderR."Sell-to Account No.");
+
+      IF shipToAddress.GET(eBayNavCSalesHeaderR."Customer No.", eBayNavCSalesHeaderR."Ship-to Address Code") THEN BEGIN
+        SalesHeaderR.VALIDATE("Ship-to Code", eBayNavCSalesHeaderR."Ship-to Address Code");
+
+      END ELSE BEGIN
+        SalesHeaderR.VALIDATE("Ship-to Name", eBayNavCSalesHeaderR."Ship-to Name");
+        SalesHeaderR.VALIDATE("Ship-to Name 2", eBayNavCSalesHeaderR."Ship-to Name 2");
+        SalesHeaderR.VALIDATE("Ship-to Address", eBayNavCSalesHeaderR."Ship-to Address");
+        SalesHeaderR.VALIDATE("Ship-to Address 2", eBayNavCSalesHeaderR."Ship-to Address 2");
+        SalesHeaderR."Ship-to Post Code" := eBayNavCSalesHeaderR."Ship-to Post Code";
+        SalesHeaderR."Ship-to City" := eBayNavCSalesHeaderR."Ship-to City";
+        SalesHeaderR.VALIDATE("Ship-to Country/Region Code", eBayNavCSalesHeaderR."Ship-to Country Code");
+        SalesHeaderR.VALIDATE("Ship-to County", eBayNavCSalesHeaderR."Ship-to County");
+      END;
+    END;
+
+    LOCAL PROCEDURE ApplyBillToAddress@1119455028(VAR eBayNavCSalesHeaderR@1119455001 : Record 5251571;VAR SalesHeaderR@1119455000 : Record 36);
+    VAR
+      billToAddress@1119455002 : Record 222;
+      eBayNavCAccount@1119455003 : Record 5251550;
+    BEGIN
+      // Schreibt die Rech. an Adresse in den VK-Kopf
+
+      eBayNavCAccount.GET(eBayNavCSalesHeaderR."Webshop Code", eBayNavCSalesHeaderR."Sell-to Account No.");
+
+      IF billToAddress.GET(eBayNavCSalesHeaderR."Customer No.", eBayNavCSalesHeaderR."Bill-to Address Code") THEN BEGIN
+
+        SalesHeaderR.VALIDATE("Bill-to Name", billToAddress.Name);
+        SalesHeaderR.VALIDATE("Bill-to Name 2", billToAddress."Name 2");
+        SalesHeaderR.VALIDATE("Bill-to Address", billToAddress.Address);
+        SalesHeaderR.VALIDATE("Bill-to Address 2", billToAddress."Address 2");
+        SalesHeaderR."Bill-to Post Code" := billToAddress."Post Code";
+        SalesHeaderR."Bill-to City" := billToAddress.City;
+        SalesHeaderR.VALIDATE("Bill-to Country/Region Code",  billToAddress."Country/Region Code");
+        SalesHeaderR.VALIDATE("Bill-to County",  billToAddress.County);
+
+      END ELSE BEGIN
+
+        SalesHeaderR.VALIDATE("Bill-to Name", eBayNavCSalesHeaderR."Bill-to Name");
+        SalesHeaderR.VALIDATE("Bill-to Name 2", eBayNavCSalesHeaderR."Bill-to Name 2");
+        SalesHeaderR.VALIDATE("Bill-to Address", eBayNavCSalesHeaderR."Bill-to Address");
+        SalesHeaderR.VALIDATE("Bill-to Address 2", eBayNavCSalesHeaderR."Bill-to Address 2");
+        SalesHeaderR."Bill-to Post Code" := eBayNavCSalesHeaderR."Bill-to Post Code";
+        SalesHeaderR."Bill-to City" := eBayNavCSalesHeaderR."Bill-to City";
+        SalesHeaderR.VALIDATE("Bill-to Country/Region Code", eBayNavCSalesHeaderR."Bill-to Country Code");
+        SalesHeaderR.VALIDATE("Bill-to County", eBayNavCSalesHeaderR."Bill-to County");
+
+      END;
+    END;
+
+    LOCAL PROCEDURE ApplyPaymentMethod@1119455020(VAR eBayNavCSalesHeaderR@1119455000 : Record 5251571;VAR SalesHeaderR@1119455001 : Record 36);
+    VAR
+      eBayNavCPaymentModuleL@1119455002 : Record 5251556;
+      eBayNavCWebshopL@1119455003 : Record 5251553;
+      PaymentMethodL@1119455004 : Record 289;
+    BEGIN
+      // Wendet die Zahlungsmethode und Zahlungbedingung auf den Auftrag an
+
+      eBayNavCWebshopL.GET(eBayNavCSalesHeaderR."Webshop Code");
+
+      IF NOT eBayNavCWebshopL."Ignore Webshop Payment Methods" THEN BEGIN
+        eBayNavCPaymentModuleL.SETRANGE("Webshop Code", eBayNavCSalesHeaderR."Webshop Code");
+        eBayNavCPaymentModuleL.SETRANGE(Identifier, eBayNavCSalesHeaderR."Webshop Payment Module");
+        eBayNavCPaymentModuleL.SETRANGE("Order Type", eBayNavCSalesHeaderR."Order Type");
+        eBayNavCPaymentModuleL.FINDFIRST();
+
+        SalesHeaderR.VALIDATE("Payment Method Code", eBayNavCPaymentModuleL."Payment Method Code");
+        PaymentMethodL.GET(eBayNavCPaymentModuleL."Payment Method Code");
+
+        // Warte auf Zahlungseingang setzen
+        IF (SalesHeaderR."Document Type" = SalesHeaderR."Document Type"::Order) AND
+           (PaymentMethodL."Cash in advance")
+        THEN BEGIN
+          SalesHeaderR.VALIDATE("Waiting for payment receipt", TRUE);
+        END;
+
+        // Zahlungsbedingung aus Zahlungsform
+        SalesHeaderR.VALIDATE("Payment Terms Code", eBayNavCPaymentModuleL."Payment Terms Code");
+      END;
+    END;
+
+    LOCAL PROCEDURE ApplyInvoiceDiscout@1119455024(VAR eBayNavCSalesHeaderR@1119455001 : Record 5251571;VAR SalesHeaderR@1119455000 : Record 36);
+    VAR
+      eBayNavCWebshopL@1119455002 : Record 5251553;
+      DiscountAmountL@1119455003 : Decimal;
+    BEGIN
+      // Wendet Rechnungsrabatte auf den VK-Kopf an
+
+      eBayNavCWebshopL.GET(eBayNavCSalesHeaderR."Webshop Code");
+
+      RecalculateInvoiceDiscount := FALSE;
+
+      IF eBayNavCSalesHeaderR."Discount Type" = 'percent' THEN BEGIN
+
+        SalesHeaderR."Invoice Discount Calculation" := SalesHeaderR."Invoice Discount Calculation"::"%";
+        SalesHeaderR."Invoice Discount Value" := eBayNavCSalesHeaderR."Discount Gross Amount";
+        RecalculateInvoiceDiscount := TRUE;
+
+      END ELSE BEGIN
+
+        DiscountAmountL := eBayNavCSalesHeaderR."Discount Gross Amount";
+
+        IF DiscountAmountL > 0 THEN BEGIN
+          IF eBayNavCWebshopL."Inv. Discount Percent" THEN BEGIN
+            SalesHeaderR."Invoice Discount Calculation" := SalesHeaderR."Invoice Discount Calculation"::"%";
+            SalesHeaderR."Invoice Discount Value" := (eBayNavCSalesHeaderR."Discount Gross Amount" * 100) /
+                          (eBayNavCSalesHeaderR."Discount Gross Amount" + eBayNavCSalesHeaderR."Total Gross Amount");
+            RecalculateInvoiceDiscount := TRUE;
+          END ELSE BEGIN
+            SalesHeaderR."Invoice Discount Calculation" := SalesHeaderR."Invoice Discount Calculation"::Amount;
+            SalesHeaderR."Invoice Discount Value" := DiscountAmountL;
+            RecalculateInvoiceDiscount := TRUE;
+          END;
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE CreateSalesOrderComments@1119455018(VAR eBayNavCSalesHeaderR@1119455005 : Record 5251571;VAR SalesHeaderR@1119455006 : Record 36);
+    VAR
+      InStreamL@1119455000 : InStream;
+      LineNoL@1119455001 : Integer;
+      CharacterL@1119455002 : Char;
+      SalesCommentTextL@1119455003 : Text[250];
+      SalesCommentLineL@1119455004 : Record 44;
+      eBayUtilL@1119455007 : Codeunit 5095800;
+      eBayConversionL@1119455008 : Codeunit 5095801;
+    BEGIN
+      // Erstellt die VK-Bemerkungszeilen fÅr einen NAVconnect Beleg
+
+      eBayNavCSalesHeaderR.CALCFIELDS("Comment BLOB");
+
+      IF eBayNavCSalesHeaderR."Comment BLOB".HASVALUE THEN BEGIN
+        eBayNavCSalesHeaderR."Comment BLOB".CREATEINSTREAM(InStreamL);
+        LineNoL := 10000;
+        CharacterL := 0;
+        SalesCommentTextL := '';
+
+        WHILE InStreamL.READ(CharacterL, 1) > 0 DO BEGIN
+          // Steuerzeichen generell ignorieren
+          IF CharacterL > 20 THEN BEGIN
+            SalesCommentTextL += FORMAT(CharacterL);
+          END;
+
+          IF (STRLEN(SalesCommentTextL) = MAXSTRLEN(SalesCommentLineL.Comment)) OR
+             (CharacterL IN [10, 13]) THEN // 10, 13 = CRLF
+          BEGIN
+            SalesCommentTextL := eBayUtilL.StringTrim(SalesCommentTextL);
+
+            IF (SalesCommentTextL <> '') THEN BEGIN
+
+              SalesCommentLineL.INIT();
+              SalesCommentLineL."Document Type" := SalesHeaderR."Document Type";
+              SalesCommentLineL."No." := SalesHeaderR."No.";
+              SalesCommentLineL."Line No." := LineNoL;
+              SalesCommentLineL.INSERT(TRUE);
+              SalesCommentLineL.VALIDATE(Code, eBayNavCSalesHeaderR."Webshop Code");
+              SalesCommentLineL.VALIDATE(Comment,eBayConversionL.ansi2oem(SalesCommentTextL));
+              SalesCommentLineL.VALIDATE(Date, eBayNavCSalesHeaderR."Order Date");
+              SalesCommentLineL.VALIDATE("Customer Comment Shop",TRUE);
+              SalesCommentLineL.MODIFY(TRUE);
+              LineNoL += 10000;
+            END;
+
+            SalesCommentTextL := '';
+          END;
+        END;
+
+        // Kleine HÑppchen auch schreiben...
+        IF SalesCommentTextL <> '' THEN BEGIN
+          SalesCommentLineL.INIT();
+          SalesCommentLineL."Document Type" := SalesHeaderR."Document Type";
+          SalesCommentLineL."No." := SalesHeaderR."No.";
+          SalesCommentLineL."Line No." := LineNoL;
+          SalesCommentLineL.INSERT(TRUE);
+          SalesCommentLineL.VALIDATE(Code, eBayNavCSalesHeaderR."Webshop Code");
+          SalesCommentLineL.VALIDATE(Comment,eBayConversionL.ansi2oem(SalesCommentTextL));
+          SalesCommentLineL.VALIDATE(Date, eBayNavCSalesHeaderR."Order Date");
+          SalesCommentLineL.VALIDATE("Customer Comment Shop",TRUE);
+          SalesCommentLineL.MODIFY(TRUE);
+          LineNoL += 10000;
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE CreateSalesLines@1119455034(VAR eBayNavCSalesHeaderR@1119455001 : Record 5251571;VAR SalesHeaderR@1119455000 : Record 36);
+    VAR
+      SalesLineL@1119455002 : Record 37;
+      eBayNavCWebshopL@1119455003 : Record 5251553;
+      eBayNavCSalesLineL@1119455004 : Record 5251572;
+      SalesCommentLineL@1170000000 : Record 44;
+      LineNoL@1119455005 : Integer;
+    BEGIN
+      // Erstellt die VK-Zeilen fÅr einen Auftrag
+
+      eBayNavCSalesLineL.SETCURRENTKEY("Document No.","Webshop Code",ID,"Parent ID");
+      eBayNavCSalesLineL.SETRANGE("Webshop Code", eBayNavCSalesHeaderR."Webshop Code");
+      eBayNavCSalesLineL.SETRANGE("Document No.", eBayNavCSalesHeaderR."No.");
+      LineNoL := 10000;
+
+      IF eBayNavCSalesLineL.FINDSET() THEN REPEAT
+        // Artikelzeilen einfÅgen
+        CreateSalesItemLine(eBayNavCSalesLineL, SalesHeaderR, SalesLineL, LineNoL);
+
+        // Ggf. Dimensionen einfÅgen
+        CreateSalesLineDimensions(eBayNavCSalesLineL, SalesLineL);
+
+        LineNoL += 10000;
+      UNTIL eBayNavCSalesLineL.NEXT() = 0;
+
+      // eBay Transaktionen behandeln
+      HandleEbaySalesLines(eBayNavCSalesHeaderR, SalesHeaderR);
+
+      // Versandkostenzeile einfÅgen
+      CreateSalesShippingCostsLine(SalesHeaderR, eBayNavCSalesHeaderR, LineNoL);
+
+      // NachnahmegebÅhrenzeile einfÅgen
+      CreateSalesCodChargesLine(SalesHeaderR, eBayNavCSalesHeaderR, LineNoL);
+
+      CreateCouponLine(SalesHeaderR, LineNoL,eBayNavCSalesHeaderR);
+
+      // Werbegeschenke einfÅgen
+      CreateSalesGiftLines(eBayNavCSalesHeaderR,SalesHeaderR);
+
+      // StÅcklisten entfalten
+      ExpandBillOfMaterialLines(eBayNavCSalesHeaderR, SalesHeaderR);
+
+      CreateExtendedTextLines(eBayNavCSalesHeaderR, SalesHeaderR);
+
+      // modify Process Status
+      eBayNavCSalesHeaderR."Process Status" := eBayNavCSalesHeaderR."Process Status"::Success;
+      eBayNavCSalesHeaderR.MODIFY;
+    END;
+
+    LOCAL PROCEDURE FillOriginalAmountFields@1000000006(SalesHeaderV@1000000000 : Record 36);
+    VAR
+      SalesLineL@1000000001 : Record 37;
+      GLSetupL@1000000002 : Record 98;
+      CurrencyL@1000000003 : Record 4;
+      AmtRoundingPrecissionL@1000000004 : Decimal;
+    BEGIN
+      CLEAR(SalesLineL);
+      SalesLineL.SETCURRENTKEY("Document Type","Document No.","Line No.");
+      SalesLineL.SETRANGE("Document Type",SalesHeaderV."Document Type");
+      SalesLineL.SETRANGE("Document No.",SalesHeaderV."No.");
+      IF SalesLineL.FINDSET THEN
+        REPEAT
+          SalesLineL."Original Amount incl. VAT" := SalesLineL."Line Amount" - SalesLineL."Inv. Discount Amount";
+          SalesLineL."Original Line Amount" := SalesLineL."Line Amount";
+          SalesLineL."Original Line Discount Amount" := SalesLineL."Line Discount Amount";
+          SalesLineL."Original Inv. Discount Amount" := SalesLineL."Inv. Discount Amount";
+          SalesLineL.MODIFY;
+        UNTIL SalesLineL.NEXT = 0;
+    END;
+
+    PROCEDURE UpdateQty@1170000000(VAR SalesHeaderR@1170000001 : Record 36);
+    VAR
+      SalesLineL@1170000002 : Record 37;
+    BEGIN
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type",SalesHeaderR."Document Type");
+      SalesLineL.SETRANGE("Document No.",SalesHeaderR."No.");
+      SalesLineL.SETFILTER(Type,'<>%1',SalesLineL.Type::" ");
+      IF SalesLineL.FINDSET THEN
+        REPEAT
+          SalesLineL.VALIDATE("Qty. to Ship",0);
+          SalesLineL.MODIFY;
+        UNTIL SalesLineL.NEXT = 0;
+    END;
+
+    PROCEDURE GetNewDocumentNoByShopCode@1119423002(ShopCodeV@1119423000 : Code[10];TypeV@1119455002 : Integer) : Code[20];
+    VAR
+      noSeriesManagement@1119423001 : Codeunit 396;
+      noSeriesCode@1119423002 : Code[10];
+      salesSetup@1119455000 : Record 311;
+      eBayNavCWebshop@1119455001 : Record 5251553;
+    BEGIN
+      eBayNavCWebshop.GET(ShopCodeV);
+      CASE TypeV OF
+       1 : EXIT(noSeriesManagement.GetNextNo(eBayNavCWebshop."NAVconnect Sales Header Nos.", TODAY, TRUE));
+       2 : EXIT(noSeriesManagement.GetNextNo(eBayNavCWebshop."Sales Header Nos.", TODAY, TRUE));
+      END;
+    END;
+
+    LOCAL PROCEDURE CreateSalesItemLine@1119455036(VAR eBayNavCSalesLineR@1119455000 : Record 5251572;VAR SalesHeaderR@1119455003 : Record 36;VAR SalesLineR@1119455005 : Record 37;VAR LineNoR@1119455001 : Integer);
+    VAR
+      eBayNavCWebshopL@1119455002 : Record 5251553;
+      AssemblyServiceSalesLineL@1119455004 : Record 37;
+      eBayNavCSalesHeaderL@1119455006 : Record 5251571;
+      ItemTransferL@1119455007 : Record 50032;
+      ResourceL@1119455008 : Record 156;
+      GLAccountL@1119455009 : Record 15;
+      eBayNavCShippingModuleL@1170000000 : Record 5251557;
+      itemShipSetup@1170000001 : Record 50030;
+      UtilL@1119455010 : Codeunit 5095800;
+      PurchMgtL@1170000002 : Codeunit 50005;
+    BEGIN
+      // Legt eine Artikelzeile an
+
+      eBayNavCWebshopL.GET(eBayNavCSalesLineR."Webshop Code");
+      SalesLineR.INIT();
+      SalesLineR.SetLagerPrÅfung(TRUE);
+      SalesLineR.SetNoConfirm(TRUE);
+      SalesLineR.SetNoMessage(TRUE);
+      SalesLineR."Document Type" := SalesHeaderR."Document Type";
+      SalesLineR."Document No." := SalesHeaderR."No.";
+      SalesLineR."Line No." := LineNoR;
+      SalesLineR.INSERT(TRUE);
+
+      // BSE111020 FP01 +
+      IF ItemTransferL.GET(eBayNavCSalesLineR."Item No.") THEN BEGIN
+        CASE ItemTransferL."Transfer to Type" OF
+          ItemTransferL."Transfer to Type"::"Charge (Item)": BEGIN
+            SalesLineR.VALIDATE(Type, SalesLineR.Type::"Charge (Item)");
+            SalesLineR.VALIDATE("No.", ItemTransferL."Transfer to No.");
+          END;
+
+          ItemTransferL."Transfer to Type"::Resource: BEGIN
+            SalesLineR.VALIDATE(Type, SalesLineR.Type::Resource);
+            SalesLineR.VALIDATE("No.", ItemTransferL."Transfer to No.");
+
+            IF ResourceL.GET(ItemTransferL."Transfer to No.") THEN BEGIN
+              SalesLineR.VALIDATE(Description, ResourceL.Name);
+              SalesLineR.VALIDATE("Description 2", ResourceL."Name 2");
+              IF ResourceL.Type = ResourceL.Type::"Trusted Shop" THEN
+                SalesLineR.VALIDATE("Allow Invoice Disc.",FALSE);
+            END;
+          END;
+
+          ItemTransferL."Transfer to Type"::"G/L Account": BEGIN
+            SalesLineR.VALIDATE(Type, SalesLineR.Type::"G/L Account");
+            SalesLineR.VALIDATE("No.", ItemTransferL."Transfer to No.");
+
+            IF GLAccountL.GET(ItemTransferL."Transfer to No.") THEN BEGIN
+              SalesLineR.VALIDATE(Description, GLAccountL.Name);
+            END;
+          END;
+        END;
+      END ELSE BEGIN
+        SalesLineR.VALIDATE(Type, SalesLineR.Type::Item);
+        SalesLineR.VALIDATE("No.", eBayNavCSalesLineR."Item No.");
+        IF eBayNavCSalesLineR."Variant Code"<>'' THEN
+          SalesLineR.VALIDATE("Variant Code", eBayNavCSalesLineR."Variant Code");
+        SalesLineR.VALIDATE(Description, COPYSTR(eBayNavCSalesLineR.Description, 1, MAXSTRLEN(SalesLineR.Description)));
+      END;
+
+      SalesLineR.VALIDATE("Unit of Measure", eBayNavCSalesLineR."Unit of Measure Code");
+      SalesLineR.VALIDATE(Quantity, eBayNavCSalesLineR.Quantity);
+      IF eBayNavCSalesLineR."Qty. per Unit of Measure" <> 0 THEN
+        SalesLineR.VALIDATE("Qty. per Unit of Measure", eBayNavCSalesLineR."Qty. per Unit of Measure");
+
+      IF UtilL.ConvertEmptyCurrencyCode('') <> UtilL.ConvertEmptyCurrencyCode(eBayNavCSalesLineR."Currency Code") THEN
+        SalesLineR.VALIDATE("Currency Code", eBayNavCSalesLineR."Currency Code");
+
+      SalesLineR.VALIDATE("Shipping Source",eBayNavCSalesLineR."Stock Location");
+      CASE eBayNavCSalesLineR."Transportation Type" OF
+        'parcelservice' : SalesLineR.VALIDATE("Transp. Type",SalesLineR."Transp. Type"::"Parcel Service");
+        'furnitureshipping' : SalesLineR.VALIDATE("Transp. Type",SalesLineR."Transp. Type"::"Furniture Shipping");
+        'shippingcompany' : SalesLineR.VALIDATE("Transp. Type",SalesLineR."Transp. Type"::"Shipping Company");
+      END;
+
+      ApplyShippingServiceLineBased(eBayNavCSalesLineR,SalesLineR);
+
+      IF SalesLineR.Type = SalesLineR.Type::Item THEN
+        PurchMgtL.GetPurchCodeV2(eBayNavCSalesLineR."Webshop Code",SalesLineR);
+
+      SalesLineR.VALIDATE("Processing of order account", eBayNavCSalesLineR."Processing of Order Account");
+
+      IF NOT eBayNavCWebshopL."Ignore Webshop Sales Prices" THEN BEGIN
+        SalesLineR.VALIDATE("Unit Price", eBayNavCSalesLineR."Unit Price");
+        IF eBayNavCSalesLineR."Discount Type" = 'percent' THEN
+          SalesLineR.VALIDATE("Line Discount %", eBayNavCSalesLineR."Discount Gross Amount")
+        ELSE BEGIN
+          IF SalesHeaderR."Prices Including VAT" THEN BEGIN
+            IF eBayNavCSalesLineR."Discount Gross Amount" <> 0 THEN BEGIN
+              SalesLineR.VALIDATE("Line Discount Amount", ROUND(eBayNavCSalesLineR."Discount Gross Amount", 0.01, '='));
+            END;
+          END ELSE BEGIN
+            IF eBayNavCSalesLineR."Discount Net Amount" <> 0 THEN BEGIN
+              SalesLineR.VALIDATE("Line Discount Amount", ROUND(eBayNavCSalesLineR."Discount Net Amount", 0.01, '='));
+            END;
+          END;
+        END;
+      END;
+
+      eBayNavCSalesHeaderL.GET(eBayNavCSalesLineR."Webshop Code", eBayNavCSalesLineR."Document No.");
+      SalesLineR.VALIDATE("Payment Transaction No.", eBayNavCSalesHeaderL."Payment Transaction No.");
+
+      SalesLineR.VALIDATE(ID,eBayNavCSalesLineR.ID);
+      SalesLineR.VALIDATE("Parent ID",eBayNavCSalesLineR."Parent ID");
+      SalesLineR.VALIDATE("Delivery Days",eBayNavCSalesLineR."Delivery Days");
+      SalesLineR.VALIDATE("Planned Delivery Date",SalesHeaderR."Order Date" + eBayNavCSalesLineR."Delivery Days");
+      SalesLineR.VALIDATE("Discount Type",eBayNavCSalesLineR."Discount Type");
+      SalesLineR.VALIDATE("Discount Coupon Code",eBayNavCSalesLineR."Discount Coupon Code");
+      SalesLineR.MODIFY(TRUE);
+
+      IF eBayNavCSalesLineR."Assembly Gross Amount" <> 0 THEN BEGIN
+        IF eBayNavCWebshopL."Account for Assembly Service" <> '' THEN BEGIN
+          LineNoR += 10000;
+          AssemblyServiceSalesLineL.INIT();
+          AssemblyServiceSalesLineL.SetLagerPrÅfung(FALSE);
+          AssemblyServiceSalesLineL.SetNoConfirm(TRUE);
+          AssemblyServiceSalesLineL.SetNoMessage(TRUE);
+          AssemblyServiceSalesLineL."Document Type" := SalesHeaderR."Document Type";
+          AssemblyServiceSalesLineL."Document No." := SalesHeaderR."No.";
+          AssemblyServiceSalesLineL."Line No." := LineNoR;
+          AssemblyServiceSalesLineL.INSERT(TRUE);
+          AssemblyServiceSalesLineL.VALIDATE(Type, eBayNavCWebshopL."Account Type for Assembly Serv"); // Die Optionsfelder passen Åberein
+          AssemblyServiceSalesLineL.VALIDATE("No.", eBayNavCWebshopL."Account for Assembly Service");
+
+          IF UtilL.ConvertEmptyCurrencyCode('') <> UtilL.ConvertEmptyCurrencyCode(eBayNavCSalesLineR."Currency Code") THEN
+            AssemblyServiceSalesLineL.VALIDATE("Currency Code", eBayNavCSalesLineR."Currency Code");
+          AssemblyServiceSalesLineL.VALIDATE(Quantity, 1);
+          IF NOT eBayNavCWebshopL."Ignore Webshop Sales Prices" THEN BEGIN
+            IF SalesHeaderR."Prices Including VAT" THEN BEGIN
+              AssemblyServiceSalesLineL.VALIDATE("Unit Price", eBayNavCSalesLineR."Assembly Gross Amount");
+            END ELSE BEGIN
+              AssemblyServiceSalesLineL.VALIDATE("Unit Price", eBayNavCSalesLineR."Assembly Net Amount");
+            END;
+          END;
+          AssemblyServiceSalesLineL.MODIFY(TRUE);
+        END;
+      END;
+
+      InvH24Mgt.CreateDunningEntry(SalesLineR);
+    END;
+
+    LOCAL PROCEDURE CreateSalesLineDimensions@1119455011(VAR eBayNavCSalesLineR@1119455000 : Record 5251572;VAR SalesLineR@1119455001 : Record 37);
+    VAR
+      eBayNavCWebsiteL@1119455002 : Record 5251554;
+      eBaySalesL@1119455003 : Codeunit 5095806;
+    BEGIN
+      // FÅgt die VK-Zeilen Dimensionen ein
+
+      IF eBayNavCWebsiteL."Dim. Code f. Sales Orders L. 1" <> '' THEN BEGIN
+        eBaySalesL.SchreibeDimensionInOrderLine(eBayNavCWebsiteL."Dim. Code f. Sales Orders L. 1",
+            eBayNavCSalesLineR."Dimension Value 1",SalesLineR);
+      END;
+
+      IF eBayNavCWebsiteL."Dim. Code f. Sales Orders L. 2" <> '' THEN BEGIN
+        eBaySalesL.SchreibeDimensionInOrderLine(eBayNavCWebsiteL."Dim. Code f. Sales Orders L. 2",
+          eBayNavCSalesLineR."Dimension Value 2",SalesLineR);
+      END;
+      SalesLineR.InitLineDimValue;
+    END;
+
+    LOCAL PROCEDURE HandleEbaySalesLines@1119455038(VAR eBayNavCSalesHeaderR@1119455001 : Record 5251571;VAR SalesHeaderR@1119455000 : Record 36);
+    VAR
+      SalesLineL@1119455002 : Record 37;
+      SalesLineModifyL@1119455004 : Record 37;
+      eBayTransactionL@1119455003 : Record 5095904;
+      eBayOnlineQuoteL@1119455005 : Record 5095902;
+      AUCTION_DEU@1119455009 : TextConst 'DEU=Auktion Nr. %1;ENU=Auction No. %1';
+      REFERENCE_DEU@1119455008 : TextConst 'DEU=Referenznr. %1;ENU=Reference No. %1';
+      AUCTION_ENU@1119455007 : TextConst 'DEU=Auction No. %1;ENU=Auction No. %1';
+      REFERENCE_ENU@1119455006 : TextConst 'DEU=Reference No. %1;ENU=Reference No. %1';
+      lineNoL@1119455010 : Integer;
+      eBayTransactionModifyL@1119455011 : Record 5095904;
+      eBayOnlineQuoteModifyL@1119455012 : Record 5095902;
+      eBayOnlineQuoteCuL@1119455013 : Codeunit 5095813;
+      TRANSACTION_MARKED@1119455014 : TextConst 'DEU=eBay Transaktion "%1" wurde erfolgreich freigegeben.;ENU=eBay Transaction "%1" has been released successfully.';
+      eBayNavCLogBufferL@1119455015 : Codeunit 5251568;
+    BEGIN
+      // Verarbeitet eBay VK-Zeilen
+
+      SalesLineL.SETCURRENTKEY("Document Type", "Processing of order account");
+      SalesLineL.SETRANGE("Document Type", SalesHeaderR."Document Type");
+      SalesLineL.SETRANGE("Document No.", SalesHeaderR."No.");
+      SalesLineL.SETRANGE(Type, SalesLineL.Type::Item);
+      SalesLineL.SETFILTER("Processing of order account", '<>%1', '');
+
+      eBayTransactionL.SETCURRENTKEY("Processing of Order Account");
+
+      IF SalesLineL.FINDSET() THEN REPEAT
+        eBayTransactionL.SETRANGE("Processing of Order Account", SalesLineL."Processing of order account");
+
+        lineNoL := SalesLineL."Line No.";
+
+        IF eBayTransactionL.FINDFIRST() THEN BEGIN
+          IF eBayOnlineQuoteL.GET(eBayTransactionL."Quote No.") THEN BEGIN
+            // Ggf. abweichenden Lagerort vom eBay Angebot nehmen
+            SalesLineModifyL.SetLagerPrÅfung(TRUE);
+            SalesLineModifyL.SetNoConfirm(TRUE);
+            SalesLineModifyL.SetNoMessage(TRUE);
+            SalesLineModifyL.GET(SalesLineL."Document Type", SalesLineL."Document No.", SalesLineL."Line No.");
+            SalesLineModifyL.VALIDATE("Location Code", eBayOnlineQuoteL."Withdrawal Stock (Order)");
+            SalesLineModifyL.MODIFY(TRUE);
+
+            // Auktionsnr. als Text
+            IF SalesHeaderR."Language Code" = '' THEN BEGIN
+              CreateSalesTextLine(SalesHeaderR, STRSUBSTNO(AUCTION_DEU, eBayOnlineQuoteL."eBay Quote No."), lineNoL + 20);
+            END ELSE BEGIN
+              CreateSalesTextLine(SalesHeaderR, STRSUBSTNO(AUCTION_ENU, eBayOnlineQuoteL."eBay Quote No."), lineNoL + 20);
+            END;
+
+            // Kaufabwicklungsnr. (Referenznr.) als Textzeile
+            IF SalesHeaderR."Language Code" = '' THEN BEGIN
+              CreateSalesTextLine(SalesHeaderR, STRSUBSTNO(REFERENCE_DEU, eBayTransactionL."Processing of Order Account"), lineNoL + 40);
+            END ELSE BEGIN
+              CreateSalesTextLine(SalesHeaderR, STRSUBSTNO(REFERENCE_ENU, eBayTransactionL."Processing of Order Account"), lineNoL + 40);
+            END;
+
+            // Nun Transaktionen markieren
+            IF NOT eBayTransactionL."Order rendered" THEN BEGIN
+              eBayTransactionModifyL.GET(eBayTransactionL."Quote No.", eBayTransactionL."Transaction-ID");
+              eBayTransactionModifyL.VALIDATE("Order No.", SalesHeaderR."No.");
+              eBayTransactionModifyL.VALIDATE("Order rendered", TRUE);
+              eBayTransactionModifyL.VALIDATE("Released by Customer", TRUE);
+              eBayTransactionModifyL.VALIDATE("Customer Release Date", CURRENTDATETIME());
+              eBayTransactionModifyL.VALIDATE("Customer Released by",
+                  COPYSTR(USERID(), 1, MAXSTRLEN(eBayTransactionModifyL."Customer Released by")));
+              eBayTransactionModifyL.MODIFY(TRUE);
+              eBayNavCLogBufferL.Log(FALSE, STRSUBSTNO(TRANSACTION_MARKED, eBayTransactionL."Transaction-ID"));
+
+              // Falls noch kein Auftrag erstellt wurde,
+              // muss der Bestand vom temporÑren Lager wieder zurÅckgebucht werden
+              IF NOT eBayNavCSalesHeaderR."Sales Document rendered" THEN BEGIN
+                eBayOnlineQuoteModifyL.GET(eBayTransactionModifyL."Quote No.");
+                eBayOnlineQuoteCuL.AufEntnahmelagerZurÅckBuchen(eBayOnlineQuoteModifyL, eBayTransactionModifyL."Purchase Quantity");
+                eBayOnlineQuoteModifyL.VALIDATE("Quantity Order rendered (Qts.)",
+                    eBayOnlineQuoteModifyL."Quantity Order rendered (Qts.)" +
+                    eBayTransactionModifyL."Purchase Quantity");
+
+                IF eBayOnlineQuoteModifyL."Quantity (Quotes)" =
+                    (eBayOnlineQuoteModifyL."Quantity Order rendered (Qts.)" +
+                    eBayOnlineQuoteModifyL."Quantity cancelled (Quotes)" +
+                    eBayOnlineQuoteModifyL."Quantity relist/stored(Quotes)")
+               THEN BEGIN
+                  eBayOnlineQuoteModifyL.Status := eBayOnlineQuoteModifyL.Status::Abgeschlossen;
+                END;
+
+                IF eBayOnlineQuoteModifyL.MODIFY() THEN;
+              END
+            END;
+          END;
+        END;
+      UNTIL SalesLineL.NEXT() = 0;
+    END;
+
+    LOCAL PROCEDURE CreateSalesShippingCostsLine@1119455013(VAR SalesHeaderR@1119455007 : Record 36;VAR eBayNavCSalesHeaderR@1119455000 : Record 5251571;VAR LineNoR@1119455001 : Integer);
+    VAR
+      eBayNavCWebshopL@1119455002 : Record 5251553;
+      CustomerTemplateL@1119455003 : Record 5105;
+      AccountTypeL@1119455004 : Integer;
+      AccountL@1119455005 : Code[20];
+      SalesLineL@1119455006 : Record 37;
+      ShippingCostsL@1119455008 : Decimal;
+      MERGED_SHIPPING_AND_COD@1119455009 : TextConst 'DEU=Die NachnahmegebÅhr wurde auf die Versandkostenzeile aufgeschlagen, da kein spezielles Konto fÅr die NachnahmegebÅhr in der NAVconnect Einrichtung hinterelgt ist.;ENU=The COD charges have been merged into the shipping charges line, since there is no COD accounting set in your NAVconnect setup.';
+      eBayNavCLogBufferL@1119455010 : Codeunit 5251568;
+    BEGIN
+      // Erstellt die Versandkosten VK-Zeile
+
+      eBayNavCWebshopL.GET(eBayNavCSalesHeaderR."Webshop Code");
+
+      ShippingCostsL := eBayNavCSalesHeaderR."Shipping Costs";
+
+      // Sofern NachnahmegebÅhren anfallen und diese nicht separat
+      // kontiert werden, werden diese auf die Versandkosten aufgeschlagen
+      IF (eBayNavCSalesHeaderR."C.O.D. Charges" <> 0) AND
+         (eBayNavCWebshopL."Account Type for COD Charges" = eBayNavCWebshopL."Account Type for COD Charges"::" ") AND
+         (eBayNavCWebshopL."Account for COD Charges" = '')
+      THEN BEGIN
+        ShippingCostsL += eBayNavCSalesHeaderR."C.O.D. Charges";
+        eBayNavCLogBufferL.Log(FALSE, MERGED_SHIPPING_AND_COD);
+      END;
+
+      // Nur Versandkostenzeile anlegen, sofern die Bestellung nicht versandkostenfrei ist
+      IF ShippingCostsL <> 0 THEN BEGIN
+        // Nun das Konto fÅr Versandkosten erîrtern
+        AccountTypeL := 0;
+        AccountL := '';
+
+        // Sofern das Versandkostenkonto aus der LÑnderdebitorvorlage kommen soll..
+        IF eBayNavCWebshopL."Account Shipping Cost Country" THEN BEGIN
+          IF CustomerTemplateL.GET(eBayNavCSalesHeaderR."Ship-to Country Code") THEN BEGIN
+            AccountTypeL := CustomerTemplateL."Account Type for Shipping Cost";
+            AccountL := CustomerTemplateL."Account for Shipping Cost";
+          END;
+        END;
+
+        // Sollte kein Versandkostenkonto gefunden worden sein, nehmen wir das aus der Einrichtung
+        IF AccountL = '' THEN BEGIN
+          AccountTypeL := eBayNavCWebshopL."Account Type for Shipping Cost";
+          AccountL := eBayNavCWebshopL."Account for Shipping Cost";
+        END;
+
+        SalesLineL.INIT();
+        SalesLineL."Document Type" := SalesHeaderR."Document Type";
+        SalesLineL."Document No." := SalesHeaderR."No.";
+        SalesLineL."Line No." := LineNoR;
+        SalesLineL.INSERT(TRUE);
+        SalesLineL.VALIDATE(Type, AccountTypeL);
+        SalesLineL.VALIDATE("No.", AccountL);
+        SalesLineL.VALIDATE(Quantity, 1);
+        SalesLineL.VALIDATE("Unit Price", ShippingCostsL);
+
+        // Eventuell Zeilenrabatte der Versandkosten anwenden
+        IF SalesHeaderR."Prices Including VAT" AND (eBayNavCSalesHeaderR."Ship. Discount Gross Amount" <> 0) THEN BEGIN
+          SalesLineL.VALIDATE("Line Discount Amount", eBayNavCSalesHeaderR."Ship. Discount Gross Amount");
+        END;
+
+        IF (NOT SalesHeaderR."Prices Including VAT") AND (eBayNavCSalesHeaderR."Total Shipment Net Amount"<> 0) THEN BEGIN
+          SalesLineL.VALIDATE("Line Discount Amount", eBayNavCSalesHeaderR."Ship. Discount Net Amount");
+        END;
+
+        SalesLineL.MODIFY(TRUE);
+
+        LineNoR += 10000;
+      END;
+    END;
+
+    LOCAL PROCEDURE CreateSalesCodChargesLine@1119455014(VAR SalesHeaderR@1119455000 : Record 36;VAR eBayNavCSalesHeaderR@1119455001 : Record 5251571;LineNoV@1119455002 : Integer);
+    VAR
+      eBayNavCWebshopL@1119455003 : Record 5251553;
+      SalesLineL@1119455004 : Record 37;
+    BEGIN
+      // Erstellt die NachnahmegebÅhren VK-Zeile
+
+      eBayNavCWebshopL.GET(eBayNavCSalesHeaderR."Webshop Code");
+
+      // Nur eine NN-Zeile anlegen, sofern NN-GebÅhren anfallen
+      IF eBayNavCSalesHeaderR."C.O.D. Charges" > 0 THEN BEGIN
+
+        // Sofern NachnahmegebÅhren anfallen, aber kein Konto spezifiziert ist,
+        // sind die NachnahmegebÅhren bereits in den Versandkosten enthalten und
+        // es muss keine Zeile angelegt werden
+        IF (eBayNavCWebshopL."Account Type for COD Charges" <> eBayNavCWebshopL."Account Type for COD Charges"::" ") AND
+           (eBayNavCWebshopL."Account for COD Charges" <> '')
+        THEN BEGIN
+          SalesLineL.INIT();
+          SalesLineL."Document Type" := SalesHeaderR."Document Type";
+          SalesLineL."Document No." := SalesHeaderR."No.";
+          SalesLineL."Line No." := LineNoV;
+          SalesLineL.INSERT(TRUE);
+          SalesLineL.VALIDATE(Type, eBayNavCWebshopL."Account Type for COD Charges");
+          SalesLineL.VALIDATE("No.", eBayNavCWebshopL."Account for COD Charges");
+          SalesLineL.VALIDATE(Quantity, 1);
+          SalesLineL.VALIDATE("Unit Price", eBayNavCSalesHeaderR."C.O.D. Charges");
+          SalesLineL.MODIFY(TRUE);
+          LineNoV += 10000;
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE CreateCouponLine@1119455019(VAR SalesHeaderR@1119455000 : Record 36;lineNoV@1119455002 : Integer;VAR eBayNavCSalesHeaderR@1000000000 : Record 5251571);
+    VAR
+      eBayNavCWebshopL@1119455003 : Record 5251553;
+      salesLineL@1119455004 : Record 37;
+      salesLine2L@1170000001 : Record 37;
+      CouponResourceL@1119455005 : Record 156;
+      CouponResourceTemplateL@1119455006 : Record 156;
+      CouponResourceUnitL@1119455007 : Record 205;
+      CouponResourceTemplateUnitL@1119455008 : Record 205;
+      VoucherL@1170000000 : Record 50051;
+      ResSetupL@1170000002 : Record 314;
+      ApprMgtL@1170000003 : Codeunit 439;
+      OrderAmountL@1170000004 : Decimal;
+      OrderAmountLCYL@1170000005 : Decimal;
+      SalesLineTmpL@1000000002 : TEMPORARY Record 37;
+      eBayNavCSalesLineL@1000000007 : Record 5251572;
+      TotalLineAmountL@1000000001 : Decimal;
+      AllocatedAmountL@1000000003 : Decimal;
+      OrderLineAmountL@1000000004 : Decimal;
+      OrderLineNoL@1000000005 : Integer;
+      VoucherMemoriaLineCreatedL@1000000006 : Boolean;
+    BEGIN
+      // Erstellt ggf. eine Gutscheinzeile
+
+      eBayNavCWebshopL.GET(eBayNavCSalesHeaderR."Webshop Code");
+      OrderAmountL := eBayNavCSalesHeaderR."Invoice Amount";
+
+      ResSetupL.GET;
+      VoucherL.RESET;
+      VoucherL.SETRANGE(Type,VoucherL.Type::Payment);
+      VoucherL.SETRANGE("Sales Order No.",eBayNavCSalesHeaderR."External Document No.");
+      IF VoucherL.FINDSET THEN
+        REPEAT
+          IF eBayNavCWebshopL."Account Type for Coupons"  <> eBayNavCWebshopL."Account Type for Coupons"::" " THEN BEGIN
+            CouponResourceL.RESET;
+
+            IF STRLEN(VoucherL."Voucher Code") > 20 THEN
+              CouponResourceL.SETRANGE("Original Code",VoucherL."Voucher Code")
+            ELSE
+              CouponResourceL.SETRANGE("No.",VoucherL."Voucher Code");
+            IF NOT CouponResourceL.FINDFIRST THEN BEGIN
+              CouponResourceTemplateL.RESET;
+              CouponResourceTemplateL.SETRANGE(Template,TRUE);
+              IF VoucherL."Coupon Type" = VoucherL."Coupon Type"::Payment THEN BEGIN
+
+                IF STRPOS(VoucherL."Voucher Code",ResSetupL."Groupon Prefix") = 1 THEN
+                  CouponResourceTemplateL.SETRANGE(Type,CouponResourceTemplateL.Type::Groupon)
+                ELSE
+                  CouponResourceTemplateL.SETRANGE(Type,CouponResourceTemplateL.Type::"Sales Bon");
+
+              END ELSE
+                CouponResourceTemplateL.SETRANGE(Type,CouponResourceTemplateL.Type::"Credit Bon");
+
+              IF NOT CouponResourceTemplateL.FINDFIRST THEN BEGIN
+                IF VoucherL."Coupon Type" = VoucherL."Coupon Type"::Payment THEN
+                  CouponResourceTemplateL.GET(eBayNavCWebshopL."Groupon Template Resource No.")
+                 ELSE
+                   CouponResourceTemplateL.GET(eBayNavCWebshopL."Coupon Template Resource No.");
+              END;
+
+              CouponResourceL.INIT();
+              IF STRLEN(VoucherL."Voucher Code") > 20 THEN
+                CouponResourceL."No." := ''
+              ELSE
+                CouponResourceL."No." := VoucherL."Voucher Code";
+
+              CouponResourceL.INSERT(TRUE);
+
+              // Einheit kopieren
+              CouponResourceTemplateUnitL.GET(CouponResourceTemplateL."No.", CouponResourceTemplateL."Base Unit of Measure");
+
+              CouponResourceUnitL.INIT();
+              CouponResourceUnitL."Resource No." := CouponResourceL."No.";
+              CouponResourceUnitL.Code := CouponResourceTemplateUnitL.Code;
+              CouponResourceUnitL.INSERT(TRUE);
+              CouponResourceUnitL.TRANSFERFIELDS(CouponResourceTemplateUnitL, FALSE);
+              CouponResourceUnitL.MODIFY(TRUE);
+
+              CouponResourceL.TRANSFERFIELDS(CouponResourceTemplateL, FALSE);
+              CouponResourceL.Template := FALSE;
+              CouponResourceL."Original Code" := VoucherL."Voucher Code";
+              CouponResourceL."Commission %" := VoucherL."Commission %";
+              CouponResourceL."Coupon Currency Code" := VoucherL."Currency Code";
+              CouponResourceL."Coupon Type" := VoucherL."Coupon Type";
+              CouponResourceL.MODIFY(TRUE);
+            END;
+
+            IF (NOT VoucherMemoriaLineCreatedL) OR (VoucherL."Coupon Type" = VoucherL."Coupon Type"::Payment) THEN BEGIN
+              salesLineL.INIT();
+              salesLineL."Document Type" := SalesHeaderR."Document Type";
+              salesLineL."Document No." := SalesHeaderR."No.";
+              salesLineL."Line No." := lineNoV;
+              salesLineL.INSERT(TRUE);
+              salesLineL.VALIDATE(Type, salesLineL.Type::Resource);
+              salesLineL.VALIDATE("No.", CouponResourceL."No.");
+              salesLineL.VALIDATE(Quantity, 1);
+            END;
+
+
+            salesLine2L.RESET;
+            salesLine2L.SETRANGE("Document Type",SalesHeaderR."Document Type");
+            salesLine2L.SETRANGE("Document No.",SalesHeaderR."No.");
+            salesLine2L.SETRANGE(Type,salesLine2L.Type::Item);
+            salesLine2L.SETRANGE("Discount Coupon Code",VoucherL."Voucher Code");
+            IF salesLine2L.FINDFIRST THEN BEGIN
+              IF (NOT VoucherMemoriaLineCreatedL) OR (VoucherL."Coupon Type" = VoucherL."Coupon Type"::Payment) THEN
+                salesLineL."Parent ID" := salesLine2L.ID;
+              IF SalesHeaderR."Invoice Discount Calculation" <> SalesHeaderR."Invoice Discount Calculation"::"%" THEN
+                salesLine2L.MODIFYALL("Allow Invoice Disc.",FALSE);
+            END;
+
+            IF (NOT VoucherMemoriaLineCreatedL) OR (VoucherL."Coupon Type" = VoucherL."Coupon Type"::Payment) THEN BEGIN
+              salesLineL.VALIDATE("Allow Invoice Disc.",FALSE);
+              salesLineL.VALIDATE("Allow Line Disc.",FALSE);
+            END;
+
+            IF VoucherL."Coupon Type" <> VoucherL."Coupon Type"::Payment THEN BEGIN
+              IF NOT VoucherMemoriaLineCreatedL THEN
+              salesLineL.VALIDATE("Unit Price", 0)
+
+            END ELSE BEGIN
+              IF CouponResourceL."Coupon Gen Prod. Posting Group" = '' THEN
+                CouponResourceL."Coupon Gen Prod. Posting Group" := CouponResourceL."Gen. Prod. Posting Group";
+              IF CouponResourceL."Coupon VAT Prod. Posting Group" = '' THEN
+                CouponResourceL."Coupon VAT Prod. Posting Group" := CouponResourceL."VAT Prod. Posting Group";
+
+              salesLineL.VALIDATE(salesLineL."Gen. Prod. Posting Group",CouponResourceL."Coupon Gen Prod. Posting Group");
+              salesLineL.VALIDATE(salesLineL."VAT Prod. Posting Group",CouponResourceL."Coupon VAT Prod. Posting Group");
+              IF VoucherL.Amount > OrderAmountL THEN
+                VoucherL.Amount := OrderAmountL;
+              salesLineL.VALIDATE("Unit Price", VoucherL.Amount * -1);
+            END;
+
+            IF VoucherL."Coupon Type" = VoucherL."Coupon Type"::Absolute THEN BEGIN
+              IF VoucherL."Sales Order Line No." = 0 THEN
+                AllocateCouponLine(SalesHeaderR,VoucherL.Amount)
+              ELSE BEGIN
+                salesLine2L.RESET;
+                salesLine2L.SETRANGE("Document Type",salesLine2L."Document Type"::Order);
+                salesLine2L.SETRANGE("Document No.",VoucherL."Sales Order No.");
+
+                eBayNavCSalesLineL.SETRANGE("Webshop Code",eBayNavCSalesHeaderR."Webshop Code");
+                eBayNavCSalesLineL.SETRANGE("Document No.",eBayNavCSalesHeaderR."No.");
+                eBayNavCSalesLineL.SETRANGE("Line No.",VoucherL."Sales Order Line No.");
+                IF eBayNavCSalesLineL.FINDFIRST THEN
+                  salesLine2L.SETRANGE(ID,eBayNavCSalesLineL.ID);
+
+                IF salesLine2L.FINDFIRST THEN BEGIN
+                  salesLine2L.VALIDATE("Line Discount Amount",salesLine2L."Line Discount Amount"+VoucherL.Amount);
+                  salesLine2L.MODIFY;
+                END;
+              END;
+            END;
+
+            IF (NOT VoucherMemoriaLineCreatedL) OR (VoucherL."Coupon Type" = VoucherL."Coupon Type"::Payment) THEN BEGIN
+              salesLineL.VALIDATE(Description, VoucherL.Description);
+              salesLineL.MODIFY(TRUE);
+            END;
+
+            lineNoV += 10000;
+
+            salesLine2L.RESET;
+            salesLine2L.SETRANGE("Document Type",SalesHeaderR."Document Type");
+            salesLine2L.SETRANGE("Document No.",SalesHeaderR."No.");
+            salesLine2L.SETRANGE(Type,salesLine2L.Type::Item);
+            salesLine2L.SETRANGE("Discount Coupon Code",VoucherL."Voucher Code");
+            IF salesLine2L.FINDSET THEN
+              IF SalesHeaderR."Invoice Discount Calculation" <> SalesHeaderR."Invoice Discount Calculation"::"%" THEN
+              salesLine2L.MODIFYALL("Allow Invoice Disc.",FALSE);
+
+            salesLine2L.RESET;
+            IF VoucherL."Coupon Type" = VoucherL."Coupon Type"::Relative THEN BEGIN
+              salesLine2L.SETRANGE("Document Type",SalesHeaderR."Document Type");
+              salesLine2L.SETRANGE("Document No.",SalesHeaderR."No.");
+              salesLine2L.SETRANGE(Type,salesLine2L.Type::Item);
+              salesLine2L.SETRANGE("Allow Line Disc.",TRUE);
+              IF salesLine2L.FINDSET THEN
+                REPEAT
+                  salesLine2L.VALIDATE("Line Discount %", salesLine2L."Line Discount %" + VoucherL.Amount);
+                  salesLine2L.MODIFY;
+                UNTIL salesLine2L.NEXT = 0;
+
+              salesLine2L.RESET;
+              salesLine2L.SETRANGE("Document Type",SalesHeaderR."Document Type");
+              salesLine2L.SETRANGE("Document No.",SalesHeaderR."No.");
+              salesLine2L.SETRANGE(Type,salesLine2L.Type::Resource);
+              salesLine2L.SETFILTER("Resource Type",'%1|%2',
+                  salesLine2L."Resource Type"::"Trusted Shop",salesLine2L."Resource Type"::Assembly);
+              salesLine2L.SETRANGE("Allow Line Disc.",TRUE);
+              IF salesLine2L.FINDSET THEN
+                REPEAT
+                  salesLine2L.VALIDATE("Line Discount %", salesLine2L."Line Discount %" + VoucherL.Amount);
+                  salesLine2L.MODIFY;
+                UNTIL salesLine2L.NEXT = 0;
+            END;
+
+            IF VoucherL."Coupon Type" <> VoucherL."Coupon Type"::Payment THEN
+              VoucherMemoriaLineCreatedL := TRUE;
+
+          END;
+        UNTIL VoucherL.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE CreateSalesGiftLines@1119455016(VAR eBayNavCSalesHeaderR@1119455000 : Record 5251571;VAR SalesHeaderR@1000000000 : Record 36);
+    VAR
+      SalesLineL@1119455002 : Record 37;
+      eBayTransactionL@1119455003 : Record 5095904;
+      eBaySalesL@1119455004 : Codeunit 5095806;
+    BEGIN
+      // FÅgt Werbegeschenke ein
+
+      SalesLineL.SETRANGE("Document Type", SalesHeaderR."Document Type");
+      SalesLineL.SETRANGE("Document No.", SalesHeaderR."No.");
+      SalesLineL.SETRANGE(Type, SalesLineL.Type::Item);
+
+      IF SalesLineL.FINDSET() THEN REPEAT
+        // Bei eBay VK-Zeilen, werden die Werbegeschenke fÅr eBay Artikel genommen
+        IF SalesLineL."Processing of order account" <> '' THEN BEGIN
+          eBayTransactionL.SETRANGE("Processing of Order Account", SalesLineL."Processing of order account");
+
+          IF eBayTransactionL.FINDFIRST() THEN BEGIN
+            eBaySalesL.eBayGiveawayToSalesOrder(eBayTransactionL, SalesLineL, FALSE);
+          END;
+        END ELSE BEGIN
+          // Ansonsten gibt es welche von NAVconnect
+          eBaySalesL.navcGiveawayToSalesOrder(eBayNavCSalesHeaderR, SalesLineL, FALSE);
+        END;
+      UNTIL SalesLineL.NEXT() = 0;
+    END;
+
+    LOCAL PROCEDURE ExpandBillOfMaterialLines@1119455017(VAR eBayNavCSalesHeaderR@1119455002 : Record 5251571;VAR salesHeaderR@1119455000 : Record 36);
+    VAR
+      eBayNavCWebshopL@1119455001 : Record 5251553;
+      ItemL@1119455003 : Record 27;
+      SalesExplodeBOML@1119455004 : Codeunit 63;
+      SalesLineL@1119455005 : Record 37;
+      eBayNavCLogBufferL@1119455006 : Codeunit 5251568;
+      BOM_EXPLODED@1119455007 : TextConst 'DEU=StÅckliste "%1" wurde erfolgreich entfaltet.;ENU=Bill of Materials "%1" has been exploded successfully.';
+    BEGIN
+      // Entfaltet VK-StÅcklistenzeilen
+
+      eBayNavCWebshopL.GET(eBayNavCSalesHeaderR."Webshop Code");
+
+      IF eBayNavCWebshopL."Explode BOM while gen. Order" THEN BEGIN
+        SalesLineL.SETRANGE("Document Type", salesHeaderR."Document Type");
+        SalesLineL.SETRANGE("Document No.", salesHeaderR."No.");
+        SalesLineL.SETRANGE(Type, SalesLineL.Type::Item);
+
+        IF SalesLineL.FINDSET() THEN REPEAT
+          IF ItemL.GET(SalesLineL."No.") THEN BEGIN
+            ItemL.CALCFIELDS("Bill of Materials");
+
+            IF ItemL."Bill of Materials" THEN BEGIN
+              COMMIT();
+              SalesExplodeBOML.SetSelection(2);
+              SalesExplodeBOML.SetNoConfirm(TRUE);
+
+              IF SalesLineL.GET(SalesLineL."Document Type", SalesLineL."Document No.", SalesLineL."Line No.") THEN BEGIN
+                IF SalesExplodeBOML.RUN(SalesLineL) THEN BEGIN
+                  eBayNavCLogBufferL.Log(FALSE, STRSUBSTNO(BOM_EXPLODED, SalesLineL."No."));
+                END;
+              END;
+            END;
+          END;
+        UNTIL SalesLineL.NEXT() = 0;
+      END;
+    END;
+
+    PROCEDURE CreateExtendedTextLines@1119455043(VAR eBayNavCSalesHeaderR@1119455005 : Record 5251571;VAR salesHeaderR@1119455000 : Record 36);
+    VAR
+      SalesLineL@1119455001 : Record 37;
+      TransferExtendedTextL@1119455002 : Codeunit 378;
+      eBayNavCLogBufferL@1119455003 : Codeunit 5251568;
+      TEXT_LINES_INSERTED@1119455004 : TextConst 'DEU=Textbausteine fÅr Artikel "%1" wurden erfolgreich eingefÅgt.;EUQ=Extended Text Lines of item "%1" have been inserted.';
+      eBayNavCWebshopL@1119455006 : Record 5251553;
+    BEGIN
+      // FÅgt ggf. FÅr eine VK-Zeile die Textbausteine ein
+      eBayNavCWebshopL.GET(eBayNavCSalesHeaderR."Webshop Code");
+
+      IF eBayNavCWebshopL."Insert ext. Text w. gen. Order" THEN BEGIN
+
+        SalesLineL.SETRANGE("Document Type", salesHeaderR."Document Type");
+        SalesLineL.SETRANGE("Document No.", salesHeaderR."No.");
+        IF SalesLineL.FINDSET() THEN REPEAT
+          IF TransferExtendedTextL.SalesCheckIfAnyExtText(SalesLineL, TRUE) THEN BEGIN
+            eBayNavCLogBufferL.Log(FALSE, STRSUBSTNO(TEXT_LINES_INSERTED, SalesLineL."No."));
+            TransferExtendedTextL.InsertSalesExtText(SalesLineL);
+          END;
+        UNTIL SalesLineL.NEXT() = 0;
+
+      END;
+    END;
+
+    LOCAL PROCEDURE ApplyShippingServiceLineBased@1119455022(eBayNavCSalesLineV@1119455000 : Record 5251572;VAR salesLineR@1119455001 : Record 37);
+    VAR
+      eBayNavCShippingModuleL@1119455002 : Record 5251557;
+      eBayNavCWebshopL@1119455003 : Record 5251553;
+    BEGIN
+      eBayNavCWebshopL.GET(eBayNavCSalesLineV."Webshop Code");
+      IF NOT eBayNavCWebshopL."Ignore Webshop Shipping Types" THEN
+        IF eBayNavCShippingModuleL.GET(eBayNavCSalesLineV."Webshop Code",eBayNavCSalesLineV."Webshop Shipping Module") THEN
+          salesLineR.VALIDATE("Shipping Agent Code", eBayNavCShippingModuleL."Shipping Agent Code");
+    END;
+
+    LOCAL PROCEDURE CreateSalesTextLine@1119455009(VAR SalesHeaderR@1119455003 : Record 36;DescriptionV@1119455001 : Text[50];LineNoV@1119455000 : Integer);
+    VAR
+      SalesLineL@1119455002 : Record 37;
+    BEGIN
+      // FÅgt eine neue VK-Zeile des Typs "Text" ein
+
+      SalesLineL.INIT();
+      SalesLineL.SetNoConfirm(TRUE);
+      SalesLineL.SetLagerPrÅfung(TRUE);
+      SalesLineL.SetNoMessage(TRUE);
+      SalesLineL."Document Type" := SalesHeaderR."Document Type";
+      SalesLineL."Document No." := SalesHeaderR."No.";
+      SalesLineL."Line No." := LineNoV;
+      SalesLineL.Type := SalesLineL.Type::" ";
+      SalesLineL.Description := DescriptionV;
+      SalesLineL.INSERT(TRUE);
+
+      LineNoV += 10000;
+    END;
+
+    PROCEDURE AllocateCouponLine@1000000001(SalesHeaderV@1000000000 : Record 36;CouponAmountV@1000000001 : Decimal);
+    VAR
+      SalesLineL@1000000008 : Record 37;
+      SalesLineTmpL@1000000006 : TEMPORARY Record 37;
+      TotalLineAmountL@1000000005 : Decimal;
+      AllocatedAmountL@1000000004 : Decimal;
+      OrderLineAmountL@1000000003 : Decimal;
+      OrderLineNoL@1000000002 : Integer;
+    BEGIN
+      TotalLineAmountL := 0;
+      AllocatedAmountL := 0;
+      IF NOT SalesLineTmpL.ISEMPTY THEN
+        SalesLineTmpL.DELETEALL;
+
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type",SalesHeaderV."Document Type");
+      SalesLineL.SETRANGE("Document No.",SalesHeaderV."No.");
+      IF SalesLineL.FINDSET THEN BEGIN
+        SalesLineL.SuspendStatusCheck(TRUE);
+        REPEAT
+          //Absolute can be allocated (Restriction: Absolute Coupon Line is the last one)
+          IF (SalesLineL.Type = SalesLineL.Type::Item) OR
+             ((SalesLineL.Type = SalesLineL.Type::Resource) AND
+              (SalesLineL."Resource Type" IN
+               [SalesLineL."Resource Type"::"Trusted Shop",SalesLineL."Resource Type"::Assembly])) THEN BEGIN
+            TotalLineAmountL += SalesLineL."Line Amount";
+            SalesLineTmpL := SalesLineL;
+            SalesLineTmpL.INSERT;
+          END;
+        UNTIL SalesLineL.NEXT = 0;
+
+        SalesLineL.FINDSET;
+        REPEAT
+          IF (SalesLineL.Type = SalesLineL.Type::Item) OR
+             ((SalesLineL.Type = SalesLineL.Type::Resource) AND
+              (SalesLineL."Resource Type" IN
+               [SalesLineL."Resource Type"::"Trusted Shop",SalesLineL."Resource Type"::Assembly])) THEN BEGIN
+
+            AllocatedAmountL += ROUND((CouponAmountV/TotalLineAmountL)*SalesLineL."Line Amount",0.01);
+
+            SalesLineL.VALIDATE("Line Discount Amount",SalesLineL."Line Discount Amount"+
+                ROUND((CouponAmountV/TotalLineAmountL)*SalesLineL."Line Amount",0.01));
+            SalesLineL.MODIFY;
+          END;
+        UNTIL SalesLineL.NEXT = 0;
+
+        //Allocate Rounding difference
+        IF AllocatedAmountL <> CouponAmountV THEN BEGIN
+          REPEAT
+            //Get Best Line
+            IF SalesLineTmpL.FINDSET THEN BEGIN
+              OrderLineAmountL := 0;
+              OrderLineNoL := 0;
+              REPEAT
+                IF SalesLineTmpL."Line Amount" > OrderLineAmountL THEN BEGIN
+                  OrderLineAmountL := SalesLineTmpL."Line Amount";
+                  OrderLineNoL := SalesLineTmpL."Line No.";
+                END;
+              UNTIL SalesLineTmpL.NEXT = 0;
+            END;
+
+            //Update Line Amount
+            IF (AllocatedAmountL > CouponAmountV) AND (OrderLineNoL <> 0) THEN BEGIN  //Reduce Line Amount
+              SalesLineL.GET(SalesHeaderV."Document Type",SalesHeaderV."No.",OrderLineNoL);
+              SalesLineL.VALIDATE("Line Discount Amount",SalesLineL."Line Discount Amount"-0.01);
+              SalesLineL.MODIFY;
+
+              AllocatedAmountL -= 0.01;
+              SalesLineTmpL.GET(SalesHeaderV."Document Type",SalesHeaderV."No.",OrderLineNoL);
+              SalesLineTmpL.DELETE;
+            END;
+
+            IF (AllocatedAmountL < CouponAmountV) AND (OrderLineNoL <> 0) THEN BEGIN  //Increase Line Amount
+              SalesLineL.GET(SalesHeaderV."Document Type",SalesHeaderV."No.",OrderLineNoL);
+              SalesLineL.VALIDATE("Line Discount Amount",SalesLineL."Line Discount Amount"+0.01);
+              SalesLineL.MODIFY;
+
+              AllocatedAmountL += 0.01;
+              SalesLineTmpL.GET(SalesHeaderV."Document Type",SalesHeaderV."No.",OrderLineNoL);
+              SalesLineTmpL.DELETE;
+            END;
+          UNTIL (AllocatedAmountL = CouponAmountV) OR (SalesLineTmpL.ISEMPTY);
+        END;
+        SalesLineL.SuspendStatusCheck(FALSE);
+      END;
+    END;
+
+    PROCEDURE "***HME**CreateSalesDocument***"@1000000000();
+    BEGIN
+    END;
+
+    PROCEDURE PostPrepayment@1000000008(VAR SalesHeaderR@1000000000 : Record 36);
+    VAR
+      SalesPostPrepaymentsL@1000000001 : Codeunit 442;
+      PaymentMethodL@1000000002 : Record 289;
+      InterfaceProcessMgtL@1000000003 : Codeunit 50087;
+      eBayNavCWebshopL@1000000004 : Record 5251553;
+    BEGIN
+      eBayNavCWebshopL.GET(FORMAT(SalesHeaderR."Website No."));
+      //IF eBayNavCWebshopL."Create Orders Immediatley" THEN
+        //EXIT;
+
+      FPCSetup.GET;
+      eBayNavCSalesHeaderG.GET(FORMAT(SalesHeaderR."Website No."), SalesHeaderR."No.");
+      PaymentMethodL.GET(SalesHeaderR."Payment Method Code");
+
+      IF eBayNavCWebshopL."Release Order If Paid" THEN BEGIN
+        IF NOT PaymentMethodL.CheckReleaseifPaid(SalesHeaderR."Payment Method Code") THEN BEGIN
+
+          IF IsPostedPrepayment(SalesHeaderR."No.",SalesHeaderR."Sell-to Customer No.") THEN
+            EXIT;
+
+          IF (SalesHeaderR."Prepayment %" <> 0) THEN BEGIN
+            SalesPostPrepaymentsL.Invoice(SalesHeaderR);
+
+            IF (SalesHeaderR.Status = SalesHeaderR.Status::"Pending Prepayment") AND
+              (PaymentMethodL."Reserve Item on pending Prepmt")
+            THEN BEGIN
+              FPCSetup.TESTFIELD("Status Pick");
+              FPCSetup.TESTFIELD("Status Reserve");
+              FPCSetup.TESTFIELD("Interface Code Rhenus");
+              FPCSetup.TESTFIELD("Trigger NavC");
+              IF InterfaceProcessMgtL.TriggerActive(FPCSetup."Trigger NavC") THEN BEGIN
+                InterfaceProcessMgtL.UpdateProcessLogForInterface(SalesHeaderR."No.",
+                    0,
+                    FPCSetup."Interface Code Rhenus",
+                    FPCSetup."Status Open",
+                    FPCSetup."Status Reserve",
+                    FPCSetup."Trigger NavC");
+              END;
+            END;
+            SalesHeaderR."Prepayment Status" := SalesHeaderR."Prepayment Status"::Success;
+            SalesHeaderR.MODIFY;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE "***HME**PostPrepayment***"@1000000007();
+    BEGIN
+    END;
+
+    PROCEDURE SeteBayNavCSalesHeader@1000000002(eBayNavCSalesHeaderV@1000000001 : Record 5251571);
+    BEGIN
+      eBayNavCSalesHeaderG.GET(eBayNavCSalesHeaderV."Webshop Code",eBayNavCSalesHeaderV."No.");
+    END;
+
+    PROCEDURE SetErroreBayNavCSalesHeader@1000000004(eBayNavCSalesHeaderV@1000000001 : Record 5251571;ErrorText@1000000000 : Text[250]);
+    BEGIN
+      eBayNavCSalesHeaderG.GET(eBayNavCSalesHeaderV."Webshop Code",eBayNavCSalesHeaderV."No.");
+      eBayNavCSalesHeaderG."Last Error Text" := ErrorText;
+      eBayNavCSalesHeaderG."Process Status" := eBayNavCSalesHeaderG."Process Status"::Failure;
+      eBayNavCSalesHeaderG.MODIFY(TRUE);
+    END;
+
+    PROCEDURE SetErrorSalesHeader@1000000010(SalesHeaderV@1000000001 : Record 36;ErrorText@1000000000 : Text[250]);
+    BEGIN
+      SalesHeaderG.GET(SalesHeaderV."Document Type",SalesHeaderV."No.");
+      SalesHeaderG.ErrorText := COPYSTR(ErrorText,1,MAXSTRLEN(SalesHeaderG.ErrorText));
+      SalesHeaderG."Prepayment Status" := eBayNavCSalesHeaderG."Process Status"::Open;
+      SalesHeaderG.MODIFY;
+    END;
+
+    PROCEDURE SetSuccesseBayNavCSalesHeader@1000000003(eBayNavCSalesHeaderV@1000000001 : Record 5251571);
+    BEGIN
+      eBayNavCSalesHeaderG.GET(eBayNavCSalesHeaderV."Webshop Code",eBayNavCSalesHeaderV."No.");
+      eBayNavCSalesHeaderV."Document Exists" := TRUE;
+      eBayNavCSalesHeaderG."Process Status" := eBayNavCSalesHeaderG."Process Status"::Success;
+      eBayNavCSalesHeaderG."Last Error Text" := '';
+      eBayNavCSalesHeaderG.VALIDATE(Status);
+      eBayNavCSalesHeaderG.MODIFY(TRUE);
+    END;
+
+    PROCEDURE SetSuccessSalesHeader@1000000009(SalesHeaderV@1000000000 : Record 36);
+    BEGIN
+      SalesHeaderG.GET(SalesHeaderV."Document Type",SalesHeaderV."No.");
+      SalesHeaderG."Prepayment Status" := SalesHeaderG."Prepayment Status"::Success;
+      SalesHeaderG.ErrorText := '';
+      SalesHeaderG.MODIFY;
+    END;
+
+    PROCEDURE SetSalesHeader@1000000019(SalesHeaderV@1000000001 : Record 36);
+    BEGIN
+      SalesHeaderG.GET(SalesHeaderV."Document Type",SalesHeaderV."No.");
+    END;
+
+    PROCEDURE SetFunctionNo@1000000005(FunctionNoV@1000000000 : Integer);
+    BEGIN
+      FunctionNo := FunctionNoV;
+    END;
+
+    PROCEDURE IsPostedPrepayment@1000000011(OrderNoV@1000000001 : Code[20];CustomerNoV@1000000002 : Code[20]) PrePaymentPostedO : Boolean;
+    VAR
+      CustLedgerEntryL@1000000000 : Record 21;
+    BEGIN
+      CustLedgerEntryL.SETCURRENTKEY("Document Type","External Document No.","Customer No.");
+
+      CustLedgerEntryL.SETRANGE("Document Type",CustLedgerEntryL."Document Type"::Invoice);
+      CustLedgerEntryL.SETRANGE("External Document No.",OrderNoV);
+      CustLedgerEntryL.SETRANGE("Customer No.",CustomerNoV);
+      CustLedgerEntryL.SETRANGE(Prepayment,TRUE);
+      CustLedgerEntryL.SETRANGE(Open,TRUE);
+      IF CustLedgerEntryL.FINDFIRST THEN
+        EXIT(TRUE);
+    END;
+
+    PROCEDURE "**HME MGT functions***"@1000000012();
+    BEGIN
+    END;
+
+    LOCAL PROCEDURE CreateMasterDataFromOrder@1119455000(VAR eBayNavCSalesHeaderR@1119455000 : Record 5251571);
+    VAR
+      ContactL@1119455004 : Record 5050;
+      eBayNavCAccountUtilL@1119455001 : Codeunit 5251542;
+      eBayNavCAccountL@1119455003 : Record 5251550;
+      eBayUtilL@1119455005 : Codeunit 5095800;
+      eBayNavCWebshopL@1119455006 : Record 5251553;
+      eBayNavCAccountLTemp@1119455007 : TEMPORARY Record 5251550;
+      eBayNavCWebsiteL@1119455008 : Record 5251554;
+    BEGIN
+      // Erstellt alle Stammdaten fÅr einen NAVconnect Webshop Auftrag
+      // und anschlie·end den VK-Kopf
+
+      eBayNavCWebshopL.GET(eBayNavCSalesHeaderR."Webshop Code");
+      eBayNavCAccountUtilL.UpdateAccountByDocument(eBayNavCSalesHeaderR."Webshop Code",eBayNavCSalesHeaderR."Sell-to Account No.",
+          eBayNavCSalesHeaderR."No.");
+
+      // Bei GastauftrÑgen das Gastkonto auswÑhlen
+      IF eBayNavCSalesHeaderR."Is Guest Order" THEN BEGIN
+        GetGuestAccountForDocument(eBayNavCSalesHeaderR, eBayNavCAccountL);
+        eBayNavCSalesHeaderR.VALIDATE("Sell-to Account No.", eBayNavCAccountL."No.");
+        eBayNavCSalesHeaderR.MODIFY(TRUE);
+        eBayNavCSalesHeaderR.GET(eBayNavCSalesHeaderR."Webshop Code",eBayNavCSalesHeaderR."No.");
+
+        IF NOT eBayNavCWebshopL."Collective Customer" THEN BEGIN
+          // Neuer Kundenzugang
+          eBayNavCAccountLTemp.INIT();
+          eBayNavCAccountLTemp."Webshop Code" := eBayNavCSalesHeaderR."Webshop Code";
+          eBayNavCAccountLTemp."No." := eBayNavCAccountL."No.";
+          eBayNavCAccountLTemp.INSERT(TRUE);
+          eBayNavCAccountLTemp.VALIDATE("E-Mail", eBayNavCSalesHeaderR."Bill-to E-Mail");
+
+          IF eBayNavCWebsiteL.GET(eBayNavCSalesHeaderR."Webshop Code", eBayNavCSalesHeaderR."Website No.") THEN
+            eBayNavCAccountLTemp.VALIDATE("Customer Group No.", eBayNavCWebsiteL."Default Customer Group No.");
+
+          eBayNavCAccountLTemp.VALIDATE(Name, eBayNavCSalesHeaderR."Bill-to Name");
+          eBayNavCAccountLTemp.VALIDATE("Job Title", eBayNavCSalesHeaderR."Bill-to Job Title");
+          eBayNavCAccountLTemp.VALIDATE("First Name", eBayNavCSalesHeaderR."Bill-to First Name");
+          eBayNavCAccountLTemp.VALIDATE("Middle Name", eBayNavCSalesHeaderR."Bill-to Middle Name");
+          eBayNavCAccountLTemp.VALIDATE(Surname, eBayNavCSalesHeaderR."Bill-to Surname");
+          eBayNavCAccountLTemp.VALIDATE("Website No.", eBayNavCSalesHeaderR."Website No.");
+          eBayNavCAccountLTemp.VALIDATE(Gender, eBayNavCAccountL.Gender::Unisex);
+          eBayNavCAccountLTemp.VALIDATE("Company Name", eBayNavCSalesHeaderR."Bill-to Company Name");
+          eBayNavCAccountLTemp.VALIDATE("Phone No.", eBayNavCSalesHeaderR."Bill-to Phone No.");
+          eBayNavCAccountLTemp.VALIDATE("Fax No.", eBayNavCSalesHeaderR."Bill-to Fax No.");
+          eBayNavCAccountLTemp.VALIDATE(Address, eBayNavCSalesHeaderR."Bill-to Address");
+          eBayNavCAccountLTemp.VALIDATE("Address 2", eBayNavCSalesHeaderR."Bill-to Address 2");
+          eBayNavCAccountLTemp.City := eBayNavCSalesHeaderR."Bill-to City";
+          eBayNavCAccountLTemp."Post Code" := eBayNavCSalesHeaderR."Bill-to Post Code";
+          eBayNavCAccountLTemp.County := eBayNavCSalesHeaderR."Bill-to County";
+          eBayNavCAccountLTemp."Country/Region Code" := eBayNavCSalesHeaderR."Bill-to Country Code";
+          eBayNavCAccountLTemp.MODIFY(TRUE);
+        END;
+      END;
+
+      // BSE110214 T00120 + LÑnder-/Regionscode bei xt:commerce AuftrÑgen nachtragen
+      IF eBayNavCSalesHeaderR."Ship-to Country Code" = '' THEN BEGIN
+        eBayNavCSalesHeaderR.VALIDATE("Ship-to Country Code",
+            eBayUtilL.ConvertEmptyCountryCode(eBayNavCSalesHeaderR."Ship-to Country Code"));
+        eBayNavCSalesHeaderR.MODIFY(TRUE);
+        eBayNavCSalesHeaderR.GET(eBayNavCSalesHeaderR."Webshop Code", eBayNavCSalesHeaderR."No.");
+      END;
+
+      IF eBayNavCSalesHeaderR."Bill-to Country Code" = '' THEN BEGIN
+        eBayNavCSalesHeaderR.VALIDATE("Bill-to Country Code",
+            eBayUtilL.ConvertEmptyCountryCode(eBayNavCSalesHeaderR."Bill-to Country Code"));
+        eBayNavCSalesHeaderR.MODIFY(TRUE);
+        eBayNavCSalesHeaderR.GET(eBayNavCSalesHeaderR."Webshop Code", eBayNavCSalesHeaderR."No.");
+      END;
+
+      eBayNavCAccountL.GET(eBayNavCSalesHeaderR."Webshop Code", eBayNavCSalesHeaderR."Sell-to Account No.");
+
+      // Sofern fÅr diesen Kundenzugang kein Debitor angelegt wurde,
+      // holen wir dies nun nach
+      //DMG110708 T00209 +
+      IF eBayNavCSalesHeaderR."Is Guest Order" AND NOT eBayNavCWebshopL."Collective Customer" THEN BEGIN
+        eBayNavCAccountUtilL.SetGuiParameters(TRUE, TRUE, TRUE);
+        eBayNavCAccountUtilL.CreateCustomerForAccount(eBayNavCAccountL."Webshop Code", eBayNavCAccountLTemp, Customer);
+      END ELSE BEGIN
+        IF NOT Customer.GET(eBayNavCAccountL."Customer No.") THEN BEGIN
+          eBayNavCAccountUtilL.SetGuiParameters(TRUE, TRUE, TRUE);
+          eBayNavCAccountUtilL.CreateCustomerForAccount(eBayNavCAccountL."Webshop Code", eBayNavCAccountL, Customer);
+        END ELSE BEGIN
+          IF NOT eBayNavCSalesHeaderR."Is Guest Order" THEN BEGIN
+            eBayNavCAccountUtilL.UpdateCustomerByAccount(eBayNavCAccountL, Customer);
+          END;
+        END;
+      END;
+
+      eBayNavCSalesHeaderR.VALIDATE("Customer No.", Customer."No.");
+
+      // H4042       28.05.15  JM +++++++
+      eBayNavCSalesHeaderR.MasterDataCreated := TRUE;
+      // H4042       28.05.15  JM -------
+
+      eBayNavCSalesHeaderR.MODIFY(TRUE);
+      eBayNavCSalesHeaderR.GET(eBayNavCSalesHeaderR."Webshop Code", eBayNavCSalesHeaderR."No.");
+
+      // Adressen erzeugen (nur im Debitor)
+      CreateCustomerAddressCodes(Customer, eBayNavCSalesHeaderR);
+
+      // Debitor Bankkonto sicherstellen
+      CreateCustomerBankAccount(Customer, eBayNavCSalesHeaderR);
+
+      // Katalogartikel erstellen
+      CreateNonstockItems(eBayNavCSalesHeaderR);
+    END;
+
+    LOCAL PROCEDURE ValidateOrder@1119455004(VAR eBayNavCSalesHeaderR@1119455000 : Record 5251571);
+    VAR
+      CountryL@1119455003 : Record 9;
+      eBayNavCPaymentModuleL@1119455002 : Record 5251556;
+      eBayNavCShippingModuleL@1119455001 : Record 5251557;
+      eBayNavCWebshopL@1119455004 : Record 5251553;
+      DOCUMENT_ALREADY_PROCESSED@1119455005 : TextConst 'DEU=Der NAVconnect VK-Beleg "%1" wurde bereits abgeschlossen. Es kann kein neuer VK-Beleg erstellt werden.;ENU=The NAVconnect document "%1" has already been processed. It is not possible to re-process it.';
+      SalesHeaderL@1119455006 : Record 36;
+      ORDER_ALREADY_EXISTS@1119455007 : TextConst 'DEU=Es existiert bereits ein VK-Auftrag (%1) fÅr den NAVconnect Auftrag "%2"!;ENU=There already is a sales order (%1) for NAVconnect order "%2"!';
+      QUOTE_ALREADY_EXISTS@1119455008 : TextConst 'DEU=Es existiert bereits ein VK-Angebot (%1) fÅr das NAVconnect Angebot "%2"!;ENU=There already is a sales quote (%1) for NAVconnect quote "%2"!';
+      eBayNavCAccountL@1119455009 : Record 5251550;
+      GuestCustomerL@1119455010 : Record 18;
+      GUEST_ACCOUNT_MISSING@1119455011 : TextConst 'DEU=Es existiert keine Gastkundenkonfiguration fÅr Land "%1" und Shop "%2"!;ENU=There is no guest account configuration for country "%1" and shop "%2"!';
+      eBayUtilL@1119455012 : Codeunit 5095800;
+      "***HME************************"@1000000000 : Integer;
+      ReleaseSalesDocumentL@1000000002 : Codeunit 414;
+      SalesPostPrepaymentsL@1000000001 : Codeunit 442;
+      SIIFillLogCreateL@1000000003 : Codeunit 50169;
+      PaymentMethodCodeL@1000000004 : Code[10];
+      PaymentMethodL@1000000005 : Record 289;
+    BEGIN
+      // PrÅft einen Auftrag auf fehlende Daten
+      eBayNavCWebshopL.GET(eBayNavCSalesHeaderR."Webshop Code");
+      // Auftrag bereits abgewickelt?
+      IF NOT (eBayNavCSalesHeaderR.Status IN [eBayNavCSalesHeaderR.Status::Unprocessed, eBayNavCSalesHeaderR.Status::DocumentCreated])
+      THEN BEGIN
+        ERROR(DOCUMENT_ALREADY_PROCESSED, eBayNavCSalesHeaderR."No.");
+      END;
+
+      // Auftrag existiert bereits?
+      IF eBayNavCSalesHeaderR."Sales Document No." <> '' THEN BEGIN
+        CASE eBayNavCSalesHeaderR."Document Type" OF
+          eBayNavCSalesHeaderR."Document Type"::SalesOrder: BEGIN
+            IF SalesHeaderL.GET(SalesHeaderL."Document Type"::Order, eBayNavCSalesHeaderR."Sales Document No.") THEN BEGIN
+              IF (SalesHeaderL.Status IN [SalesHeaderL.Status::Released,SalesHeaderL.Status::Canceled]) = FALSE THEN BEGIN
+                CLEAR(ReleaseSalesDocumentL);
+                CLEAR(SalesPostPrepaymentsL);
+                IF (eBayNavCWebshopL."Release Order If Paid")
+                THEN BEGIN
+                    IF PaymentMethodL.CheckReleaseifPaid(SalesHeaderL."Payment Method Code") THEN BEGIN
+                    ReleaseSalesDocumentL.RUN(SalesHeaderL);
+                    SalesHeaderL.GET(SalesHeaderL."Document Type"::Order, eBayNavCSalesHeaderR."Sales Document No.");
+                    IF NOT SalesHeaderL."Payment received" THEN BEGIN
+                      SalesHeaderL."Payment received" := TRUE;
+                      SalesHeaderL."Payment received from" := SalesHeaderL."Payment received from"::PaymentMethod;
+                      SalesHeaderL.VALIDATE("Payment received at",WORKDATE);
+                      SalesHeaderL.MODIFY;
+                      SIIFillLogCreateL.CreateOrderPicking(SalesHeaderL);
+                      SIIFillLogCreateL.CreateOrderPickingPrepayment(SalesHeaderL);
+                    END;
+                  END ELSE
+                    IF (SalesHeaderL."Prepayment %" <> 0) THEN BEGIN
+                      // H4042       28.05.15 JM ++++++++
+                      //SalesPostPrepayments.Invoice(salesHeader);
+                      IF GUIALLOWED THEN BEGIN
+                        //CreateSalesOrderMgt.SetFunctionNo(1);  // Post Prepayment
+                        //CreateSalesOrderMgt.SetSalesHeader(salesHeader);
+                        PostPrepayment(SalesHeaderL);
+                        //CreateSalesOrderMgt.RUN
+                      END;
+                      // H4042       28.05.15 JM --------
+                    END;
+                END;
+              END;
+              eBayNavCSalesHeaderR."Sales Document rendered" := TRUE;
+              eBayNavCSalesHeaderR."Sales Document rendered at" := CURRENTDATETIME();
+              eBayNavCSalesHeaderR."Sales Document rendered by" := COPYSTR(USERID(), 1,
+                                                                  MAXSTRLEN(eBayNavCSalesHeaderR."Sales Document rendered by"));
+              eBayNavCSalesHeaderR."Sales Document No." := SalesHeaderL."No.";
+              // H4042       28.05.15  JM +++++++
+              eBayNavCSalesHeaderR.OrderValidated := TRUE;
+              // H4042       28.05.15  JM -------
+              eBayNavCSalesHeaderR.MODIFY(TRUE);
+
+              EXIT;
+              ERROR(ORDER_ALREADY_EXISTS, eBayNavCSalesHeaderR."No.", SalesHeaderL."No.");
+            END;
+          END;
+
+          eBayNavCSalesHeaderR."Document Type"::SalesQuote: BEGIN
+            IF SalesHeaderL.GET(SalesHeaderL."Document Type"::Quote, eBayNavCSalesHeaderR."Sales Document No.") THEN BEGIN
+              ERROR(QUOTE_ALREADY_EXISTS, eBayNavCSalesHeaderR."No.", SalesHeaderL."No.");
+            END;
+          END;
+        END;
+      END;
+
+      // LÑnder prÅfen
+      CountryL.GET(eBayNavCSalesHeaderR."Ship-to Country Code");
+      CountryL.GET(eBayNavCSalesHeaderR."Bill-to Country Code");
+
+      // Zahlungsformen prÅfen
+      IF NOT eBayNavCWebshopL."Ignore Webshop Payment Methods" THEN BEGIN
+        eBayNavCPaymentModuleL.SETRANGE("Webshop Code", eBayNavCSalesHeaderR."Webshop Code");
+        eBayNavCPaymentModuleL.SETRANGE(Identifier, eBayNavCSalesHeaderR."Webshop Payment Module");
+        eBayNavCPaymentModuleL.SETRANGE("Order Type", eBayNavCSalesHeaderR."Order Type");
+        eBayNavCPaymentModuleL.FINDFIRST();
+        IF InvH24Mgt.IsVirtualIBAN(eBayNavCSalesHeaderR,PaymentMethodCodeL) THEN
+          InvH24Mgt.SetPaymentTransactionOrder(eBayNavCSalesHeaderR);
+      END;
+
+      // Gastzugangskonten prÅfen
+
+      IF eBayNavCSalesHeaderR."Is Guest Order" THEN BEGIN
+        IF NOT GetGuestCustomerForDocument(eBayNavCSalesHeaderR, GuestCustomerL) THEN BEGIN
+          ERROR(GUEST_ACCOUNT_MISSING,
+            eBayUtilL.ConvertEmptyCountryCode(eBayNavCSalesHeaderR."Bill-to Country Code"),
+            eBayNavCSalesHeaderR."Webshop Code");
+        END;
+      END;
+    END;
+
+    PROCEDURE GetGuestAccountForDocument@1119455015(VAR eBayNavCSalesHeaderR@1119455000 : Record 5251571;VAR AccountR@1119455001 : Record 5251550) FoundO : Boolean;
+    VAR
+      eBayUtilL@1119455003 : Codeunit 5095800;
+      WebshopL@1119455002 : Record 5251553;
+    BEGIN
+      // Gibt anhand eines NAVconnect VK-Belegs den Gastzugang zurÅck
+
+      WebshopL.GET(eBayNavCSalesHeaderR."Webshop Code");
+      AccountR.SETCURRENTKEY("Webshop Code", "Country/Region Code", "Guest Account");
+      AccountR.SETRANGE("Webshop Code", eBayNavCSalesHeaderR."Webshop Code");
+      IF WebshopL."Collective Customer" THEN
+        AccountR.SETRANGE("Country/Region Code", eBayUtilL.ConvertEmptyCountryCode(eBayNavCSalesHeaderR."Bill-to Country Code"));
+      AccountR.SETRANGE("Guest Account", TRUE);
+      FoundO :=  AccountR.FINDFIRST();
+    END;
+
+    LOCAL PROCEDURE CreateCustomerAddressCodes@1119455003(CustomerV@1119455001 : Record 18;VAR eBayNavCSalesHeaderR@1119455000 : Record 5251571);
+    VAR
+      eBayExamL@1119455002 : Codeunit 5095802;
+      AddressCodeL@1119455003 : Code[20];
+      ShiptoAddressL@1119455004 : Record 222;
+      BillToAddressL@1119455005 : Record 222;
+      SHIPTO_ADDRESS_UPDATED@1119455006 : TextConst 'DEU=Lief. an Adresse "%1" wurde erfolgreich angelegt/aktualisiert.;ENU=Ship-to Address "%1" has been created/updated successfully.';
+      BILLTO_ADDRESS_UPDATED@1119455007 : TextConst 'DEU=Rech. an Adresse "%1" wurde erfolgreich angelegt/aktualisiert.;ENU=Bill-to Address "%1" has been created/updated successfully.';
+      eBayNavCLogBufferL@1119455008 : Codeunit 5251568;
+      eBaySetupL@1119455009 : Record 5095800;
+      eBayNavCWebshopL@1119455010 : Record 5251553;
+    BEGIN
+      // Legt fÅr einen NAVconnect VK-Beleg die Debitoradresscodes an
+      eBaySetupL.GET();
+
+      // Liefern an Adresscode
+      ShiptoAddressL.Code := 'LIEF001';
+      ShiptoAddressL."Customer No." := CustomerV."No.";
+      ShiptoAddressL.VALIDATE(Name, COPYSTR(eBayNavCSalesHeaderR."Ship-to Name",1,MAXSTRLEN(ShiptoAddressL.Name)));
+      ShiptoAddressL.VALIDATE("Name 2", COPYSTR(eBayNavCSalesHeaderR."Ship-to Name 2",1,MAXSTRLEN(ShiptoAddressL."Name 2")));
+      ShiptoAddressL."First name" := eBayNavCSalesHeaderR."Ship-to First Name";
+      ShiptoAddressL."Last name" := eBayNavCSalesHeaderR."Ship-to Surname";
+      ShiptoAddressL."Job-Title" := eBayNavCSalesHeaderR."Ship-to Job Title";
+      ShiptoAddressL."Company Name" := eBayNavCSalesHeaderR."Ship-to Company Name";
+      ShiptoAddressL.VALIDATE(Address, COPYSTR(eBayNavCSalesHeaderR."Ship-to Address",1,MAXSTRLEN(ShiptoAddressL.Address)));
+      ShiptoAddressL.VALIDATE("Address 2", COPYSTR(eBayNavCSalesHeaderR."Ship-to Address 2",1,MAXSTRLEN(ShiptoAddressL."Address 2")));
+      ShiptoAddressL."Post Code" := eBayNavCSalesHeaderR."Ship-to Post Code";
+      ShiptoAddressL.City := eBayNavCSalesHeaderR."Ship-to City";
+      ShiptoAddressL.VALIDATE("Country/Region Code", eBayNavCSalesHeaderR."Ship-to Country Code");
+
+      IF (eBaySetupL."Company Country/Region Code" = eBayNavCSalesHeaderR."Ship-to Country Code")
+          AND (eBaySetupL."Company Country No Country C.")
+      THEN
+        ShiptoAddressL."Country/Region Code" := '';
+
+      ShiptoAddressL.VALIDATE(County, eBayNavCSalesHeaderR."Ship-to County");
+      IF eBayNavCSalesHeaderR."Is Guest Order" THEN BEGIN
+        eBayNavCWebshopL.GET(eBayNavCSalesHeaderR."Webshop Code");
+        IF eBayNavCWebshopL."Collective Customer" THEN
+          ShiptoAddressL.VALIDATE("E-Mail", eBayNavCSalesHeaderR."Ship-to E-Mail");
+      END;
+
+      ShiptoAddressL.VALIDATE("Phone No.",eBayNavCSalesHeaderR."Ship-to Phone No.");
+      AddressCodeL := eBayExamL.AdressenPrÅfenGgfEinfÅgen('LIEF', ShiptoAddressL."Customer No.", ShiptoAddressL);
+      eBayNavCLogBufferL.Log(FALSE, STRSUBSTNO(SHIPTO_ADDRESS_UPDATED, AddressCodeL));
+      eBayNavCSalesHeaderR.VALIDATE("Ship-to Address Code", AddressCodeL);
+
+      // Rechnung an Adresscode
+      BillToAddressL.Code := 'RECH001';
+      BillToAddressL."Customer No." := Customer."No.";
+      BillToAddressL.VALIDATE(Name, COPYSTR(eBayNavCSalesHeaderR."Bill-to Name",1,MAXSTRLEN(BillToAddressL.Name)));
+      BillToAddressL.VALIDATE("Name 2", COPYSTR(eBayNavCSalesHeaderR."Bill-to Name 2",1,MAXSTRLEN(BillToAddressL."Name 2")));
+      BillToAddressL."First name" := eBayNavCSalesHeaderR."Bill-to First Name";
+      BillToAddressL."Last name" := eBayNavCSalesHeaderR."Bill-to Surname";
+      BillToAddressL."Job-Title" := eBayNavCSalesHeaderR."Bill-to Job Title";
+      BillToAddressL."Company Name" := eBayNavCSalesHeaderR."Bill-to Company Name";
+      BillToAddressL.VALIDATE(Address, COPYSTR(eBayNavCSalesHeaderR."Bill-to Address",1,MAXSTRLEN(BillToAddressL.Address)));
+      BillToAddressL.VALIDATE("Address 2", COPYSTR(eBayNavCSalesHeaderR."Bill-to Address 2",1,MAXSTRLEN(BillToAddressL."Address 2")));
+      BillToAddressL."Post Code" := eBayNavCSalesHeaderR."Bill-to Post Code";
+      BillToAddressL.City := eBayNavCSalesHeaderR."Bill-to City";
+      BillToAddressL.VALIDATE("Country/Region Code", eBayNavCSalesHeaderR."Bill-to Country Code");
+
+      IF (eBaySetupL."Company Country/Region Code"= eBayNavCSalesHeaderR."Bill-to Country Code")
+          AND (eBaySetupL."Company Country No Country C.")
+      THEN
+        BillToAddressL."Country/Region Code" := '';
+
+      BillToAddressL.VALIDATE(County, eBayNavCSalesHeaderR."Bill-to County");
+      AddressCodeL := eBayExamL.AdressenPrÅfenGgfEinfÅgen('RECH', BillToAddressL."Customer No.", BillToAddressL);
+      eBayNavCLogBufferL.Log(FALSE, STRSUBSTNO(BILLTO_ADDRESS_UPDATED, AddressCodeL));
+      eBayNavCSalesHeaderR.VALIDATE("Bill-to Address Code", AddressCodeL);
+      eBayNavCSalesHeaderR.MODIFY(TRUE);
+    END;
+
+    LOCAL PROCEDURE CreateCustomerBankAccount@1119455005(CustomerV@1119455001 : Record 18;VAR eBayNavCSalesHeaderR@1119455000 : Record 5251571);
+    VAR
+      CustomerBankAccountL@1119455002 : Record 287;
+      BankAccountCodeL@1119455003 : Code[20];
+      eBayNavCWebshopL@1119455004 : Record 5251553;
+      BANK_ACCOUNT_UPDATED@1119455005 : TextConst 'DEU=Debitor Bankkonto "%1" wurde erfolgreich angelegt/aktualisiert.;ENU=Customer Bank Account "%1" has been created/updated successfully.';
+      eBayNavCLogBufferL@1119455006 : Codeunit 5251568;
+    BEGIN
+      // Legt fÅr einen NAVconnect VK-Beleg ein Debitor Bankkonto an
+
+      IF (eBayNavCSalesHeaderR."Bank Account No." <> '') AND
+         (eBayNavCSalesHeaderR."Bank Branch No." <> '') THEN
+      BEGIN
+        eBayNavCWebshopL.GET(eBayNavCSalesHeaderR."Webshop Code");
+        CustomerBankAccountL.SETRANGE("Customer No.", Customer."No.");
+        CustomerBankAccountL.SETRANGE("Bank Account No.", eBayNavCSalesHeaderR."Bank Account No.");
+        CustomerBankAccountL.SETRANGE("Bank Branch No.", eBayNavCSalesHeaderR."Bank Branch No.");
+
+        // Ein Bankkonto nur dann anlegen, sofern noch keines existiert
+        IF NOT CustomerBankAccountL.FINDFIRST() THEN BEGIN
+          // Dann alle anderen Bankkonten als "Clearing = Nein" kennzeichnen.
+          // Es darf nur ein Bankkonto mit "Clearing = Ja" geben
+          CustomerBankAccountL.RESET();
+          CustomerBankAccountL.SETRANGE("Customer No.", Customer."No.");
+          CustomerBankAccountL.MODIFYALL(Clearing, FALSE, TRUE);
+
+          // Nun das letzte Bankkonto finden und die Nr. erhîhren
+          BankAccountCodeL := '';
+
+          CustomerBankAccountL.RESET();
+          CustomerBankAccountL.SETRANGE("Customer No.", Customer."No.");
+          CustomerBankAccountL.SETFILTER(Code, CONVERTSTR(eBayNavCWebshopL."Bank Account No. Format", '0123456789', '??????????'));
+
+          IF CustomerBankAccountL.FINDLAST() THEN BEGIN
+            BankAccountCodeL := INCSTR(CustomerBankAccountL.Code);
+          END;
+
+          IF BankAccountCodeL = '' THEN BEGIN
+            BankAccountCodeL := eBayNavCWebshopL."Bank Account No. Format";
+          END;
+
+          CustomerBankAccountL.RESET();
+          CustomerBankAccountL.INIT();
+          CustomerBankAccountL."Customer No." := Customer."No.";
+          CustomerBankAccountL.Code := BankAccountCodeL;
+          CustomerBankAccountL.INSERT(TRUE);
+          CustomerBankAccountL."Bank Account No." := eBayNavCSalesHeaderR."Bank Account No.";
+          CustomerBankAccountL."Bank Branch No." := eBayNavCSalesHeaderR."Bank Branch No.";
+
+          IF STRLEN(eBayNavCSalesHeaderR."Bank Name") < 31 THEN
+            CustomerBankAccountL.Name := eBayNavCSalesHeaderR."Bank Name"
+          ELSE BEGIN
+            CustomerBankAccountL.Name := COPYSTR(eBayNavCSalesHeaderR."Bank Name", 1, 30);
+            CustomerBankAccountL."Name 2" := COPYSTR(eBayNavCSalesHeaderR."Bank Name", 31, 30);
+          END;
+
+          CustomerBankAccountL.Clearing := TRUE;
+          CustomerBankAccountL.MODIFY(TRUE);
+
+          eBayNavCLogBufferL.Log(FALSE, STRSUBSTNO(BANK_ACCOUNT_UPDATED, CustomerBankAccountL.Code));
+        END;
+      END;
+    END;
+
+    PROCEDURE GetGuestCustomerForDocument@1119455006(VAR eBayNavCSalesHeaderR@1119455000 : Record 5251571;VAR CustomerR@1119455001 : Record 18) FoundO : Boolean;
+    VAR
+      AccountL@1119455002 : Record 5251550;
+      eBayUtilL@1119455003 : Codeunit 5095800;
+      WebshopL@1119455004 : Record 5251553;
+    BEGIN
+      // Gibt anhand eines NAVconnect VK-Belegs den Gastdebitor zurÅck
+
+      WebshopL.GET(eBayNavCSalesHeaderR."Webshop Code");
+      FoundO := FALSE;
+
+      IF GetGuestAccountForDocument(eBayNavCSalesHeaderR, AccountL) THEN BEGIN
+        IF WebshopL."Collective Customer" THEN
+          FoundO := Customer.GET(AccountL."Customer No.")
+        ELSE
+          FoundO := TRUE;
+      END;
+    END;
+
+    LOCAL PROCEDURE CreateNonstockItems@1119455040(VAR eBayNavCSalesHeaderR@1119455000 : Record 5251571);
+    VAR
+      eBayNavCSalesLineL@1119455001 : Record 5251572;
+      eBayNavCSalesLineModifyL@1119455002 : Record 5251572;
+      NonstockTestItemL@1119455003 : Record 5718;
+      NonstockItemL@1119455004 : Record 5718;
+      eBayNavCRpcL@1119455005 : Codeunit 5251540;
+      NONSTOCK_ITEM_MISSING@1119455007 : TextConst 'DEU=Es existiert kein Katalogartikel fÅr externe Artikelnr. "%1"!;ENU=There is no nonstock item for external no. "%1"!';
+      CREATED_CATALOG_ITEM@1119455006 : TextConst 'DEU=Artikel "%1" wurde erfolgreich aus Katalogartikel "%2" erstellt.;ENU=Item "%1" has been successfully created based on nonstock item "%2".';
+      eBayNavCWebshopL@1119455008 : Record 5251553;
+      NonstockItemMgtL@1119455009 : Codeunit 5703;
+      eBayNavCLogBufferL@1119455010 : Codeunit 5251568;
+    BEGIN
+      // Erstellt aus Katalogartikeln die finalen Artikel
+
+      eBayNavCWebshopL.GET(eBayNavCSalesHeaderR."Webshop Code");
+      IF eBayNavCWebshopL."Create Catalog Items"
+
+      THEN BEGIN
+        eBayNavCSalesLineL.SETRANGE("Webshop Code", eBayNavCSalesHeaderR."Webshop Code");
+        eBayNavCSalesLineL.SETRANGE("Document No.", eBayNavCSalesHeaderR."No.");
+
+        IF eBayNavCSalesLineL.FINDSET() THEN
+          REPEAT
+
+            IF NOT NonstockTestItemL.GET(eBayNavCSalesLineL."Item No.") THEN BEGIN
+              IF eBayNavCSalesLineL."Nonstock Item Entry No." = '' THEN BEGIN
+                NonstockItemL.SETCURRENTKEY("External Item ID");
+                NonstockItemL.SETRANGE("External Item ID", eBayNavCSalesLineL."External Item ID");
+                IF NOT NonstockItemL.FINDFIRST() THEN
+                  ERROR(NONSTOCK_ITEM_MISSING, eBayNavCSalesLineL."Item No.");
+                eBayNavCSalesLineL."Nonstock Item Entry No." := NonstockItemL."Entry No.";
+              END ELSE BEGIN
+                NonstockItemL.GET(eBayNavCSalesLineL."Nonstock Item Entry No.");
+              END;
+
+              IF NOT NonstockTestItemL.GET(NonstockItemL."Item No.") THEN BEGIN
+                NonstockItemMgtL.NonstockAutoItem(NonstockItemL);
+                NonstockItemL.GET(NonstockItemL."Entry No.");
+                eBayNavCLogBufferL.Log(FALSE, STRSUBSTNO(CREATED_CATALOG_ITEM, NonstockItemL."Item No.",  NonstockItemL."Entry No."));
+              END;
+              eBayNavCSalesLineModifyL.GET(eBayNavCSalesLineL."Webshop Code",
+                  eBayNavCSalesLineL."Document No.", eBayNavCSalesLineL."Line No.");
+              eBayNavCSalesLineModifyL."Item No." := NonstockItemL."Item No.";
+              eBayNavCSalesLineModifyL.MODIFY(TRUE);
+            END;
+          UNTIL eBayNavCSalesLineL.NEXT() = 0;
+      END;
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+
+      H4042       28.05.15 JM        CU Created
+    }
+    END.
+  }
+}
+

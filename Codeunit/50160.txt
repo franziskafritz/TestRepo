@@ -1,0 +1,1157 @@
+OBJECT Codeunit 50160 RHD Sales Temp Develop
+{
+  OBJECT-PROPERTIES
+  {
+    Date=05.12.13;
+    Time=11:43:32;
+    Version List=GOB;
+  }
+  PROPERTIES
+  {
+    OnRun=VAR
+            a@1000000000 : Record 37;
+            STIME@1000000001 : Time;
+            ETIME@1000000002 : Time;
+          BEGIN
+            ShowMsg := TRUE;
+            a.GET(1,'30106000520716',10000);
+            STIME := TIME;
+            TriggerRhenusInterface(a);
+            ETIME := TIME;
+            MESSAGE(FORMAT(ETIME - STIME));
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      ShowMsg@1000000000 : Boolean;
+
+    PROCEDURE TriggerRhenusFromSalesHeader@1000000012(p_SalesHeader@1000000000 : Record 36);
+    VAR
+      SalesLine@1000000001 : Record 37;
+    BEGIN
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type",p_SalesHeader."Document Type");
+      SalesLine.SETRANGE("Document No.",p_SalesHeader."No.");
+      IF SalesLine.FINDFIRST THEN
+        TriggerRhenusInterface(SalesLine);
+    END;
+
+    PROCEDURE TriggerRhenusInterface@1000000000(p_SalesLine@1000000000 : Record 37);
+    VAR
+      RHDSetup@1000000003 : Record 50177;
+      NewFB@1000000007 : Boolean;
+      NewGB@1000000006 : Boolean;
+      UpdateFB@1000000004 : Boolean;
+      UpdateGB@1000000005 : Boolean;
+      CancelFB@1000000009 : Boolean;
+      CancelGB@1000000008 : Boolean;
+      TryToDeleteEntryNoFB@1000000001 : Integer;
+      TryToDeleteEntryNoGB@1000000002 : Integer;
+    BEGIN
+      IF p_SalesLine.ISEMPTY THEN
+        EXIT;
+
+      RHDSetup.GET;
+      RHDSetup.TESTFIELD("Branch Code GB");
+      RHDSetup.TESTFIELD("Branch Code FB");
+      //Check for Updates
+      //Get Active Sequence to Compare
+      NewFB := FALSE;
+      NewGB := FALSE;
+      UpdateFB := FALSE;
+      UpdateGB := FALSE;
+      CancelFB := FALSE;
+      CancelGB := FALSE;
+      TryToDeleteEntryNoFB := 0;
+      TryToDeleteEntryNoGB := 0;
+
+      CheckForNecessaryActions(p_SalesLine,
+        NewFB{CallByReference},
+        NewGB{CallByReference},
+        UpdateFB{CallByReference},
+        UpdateGB{CallByReference},
+        CancelFB{CallByReference},
+        CancelGB{CallByReference},
+        TryToDeleteEntryNoFB{CallByReference},
+        TryToDeleteEntryNoGB{CallByReference});
+
+      IF GUIALLOWED AND ShowMsg THEN
+        MESSAGE(
+          'NewFB:                 ' + FORMAT(NewFB) + '\' +
+          'NewGB:                 ' + FORMAT(NewGB) + '\' +
+          'UpdateFB:              ' + FORMAT(UpdateFB) + '\' +
+          'UpdateGB:              ' + FORMAT(UpdateGB) + '\' +
+          'CancelFB:              ' + FORMAT(CancelFB) + '\' +
+          'CancelGB:              ' + FORMAT(CancelGB) + '\' +
+          'TryToDeleteEntryNoFB:  ' + FORMAT(TryToDeleteEntryNoFB) + '\' +
+          'TryToDeleteEntryNoGB:  ' + FORMAT(TryToDeleteEntryNoGB));
+
+      IF NewFB THEN BEGIN
+        FillNewOrderForBranch(p_SalesLine,RHDSetup."Branch Code FB");
+      END;
+
+      IF NewGB THEN BEGIN
+        FillNewOrderForBranch(p_SalesLine,RHDSetup."Branch Code GB");
+      END;
+
+      IF UpdateFB THEN BEGIN
+        UpdateOrderForBranch(p_SalesLine,RHDSetup."Branch Code FB",TryToDeleteEntryNoFB);
+      END;
+
+      IF UpdateGB THEN BEGIN
+        UpdateOrderForBranch(p_SalesLine,RHDSetup."Branch Code GB",TryToDeleteEntryNoGB);
+      END;
+
+      IF CancelFB THEN BEGIN
+        CancelOrderForBranch(p_SalesLine,RHDSetup."Branch Code FB");
+      END;
+
+      IF CancelGB THEN BEGIN
+        CancelOrderForBranch(p_SalesLine,RHDSetup."Branch Code GB");
+      END;
+    END;
+
+    PROCEDURE GetBrachCodeFromPurchasingCode@1000000001(p_PurchasingCode@1000000000 : Code[10]) : Code[10];
+    VAR
+      Purchasing@1000000001 : Record 5721;
+    BEGIN
+      IF Purchasing.GET(p_PurchasingCode) THEN
+        EXIT(Purchasing."RHE Branch Code");
+
+      EXIT('');
+    END;
+
+    PROCEDURE FillNewOrderForBranch@1000000015(p_SalesLine@1000000002 : Record 37;p_Branch@1000000003 : Code[10]);
+    VAR
+      RHDSalesExportHeader@1000000000 : Record 50181;
+      RHDSalesExportLine@1000000008 : Record 50182;
+      SalesHeader@1000000001 : Record 36;
+      RHDSetup@1000000004 : Record 50177;
+      AdditionalSalesHeaderFields@1000000005 : Record 50120;
+      SalesLine@1000000006 : Record 37;
+      NextLineNo@1000000007 : Integer;
+      Item@1000000009 : Record 27;
+      RHDSalesLineReference@1000000010 : Record 80011;
+    BEGIN
+      // Get Sales Header and check Setup
+      SalesHeader.GET(p_SalesLine."Document Type",p_SalesLine."Document No.");
+      RHDSetup.GET;
+      RHDSetup.TESTFIELD("Record Type KAK");
+      RHDSetup.TESTFIELD("Record Type KAP");
+      RHDSetup.TESTFIELD("Record Type KAB");
+      RHDSetup.TESTFIELD("Record Type KAS");
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type",SalesHeader."Document Type");
+      SalesLine.SETRANGE("Document No.",SalesHeader."No.");
+      SalesLine.SETRANGE(Type,SalesLine.Type::Item);
+      SalesLine.SETFILTER(Quantity,'<>%1',0);
+      IF SalesLine.FINDSET THEN BEGIN
+        NextLineNo := 0;
+        REPEAT
+          // Chekc if RHD Branch correct
+          IF GetBrachCodeFromPurchasingCode(SalesLine."Purchasing Code") = p_Branch THEN BEGIN
+            IF NextLineNo = 0 THEN BEGIN
+              RHDSalesExportHeader.RESET;
+              RHDSalesExportHeader."Entry No." := RHDSalesExportHeader.GetNextEntryNo;
+              RHDSalesExportHeader.Status := RHDSalesExportHeader.Status::Creation;
+              RHDSalesExportHeader.INSERT;
+              RHDSalesExportHeader."Document Type" := SalesHeader."Document Type";
+              RHDSalesExportHeader."Document No." := SalesHeader."No.";
+              RHDSalesExportHeader."Sequence No." := GetNextSequenceNo(SalesHeader);
+              RHDSalesExportHeader."Rhenus Order No." := RHDSalesExportHeader."Document No." + RHDSalesExportHeader."Sequence No.";
+              RHDSalesExportHeader."Transmission Mode" := RHDSalesExportHeader."Transmission Mode"::New;
+              RHDSalesExportHeader."Transmission No." := GetNextTransmissionNo(RHDSalesExportHeader);
+              RHDSalesExportHeader."Branch Code" := p_Branch;
+              RHDSalesExportHeader."Record Type" := RHDSetup."Record Type KAK";
+              RHDSalesExportHeader."Website No." := SalesHeader."Website No.";
+              RHDSalesExportHeader.Status := RHDSalesExportHeader.Status::Unprocessed;
+              RHDSalesExportHeader."Insert Timestamp" := CURRENTDATETIME;
+              RHDSalesExportHeader."Process Timestamp" := 0DT;
+              RHDSalesExportHeader.Filename := '';
+              RHDSalesExportHeader."Ship-to Customer No." := SalesHeader."Sell-to Customer No.";
+              // Check Addional Address in Addional Sales HEader Fields Tables
+              IF AdditionalSalesHeaderFields.GET(SalesHeader."Document Type",SalesHeader."No.") THEN BEGIN
+                RHDSalesExportHeader.Salutation := GetSalutionFromAddionalTable(AdditionalSalesHeaderFields);
+                RHDSalesExportHeader."Ship-to Name" := AdditionalSalesHeaderFields."Ship-to First Name";
+                RHDSalesExportHeader."Ship-to Name 2" := AdditionalSalesHeaderFields."Ship-to Last Name";
+              END ELSE BEGIN
+                RHDSalesExportHeader.Salutation := RHDSalesExportHeader.Salutation::Company;
+                RHDSalesExportHeader."Ship-to Name" := AdditionalSalesHeaderFields."Ship-to Company Name";
+                RHDSalesExportHeader."Ship-to Name 2" := '';
+              END;
+              RHDSalesExportHeader."Ship-to Address" := SalesHeader."Ship-to Address";
+              RHDSalesExportHeader."Ship-to Address 2" := SalesHeader."Ship-to Address 2";
+              RHDSalesExportHeader."Ship-to City" := SalesHeader."Ship-to City";
+              RHDSalesExportHeader."Ship-to Post Code" := SalesHeader."Ship-to Post Code";
+              RHDSalesExportHeader."Ship-to Country/Region Code" := SalesHeader."Ship-to Country/Region Code";
+              RHDSalesExportHeader."Phone No." := SalesHeader."Phone No.";
+              RHDSalesExportHeader."E-Mail" := SalesHeader."E-Mail";
+              RHDSalesExportHeader."Order Date" := SalesHeader."Order Date";
+              RHDSalesExportHeader."Desired Time From" := 0T;
+              RHDSalesExportHeader."Desired Time To" := 0T;
+              IF SalesHeader.Status = SalesHeader.Status::"Pending Prepayment" THEN
+                RHDSalesExportHeader."Shipment Date" := 11112911D
+              ELSE
+                RHDSalesExportHeader."Shipment Date" := 0D;
+              RHDSalesExportHeader.MODIFY;
+            END;
+            RHDSalesExportLine.RESET;
+            RHDSalesExportLine.SETRANGE("Entry No.",RHDSalesExportHeader."Entry No.");
+            RHDSalesExportLine.SETRANGE(Type,RHDSalesExportLine.Type::Item);
+            RHDSalesExportLine.SETRANGE("No.",SalesLine."No.");
+            IF NOT RHDSalesExportLine.FINDSET THEN BEGIN
+              // Item does not already exist for order
+              NextLineNo += 10000;
+              RHDSalesExportLine."Entry No." := RHDSalesExportHeader."Entry No.";
+              RHDSalesExportLine."Entry Line No." := NextLineNo;
+              RHDSalesExportLine.INSERT;
+              RHDSalesLineReference.RESET;
+              RHDSalesLineReference."Attached to Entry No." := RHDSalesExportLine."Entry No.";
+              RHDSalesLineReference."Attached to Entry Line No." := RHDSalesExportLine."Entry Line No.";
+              RHDSalesLineReference."Attached to Sales Line No." := SalesLine."Line No.";
+              RHDSalesLineReference.Quantity := SalesLine.Quantity;
+              RHDSalesLineReference.INSERT;
+              RHDSalesExportLine."Attached to Document Type" := p_SalesLine."Document Type";
+              RHDSalesExportLine."Attached to Document No." := p_SalesLine."Document No.";
+              RHDSalesExportLine."Record Type" := RHDSetup."Record Type KAP";
+              RHDSalesExportLine.Type := RHDSalesExportLine.Type::Item;
+              RHDSalesExportLine."No." := SalesLine."No.";
+              RHDSalesExportLine.Description := SalesLine.Description;
+              RHDSalesExportLine."Attached to Pos. No." := 0;
+              RHDSalesExportLine.Quantity += SalesLine.Quantity;
+              RHDSalesExportLine."Location Code" := SalesLine."Location Code";
+              RHDSalesExportLine.Crossdock := SalesLine."Special Order";
+              RHDSalesExportLine."Purchase Order No." := SalesLine."Special Order Purchase No.";
+              RHDSalesExportLine."Purch. Order Line No." := SalesLine."Special Order Purch. Line No.";
+              RHDSalesExportLine."Partial Delivery" := FALSE;
+              RHDSalesExportLine."Unit Volume" := SalesLine."Unit Volume";
+              RHDSalesExportLine."Unit Weight" := SalesLine."Net Weight";
+              RHDSalesExportLine.Barcode := '';
+              RHDSalesExportLine."Purchasing Code" := SalesLine."Purchasing Code";
+              Item.GET(RHDSalesExportLine."No.");
+              Item.CALCFIELDS("Parcels Number");
+              RHDSalesExportLine."No. of Packages" := Item."Parcels Number";
+              RHDSalesExportLine."Package Entry No." := 0;
+              RHDSalesExportLine."Pos. No." := SalesLine.ID;
+              //GetPosNoForExportLine(RHDSalesExportHeader,RHDSalesExportLine);
+              RHDSalesExportLine.MODIFY;
+              // Create Barcodes
+              CheckAndInsertBarcodes(RHDSalesExportHeader,RHDSalesExportLine,NextLineNo);
+              // Create Assembly
+              CheckAndInsertAttachedAssembly(RHDSalesExportLine,SalesLine,NextLineNo);
+            END ELSE BEGIN
+              // Item already exists, Update Qty and Insert Line Reference
+              RHDSalesExportLine.Quantity += SalesLine.Quantity;
+              RHDSalesExportLine.MODIFY;
+              RHDSalesLineReference.RESET;
+              RHDSalesLineReference."Attached to Entry No." := RHDSalesExportLine."Entry No.";
+              RHDSalesLineReference."Attached to Entry Line No." := RHDSalesExportLine."Entry Line No.";
+              RHDSalesLineReference."Attached to Sales Line No." := SalesLine."Line No.";
+              RHDSalesLineReference.Quantity := SalesLine.Quantity;
+              RHDSalesLineReference.INSERT;
+            END;
+          END;
+        UNTIL SalesLine.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE UpdateOrderForBranch@1000000101(p_SalesLine@1000000002 : Record 37;p_Branch@1000000003 : Code[10];p_TryToDeleteEntryNoFB@1000000011 : Integer);
+    VAR
+      RHDSalesExportHeader@1000000000 : Record 50181;
+      RHDSalesExportLine@1000000008 : Record 50182;
+      SalesHeader@1000000001 : Record 36;
+      RHDSetup@1000000004 : Record 50177;
+      AdditionalSalesHeaderFields@1000000005 : Record 50120;
+      SalesLine@1000000006 : Record 37;
+      NextLineNo@1000000007 : Integer;
+      Item@1000000009 : Record 27;
+      RHDSalesLineReference@1000000010 : Record 80011;
+      RHDSalesExportHeader2@1000000012 : Record 50181;
+    BEGIN
+      SalesHeader.GET(p_SalesLine."Document Type",p_SalesLine."Document No.");
+      RHDSetup.GET;
+      RHDSetup.TESTFIELD("Record Type KAK");
+      RHDSetup.TESTFIELD("Record Type KAP");
+      RHDSetup.TESTFIELD("Record Type KAB");
+      RHDSetup.TESTFIELD("Record Type KAS");
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type",SalesHeader."Document Type");
+      SalesLine.SETRANGE("Document No.",SalesHeader."No.");
+      SalesLine.SETRANGE(Type,SalesLine.Type::Item);
+      SalesLine.SETFILTER(Quantity,'<>%1',0);
+      IF SalesLine.FINDSET THEN BEGIN
+        NextLineNo := 0;
+        REPEAT
+          IF GetBrachCodeFromPurchasingCode(SalesLine."Purchasing Code") = p_Branch THEN BEGIN
+            IF NextLineNo = 0 THEN BEGIN
+              //Create Rec with Status Creation
+              RHDSalesExportHeader.RESET;
+              RHDSalesExportHeader."Entry No." := RHDSalesExportHeader.GetNextEntryNo;
+              RHDSalesExportHeader.Status := RHDSalesExportHeader.Status::Creation;
+              RHDSalesExportHeader.INSERT;
+              //Fill General Fields
+              RHDSalesExportHeader."Document Type" := SalesHeader."Document Type";
+              RHDSalesExportHeader."Document No." := SalesHeader."No.";
+              RHDSalesExportHeader."Branch Code" := p_Branch;
+              RHDSalesExportHeader."Record Type" := RHDSetup."Record Type KAK";
+              RHDSalesExportHeader."Website No." := SalesHeader."Website No.";
+              RHDSalesExportHeader.Status := RHDSalesExportHeader.Status::Unprocessed;
+              RHDSalesExportHeader."Insert Timestamp" := CURRENTDATETIME;
+              RHDSalesExportHeader."Process Timestamp" := 0DT;
+              RHDSalesExportHeader.Filename := '';
+              RHDSalesExportHeader."Ship-to Customer No." := SalesHeader."Sell-to Customer No.";
+              // If existing unprocessed Sequnce then Set to Delete and Use Sequence + Transmission
+              IF (p_TryToDeleteEntryNoFB <> 0) AND
+                 RHDSalesExportHeader2.GET(p_TryToDeleteEntryNoFB) AND
+                 (RHDSalesExportHeader2.Status = RHDSalesExportHeader2.Status::Unprocessed)
+              THEN BEGIN
+                RHDSalesExportHeader2.Status := RHDSalesExportHeader2.Status::Delete;
+                RHDSalesExportHeader2.MODIFY;
+                //COMMIT; //!!!
+                RHDSalesExportHeader."Sequence No." := RHDSalesExportHeader2."Sequence No.";
+                RHDSalesExportHeader."Rhenus Order No." := RHDSalesExportHeader2."Document No." + RHDSalesExportHeader2."Sequence No.";
+                RHDSalesExportHeader."Transmission Mode" := RHDSalesExportHeader2."Transmission Mode";
+                RHDSalesExportHeader."Transmission No." := RHDSalesExportHeader2."Transmission No.";
+              END ELSE BEGIN
+                RHDSalesExportHeader."Sequence No." := GetSequenceNoForUpdate(SalesHeader,p_Branch);
+                RHDSalesExportHeader."Rhenus Order No." := RHDSalesExportHeader."Document No." + RHDSalesExportHeader."Sequence No.";
+                RHDSalesExportHeader."Transmission Mode" := RHDSalesExportHeader."Transmission Mode"::Update;
+                RHDSalesExportHeader."Transmission No." := GetNextTransmissionNo(RHDSalesExportHeader);
+              END;
+              // Get Address from Addional Fields Table
+              IF AdditionalSalesHeaderFields.GET(SalesHeader."Document Type",SalesHeader."No.") THEN BEGIN
+                RHDSalesExportHeader.Salutation := GetSalutionFromAddionalTable(AdditionalSalesHeaderFields);
+                RHDSalesExportHeader."Ship-to Name" := AdditionalSalesHeaderFields."Ship-to First Name";
+                RHDSalesExportHeader."Ship-to Name 2" := AdditionalSalesHeaderFields."Ship-to Last Name";
+              END ELSE BEGIN
+                RHDSalesExportHeader.Salutation := RHDSalesExportHeader.Salutation::Company;
+                RHDSalesExportHeader."Ship-to Name" := AdditionalSalesHeaderFields."Ship-to Company Name";
+                RHDSalesExportHeader."Ship-to Name 2" := '';
+              END;
+              RHDSalesExportHeader."Ship-to Address" := SalesHeader."Ship-to Address";
+              RHDSalesExportHeader."Ship-to Address 2" := SalesHeader."Ship-to Address 2";
+              RHDSalesExportHeader."Ship-to City" := SalesHeader."Ship-to City";
+              RHDSalesExportHeader."Ship-to Post Code" := SalesHeader."Ship-to Post Code";
+              RHDSalesExportHeader."Ship-to Country/Region Code" := SalesHeader."Ship-to Country/Region Code";
+              RHDSalesExportHeader."Phone No." := SalesHeader."Phone No.";
+              RHDSalesExportHeader."E-Mail" := SalesHeader."E-Mail";
+              RHDSalesExportHeader."Order Date" := SalesHeader."Order Date";
+              RHDSalesExportHeader."Desired Time From" := 0T;
+              RHDSalesExportHeader."Desired Time To" := 0T;
+              IF SalesHeader.Status = SalesHeader.Status::"Pending Prepayment" THEN
+                RHDSalesExportHeader."Shipment Date" := 11112911D
+              ELSE
+                RHDSalesExportHeader."Shipment Date" := 0D;
+              RHDSalesExportHeader.MODIFY;
+            END;
+            RHDSalesExportLine.RESET;
+            RHDSalesExportLine.SETRANGE("Entry No.",RHDSalesExportHeader."Entry No.");
+            RHDSalesExportLine.SETRANGE(Type,RHDSalesExportLine.Type::Item);
+            RHDSalesExportLine.SETRANGE("No.",SalesLine."No.");
+            IF NOT RHDSalesExportLine.FINDSET THEN BEGIN
+              NextLineNo += 10000;
+              RHDSalesExportLine."Entry No." := RHDSalesExportHeader."Entry No.";
+              RHDSalesExportLine."Entry Line No." := NextLineNo;
+              RHDSalesExportLine.INSERT;
+              RHDSalesLineReference.RESET;
+              RHDSalesLineReference."Attached to Entry No." := RHDSalesExportLine."Entry No.";
+              RHDSalesLineReference."Attached to Entry Line No." := RHDSalesExportLine."Entry Line No.";
+              RHDSalesLineReference."Attached to Sales Line No." := SalesLine."Line No.";
+              RHDSalesLineReference.Quantity := SalesLine.Quantity;
+              RHDSalesLineReference.INSERT;
+              RHDSalesExportLine."Attached to Document Type" := SalesLine."Document Type";
+              RHDSalesExportLine."Attached to Document No." := SalesLine."Document No.";
+              RHDSalesExportLine."Record Type" := RHDSetup."Record Type KAP";
+              RHDSalesExportLine.Type := RHDSalesExportLine.Type::Item;
+              RHDSalesExportLine."Pos. No." := SalesLine.ID;
+              //GetPosNoForExportLine(RHDSalesExportLine);
+              RHDSalesExportLine."No." := SalesLine."No.";
+              RHDSalesExportLine.Description := SalesLine.Description;
+              RHDSalesExportLine."Attached to Pos. No." := 0;
+              RHDSalesExportLine.Quantity := SalesLine.Quantity;
+              RHDSalesExportLine."Location Code" := SalesLine."Location Code";
+              RHDSalesExportLine.Crossdock := SalesLine."Special Order";
+              RHDSalesExportLine."Purchase Order No." := SalesLine."Special Order Purchase No.";
+              RHDSalesExportLine."Purch. Order Line No." := SalesLine."Special Order Purch. Line No.";
+              RHDSalesExportLine."Partial Delivery" := FALSE;
+              RHDSalesExportLine."Unit Volume" := SalesLine."Unit Volume";
+              RHDSalesExportLine."Unit Weight" := SalesLine."Net Weight";
+              RHDSalesExportLine.Barcode := '';
+              RHDSalesExportLine."Purchasing Code" := SalesLine."Purchasing Code";
+              Item.GET(SalesLine."No.");
+              Item.CALCFIELDS("Parcels Number");
+              RHDSalesExportLine."No. of Packages" := Item."Parcels Number";
+              RHDSalesExportLine.MODIFY;
+              // Create Barcodes
+              CheckAndInsertBarcodes(RHDSalesExportHeader,RHDSalesExportLine,NextLineNo);
+              // Create Assembly
+              CheckAndInsertAttachedAssembly(RHDSalesExportLine,SalesLine,NextLineNo);
+            END ELSE BEGIN
+              RHDSalesExportLine.Quantity += SalesLine.Quantity;
+              RHDSalesExportLine.MODIFY;
+              RHDSalesLineReference.RESET;
+              RHDSalesLineReference."Attached to Entry No." := RHDSalesExportLine."Entry No.";
+              RHDSalesLineReference."Attached to Entry Line No." := RHDSalesExportLine."Entry Line No.";
+              RHDSalesLineReference."Attached to Sales Line No." := SalesLine."Line No.";
+              RHDSalesLineReference.Quantity := SalesLine.Quantity;
+              RHDSalesLineReference.INSERT;
+            END;
+          END;
+        UNTIL SalesLine.NEXT = 0;
+        // Refresh and Delete
+        IF p_TryToDeleteEntryNoFB <> 0 THEN BEGIN
+          RHDSalesExportHeader2.GET(p_TryToDeleteEntryNoFB);
+          RHDSalesExportHeader2.DELETE(TRUE);
+        END;
+      END;
+    END;
+
+    PROCEDURE CancelOrderForBranch@1000000007(p_SalesLine@1000000002 : Record 37;p_Branch@1000000001 : Code[10]);
+    VAR
+      LastRHDSalesExportHeader@1000000000 : Record 50181;
+      LastRHDSalesExportLine@1000000007 : Record 50182;
+      LastRHDSalesLineReference@1000000006 : Record 80011;
+      RHDSalesExportHeader@1000000003 : Record 50181;
+      RHDSalesExportLine@1000000004 : Record 50182;
+      RHDSalesLineReference@1000000005 : Record 80011;
+    BEGIN
+      // Insert Cancel for last Sequnce/Branch
+      LastRHDSalesExportHeader.RESET;
+      LastRHDSalesExportHeader.SETCURRENTKEY("Document Type","Document No.","Sequence No.","Transmission No.");
+      LastRHDSalesExportHeader.SETRANGE("Document Type",p_SalesLine."Document Type");
+      LastRHDSalesExportHeader.SETRANGE("Document No.",p_SalesLine."Document No.");
+      LastRHDSalesExportHeader.SETRANGE("Branch Code",p_Branch);
+      IF LastRHDSalesExportHeader.FINDLAST AND
+         (LastRHDSalesExportHeader."Transmission Mode" <> LastRHDSalesExportHeader."Transmission Mode"::Delete)
+      THEN BEGIN
+        RHDSalesExportHeader.RESET;
+        RHDSalesExportHeader.TRANSFERFIELDS(LastRHDSalesExportHeader);
+        RHDSalesExportHeader."Entry No." := RHDSalesExportHeader.GetNextEntryNo;
+        RHDSalesExportHeader.Status := RHDSalesExportHeader.Status::Creation;
+        RHDSalesExportHeader.INSERT;
+        RHDSalesExportHeader."Transmission Mode" := RHDSalesExportHeader."Transmission Mode"::Delete;
+        RHDSalesExportHeader."Transmission No." := INCSTR(RHDSalesExportHeader."Transmission No.");
+        RHDSalesExportHeader.Status := RHDSalesExportHeader.Status::Unprocessed;
+        RHDSalesExportHeader."Insert Timestamp" := CURRENTDATETIME;
+        RHDSalesExportHeader."Process Timestamp" := 0DT;
+        RHDSalesExportHeader.Filename := '';
+        LastRHDSalesExportLine.RESET;
+        LastRHDSalesExportLine.SETRANGE("Entry No.",LastRHDSalesExportHeader."Entry No.");
+        IF LastRHDSalesExportLine.FINDSET THEN BEGIN
+          REPEAT
+            RHDSalesExportLine.RESET;
+            RHDSalesExportLine.TRANSFERFIELDS(LastRHDSalesExportLine);
+            RHDSalesExportLine."Entry No." := RHDSalesExportHeader."Entry No.";
+            RHDSalesExportLine.INSERT;
+          UNTIL LastRHDSalesExportLine.NEXT = 0;
+        END;
+        LastRHDSalesLineReference.RESET;
+        LastRHDSalesLineReference.SETRANGE("Attached to Entry No.",LastRHDSalesExportHeader."Entry No.");
+        IF LastRHDSalesLineReference.FINDSET THEN BEGIN
+          REPEAT
+            RHDSalesLineReference.RESET;
+            RHDSalesLineReference.TRANSFERFIELDS(LastRHDSalesLineReference);
+            RHDSalesLineReference."Attached to Entry No." := RHDSalesExportHeader."Entry No.";
+            RHDSalesLineReference.INSERT;
+          UNTIL LastRHDSalesLineReference.NEXT = 0;
+        END;
+        RHDSalesExportHeader.MODIFY;
+      END;
+    END;
+
+    PROCEDURE CheckForNecessaryActions@1000000023(p_SalesLine@1000000001 : Record 37;VAR p_NewFB_Var@1000000011 : Boolean;VAR p_NewGB_Var@1000000010 : Boolean;VAR p_UpdateFB_Var@1000000003 : Boolean;VAR p_UpdateGB_Var@1000000004 : Boolean;VAR p_CancelFB_Var@1000000008 : Boolean;VAR p_CancelGB_Var@1000000009 : Boolean;VAR p_TryToDeleteEntryNoFB_Var@1000000026 : Integer;VAR p_TryToDeleteEntryNoGB_Var@1000000027 : Integer);
+    VAR
+      ExistingFBSequence@1000000006 : Record 50181;
+      ExistingGBSequence@1000000002 : Record 50181;
+      SalesHeader@1000000000 : Record 36;
+      AdditionalSalesHeaderFields@1000000005 : Record 50120;
+      RHDSetup@1000000007 : Record 50177;
+      SalesLine@1000000012 : Record 37;
+      SalesLine2@1000000023 : Record 37;
+      TempBranchCode@1000000013 : Code[10];
+      WrongBranchError@1000000014 : TextConst 'ENU=Invalid Branch Code.';
+      OrderHasFBPositions@1000000015 : Boolean;
+      OrderHasGBPositions@1000000016 : Boolean;
+      FBClear@1000000017 : Boolean;
+      GBClear@1000000018 : Boolean;
+      RHDSalesExportLine@1000000024 : Record 50182;
+      RHDSalesExportLine2@1000000019 : Record 50182;
+      RHDSalesLineReference@1000000025 : Record 80011;
+      RHDSalesLineReference2@1000000020 : Record 80011;
+      QtyAddition@1000000021 : Decimal;
+      Item@1000000022 : Record 27;
+    BEGIN
+      // Clear Vars, Get Setup and Sales Header
+      FBClear := FALSE;
+      GBClear := FALSE;
+      OrderHasFBPositions := FALSE;
+      OrderHasGBPositions := FALSE;
+      RHDSetup.GET;
+      RHDSetup.TESTFIELD("Branch Code GB");
+      RHDSetup.TESTFIELD("Branch Code FB");
+      SalesHeader.GET(p_SalesLine."Document Type",p_SalesLine."Document No.");
+      IF SalesHeader.Status IN [SalesHeader.Status::Open,SalesHeader.Status::"Pending Approval"] THEN
+        EXIT;
+
+      IF SalesHeader.Status = SalesHeader.Status::Canceled THEN BEGIN
+        p_CancelFB_Var := TRUE;
+        p_CancelGB_Var := TRUE;
+        EXIT;
+      END;
+      // Check if RHD-Freienbrink Sequence already exists
+      ExistingFBSequence.RESET;
+      ExistingFBSequence.SETCURRENTKEY("Document Type","Document No.","Sequence No.","Transmission No.");
+      ExistingFBSequence.SETRANGE("Document Type",p_SalesLine."Document Type");
+      ExistingFBSequence.SETRANGE("Document No.",p_SalesLine."Document No.");
+      ExistingFBSequence.SETRANGE("Branch Code",RHDSetup."Branch Code FB");
+      IF ExistingFBSequence.FINDLAST THEN BEGIN
+        IF (SalesHeader."Document Type" <> ExistingFBSequence."Document Type") OR
+           (SalesHeader."No." <> ExistingFBSequence."Document No.") OR
+           (SalesHeader."Website No." <> ExistingFBSequence."Website No.") OR
+           (SalesHeader."Sell-to Customer No." <> ExistingFBSequence."Ship-to Customer No.") OR
+           (SalesHeader."Ship-to Address" <> ExistingFBSequence."Ship-to Address") OR
+           (SalesHeader."Ship-to Address 2" <> ExistingFBSequence."Ship-to Address 2") OR
+           (SalesHeader."Ship-to City" <> ExistingFBSequence."Ship-to City") OR
+           (SalesHeader."Ship-to Post Code" <> ExistingFBSequence."Ship-to Post Code") OR
+           (SalesHeader."Ship-to Country/Region Code" <> ExistingFBSequence."Ship-to Country/Region Code") OR
+           (SalesHeader."Order Date" <> ExistingFBSequence."Order Date") OR
+           (SalesHeader."Phone No." <> ExistingFBSequence."Phone No.") OR
+           (SalesHeader."E-Mail" <> ExistingFBSequence."E-Mail")
+        THEN BEGIN
+          p_UpdateFB_Var := TRUE;
+        END ELSE BEGIN
+          IF AdditionalSalesHeaderFields.GET(SalesHeader."Document Type",SalesHeader."No.") THEN BEGIN
+            IF (ExistingFBSequence.Salutation <> GetSalutionFromAddionalTable(AdditionalSalesHeaderFields)) OR
+               (ExistingFBSequence."Ship-to Name" <> AdditionalSalesHeaderFields."Ship-to First Name") OR
+               (ExistingFBSequence."Ship-to Name 2" <> AdditionalSalesHeaderFields."Ship-to Last Name")
+            THEN BEGIN
+              p_UpdateFB_Var := TRUE;
+            END;
+          END ELSE BEGIN
+            IF (ExistingFBSequence."Ship-to Name" <> AdditionalSalesHeaderFields."Ship-to Company Name") OR
+               (ExistingFBSequence.Salutation <> ExistingFBSequence.Salutation::Company)
+            THEN BEGIN
+              p_UpdateFB_Var := TRUE;
+            END;
+          END;
+        END;
+      END ELSE
+        p_NewFB_Var := TRUE;
+
+      // Check if RHD-Grevenbroich Sequence already exists
+      ExistingGBSequence.RESET;
+      ExistingGBSequence.SETCURRENTKEY("Document Type","Document No.","Sequence No.","Transmission No.");
+      ExistingGBSequence.SETRANGE("Document Type",p_SalesLine."Document Type");
+      ExistingGBSequence.SETRANGE("Document No.",p_SalesLine."Document No.");
+      ExistingGBSequence.SETRANGE("Branch Code",RHDSetup."Branch Code GB");
+      IF ExistingGBSequence.FINDLAST THEN BEGIN
+        IF (SalesHeader."Document Type" <> ExistingGBSequence."Document Type") OR
+           (SalesHeader."No." <> ExistingGBSequence."Document No.") OR
+           (SalesHeader."Website No." <> ExistingGBSequence."Website No.") OR
+           (SalesHeader."Sell-to Customer No." <> ExistingGBSequence."Ship-to Customer No.") OR
+           (SalesHeader."Ship-to Address" <> ExistingGBSequence."Ship-to Address") OR
+           (SalesHeader."Ship-to Address 2" <> ExistingGBSequence."Ship-to Address 2") OR
+           (SalesHeader."Ship-to City" <> ExistingGBSequence."Ship-to City") OR
+           (SalesHeader."Ship-to Post Code" <> ExistingGBSequence."Ship-to Post Code") OR
+           (SalesHeader."Ship-to Country/Region Code" <> ExistingGBSequence."Ship-to Country/Region Code") OR
+           (SalesHeader."Order Date" <> ExistingGBSequence."Order Date") OR
+           (SalesHeader."Phone No." <> ExistingGBSequence."Phone No.") OR
+           (SalesHeader."E-Mail" <> ExistingGBSequence."E-Mail")
+        THEN BEGIN
+          p_UpdateGB_Var := TRUE;
+        END ELSE BEGIN
+          IF AdditionalSalesHeaderFields.GET(SalesHeader."Document Type",SalesHeader."No.") THEN BEGIN
+            IF (ExistingGBSequence.Salutation <> GetSalutionFromAddionalTable(AdditionalSalesHeaderFields)) OR
+               (ExistingGBSequence."Ship-to Name" <> AdditionalSalesHeaderFields."Ship-to First Name") OR
+               (ExistingGBSequence."Ship-to Name 2" <> AdditionalSalesHeaderFields."Ship-to Last Name")
+            THEN BEGIN
+              p_UpdateGB_Var := TRUE;
+            END;
+          END ELSE BEGIN
+            IF (ExistingGBSequence."Ship-to Name" <> AdditionalSalesHeaderFields."Ship-to Company Name") OR
+               (ExistingGBSequence.Salutation <> ExistingGBSequence.Salutation::Company)
+            THEN BEGIN
+              p_UpdateGB_Var := TRUE;
+            END;
+          END;
+        END;
+      END ELSE
+        p_NewGB_Var := TRUE;
+
+      // Check for which Rhenus Branchs Positions exist
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type",p_SalesLine."Document Type");
+      SalesLine.SETRANGE("Document No.",p_SalesLine."Document No.");
+      SalesLine.SETFILTER(Quantity,'<>%1',0);
+      IF SalesLine.FINDSET THEN BEGIN
+        REPEAT
+          TempBranchCode := GetBrachCodeFromPurchasingCode(SalesLine."Purchasing Code");
+          IF TempBranchCode <> '' THEN BEGIN
+            CASE TempBranchCode OF
+              RHDSetup."Branch Code FB" :
+                BEGIN
+                  OrderHasFBPositions := TRUE;
+                END;
+              RHDSetup."Branch Code GB" :
+                BEGIN
+                  OrderHasGBPositions := TRUE;
+                END;
+              ELSE
+                ERROR(WrongBranchError);
+            END;
+          END;
+        UNTIL SalesLine.NEXT = 0;
+      END;
+
+      // If everything is clear exit without triggering Rhenus interface
+      IF p_NewFB_Var AND p_NewGB_Var AND NOT OrderHasFBPositions AND NOT OrderHasGBPositions THEN
+        EXIT;
+
+      // If no existing Freienbrink Position and Order has no Freienbrink Position set Freienbrink Flags to FALSE
+      IF p_NewFB_Var AND NOT OrderHasFBPositions THEN BEGIN
+        p_NewFB_Var := FALSE;
+        p_UpdateFB_Var := FALSE;
+        p_CancelFB_Var := FALSE;
+        FBClear := TRUE;
+      END;
+
+      // If no existing Grevenbroich Position and Order has no Grevenbroich Position set Grevenbroic Flags to FALSE
+      IF p_NewGB_Var AND NOT OrderHasGBPositions THEN BEGIN
+        p_NewGB_Var := FALSE;
+        p_UpdateGB_Var := FALSE;
+        p_CancelGB_Var := FALSE;
+        GBClear := TRUE;
+      END;
+
+      // Freienbrink: Compare existing Lines with Interface if Update necessary
+      IF NOT FBClear AND NOT p_NewFB_Var THEN BEGIN
+        // Check for Interface <> Sales Line
+        RHDSalesExportLine.RESET;
+        RHDSalesExportLine.SETRANGE("Entry No.",ExistingFBSequence."Entry No.");
+        RHDSalesExportLine.SETRANGE(Type,RHDSalesExportLine.Type::Item);
+        IF RHDSalesExportLine.FINDSET THEN BEGIN
+          REPEAT
+            RHDSalesLineReference.RESET;
+            RHDSalesLineReference.SETRANGE("Attached to Entry No.",RHDSalesExportLine."Entry No.");
+            RHDSalesLineReference.SETRANGE("Attached to Entry Line No.",RHDSalesExportLine."Entry Line No.");
+            IF RHDSalesLineReference.FINDSET THEN BEGIN
+              QtyAddition := 0;
+              REPEAT
+                SalesLine.GET(p_SalesLine."Document Type",p_SalesLine."Document No.",RHDSalesLineReference."Attached to Sales Line No.")
+      ;
+                QtyAddition += SalesLine.Quantity;
+                IF SalesLine.Type = SalesLine.Type::Item THEN BEGIN
+                  Item.GET(SalesLine."No.");
+                  Item.CALCFIELDS("Parcels Number");
+                  CASE TRUE OF
+                    RHDSalesExportLine."Attached to Document Type" <> SalesLine."Document Type",
+                    RHDSalesExportLine."Attached to Document No." <> SalesLine."Document No.",
+                    RHDSalesExportLine."No." <> SalesLine."No.",
+                    RHDSalesExportLine.Description <> SalesLine.Description,
+                    RHDSalesExportLine."Location Code" <> SalesLine."Location Code",
+                    RHDSalesExportLine.Crossdock <> SalesLine."Special Order",
+                    RHDSalesExportLine."Purchase Order No." <> SalesLine."Special Order Purchase No.",
+                    RHDSalesExportLine."Purch. Order Line No." <> SalesLine."Special Order Purch. Line No.",
+                    RHDSalesExportLine."Unit Volume" <> SalesLine."Unit Volume",
+                    RHDSalesExportLine."Unit Weight" <> SalesLine."Net Weight",
+                    RHDSalesExportLine."Purchasing Code" <> SalesLine."Purchasing Code",
+                    RHDSalesExportLine."No. of Packages" <> Item."Parcels Number",
+                    GetBrachCodeFromPurchasingCode(SalesLine."Purchasing Code") <> RHDSetup."Branch Code FB" :
+                      BEGIN
+                        p_UpdateFB_Var := TRUE;
+                      END;
+                  END;
+                END;
+                IF (SalesLine.Type = SalesLine.Type::Resource) AND (SalesLine."Resource Type" = SalesLine."Resource Type"::Assembly)
+                THEN BEGIN
+                  // Item Line Attached to Assembly
+                  SalesLine2.RESET;
+                  SalesLine2.SETRANGE("Document Type",SalesLine."Document Type");
+                  SalesLine2.SETRANGE("Document No.",SalesLine."Document No.");
+                  SalesLine2.SETRANGE(Type,SalesLine2.Type::Item);
+                  SalesLine2.SETRANGE(ID,SalesLine."Parent ID");
+                  SalesLine2.FINDLAST;
+                  // Item Line Reference in RHD Export
+                  RHDSalesLineReference2.RESET;
+                  RHDSalesLineReference2.SETRANGE("Attached to Entry No.",RHDSalesLineReference."Attached to Entry No.");
+                  RHDSalesLineReference2.SETRANGE("Attached to Sales Line No.",SalesLine2."Line No.");
+                  IF RHDSalesLineReference2.FINDLAST THEN BEGIN
+                    // Item Line Reference RHD Export
+                    IF RHDSalesExportLine2.GET(
+                       RHDSalesLineReference2."Attached to Entry No.",
+                       RHDSalesLineReference2."Attached to Entry Line No.")
+                    THEN BEGIN
+                      IF RHDSalesExportLine."Attached to Pos. No." <> RHDSalesExportLine2."Pos. No." THEN BEGIN
+                        p_UpdateFB_Var := TRUE;
+                      END;
+                    END ELSE BEGIN
+                      p_UpdateFB_Var := TRUE;
+                    END;
+                  END ELSE BEGIN
+                    p_UpdateFB_Var := TRUE;
+                  END;
+                END;
+              UNTIL (RHDSalesLineReference.NEXT = 0) OR p_UpdateFB_Var;
+              IF RHDSalesExportLine.Quantity <> QtyAddition THEN BEGIN
+                p_UpdateFB_Var := TRUE;
+              END;
+            END;
+          UNTIL (RHDSalesExportLine.NEXT = 0) OR p_UpdateFB_Var;
+        END;
+        IF NOT p_UpdateFB_Var AND NOT p_NewFB_Var THEN BEGIN
+          // Check Sales Line <> Interface
+          SalesLine2.RESET;
+          SalesLine2.SETRANGE("Document Type",p_SalesLine."Document Type");
+          SalesLine2.SETRANGE("Document No.",p_SalesLine."Document No.");
+          SalesLine2.SETRANGE(Type,SalesLine2.Type::Item);
+          IF SalesLine2.FINDSET THEN BEGIN
+            REPEAT
+              IF GetBrachCodeFromPurchasingCode(SalesLine2."Purchasing Code") = RHDSetup."Branch Code FB" THEN BEGIN
+                Item.GET(SalesLine2."No.");
+                Item.CALCFIELDS("Parcels Number");
+                RHDSalesLineReference2.RESET;
+                RHDSalesLineReference2.SETRANGE("Attached to Entry No.",ExistingFBSequence."Entry No.");
+                RHDSalesLineReference2.SETRANGE("Attached to Sales Line No.",SalesLine2."Line No.");
+                IF RHDSalesLineReference2.FINDLAST THEN BEGIN
+                  IF RHDSalesExportLine2.GET(
+                      RHDSalesLineReference2."Attached to Entry No.",
+                      RHDSalesLineReference2."Attached to Entry Line No.")
+                  THEN BEGIN
+                    CASE TRUE OF
+                      RHDSalesExportLine2."Attached to Document Type" <> SalesLine2."Document Type",
+                      RHDSalesExportLine2."Attached to Document No." <> SalesLine2."Document No.",
+                      RHDSalesExportLine2."No." <> SalesLine2."No.",
+                      RHDSalesExportLine2.Description <> SalesLine2.Description,
+                      RHDSalesExportLine2."Location Code" <> SalesLine2."Location Code",
+                      RHDSalesExportLine2.Crossdock <> SalesLine2."Special Order",
+                      RHDSalesExportLine2."Purchase Order No." <> SalesLine2."Special Order Purchase No.",
+                      RHDSalesExportLine2."Purch. Order Line No." <> SalesLine2."Special Order Purch. Line No.",
+                      RHDSalesExportLine2."Unit Volume" <> SalesLine2."Unit Volume",
+                      RHDSalesExportLine2."Unit Weight" <> SalesLine2."Net Weight",
+                      RHDSalesExportLine2."Purchasing Code" <> SalesLine2."Purchasing Code",
+                      RHDSalesExportLine2."No. of Packages" <> Item."Parcels Number",
+                      GetBrachCodeFromPurchasingCode(SalesLine."Purchasing Code") <> RHDSetup."Branch Code FB" :
+                        BEGIN
+                          p_UpdateFB_Var := TRUE;
+                        END;
+                    END;
+                  END ELSE
+                    p_UpdateFB_Var := TRUE;
+                END ELSE
+                  p_UpdateFB_Var := TRUE;
+              END;
+            UNTIL (SalesLine2.NEXT = 0) OR p_UpdateFB_Var;
+          END;
+        END;
+      END;
+      IF p_UpdateFB_Var AND NOT p_NewFB_Var THEN
+        IF ExistingFBSequence.Status = ExistingFBSequence.Status::Unprocessed THEN
+          p_TryToDeleteEntryNoFB_Var := ExistingFBSequence."Entry No.";
+
+      // Change and no more active pos = cancel seq
+      IF p_UpdateFB_Var AND NOT OrderHasFBPositions THEN BEGIN
+        p_CancelFB_Var := TRUE;
+        p_UpdateFB_Var := FALSE;
+        // if already canceled no second cancel needed
+        IF ExistingFBSequence."Transmission Mode" = ExistingFBSequence."Transmission Mode"::Delete THEN
+          p_CancelFB_Var := FALSE;
+      END;
+
+      // Grevenbroich: Compare existing Lines with Interface if Update necessary
+      IF NOT GBClear AND NOT p_NewGB_Var THEN BEGIN
+        // Check for Interface <> Sales Line
+        RHDSalesExportLine.RESET;
+        RHDSalesExportLine.SETRANGE("Entry No.",ExistingGBSequence."Entry No.");
+        RHDSalesExportLine.SETRANGE(Type,RHDSalesExportLine.Type::Item);
+        IF RHDSalesExportLine.FINDSET THEN BEGIN
+          REPEAT
+            RHDSalesLineReference.RESET;
+            RHDSalesLineReference.SETRANGE("Attached to Entry No.",RHDSalesExportLine."Entry No.");
+            RHDSalesLineReference.SETRANGE("Attached to Entry Line No.",RHDSalesExportLine."Entry Line No.");
+            IF RHDSalesLineReference.FINDSET THEN BEGIN
+              QtyAddition := 0;
+              REPEAT
+                SalesLine.GET(p_SalesLine."Document Type",p_SalesLine."Document No.",RHDSalesLineReference."Attached to Sales Line No.")
+      ;
+                QtyAddition += SalesLine.Quantity;
+                IF SalesLine.Type = SalesLine.Type::Item THEN BEGIN
+                  Item.GET(SalesLine."No.");
+                  Item.CALCFIELDS("Parcels Number");
+                  CASE TRUE OF
+                    RHDSalesExportLine."Attached to Document Type" <> SalesLine."Document Type",
+                    RHDSalesExportLine."Attached to Document No." <> SalesLine."Document No.",
+                    RHDSalesExportLine."No." <> SalesLine."No.",
+                    RHDSalesExportLine.Description <> SalesLine.Description,
+                    RHDSalesExportLine."Location Code" <> SalesLine."Location Code",
+                    RHDSalesExportLine.Crossdock <> SalesLine."Special Order",
+                    RHDSalesExportLine."Purchase Order No." <> SalesLine."Special Order Purchase No.",
+                    RHDSalesExportLine."Purch. Order Line No." <> SalesLine."Special Order Purch. Line No.",
+                    RHDSalesExportLine."Unit Volume" <> SalesLine."Unit Volume",
+                    RHDSalesExportLine."Unit Weight" <> SalesLine."Net Weight",
+                    RHDSalesExportLine."Purchasing Code" <> SalesLine."Purchasing Code",
+                    RHDSalesExportLine."No. of Packages" <> Item."Parcels Number",
+                    GetBrachCodeFromPurchasingCode(SalesLine."Purchasing Code") <> RHDSetup."Branch Code GB" :
+                      BEGIN
+                        p_UpdateGB_Var := TRUE;
+                      END;
+                  END;
+                END;
+                IF (SalesLine.Type = SalesLine.Type::Resource) AND (SalesLine."Resource Type" = SalesLine."Resource Type"::Assembly)
+                THEN BEGIN
+                  // Item Line Attached to Assembly
+                  SalesLine2.RESET;
+                  SalesLine2.SETRANGE("Document Type",SalesLine."Document Type");
+                  SalesLine2.SETRANGE("Document No.",SalesLine."Document No.");
+                  SalesLine2.SETRANGE(Type,SalesLine2.Type::Item);
+                  SalesLine2.SETRANGE(ID,SalesLine."Parent ID");
+                  SalesLine2.FINDLAST;
+                  // Item Line Reference in RHD Export
+                  RHDSalesLineReference2.RESET;
+                  RHDSalesLineReference2.SETRANGE("Attached to Entry No.",RHDSalesLineReference."Attached to Entry No.");
+                  RHDSalesLineReference2.SETRANGE("Attached to Sales Line No.",SalesLine2."Line No.");
+                  IF RHDSalesLineReference2.FINDLAST THEN BEGIN
+                    // Item Line Reference RHD Export
+                    IF RHDSalesExportLine2.GET(
+                       RHDSalesLineReference2."Attached to Entry No.",
+                       RHDSalesLineReference2."Attached to Entry Line No.")
+                    THEN BEGIN
+                      IF RHDSalesExportLine."Attached to Pos. No." <> RHDSalesExportLine2."Pos. No." THEN
+                        p_UpdateGB_Var := TRUE;
+                    END ELSE
+                      p_UpdateGB_Var := TRUE;
+                  END ELSE
+                    p_UpdateGB_Var := TRUE;
+                END;
+              UNTIL (RHDSalesLineReference.NEXT = 0) OR p_UpdateGB_Var;
+              IF RHDSalesExportLine.Quantity <> QtyAddition THEN
+                p_UpdateGB_Var := TRUE;
+            END;
+          UNTIL (RHDSalesExportLine.NEXT = 0) OR p_UpdateGB_Var;
+        END;
+        IF NOT p_UpdateGB_Var AND NOT p_NewGB_Var THEN BEGIN
+          // Check Sales Line <> Interface
+          SalesLine2.RESET;
+          SalesLine2.SETRANGE("Document Type",p_SalesLine."Document Type");
+          SalesLine2.SETRANGE("Document No.",p_SalesLine."Document No.");
+          SalesLine2.SETRANGE(Type,SalesLine2.Type::Item);
+          IF SalesLine2.FINDSET THEN BEGIN
+            REPEAT
+              IF GetBrachCodeFromPurchasingCode(SalesLine2."Purchasing Code") = RHDSetup."Branch Code GB" THEN BEGIN
+                Item.GET(SalesLine2."No.");
+                Item.CALCFIELDS("Parcels Number");
+                RHDSalesLineReference2.RESET;
+                RHDSalesLineReference2.SETRANGE("Attached to Entry No.",ExistingGBSequence."Entry No.");
+                RHDSalesLineReference2.SETRANGE("Attached to Sales Line No.",SalesLine2."Line No.");
+                IF RHDSalesLineReference2.FINDLAST THEN BEGIN
+                  IF RHDSalesExportLine2.GET(
+                     RHDSalesLineReference2."Attached to Entry No.",
+                     RHDSalesLineReference2."Attached to Entry Line No.")
+                  THEN BEGIN
+                    CASE TRUE OF
+                      RHDSalesExportLine2."Attached to Document Type" <> SalesLine2."Document Type",
+                      RHDSalesExportLine2."Attached to Document No." <> SalesLine2."Document No.",
+                      RHDSalesExportLine2."No." <> SalesLine2."No.",
+                      RHDSalesExportLine2.Description <> SalesLine2.Description,
+                      RHDSalesExportLine2."Location Code" <> SalesLine2."Location Code",
+                      RHDSalesExportLine2.Crossdock <> SalesLine2."Special Order",
+                      RHDSalesExportLine2."Purchase Order No." <> SalesLine2."Special Order Purchase No.",
+                      RHDSalesExportLine2."Purch. Order Line No." <> SalesLine2."Special Order Purch. Line No.",
+                      RHDSalesExportLine2."Unit Volume" <> SalesLine2."Unit Volume",
+                      RHDSalesExportLine2."Unit Weight" <> SalesLine2."Net Weight",
+                      RHDSalesExportLine2."Purchasing Code" <> SalesLine2."Purchasing Code",
+                      RHDSalesExportLine2."No. of Packages" <> Item."Parcels Number",
+                      GetBrachCodeFromPurchasingCode(SalesLine."Purchasing Code") <> RHDSetup."Branch Code GB" :
+                        BEGIN
+                          p_UpdateGB_Var := TRUE;
+                        END;
+                    END;
+                  END ELSE
+                    p_UpdateGB_Var := TRUE;
+                END ELSE
+                  p_UpdateGB_Var := TRUE;
+              END;
+            UNTIL (SalesLine2.NEXT = 0) OR p_UpdateGB_Var;
+          END;
+        END;
+      END;
+      IF p_UpdateGB_Var AND NOT p_NewGB_Var THEN
+        IF ExistingGBSequence.Status = ExistingGBSequence.Status::Unprocessed THEN
+          p_TryToDeleteEntryNoGB_Var := ExistingGBSequence."Entry No.";
+
+      // Change and no more active pos = cancel seq
+      IF p_UpdateGB_Var AND NOT OrderHasGBPositions THEN BEGIN
+        p_CancelGB_Var := TRUE;
+        p_UpdateGB_Var := FALSE;
+        // if already canceled no second cancel needed
+        IF ExistingGBSequence."Transmission Mode" = ExistingGBSequence."Transmission Mode"::Delete THEN
+          p_CancelGB_Var := FALSE;
+      END;
+    END;
+
+    PROCEDURE GetNextSequenceNo@1000000008(p_SalesHeader@1000000000 : Record 36) : Code[10];
+    VAR
+      RHDSalesExportHeader@1000000001 : Record 50181;
+    BEGIN
+      RHDSalesExportHeader.RESET;
+      RHDSalesExportHeader.SETCURRENTKEY("Document Type","Document No.","Sequence No.","Transmission No.");
+      RHDSalesExportHeader.SETRANGE("Document Type",p_SalesHeader."Document Type");
+      RHDSalesExportHeader.SETRANGE("Document No.",p_SalesHeader."No.");
+      IF RHDSalesExportHeader.FINDLAST THEN
+        EXIT(INCSTR(RHDSalesExportHeader."Sequence No."));
+
+      EXIT('001');
+    END;
+
+    PROCEDURE GetSequenceNoForUpdate@1000000006(p_SalesHeader@1000000000 : Record 36;p_BranchCode@1000000002 : Code[10]) : Code[10];
+    VAR
+      RHDSalesExportHeader@1000000001 : Record 50181;
+    BEGIN
+      RHDSalesExportHeader.RESET;
+      RHDSalesExportHeader.SETCURRENTKEY("Document Type","Document No.","Sequence No.","Transmission No.");
+      RHDSalesExportHeader.SETRANGE("Document Type",p_SalesHeader."Document Type");
+      RHDSalesExportHeader.SETRANGE("Document No.",p_SalesHeader."No.");
+      RHDSalesExportHeader.SETRANGE("Branch Code",p_BranchCode);
+      IF RHDSalesExportHeader.FINDLAST THEN
+        EXIT(RHDSalesExportHeader."Sequence No.");
+
+      EXIT('001');
+    END;
+
+    PROCEDURE GetNextTransmissionNo@1000000009(p_RHDSalesExportHeader@1000000000 : Record 50181) : Code[10];
+    VAR
+      RHDSalesExportHeader@1000000001 : Record 50181;
+    BEGIN
+      RHDSalesExportHeader.RESET;
+      RHDSalesExportHeader.SETCURRENTKEY("Document Type","Document No.","Sequence No.","Transmission No.");
+      RHDSalesExportHeader.SETRANGE("Document Type",p_RHDSalesExportHeader."Document Type");
+      RHDSalesExportHeader.SETRANGE("Document No.",p_RHDSalesExportHeader."Document No.");
+      RHDSalesExportHeader.SETRANGE("Sequence No.",p_RHDSalesExportHeader."Sequence No.");
+      IF RHDSalesExportHeader.FINDLAST THEN
+        EXIT(INCSTR(RHDSalesExportHeader."Transmission No."));
+
+      EXIT('1');
+    END;
+
+    PROCEDURE GetNextParcelEntryNo@1000000028(p_RHDSalesExportLine@1000000000 : Record 50182);
+    BEGIN
+    END;
+
+    PROCEDURE GetPosNoForBarcodeLine@1000000025(p_RHDSalesExportLine@1000000000 : Record 50182) : Integer;
+    VAR
+      SalesLine@1000000001 : Record 37;
+      HighestReservedPosNo@1000000002 : Integer;
+      UniquePosNo@1000000003 : Boolean;
+      RHDSalesExportLine@1000000005 : Record 50182;
+    BEGIN
+      HighestReservedPosNo := 0;
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type",p_RHDSalesExportLine."Attached to Document Type");
+      SalesLine.SETRANGE("Document No.",p_RHDSalesExportLine."Attached to Document No.");
+      IF SalesLine.FINDSET THEN BEGIN
+        REPEAT
+         IF HighestReservedPosNo < SalesLine.ID THEN
+           HighestReservedPosNo := SalesLine.ID;
+        UNTIL SalesLine.NEXT = 0;
+      END;
+      UniquePosNo := FALSE;
+      REPEAT
+        HighestReservedPosNo += 1;
+        RHDSalesExportLine.RESET;
+        RHDSalesExportLine.SETRANGE("Entry No.",p_RHDSalesExportLine."Entry No.");
+        RHDSalesExportLine.SETFILTER("Pos. No.",'>=%1',HighestReservedPosNo);
+        IF RHDSalesExportLine.ISEMPTY THEN
+          UniquePosNo := TRUE;
+      UNTIL UniquePosNo;
+
+      EXIT(HighestReservedPosNo);
+    END;
+
+    PROCEDURE GetSalutionFromAddionalTable@1000000002(p_AdditionalSalesHeaderFields@1000000000 : Record 50120) : Integer;
+    VAR
+      JobTitleCode@1000000001 : Code[30];
+    BEGIN
+      IF p_AdditionalSalesHeaderFields."Ship-to Company Name" <> '' THEN
+        EXIT(2);
+
+      JobTitleCode := p_AdditionalSalesHeaderFields."Ship-to Job Title";
+      IF (STRPOS(JobTitleCode,'MENEER') <> 0) OR
+         (STRPOS(JobTitleCode,'MIJNHEER') <> 0) OR
+         (STRPOS(JobTitleCode,'MONSIEUR') <> 0) OR
+         (STRPOS(JobTitleCode,'HERR') <> 0) OR
+         (STRPOS(JobTitleCode,'M') = 1)
+      THEN
+        EXIT(0);
+      IF (STRPOS(JobTitleCode,'MENVROUW') <> 0) OR
+         (STRPOS(JobTitleCode,'VROUW') <> 0) OR
+         (STRPOS(JobTitleCode,'MADAME') <> 0) OR
+         (STRPOS(JobTitleCode,'FRAU') <> 0) OR
+         (STRPOS(JobTitleCode,'F') = 1)
+      THEN
+        EXIT(1);
+
+      EXIT(2);
+    END;
+
+    PROCEDURE CheckAndInsertAttachedAssembly@1000000013(p_RHDSalesExportLine@1000000002 : Record 50182;p_SalesLine@1000000000 : Record 37;VAR p_NextEntryLineNo_Var@1000000001 : Integer);
+    VAR
+      SalesLine@1000000003 : Record 37;
+      RHDSalesExportLine@1000000004 : Record 50182;
+      RHDSetup@1000000005 : Record 50177;
+    BEGIN
+      RHDSetup.GET;
+      RHDSetup.TESTFIELD("Record Type KAS");
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type",p_SalesLine."Document Type");
+      SalesLine.SETRANGE("Document No.",p_SalesLine."Document No.");
+      SalesLine.SETRANGE(Type,SalesLine.Type::Resource);
+      SalesLine.SETRANGE("Resource Type",SalesLine."Resource Type"::Assembly);
+      SalesLine.SETRANGE("Parent ID",p_SalesLine.ID);
+      IF SalesLine.FINDLAST THEN BEGIN
+        p_NextEntryLineNo_Var += 10000;
+        RHDSalesExportLine.RESET;
+        RHDSalesExportLine."Entry No." := p_RHDSalesExportLine."Entry No.";
+        RHDSalesExportLine."Entry Line No." := p_NextEntryLineNo_Var;
+        RHDSalesExportLine.INSERT;
+        RHDSalesExportLine."Attached to Document Type" := SalesLine."Document Type";
+        RHDSalesExportLine."Attached to Document No." := SalesLine."Document No.";
+        RHDSalesExportLine."Record Type" := RHDSetup."Record Type KAP";
+        RHDSalesExportLine.Type := RHDSalesExportLine.Type::Assembly;
+        RHDSalesExportLine."Pos. No." := SalesLine.ID;
+        RHDSalesExportLine."No." := SalesLine."No.";
+        RHDSalesExportLine.Description := SalesLine.Description;
+        RHDSalesExportLine."Attached to Pos. No." := p_RHDSalesExportLine."Pos. No.";
+        RHDSalesExportLine.Quantity := SalesLine.Quantity;
+        RHDSalesExportLine."Location Code" := SalesLine."Location Code";
+        RHDSalesExportLine.Crossdock := SalesLine."Special Order";
+        RHDSalesExportLine."Purchase Order No." := SalesLine."Special Order Purchase No.";
+        RHDSalesExportLine."Purch. Order Line No." := SalesLine."Special Order Purch. Line No.";
+        RHDSalesExportLine."Partial Delivery" := FALSE;
+        RHDSalesExportLine."Unit Volume" := 0;
+        RHDSalesExportLine."Unit Weight" := 0;
+        RHDSalesExportLine.Barcode := '';
+        RHDSalesExportLine."Purchasing Code" := SalesLine."Purchasing Code";
+        RHDSalesExportLine.Amount := SalesLine."Line Amount";
+        RHDSalesExportLine."No. of Packages" := 0;
+        RHDSalesExportLine.MODIFY;
+      END;
+    END;
+
+    PROCEDURE CheckAndInsertBarcodes@1000000004(p_RHDSalesExportHeader@1000000006 : Record 50181;p_RHDSalesExportLine@1000000000 : Record 50182;VAR p_NextEntryNo_Var@1000000005 : Integer);
+    VAR
+      RHDSalesExportLine@1000000001 : Record 50182;
+      BarcodeSalesExportLine@1000000004 : Record 50182;
+      i@1000000003 : Integer;
+      RHDSetup@1000000002 : Record 50177;
+      LocText001@1000000007 : TextConst 'DEU=PackstÅck %1/%2;ENU=PackstÅck %1/%2';
+    BEGIN
+      IF NOT p_RHDSalesExportLine.Crossdock THEN
+        EXIT;
+      IF (p_RHDSalesExportLine."Purchase Order No." = '') OR (p_RHDSalesExportLine."Purch. Order Line No." = 0) THEN
+        EXIT;
+
+      RHDSetup.GET;
+      RHDSetup.TESTFIELD("Record Type KAB");
+
+      BarcodeSalesExportLine.SETRANGE("Attached to Document Type",p_RHDSalesExportLine."Attached to Document Type");
+      BarcodeSalesExportLine.SETRANGE("Attached to Document No.",p_RHDSalesExportLine."Attached to Document No.");
+
+      FOR i := 1 TO p_RHDSalesExportLine."No. of Packages" DO BEGIN
+        p_NextEntryNo_Var += 10000;
+        RHDSalesExportLine.RESET;
+        RHDSalesExportLine."Entry No." := p_RHDSalesExportLine."Entry No.";
+        RHDSalesExportLine."Entry Line No." := p_NextEntryNo_Var;
+        RHDSalesExportLine.INSERT;
+        RHDSalesExportLine."Attached to Document Type" := p_RHDSalesExportLine."Attached to Document Type";
+        RHDSalesExportLine."Attached to Document No." := p_RHDSalesExportLine."Attached to Document No.";
+        RHDSalesExportLine."Record Type" := RHDSetup."Record Type KAB";
+        RHDSalesExportLine.Type := RHDSalesExportLine.Type::Barcode;
+        RHDSalesExportLine."Pos. No." := GetPosNoForBarcodeLine(p_RHDSalesExportLine);
+        RHDSalesExportLine."No." := '';
+        RHDSalesExportLine.Description := STRSUBSTNO(LocText001,i,p_RHDSalesExportLine."No. of Packages");;
+        RHDSalesExportLine."Attached to Pos. No." := p_RHDSalesExportLine."Pos. No.";
+        RHDSalesExportLine.Quantity := 0;
+        RHDSalesExportLine."Location Code" := '';
+        // S/P1157
+        // RHDSalesExportLine.Crossdock := FALSE;
+        RHDSalesExportLine.Crossdock := p_RHDSalesExportLine.Crossdock;
+        // S/P1157
+        RHDSalesExportLine."Partial Delivery" := FALSE;
+        RHDSalesExportLine."Unit Volume" := 0;
+        RHDSalesExportLine."Unit Weight" := 0;
+        RHDSalesExportLine."Purchasing Code" := '';
+        RHDSalesExportLine.Amount := 0;
+        RHDSalesExportLine."No. of Packages" := 0;
+        RHDSalesExportLine."Package Entry No." := GetNextPackageEntryNo(p_RHDSalesExportLine);
+        RHDSalesExportLine.Barcode := CreateBarcode(p_RHDSalesExportHeader,p_RHDSalesExportLine,RHDSalesExportLine."Package Entry No.");
+        RHDSalesExportLine."Purchase Order No." := '';
+        RHDSalesExportLine."Purch. Order Line No." := 0;
+        RHDSalesExportLine.MODIFY(TRUE);
+      END;
+    END;
+
+    PROCEDURE UpdateStatusUploaded@1000000003(p_Filename@1000000000 : Text[30]);
+    VAR
+      RHDSalesExportHeader@1000000001 : Record 50181;
+    BEGIN
+      RHDSalesExportHeader.RESET;
+      RHDSalesExportHeader.SETCURRENTKEY(Filename);
+      RHDSalesExportHeader.SETRANGE(Filename,p_Filename);
+      IF RHDSalesExportHeader.FINDSET THEN BEGIN
+        RHDSalesExportHeader.Status := RHDSalesExportHeader.Status::Uploaded;
+        RHDSalesExportHeader.MODIFY;
+      END;
+    END;
+
+    PROCEDURE CreateBarcode@1000000010(p_RHDSalesExportHeader@1000000004 : Record 50181;p_RHDSalesExportLine@1000000003 : Record 50182;p_EntryNo@1000000006 : Integer) r_Barcode : Text[50];
+    VAR
+      Location@1000000002 : Record 14;
+      PurchaseHeader@1000000001 : Record 38;
+      RHDSetup@1000000000 : Record 50177;
+      RHDGeneralMgt@1000000005 : Codeunit 50157;
+    BEGIN
+      RHDSetup.GET;
+      RHDSetup.TESTFIELD("Rhenus Client Identifier");
+      IF PurchaseHeader.GET(PurchaseHeader."Document Type"::Order,p_RHDSalesExportLine."Purchase Order No.") THEN BEGIN
+        Location.GET(PurchaseHeader."Location Code");
+        Location.TESTFIELD("Branch Code",p_RHDSalesExportHeader."Branch Code");
+        r_Barcode := RHDSetup."Rhenus Client Identifier" + p_RHDSalesExportHeader."Rhenus Order No.";
+        RHDGeneralMgt.AppendToString(r_Barcode,FORMAT(p_EntryNo),3,'0',0);
+      END;
+    END;
+
+    PROCEDURE GetNextPackageEntryNo@1000000011(p_RHDSalesExportLine@1000000000 : Record 50182) r_HighestEntryNo : Integer;
+    VAR
+      RHDSalesExportLine@1000000001 : Record 50182;
+    BEGIN
+      r_HighestEntryNo := 0;
+      RHDSalesExportLine.RESET;
+      RHDSalesExportLine.SETRANGE("Entry No.",p_RHDSalesExportLine."Entry No.");
+      RHDSalesExportLine.SETFILTER("Package Entry No.",'<>%1',0);
+      IF RHDSalesExportLine.FINDSET THEN BEGIN
+        REPEAT
+          IF r_HighestEntryNo < RHDSalesExportLine."Package Entry No." THEN
+            r_HighestEntryNo := RHDSalesExportLine."Package Entry No.";
+        UNTIL RHDSalesExportLine.NEXT = 0;
+      END;
+      EXIT(r_HighestEntryNo + 1);
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------------+
+      |                   ∏  Copyright                   |
+      |       GOB Software & Systeme GmbH & Co. KG       |
+      +--------------------------------------------------+
+      |                      home24                      |
+      +--------------------------------------------------+
+
+      Project   Date        Consultant  Comment
+      ------------------------------------------------------
+      P1070     23.10.13    gob-rste    RHD Redesing
+    }
+    END.
+  }
+}
+

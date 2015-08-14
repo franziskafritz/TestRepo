@@ -1,0 +1,364 @@
+OBJECT Codeunit 50255 Hermes TFormer Label Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=30.03.15;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=HME3988;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      EDIPath@1000000000 : Text[250];
+      TextHME001@1000000001 : TextConst 'ENU="""Hermes Grouping No"" is invalid. Allowed is a value between 0 and 99. Document Typer = %1, Document No. = %2, Document Line No = %3."';
+      HermesSetup@1000000002 : Record 50319;
+      TextHME002@1000000003 : TextConst 'ENU=FPCO';
+
+    PROCEDURE FillHermesCDLabelWithData@1000000007(PurchHeaderR@1000000016 : Record 38) : Text[1024];
+    VAR
+      MailITL@1000000017 : OCX "{C8C4804C-89BA-4291-AB58-4C6050B65175}:'ExpandIT.MailIT2'";
+      PrintJobL@1000000001 : Automation "{B2457449-CF57-472E-BA13-C6CEC7BBB7C0} 7.5:{DA4D2DAE-EA27-4AEB-9AC9-BB21AA87AF65}:'TFORMer 7.5 Runtime Type Library'.IJob";
+      PrintJobDataL@1000000002 : Automation "{B2457449-CF57-472E-BA13-C6CEC7BBB7C0} 7.5:{4B2238FB-7965-47C4-8371-61A8B664FB38}:'TFORMer 7.5 Runtime Type Library'.IJobDataRecordSet";
+      ClientFsoL@1000000015 : Automation "{420B2830-E718-11CF-893D-00A0C9054228} 1.0:{0D43FE01-F093-11CF-8940-00A0C9054228}:'Microsoft Scripting Runtime'.FileSystemObject";
+      ClientUtilL@1000000014 : Automation "{1639594D-2135-4248-BE9B-FB55210F8AD8} 1.0:{D7CD856D-3889-4F19-BBBA-7608CF34EFB6}:'ExpandIT Dynamics Role Tailored Client Utility'.Utility";
+      DivUtilL@1000000013 : Automation "{2CD8D481-009C-4685-98EA-BC16452327B2} 1.0:{F1BBE10B-6E48-41B0-9EF6-F428C7A48655}:'Dynovus_SHA1Encryption'.SHA1EncryptAutomation";
+      TFORMerL@1000000003 : Automation "{B2457449-CF57-472E-BA13-C6CEC7BBB7C0} 7.5:{909444B6-E724-49CD-8711-E78E129A9FAD}:'TFORMer 7.5 Runtime Type Library'.tformer";
+      PurchLineL@1000000011 : Record 39;
+      CustomerL@1000000046 : Record 18;
+      UserSetupL@1000000055 : Record 91;
+      SalesHeaderL@1000000000 : Record 36;
+      LocationL@1000000004 : Record 14;
+      Location2L@1000000035 : Record 14;
+      BranchPerCountryL@1000000006 : Record 80009;
+      ItemL@1000000010 : Record 27;
+      ItemParcelsL@1000000027 : Record 50023;
+      HermesTrackingGroupingL@1000000033 : Record 50332;
+      HesDepAssDirInjL@1000000034 : Record 50333;
+      AutomEmailProc2@1000000024 : Codeunit 50094;
+      EDIORDERSExportServiceL@1000000018 : Codeunit 50166;
+      BranchL@1000000007 : Code[10];
+      SalesOrderNoL@1000000008 : Code[20];
+      DocNameL@1000000022 : Text[250];
+      ClientTempFolderL@1000000021 : Text[250];
+      ClientPdfFileNameL@1000000020 : Text[250];
+      OldDefaultPrinterL@1000000019 : Text[250];
+      JobIDL@1000000026 : Text[50];
+      BarcodeText128L@1000000029 : Text[30];
+      Barcode128KlartextL@1000000023 : Text[50];
+      ServiceCodeL@1000000047 : Text[14];
+      MeasurementL@1000000028 : Text[50];
+      PropertyNamesL@1000000031 : ARRAY [20] OF Text[250];
+      PropertyValuesL@1000000030 : ARRAY [20] OF Text[250];
+      ParcelCounterL@1000000049 : Integer;
+      ParcelsTotalL@1000000012 : Integer;
+      ParcelsAllLinesL@1000000025 : Integer;
+      NumberOfParcelsWeightL@1000000051 : Integer;
+      SalesOrderLineNoL@1000000009 : Integer;
+      HermesGroupingNoL@1000000032 : Integer;
+      ParcelNoForBarcodeL@1000000005 : Integer;
+    BEGIN
+      HermesSetup.GET;
+      UserSetupL.GET(USERID);
+
+      CLEAR(TFORMerL);
+      CLEAR(PrintJobL);
+      CREATE(TFORMerL);
+      TFORMerL.License('Home24 GmbH DE-10405',5,1,'5C030D7F6DE670D7F39826E683A0E717');
+
+      CREATE(ClientFsoL,TRUE,TRUE);
+      CREATE(ClientUtilL,TRUE,TRUE);
+      CREATE(DivUtilL,TRUE,TRUE);
+      JobIDL := MailITL.CreateGUID();
+
+      // Temp folder for DPD-Label.pdf
+      ClientTempFolderL := ClientUtilL.GetTempPath();
+      IF ClientTempFolderL = '' THEN
+        ERROR('Unable to create the path of the temporary folder.');
+      ClientTempFolderL := ClientTempFolderL + 'ExpMail';
+      IF NOT ClientFsoL.FolderExists(ClientTempFolderL) THEN
+        ClientFsoL.CreateFolder(ClientTempFolderL);
+      ClientTempFolderL := ClientTempFolderL + '\' + JobIDL;
+      IF NOT ClientFsoL.FolderExists(ClientTempFolderL) THEN
+        ClientFsoL.CreateFolder(ClientTempFolderL);
+
+      DocNameL := 'Hermes_Labels_' + PurchHeaderR."No.";
+      ClientPdfFileNameL := ClientTempFolderL + '\' + DocNameL + '.pdf';
+      IF EDIPath <> '' THEN
+        ClientPdfFileNameL := EDIPath;
+
+      IF ClientFsoL.FileExists(ClientPdfFileNameL) THEN
+        ClientFsoL.DeleteFile(ClientPdfFileNameL);
+
+      ParcelsAllLinesL := 0;
+      PurchLineL.SETRANGE("Document No.",PurchHeaderR."No.");
+      PurchLineL.SETRANGE("Document Type",PurchLineL."Document Type"::Order);
+      PurchLineL.SETRANGE(Type,PurchLineL.Type::Item);
+      PurchLineL.SETFILTER(Quantity,'>%1',0);
+
+      // Count Collis in complete order
+      IF PurchLineL.FINDSET THEN
+        REPEAT
+          IF ItemL.GET(PurchLineL."No.") THEN BEGIN
+            ItemL.CALCFIELDS("Parcels Number");
+            IF ItemL."Parcels Number" = 0 THEN
+              ParcelsAllLinesL += 1
+            ELSE
+              ParcelsAllLinesL += ItemL."Parcels Number";
+          END;
+        UNTIL PurchLineL.NEXT=0;
+
+      // Do the label work
+      IF PurchLineL.FIND('-') THEN BEGIN
+        PrintJobL := TFORMerL.CreateJob();
+        PrintJobL.RepositoryName := HermesSetup."Hermes Label Template Path";
+
+        //PrintJobL.PrinterType := 1;   // Output to Printer
+        PrintJobL.PrinterType := 6;     // Make PDF file
+        PrintJobL.OutputName := ClientPdfFileNameL;
+        PrintJobDataL := PrintJobL.NewJobDataRecordSet();
+        REPEAT
+          ParcelCounterL := 0;
+          CustomerL.GET(PurchHeaderR."Sell-to Customer No.");
+
+          // H3806, H3878 12.03.15 tec-ar ++++++++++++
+          ParcelNoForBarcodeL := CalcParcelNosBeforeLines(PurchLineL,TRUE);
+          // H3806, H3878 12.03.15 tec-ar ------------
+          IF PurchLineL."Special Order" THEN BEGIN
+            SalesOrderNoL := PurchLineL."Special Order Sales No.";
+            SalesOrderLineNoL :=  PurchLineL."Special Order Sales Line No.";
+          END ELSE BEGIN
+            SalesOrderNoL := PurchLineL."Sales Order No.";
+            SalesOrderLineNoL :=  PurchLineL."Sales Order Line No.";
+          END;
+          SalesHeaderL.GET(SalesHeaderL."Document Type"::Order,SalesOrderNoL);
+
+          // H3903  23.03.15  MKR +++++++++++++++++++++++++++++++++++
+          IF LocationL.GET(PurchLineL."Location Code") THEN
+            IF LocationL."Hermes Location Type" = LocationL."Hermes Location Type"::"Cross-Dock" THEN BEGIN
+              HesDepAssDirInjL.GetSalesOrderDILocation(SalesHeaderL, Location2L);
+              BranchL := Location2L."Branch Code";
+            END ELSE
+              BranchL := LocationL."Branch Code"
+          ELSE BEGIN
+            BranchL := '';
+            LocationL.INIT;
+          END;
+          // H3903  23.03.15  MKR -----------------------------------
+
+          // Count total parcels
+          IF ItemL.GET(PurchLineL."No.") THEN BEGIN
+            ItemL.CALCFIELDS("Parcels Number");
+
+            IF ItemL."Parcels Number" = 0 THEN
+              ParcelsTotalL := 1
+            ELSE
+              ParcelsTotalL := ItemL."Parcels Number";
+          END;
+
+          // Basically we want to print as much labels as entries in "Item Parcels" exist
+          // But if there are none there has to be at least one label to be printed out,
+          // so looping through ItemParcels is not a good idea even if it would be the right thing to do here
+          ItemParcelsL.RESET;
+          ItemParcelsL.SETRANGE("Item No.", PurchLineL."No.");
+          IF NOT ItemParcelsL.FIND('-') THEN
+            ItemParcelsL.INIT;
+
+          REPEAT
+            ParcelCounterL += 1;
+            IF (ItemParcelsL."Length In CM" <> 0)
+               OR (ItemParcelsL."Width In CM" <> 0)
+               OR (ItemParcelsL."Height In CM" <> 0)
+            THEN
+              MeasurementL := FORMAT(ItemParcelsL."Length In CM") + ' x ' +
+                FORMAT(ItemParcelsL."Width In CM") + ' x ' + FORMAT(ItemParcelsL."Height In CM")
+            ELSE
+              MeasurementL := '';
+
+            //New page
+            PrintJobDataL.AddNewRecord();
+            //Int. captions for label
+            IF SalesHeaderL."Ship-to Country/Region Code" IN ['DE',''] THEN BEGIN
+              PrintJobDataL.SetDataField('Caption1','PO-Nr.: ');
+              PrintJobDataL.SetDataField('Caption2','SO-Nr.: ');
+              PrintJobDataL.SetDataField('Caption3','CD-Station: ');
+              PrintJobDataL.SetDataField('Caption4','Depot: ');
+              PrintJobDataL.SetDataField('Caption5','Lieferadresse: ');
+              PrintJobDataL.SetDataField('Caption6','Home24-SKU: ');
+              PrintJobDataL.SetDataField('Caption7','Home24-Beschr.: ');
+              PrintJobDataL.SetDataField('Caption8','PackstÅck: ');
+              PrintJobDataL.SetDataField('Caption9','Lieferanten-SKU: ');
+              PrintJobDataL.SetDataField('Caption10','Lieferanten-Name: ');
+              PrintJobDataL.SetDataField('Caption11','Menge/Packst.: ');
+              PrintJobDataL.SetDataField('Caption12','Bruttogew. in kg: ');
+              PrintJobDataL.SetDataField('Caption13','LxBxH / ù in cm: ');
+              PrintJobDataL.SetDataField('Caption14','Code128: ');
+              PrintJobDataL.SetDataField('Caption15',' Collis');
+            END ELSE BEGIN
+              PrintJobDataL.SetDataField('Caption1','PO-No.: ');
+              PrintJobDataL.SetDataField('Caption2','SO-No.: ');
+              PrintJobDataL.SetDataField('Caption3','CD-Station: ');
+              PrintJobDataL.SetDataField('Caption4','Depot: ');
+              PrintJobDataL.SetDataField('Caption5','Shipping Addr.: ');
+              PrintJobDataL.SetDataField('Caption6','Home24-SKU: ');
+              PrintJobDataL.SetDataField('Caption7','Home24-Descr.: ');
+              PrintJobDataL.SetDataField('Caption8','Package: ');
+              PrintJobDataL.SetDataField('Caption9','Vendor-SKU: ');
+              PrintJobDataL.SetDataField('Caption10','Vendor-Name: ');
+              PrintJobDataL.SetDataField('Caption11','Qty./Package: ');
+              PrintJobDataL.SetDataField('Caption12','Gross Weight in kg: ');
+              PrintJobDataL.SetDataField('Caption13','LxWxH / ù in cm: ');
+              PrintJobDataL.SetDataField('Caption14','Code128: ');
+              PrintJobDataL.SetDataField('Caption15',' Collis');
+            END;
+
+            PrintJobDataL.SetDataField('PurchaseOrder_No',PurchHeaderR."No.");
+
+            HermesGroupingNoL := HermesTrackingGroupingL.GetActGroupingNo(2,SalesHeaderL."Document Type",
+              SalesOrderNoL,SalesOrderLineNoL);
+            IF (HermesGroupingNoL < 1) OR (HermesGroupingNoL > 99) THEN
+              ERROR(TextHME001,SalesHeaderL."Document Type",SalesOrderNoL,SalesOrderLineNoL);
+
+            PrintJobDataL.SetDataField('HermesOrder_No',SalesOrderNoL + '_' + FormatIntToLeadZero(HermesGroupingNoL,2));
+            PrintJobDataL.SetDataField('CrossDock_Station1',LocationL.Name);
+            PrintJobDataL.SetDataField('CrossDock_Station2',LocationL.Address);
+            PrintJobDataL.SetDataField('CrossDock_Station3', LocationL."Country/Region Code" + '-' +
+              LocationL."Post Code" + ' ' + LocationL.City);
+            PrintJobDataL.SetDataField('Depot', BranchL);
+            PrintJobDataL.SetDataField('Collis',FORMAT(ParcelsAllLinesL));
+            PrintJobDataL.SetDataField('Shipping_Address1',SalesHeaderL."Ship-to Name");
+            IF SalesHeaderL."Ship-to Name 2" <> '' THEN BEGIN
+              PrintJobDataL.SetDataField('Shipping_Address2',SalesHeaderL."Ship-to Name 2");
+              PrintJobDataL.SetDataField('Shipping_Address3',SalesHeaderL."Ship-to Address");
+              PrintJobDataL.SetDataField('Shipping_Address4',SalesHeaderL."Ship-to Country/Region Code" + '-' +
+                 SalesHeaderL."Ship-to Post Code" + ' ' + SalesHeaderL."Ship-to City");
+            END ELSE BEGIN
+              PrintJobDataL.SetDataField('Shipping_Address2',SalesHeaderL."Ship-to Address");
+              PrintJobDataL.SetDataField('Shipping_Address3',SalesHeaderL."Ship-to Country/Region Code" + '-' +
+                 SalesHeaderL."Ship-to Post Code" + ' ' + SalesHeaderL."Ship-to City");
+              PrintJobDataL.SetDataField('Shipping_Address4',' ');
+            END;
+            PrintJobDataL.SetDataField('Home24_SKU',PurchLineL."No.");
+            PrintJobDataL.SetDataField('Home24_Description',ItemL.Description +' '+ ItemL."Description 2");
+            PrintJobDataL.SetDataField('Package',FORMAT(ParcelCounterL) + '/' + FORMAT(ParcelsTotalL));
+            PrintJobDataL.SetDataField('Vendor_SKU',PurchLineL."Vendor Item No.");
+            PrintJobDataL.SetDataField('Vendor_Name',PurchHeaderR."Buy-from Vendor Name");
+            PrintJobDataL.SetDataField('Quan_per_Colli', '');              // currently not available
+            IF ItemParcelsL."Weight In KG" <> 0 THEN
+              PrintJobDataL.SetDataField('Gross_Weight', FORMAT(ItemParcelsL."Weight In KG"))
+            ELSE
+              PrintJobDataL.SetDataField('Gross_Weight', '');
+            PrintJobDataL.SetDataField('Measurement', MeasurementL);
+            //Barcode
+            //H1698, H3806, H3878 12.03.15 tec-ar ++++++++++++
+            BarcodeText128L := GenerateHermesBarcode(PurchLineL,ParcelNoForBarcodeL);
+            //H1698, H3806, H3878 12.03.15 tec-ar ------------
+            PrintJobDataL.SetDataField('Barcode128',BarcodeText128L);
+            PrintJobDataL.SetDataField('Code128_Text',BarcodeText128L);
+
+            IF ItemParcelsL.NEXT=0 THEN
+              ItemParcelsL.INIT;
+
+          UNTIL ParcelCounterL = ParcelsTotalL;
+        UNTIL PurchLineL.NEXT = 0;
+
+        PrintJobL.PrintForm();
+
+      END;
+
+      EXIT(ClientPdfFileNameL);
+    END;
+
+    PROCEDURE SetEDIPath@1000000000(EDIPathR@1000000000 : Text[250]);
+    BEGIN
+      EDIPath := EDIPathR;
+    END;
+
+    PROCEDURE FormatIntToLeadZero@1000000001(FieldV@1000000000 : Integer;LengthV@1000000001 : Integer) TxtO : Text[30];
+    VAR
+      LengthL@1000000003 : Integer;
+    BEGIN
+      TxtO := FORMAT(FieldV);
+      LengthL := STRLEN(TxtO);
+      WHILE LengthL < LengthV DO BEGIN
+        TxtO := '0' + TxtO;
+        LengthL := LengthL + 1;
+      END;
+    END;
+
+    PROCEDURE GenerateHermesBarcode@1000000002(PurchaseLineV@1000000000 : Record 39;VAR ParcelNoForBarcodeR@1000000001 : Integer) : Text[1024];
+    VAR
+      SalesOrderNoL@1000000002 : Code[20];
+      SalesLineL@1000000003 : Record 37;
+    BEGIN
+      //H1698, H3806, H3878 12.03.15 tec-ar ++++++++++++
+      PurchaseLineV.GetLinkedSalesLine(SalesLineL,TRUE);
+      IF PurchaseLineV."Special Order" THEN BEGIN
+        SalesOrderNoL := PurchaseLineV."Special Order Sales No.";
+      END ELSE BEGIN
+        SalesOrderNoL := PurchaseLineV."Sales Order No.";
+      END;
+
+      ParcelNoForBarcodeR += 1;
+      EXIT(TextHME002 + SalesOrderNoL + FormatIntToLeadZero(ParcelNoForBarcodeR,3));
+      //H1698, H3806, H3878 05.03.15 tec-ar ------------
+    END;
+
+    PROCEDURE CalcParcelNosBeforeLines@1000000003(PurchaseLineV@1000000000 : Record 39;CheckWithErrorV@1000000002 : Boolean) : Integer;
+    VAR
+      SalesLineL@1000000001 : Record 37;
+    BEGIN
+      //H3806, H3878 12.03.15 tec-ar ++++++++++++
+      IF CheckWithErrorV THEN
+        PurchaseLineV.GetLinkedSalesLine(SalesLineL,CheckWithErrorV)
+      ELSE
+        IF NOT PurchaseLineV.GetLinkedSalesLine(SalesLineL,CheckWithErrorV) THEN
+          EXIT(0);
+
+      EXIT(SalesLineL.CalcParcelNosBeforeLines);
+      //H3806, H3878 12.03.15 tec-ar ------------
+    END;
+
+    PROCEDURE IsHermesOrderPO@1000000004(PurchaseLineV@1000000000 : Record 39) : Boolean;
+    VAR
+      SalesLineL@1000000001 : Record 37;
+      HermesSetupL@1000000002 : Record 50319;
+    BEGIN
+      // H3988  30.03.15  MKR ++++++++++++++++++++++++++++
+      HermesSetupL.GET;
+
+      IF PurchaseLineV.GetLinkedSalesLine(SalesLineL, FALSE) THEN
+        IF SalesLineL."Purchasing Code" = HermesSetupL."Purchasing Code HES CD-DI GER" THEN
+          EXIT(TRUE);
+
+      EXIT(FALSE);
+      // H3988  30.03.15  MKR ----------------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation Tectura & Home24 NAV Team  |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      H1698       19.12.14  tec-ar    Hermes 2MH Adjustments Cross-Dock LabelEDI ORDERSCSV: Object created
+      H3806       05.03.15  tec-ar    Bugfix. Function GenerateHermesBarcode redesignt. New function CalcParcelNosBeforeLines
+      H3878       12.03.15  tec-are   Bugfix
+      H3903       20.03.15  MKR       Hermes 2MH: Adjustments label/EDI ORDERS/CSV for cross docking: Use customer based depot
+      H3988       30.03.15  MKR       EDI-Warehouse Purchase Order creation fails
+    }
+    END.
+  }
+}
+

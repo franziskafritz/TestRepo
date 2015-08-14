@@ -1,0 +1,1140 @@
+OBJECT Codeunit 82851 Outbound EDI Service
+{
+  OBJECT-PROPERTIES
+  {
+    Date=30.03.15;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=EDIINT6.00,HME3988;
+  }
+  PROPERTIES
+  {
+    TableNo=82864;
+    OnRun=BEGIN
+            SendOutboundEDIListToEDI(Rec,FALSE);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      rEDIPartnerDocumentType@1115500001 : Record 82852;
+      rOutboundEDIMessage@1115500000 : Record 82859;
+      iLastHeaderEntryNo@1108200000 : Integer;
+      Text002@1108200003 : TextConst 'DEU=Die Verarbeitung wurde abgebrochen.;ENU=The process was canceled.';
+      LabelPath_g@1000000000 : Text[250];
+      DNPath_g@1000000001 : Text[250];
+
+    PROCEDURE SendOutboundEDIListToEDI@1115500000(rOutboundEDIDocumentList@1115500000 : Record 82864;bShowMessage@1115500005 : Boolean);
+    VAR
+      rOutboundEDIDocumentHeader@1115500001 : Record 82865;
+      rOutboundEDIDocumentLine@1115500002 : Record 82866;
+      rPurchHeader@1000000000 : Record 38;
+      iCounter@1108200001 : Integer;
+      iHeaderID@1115500003 : Integer;
+      Text001@1115500004 : TextConst 'DEU=Die Liste %1 wurde an den Partner %2 Åbermittelt.;ENU=List %1 was sent to %2.';
+      Text003@1000000001 : TextConst 'DEU=" Soll sie noch einmal Åbermittelt werden?";ENU=Do you want to send again?';
+    BEGIN
+      // H0552       13.09.13    FX +++++++++++++++++
+      IF (rOutboundEDIDocumentList."Outbound EDI Message No." <> 0) AND (GUIALLOWED) THEN
+      // H0552       13.09.13    FX ------------------------
+        IF NOT CONFIRM(STRSUBSTNO(Text001 + Text003,rOutboundEDIDocumentList."No.",rOutboundEDIDocumentList."Partner Code"),FALSE) THEN
+          ERROR(Text002);
+
+      GetPartnerDocumentType(rOutboundEDIDocumentList."Partner Code",FORMAT(rOutboundEDIDocumentList."Document Type"));
+
+      rOutboundEDIDocumentHeader.SETRANGE("Header Document Type",rOutboundEDIDocumentList."Document Type");
+      rOutboundEDIDocumentHeader.SETRANGE("Header Document No.",rOutboundEDIDocumentList."No.");
+      CASE rOutboundEDIDocumentList."Document Type" OF
+        rOutboundEDIDocumentList."Document Type"::INVOIC:
+          rOutboundEDIDocumentHeader.SETFILTER("Document Type",'%1|%2',
+          rOutboundEDIDocumentHeader."Document Type"::"Sales Invoice",rOutboundEDIDocumentHeader."Document Type"::"Sales Credit Memo");
+        rOutboundEDIDocumentList."Document Type"::DESADV:
+          rOutboundEDIDocumentHeader.SETRANGE("Document Type",rOutboundEDIDocumentHeader."Document Type"::"Sales Shipment");
+        rOutboundEDIDocumentList."Document Type"::PRICAT:
+          rOutboundEDIDocumentHeader.SETRANGE("Document Type",rOutboundEDIDocumentHeader."Document Type"::PRICAT);
+        rOutboundEDIDocumentList."Document Type"::ORDERS:
+          rOutboundEDIDocumentHeader.SETRANGE("Document Type",rOutboundEDIDocumentHeader."Document Type"::"Purchase Order");
+        //A,gob-dst,21.05.2013,P0924
+        //rOutboundEDIDocumentList."Document Type"::IFTMIN:
+        //  rOutboundEDIDocumentHeader.SETRANGE("Document Type",rOutboundEDIDocumentHeader."Document Type"::"Purchase Order");
+        //E,gob-dst,21.05.2013,P0924
+      END;
+      rOutboundEDIDocumentHeader.FIND('-');
+
+      rOutboundEDIDocumentLine.SETRANGE("Header Document Type",rOutboundEDIDocumentList."Document Type");
+      rOutboundEDIDocumentLine.SETRANGE("Header Document No.",rOutboundEDIDocumentList."No.");
+
+      Create_EDIMessage(rOutboundEDIDocumentList);
+
+      REPEAT
+        iHeaderID := Create_EDIMessageHeader(rOutboundEDIDocumentList,rOutboundEDIDocumentHeader);
+
+        {
+        //Mehrere MwSt.-SÑtze pro Rechnung
+        rOutboundEDIVATLine.SETRANGE("Header Document Type",rOutboundEDIDocumentList."Document Type");
+        rOutboundEDIVATLine.SETRANGE("Header Document No.",rOutboundEDIDocumentList."No.");
+        rOutboundEDIVATLine.SETRANGE("Document Type",rOutboundEDIDocumentHeader."Document Type");
+        rOutboundEDIVATLine.SETRANGE("Document No.",rOutboundEDIDocumentHeader."Document No.");
+        IF rOutboundEDIVATLine.COUNT > 1 THEN BEGIN
+          iCounter := 0;
+          rOutboundEDIVATLine.FINDSET;
+          REPEAT
+            Create_EDIMessageVATHeader(rOutboundEDIDocumentList,rOutboundEDIDocumentHeader,rOutboundEDIVATLine,iHeaderID,iCounter);
+            iCounter += 1;
+          UNTIL rOutboundEDIVATLine.NEXT = 0;
+        END;
+        }
+
+        rOutboundEDIDocumentLine.SETRANGE("Document Type",rOutboundEDIDocumentHeader."Document Type");
+        IF rOutboundEDIDocumentList."Document Type" = rOutboundEDIDocumentList."Document Type"::DESADV THEN
+          rOutboundEDIDocumentLine.SETRANGE("Document Type",rOutboundEDIDocumentLine."Document Type"::"Packaging Information");
+        rOutboundEDIDocumentLine.SETRANGE("Document No.",rOutboundEDIDocumentHeader."Document No.");
+        rOutboundEDIDocumentLine.SETRANGE("Belongs To Pack. Inf. Line",0);
+      //bei DESADV zuerst CPS verarbeiten, bei anderen Belegarten ist
+                                                                           //das Feld immer 0
+        rOutboundEDIDocumentLine.FIND('-');
+        REPEAT
+          Create_EDIMessageLine(rOutboundEDIDocumentList,rOutboundEDIDocumentHeader,rOutboundEDIDocumentLine,iHeaderID);
+        UNTIL rOutboundEDIDocumentLine.NEXT = 0;
+      UNTIL rOutboundEDIDocumentHeader.NEXT = 0;
+
+      rOutboundEDIMessage."Label needed" := rOutboundEDIDocumentList."Label needed";
+      rOutboundEDIMessage."Del. Note needed" := rOutboundEDIDocumentList."Del. Note needed";
+      //IF (NOT rOutboundEDIMessage."Label needed") AND (NOT rOutboundEDIMessage."Del. Note needed") THEN
+      rOutboundEDIMessage."Commited Record" := TRUE;
+
+      rOutboundEDIMessage.MODIFY;
+
+      rOutboundEDIDocumentList."Outbound EDI Message No." := rOutboundEDIMessage."EDI Message No.";
+      rOutboundEDIDocumentList.MODIFY;
+
+      //S/P0876
+      //A,gob-dst,18.04.2013,P0883
+      //IF rOutboundEDIDocumentList."Document Type" = rOutboundEDIDocumentList."Document Type"::ORDERS THEN
+      //  IF rPurchHeader.GET(rPurchHeader."Document Type"::Order,rOutboundEDIDocumentList."Document No.") THEN BEGIN
+      //    rPurchHeader."EDI Send Date" := rOutboundEDIDocumentList."Send Date";
+      //    rPurchHeader."EDI Time Sent" := rOutboundEDIDocumentList."Send Time";
+      //    rPurchHeader.MODIFY;
+      //  END;
+      //E,gob-dst,18.04.2013,P0883
+      //E/P0876
+
+      IF bShowMessage THEN
+        MESSAGE(Text001,rOutboundEDIDocumentList."No.",rOutboundEDIDocumentList."Partner Code");
+    END;
+
+    PROCEDURE Create_EDIMessage@1115500001(rOutboundEDIDocumentList@1115500001 : Record 82864);
+    VAR
+      rEDIPartner@1119443000 : Record 82851;
+      "**** HME **********"@1000000000 : Integer;
+      EDIIntegratorSetupL@1000000001 : Record 82850;
+    BEGIN
+      rOutboundEDIMessage.INIT;
+      rOutboundEDIMessage."EDI Message No." := GetEDIMessageNo();
+
+      CASE rOutboundEDIDocumentList."Document Type" OF
+        rOutboundEDIDocumentList."Document Type"::INVOIC:
+          rOutboundEDIMessage."Document Type" := rOutboundEDIMessage."Document Type"::INVOIC;
+        rOutboundEDIDocumentList."Document Type"::DESADV:
+          rOutboundEDIMessage."Document Type" := rOutboundEDIMessage."Document Type"::DESADV;
+        rOutboundEDIDocumentList."Document Type"::PRICAT:
+          rOutboundEDIMessage."Document Type" := rOutboundEDIMessage."Document Type"::PRICAT;
+        rOutboundEDIDocumentList."Document Type"::ORDERS:
+          rOutboundEDIMessage."Document Type" := rOutboundEDIMessage."Document Type"::ORDERS;
+        //A,gob-dst,21.05.2013,P0924
+        rOutboundEDIDocumentList."Document Type"::IFTMIN:
+          rOutboundEDIMessage."Document Type" := rOutboundEDIMessage."Document Type"::IFTMIN;
+        //E,gob-dst,21.05.2013,P0924
+      END;
+
+      //H1218 08.08.14 EHN ++++++++++++++++++++++++++++++
+      EDIIntegratorSetupL.GET();
+      //H1218 08.08.14 EHN ------------------------------
+
+      //A,gob-dst,21.05.2013,P0924
+      //rOutboundEDIMessage."Interchange Sender GLN" := rOutboundEDIDocumentList."Sender GLN";
+      //E,gob-dst,21.05.2013,P0924
+      rOutboundEDIMessage."Interchange Recipient GLN" := rOutboundEDIDocumentList."Recipient GLN";
+      rOutboundEDIMessage."EDI Partner Code" := rOutboundEDIDocumentList."Partner Code";
+      rEDIPartner.SETRANGE(GLN,rOutboundEDIMessage."Interchange Recipient GLN");
+      rEDIPartner.FINDFIRST;
+      //A,gob-dst,21.05.2013,P0924
+      IF rEDIPartnerDocumentType."Alternate Sender GLN" <> '' THEN
+        rOutboundEDIMessage."Interchange Sender GLN" := rEDIPartnerDocumentType."Alternate Sender GLN"
+      ELSE
+        //H1218 08.08.14 EHN ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        //rOutboundEDIMessage."Interchange Sender GLN" := rOutboundEDIDocumentList."Sender GLN";
+        rOutboundEDIMessage."Interchange Sender GLN" := EDIIntegratorSetupL."Global Location Number (GLN)";
+        //H1218 08.08.14 EHN ------------------------------------------------------------------
+      //E,gob-dst,21.05.2013,P0924
+      rOutboundEDIMessage."Reference No." := FORMAT(rEDIPartner."Reference Entry No.");
+      rEDIPartner."Reference Entry No." := rEDIPartner."Reference Entry No." + 1;
+      rEDIPartner.MODIFY;
+      rOutboundEDIMessage."Reference No." := FORMAT(rOutboundEDIMessage."EDI Message No.");
+      IF rOutboundEDIDocumentList."Test Indicator" THEN
+        rOutboundEDIMessage."Test Indicator" := '1';
+      rOutboundEDIMessage."Application Reference" := rOutboundEDIDocumentList."Application Reference";
+      // A/gob-lku/20.11.2012
+      rOutboundEDIMessage."File Name PDF Label" := LabelPath_g;
+      rOutboundEDIMessage."File Name PDF Del. Note" := DNPath_g;
+      // E/gob-lku/20.11.2012
+      rOutboundEDIMessage.INSERT;
+    END;
+
+    PROCEDURE Create_EDIMessageHeader@1115500004(rOutboundEDIDocumentList@1115500003 : Record 82864;rOutboundEDIDocumentHeader@1115500000 : Record 82865) iHeaderID : Integer;
+    VAR
+      rEDIPartner@1000000000 : Record 82851;
+      rEDIMapping@1115500002 : Record 82854;
+      rFieldTypeQualifierCodes@1108200000 : Record 82855;
+      rOutboundEDIHeaderFooter@1115500001 : Record 82860;
+      OutboundEDIDHLShipmentCode_l@1000000001 : Record 50112;
+      FieldValue@1115500004 : Variant;
+      bIsEmpty@1115500005 : Boolean;
+      "****HME****************"@1000000003 : Integer;
+      EntryNoOffsetL@1000000004 : Integer;
+      SubsectionInsertedL@1000000005 : Boolean;
+    BEGIN
+      {
+      CASE rOutboundEDIDocumentList."Document Type" OF
+        rOutboundEDIDocumentList."Document Type"::INVOIC:
+          BEGIN
+            rOutboundEDIVATLine.SETRANGE("Header Document Type",rOutboundEDIDocumentList."Document Type");
+            rOutboundEDIVATLine.SETRANGE("Header Document No.",rOutboundEDIDocumentList."No.");
+            rOutboundEDIVATLine.SETRANGE("Document Type",rOutboundEDIDocumentHeader."Document Type");
+            rOutboundEDIVATLine.SETRANGE("Document No.",rOutboundEDIDocumentHeader."Document No.");
+            rOutboundEDIVATLine.FINDFIRST;
+          END;
+      END;
+      }
+
+      rEDIMapping.SETRANGE("In-/Outbound Document",rEDIMapping."In-/Outbound Document"::Outbound);
+      CASE rOutboundEDIDocumentList."Document Type" OF
+        rOutboundEDIDocumentList."Document Type"::INVOIC:
+          BEGIN
+            rEDIMapping.SETRANGE("Document Type",rEDIMapping."Document Type"::INVOIC);
+            CASE rOutboundEDIDocumentHeader."Document Type" OF
+              rOutboundEDIDocumentHeader."Document Type"::"Sales Invoice":
+                rEDIMapping.SETRANGE("Navision Document Type",rEDIMapping."Navision Document Type"::"Sales Invoice");
+              rOutboundEDIDocumentHeader."Document Type"::"Sales Credit Memo":
+                rEDIMapping.SETRANGE("Navision Document Type",rEDIMapping."Navision Document Type"::"Sales Credit Memo");
+            END;
+          END;
+        rOutboundEDIDocumentList."Document Type"::DESADV: rEDIMapping.SETRANGE("Document Type",rEDIMapping."Document Type"::DESADV);
+        rOutboundEDIDocumentList."Document Type"::PRICAT: rEDIMapping.SETRANGE("Document Type",rEDIMapping."Document Type"::PRICAT);
+        rOutboundEDIDocumentList."Document Type"::ORDERS: rEDIMapping.SETRANGE("Document Type",rEDIMapping."Document Type"::ORDERS);
+        //A,gob-dst,21.05.2013,P0924
+        rOutboundEDIDocumentList."Document Type"::IFTMIN: rEDIMapping.SETRANGE("Document Type",rEDIMapping."Document Type"::IFTMIN);
+        //E,gob-dst,21.05.2013,P0924
+      END;
+      rEDIMapping.SETRANGE(Type,rEDIMapping.Type::Header);
+      rEDIPartner.GET(rOutboundEDIDocumentList."Partner Code");
+      IF rEDIPartner."Mapping Partner" = '' THEN
+        rEDIMapping.SETRANGE("Partner Code",rEDIPartner.Code)
+      ELSE
+        rEDIMapping.SETRANGE("Partner Code",rEDIPartner."Mapping Partner");
+      rEDIMapping.FIND('-');
+
+      iHeaderID := GetEDIHeaderNo();
+      // E/20.11.2012/gob-lku/EDIINT6.03
+      //H1361 14.07.14 EHN +++++++++++++
+      EntryNoOffsetL := 0;
+      //H1361 14.07.14 EHN -------------
+      REPEAT
+        FieldValue := '';
+        rOutboundEDIHeaderFooter.INIT;
+        rOutboundEDIHeaderFooter."EDI Message No." := rOutboundEDIMessage."EDI Message No.";
+        rOutboundEDIHeaderFooter."EDI Header No." := iHeaderID;
+
+        TransMappingEDIHeader(rEDIMapping,rOutboundEDIHeaderFooter);
+        //H1361 14.07.14 EHN ++++++++++++++++++++++++++++++++++++
+        rOutboundEDIHeaderFooter."Entry No." += EntryNoOffsetL;
+        SubsectionInsertedL := FALSE;
+        //H1361 14.07.14 EHN ------------------------------------
+        CASE rEDIMapping."Table ID" OF
+          82864: GetFieldValue(rEDIMapping,rOutboundEDIDocumentList,FieldValue);
+          82865: GetFieldValue(rEDIMapping,rOutboundEDIDocumentHeader,FieldValue);
+          // 82867: GetFieldValue(rEDIMapping,rOutboundEDIVATLine,FieldValue);
+          // A/20.11.2012/gob-lku/EDIINT6.03
+          50112:
+          BEGIN
+            OutboundEDIDHLShipmentCode_l.SETRANGE("Header Document Type",rOutboundEDIDocumentHeader."Header Document Type");
+            OutboundEDIDHLShipmentCode_l.SETRANGE("Header Document No.",rOutboundEDIDocumentHeader."Header Document No.");
+            OutboundEDIDHLShipmentCode_l.SETRANGE("Document Type",rOutboundEDIDocumentHeader."Document Type");
+            OutboundEDIDHLShipmentCode_l.SETRANGE("Document No.",rOutboundEDIDocumentHeader."Document No.");
+            OutboundEDIDHLShipmentCode_l.SETRANGE(Direction,OutboundEDIDHLShipmentCode_l.Direction::Outbound);
+            IF OutboundEDIDHLShipmentCode_l.FINDSET THEN BEGIN
+              REPEAT
+                rOutboundEDIHeaderFooter."Field Value Text" := OutboundEDIDHLShipmentCode_l."DHL Shipment Code";
+                //H1361 14.07.14 EHN ++++++++++++++++++++++++++++++++++++++++++++++
+                //rOutboundEDIHeaderFooter."Entry No." := rEDIMapping."Entry No." + i;
+                IF SubsectionInsertedL THEN BEGIN
+                  EntryNoOffsetL += 1;
+                  rOutboundEDIHeaderFooter."Entry No." += 1;
+                END ELSE BEGIN
+                  SubsectionInsertedL := TRUE;
+                END;
+                //H1361 14.07.14 EHN ----------------------------------------------
+                rOutboundEDIHeaderFooter."Belongs To Entry No." := rEDIMapping."Belongs To Entry No.";
+                rOutboundEDIHeaderFooter."Field Type" := rEDIMapping."Field Type";
+                rOutboundEDIHeaderFooter."Field Qualifier" := rEDIMapping."Field Qualifier";
+                rOutboundEDIHeaderFooter."Field Datatype" := rEDIMapping."Field Datatype";
+
+                rFieldTypeQualifierCodes.GET(rFieldTypeQualifierCodes.Type::"Field Type",rOutboundEDIHeaderFooter."Field Type");
+                rOutboundEDIHeaderFooter."EDIFACT Segment" := rFieldTypeQualifierCodes."EDIFACT Data Element";
+                IF rOutboundEDIHeaderFooter."Field Qualifier" <> '' THEN BEGIN
+                  rFieldTypeQualifierCodes.GET(rFieldTypeQualifierCodes.Type::"Field Qualifier",
+                                               rOutboundEDIHeaderFooter."Field Qualifier");
+                  rOutboundEDIHeaderFooter."EDIFACT Data Element" := rFieldTypeQualifierCodes."EDIFACT Data Element";
+                END;
+                rOutboundEDIHeaderFooter.INSERT;
+              UNTIL OutboundEDIDHLShipmentCode_l.NEXT = 0;
+            END;
+          END;
+          // E/20.11.2012/gob-lku/EDIINT6.03
+          // H1700  04.02.15  MKR +++++++++++++++++++++++++++++++++++
+          14: GetLocationValue(rEDIMapping, rOutboundEDIDocumentHeader, FieldValue);
+          // H1700  04.02.15  MKR -----------------------------------
+        END;
+
+        //H1361 14.07.14 EHN +++++++++++++++++++++++++
+        IF NOT SubsectionInsertedL THEN BEGIN
+        //H1361 14.07.14 EHN -------------------------
+          CASE rEDIMapping."Field Datatype" OF
+            rEDIMapping."Field Datatype"::Decimal:
+              BEGIN
+                IF FieldValue.ISDECIMAL OR FieldValue.ISINTEGER THEN
+                  rOutboundEDIHeaderFooter."Field Value Decimal" := FieldValue;
+              END;
+            rEDIMapping."Field Datatype"::Date:
+              BEGIN
+                IF FieldValue.ISDATE THEN
+                  rOutboundEDIHeaderFooter."Field Value Date" := FieldValue;
+              END;
+            rEDIMapping."Field Datatype"::Text:
+              BEGIN
+                IF FieldValue.ISINTEGER THEN
+                  IF FORMAT(FieldValue) <> '0' THEN
+                    rOutboundEDIHeaderFooter."Field Value Text" := FORMAT(FieldValue);
+                IF FieldValue.ISTEXT OR FieldValue.ISCODE THEN
+                  IF rEDIMapping."Convert to Number" THEN
+                    rOutboundEDIHeaderFooter."Field Value Text" := TrimToNumber(FORMAT(FieldValue))
+                  ELSE BEGIN
+                    rOutboundEDIHeaderFooter."Field Value Text" := ConvertUmlaut(FORMAT(FieldValue));
+                  END;
+              END;
+          END;
+
+          IF (rEDIMapping."Field Datatype" = rEDIMapping."Field Datatype"::Decimal) AND (rEDIMapping."Field Value Decimal" <> 0) THEN
+            rOutboundEDIHeaderFooter."Field Value Decimal" := rEDIMapping."Field Value Decimal";
+
+          IF (rEDIMapping."Field Datatype" = rEDIMapping."Field Datatype"::Date) AND (rEDIMapping."Field Value Date" <> 0D) THEN
+            rOutboundEDIHeaderFooter."Field Value Date" := rEDIMapping."Field Value Date";
+
+          IF (rEDIMapping."Field Datatype" = rEDIMapping."Field Datatype"::Text) AND (rEDIMapping."Field Value Text" <> '') THEN
+            rOutboundEDIHeaderFooter."Field Value Text" := ConvertUmlaut(rEDIMapping."Field Value Text");
+
+          bIsEmpty := FALSE;
+          IF (rOutboundEDIHeaderFooter."Field Datatype" = rOutboundEDIHeaderFooter."Field Datatype"::Decimal) AND
+            (rOutboundEDIHeaderFooter."Field Value Decimal" = 0) THEN
+            bIsEmpty := TRUE;
+          IF (rOutboundEDIHeaderFooter."Field Datatype" = rOutboundEDIHeaderFooter."Field Datatype"::Date) AND
+            (rOutboundEDIHeaderFooter."Field Value Date" = 0D) THEN
+            bIsEmpty := TRUE;
+          IF (rOutboundEDIHeaderFooter."Field Datatype" = rOutboundEDIHeaderFooter."Field Datatype"::Text) AND
+            (rOutboundEDIHeaderFooter."Field Value Text" = '') THEN
+            bIsEmpty := TRUE;
+
+          rFieldTypeQualifierCodes.GET(rFieldTypeQualifierCodes.Type::"Field Type",rOutboundEDIHeaderFooter."Field Type");
+          rOutboundEDIHeaderFooter."EDIFACT Segment" := rFieldTypeQualifierCodes."EDIFACT Data Element";
+          IF rOutboundEDIHeaderFooter."Field Qualifier" <> '' THEN BEGIN
+            rFieldTypeQualifierCodes.GET(rFieldTypeQualifierCodes.Type::"Field Qualifier",rOutboundEDIHeaderFooter."Field Qualifier");
+            rOutboundEDIHeaderFooter."EDIFACT Data Element" := rFieldTypeQualifierCodes."EDIFACT Data Element";
+          END;
+
+          IF NOT bIsEmpty THEN
+            rOutboundEDIHeaderFooter.INSERT
+          ELSE IF rEDIMapping."Keep Empty" THEN
+            rOutboundEDIHeaderFooter.INSERT;
+        // A/20.11.2012/gob-lku/EDIINT6.03
+        END;
+        // E/20.11.2012/gob-lku/EDIINT6.03
+      UNTIL rEDIMapping.NEXT = 0;
+
+      iLastHeaderEntryNo := rOutboundEDIHeaderFooter."Entry No.";
+    END;
+
+    PROCEDURE Create_EDIMessageVATHeader@1108200000(rOutboundEDIDocumentList@1115500003 : Record 82864;rOutboundEDIDocumentHeader@1115500000 : Record 82865;iHeaderID@1108200001 : Integer;iCounter@1108200002 : Integer);
+    VAR
+      rEDIPartner@1000000000 : Record 82851;
+      rEDIMapping@1115500002 : Record 82854;
+      rOutboundEDIHeaderFooter@1115500001 : Record 82860;
+      FieldValue@1115500004 : Variant;
+      bIsEmpty@1115500005 : Boolean;
+    BEGIN
+      rEDIMapping.SETRANGE("In-/Outbound Document",rEDIMapping."In-/Outbound Document"::Outbound);
+      rEDIMapping.SETRANGE("Document Type",rEDIMapping."Document Type"::INVOIC);
+      CASE rOutboundEDIDocumentHeader."Document Type" OF
+        rOutboundEDIDocumentHeader."Document Type"::"Sales Invoice":
+          rEDIMapping.SETRANGE("Navision Document Type",rEDIMapping."Navision Document Type"::"Sales Invoice");
+        rOutboundEDIDocumentHeader."Document Type"::"Sales Credit Memo":
+          rEDIMapping.SETRANGE("Navision Document Type",rEDIMapping."Navision Document Type"::"Sales Credit Memo");
+      END;
+      rEDIMapping.SETRANGE(Type,rEDIMapping.Type::"VAT Header");
+      rEDIPartner.GET(rOutboundEDIDocumentList."Partner Code");
+      IF rEDIPartner."Mapping Partner" = '' THEN
+        rEDIMapping.SETRANGE("Partner Code",rEDIPartner.Code)
+      ELSE
+        rEDIMapping.SETRANGE("Partner Code",rEDIPartner."Mapping Partner");
+      rEDIMapping.FIND('-');
+
+      REPEAT
+        FieldValue := '';
+        rOutboundEDIHeaderFooter.INIT;
+        rOutboundEDIHeaderFooter."EDI Message No." := rOutboundEDIMessage."EDI Message No.";
+        rOutboundEDIHeaderFooter."EDI Header No." := iHeaderID;
+
+        TransMappingEDIHeader(rEDIMapping,rOutboundEDIHeaderFooter);
+
+        //neue Entry No. vergeben (Letzte EDI Header Entry No. + (Anzahl DruchlÑufe - 1) * Mapping Zeilen + Entry No. des Mappings)
+        rOutboundEDIHeaderFooter."Entry No." := iLastHeaderEntryNo + (iCounter * rEDIMapping.COUNT) +
+          rEDIMapping."Entry No.";
+        IF rOutboundEDIHeaderFooter."Belongs To Entry No." <> 0 THEN
+          rOutboundEDIHeaderFooter."Belongs To Entry No." := iLastHeaderEntryNo + (iCounter * rEDIMapping.COUNT) +
+            rEDIMapping."Belongs To Entry No.";
+
+        CASE rEDIMapping."Table ID" OF
+          82864: GetFieldValue(rEDIMapping,rOutboundEDIDocumentList,FieldValue);
+          82865: GetFieldValue(rEDIMapping,rOutboundEDIDocumentHeader,FieldValue);
+      //    82867: GetFieldValue(rEDIMapping,rOutboundEDIVATLine,FieldValue);
+        END;
+
+        CASE rEDIMapping."Field Datatype" OF
+          rEDIMapping."Field Datatype"::Decimal:
+            BEGIN
+              IF FieldValue.ISDECIMAL OR FieldValue.ISINTEGER THEN
+                rOutboundEDIHeaderFooter."Field Value Decimal" := FieldValue;
+            END;
+          rEDIMapping."Field Datatype"::Date:
+            BEGIN
+              IF FieldValue.ISDATE THEN
+                rOutboundEDIHeaderFooter."Field Value Date" := FieldValue;
+            END;
+          rEDIMapping."Field Datatype"::Text:
+            BEGIN
+              IF FieldValue.ISINTEGER THEN
+                IF FORMAT(FieldValue) <> '0' THEN
+                  rOutboundEDIHeaderFooter."Field Value Text" := FORMAT(FieldValue);
+              IF FieldValue.ISTEXT OR FieldValue.ISCODE THEN
+                IF rEDIMapping."Convert to Number" THEN BEGIN
+                  rOutboundEDIHeaderFooter."Field Value Text" := TrimToNumber(FORMAT(FieldValue));
+                END ELSE BEGIN
+                  rOutboundEDIHeaderFooter."Field Value Text" := ConvertUmlaut(FORMAT(FieldValue));
+                END;
+            END;
+        END;
+
+        IF (rEDIMapping."Field Datatype" = rEDIMapping."Field Datatype"::Decimal) AND (rEDIMapping."Field Value Decimal" <> 0) THEN
+          rOutboundEDIHeaderFooter."Field Value Decimal" := rEDIMapping."Field Value Decimal";
+
+        IF (rEDIMapping."Field Datatype" = rEDIMapping."Field Datatype"::Date) AND (rEDIMapping."Field Value Date" <> 0D) THEN
+          rOutboundEDIHeaderFooter."Field Value Date" := rEDIMapping."Field Value Date";
+
+        IF (rEDIMapping."Field Datatype" = rEDIMapping."Field Datatype"::Text) AND (rEDIMapping."Field Value Text" <> '') THEN
+          rOutboundEDIHeaderFooter."Field Value Text" := ConvertUmlaut(rEDIMapping."Field Value Text");
+
+        bIsEmpty := FALSE;
+        IF (rOutboundEDIHeaderFooter."Field Datatype" = rOutboundEDIHeaderFooter."Field Datatype"::Decimal) AND
+          (rOutboundEDIHeaderFooter."Field Value Decimal" = 0) THEN
+          bIsEmpty := TRUE;
+        IF (rOutboundEDIHeaderFooter."Field Datatype" = rOutboundEDIHeaderFooter."Field Datatype"::Date) AND
+          (rOutboundEDIHeaderFooter."Field Value Date" = 0D) THEN
+          bIsEmpty := TRUE;
+        IF (rOutboundEDIHeaderFooter."Field Datatype" = rOutboundEDIHeaderFooter."Field Datatype"::Text) AND
+          (rOutboundEDIHeaderFooter."Field Value Text" = '') THEN
+          bIsEmpty := TRUE;
+
+        IF NOT bIsEmpty THEN
+          rOutboundEDIHeaderFooter.INSERT
+        ELSE
+          IF rEDIMapping."Keep Empty" THEN
+            rOutboundEDIHeaderFooter.INSERT;
+      UNTIL rEDIMapping.NEXT = 0;
+    END;
+
+    PROCEDURE Create_EDIMessageLine@1115500010(rOutboundEDIDocumentList@1115500003 : Record 82864;rOutboundEDIDocumentHeader@1115500000 : Record 82865;rOutboundEDIDocumentLine@1115500007 : Record 82866;iHeaderID@1115500006 : Integer);
+    VAR
+      rEDIPartner@1000000000 : Record 82851;
+      rEDIMapping@1115500002 : Record 82854;
+      rFieldTypeQualifierCodes@1108200000 : Record 82855;
+      rOutboundEDILines@1115500001 : Record 82861;
+      rOutboundEDISubDocumentLine@1108200001 : Record 82866;
+      OutboundEDIDHLShipmentCode_l@1000000001 : Record 50112;
+      FieldValue@1115500004 : Variant;
+      iLineID@1115500008 : Integer;
+      bIsEmpty@1115500005 : Boolean;
+      "****HME*************"@1000000002 : Integer;
+      EntryNoOffsetL@1000000003 : Integer;
+      SubsectionInsertedL@1000000004 : Boolean;
+      RHDSalesExportLineL@1000000005 : Record 50182;
+      RHDSalesExportSubLineL@1000000006 : Record 50182;
+      RHDSetupL@1000000007 : Record 50177;
+      PurchaseLineL@1000000008 : Record 39;
+      ItemL@1000000009 : Record 27;
+      HesTFormLabMgtL@1000000012 : Codeunit 50255;
+      ItemParcelsTotalL@1000000014 : Integer;
+      ItemParcelCountL@1000000010 : Integer;
+      ParcelNoForBarcodeL@1000000011 : Integer;
+    BEGIN
+      //Filterung des Mappings
+      rEDIMapping.SETRANGE("In-/Outbound Document",rEDIMapping."In-/Outbound Document"::Outbound);
+      CASE rOutboundEDIDocumentList."Document Type" OF
+        rOutboundEDIDocumentList."Document Type"::INVOIC:
+          BEGIN
+            rEDIMapping.SETRANGE("Document Type",rEDIMapping."Document Type"::INVOIC);
+            IF rOutboundEDIDocumentHeader."Document Type" = rOutboundEDIDocumentHeader."Document Type"::"Sales Invoice" THEN
+              rEDIMapping.SETRANGE("Navision Document Type",rEDIMapping."Navision Document Type"::"Sales Invoice")
+            ELSE
+              rEDIMapping.SETRANGE("Navision Document Type",rEDIMapping."Navision Document Type"::"Sales Credit Memo");
+          END;
+
+        rOutboundEDIDocumentList."Document Type"::DESADV: rEDIMapping.SETRANGE("Document Type",rEDIMapping."Document Type"::DESADV);
+        rOutboundEDIDocumentList."Document Type"::PRICAT: rEDIMapping.SETRANGE("Document Type",rEDIMapping."Document Type"::PRICAT);
+        rOutboundEDIDocumentList."Document Type"::ORDERS: rEDIMapping.SETRANGE("Document Type",rEDIMapping."Document Type"::ORDERS);
+        //A,gob-dst,21.05.2013,P0924
+        rOutboundEDIDocumentList."Document Type"::IFTMIN: rEDIMapping.SETRANGE("Document Type",rEDIMapping."Document Type"::IFTMIN);
+        //E,gob-dst,21.05.2013,P0924
+      END;
+
+      IF rOutboundEDIDocumentList."Document Type" = rOutboundEDIDocumentList."Document Type"::DESADV THEN
+        rEDIMapping.SETRANGE(Type,rEDIMapping.Type::"Packaging Information") //bei DESADV erst Verpackungsinformationen CPS
+      ELSE
+        rEDIMapping.SETRANGE(Type,rEDIMapping.Type::Line);
+
+      //Mapping Partner ermitteln
+      rEDIPartner.GET(rOutboundEDIDocumentList."Partner Code");
+      IF rEDIPartner."Mapping Partner" = '' THEN
+        rEDIMapping.SETRANGE("Partner Code",rEDIPartner.Code)
+      ELSE
+        rEDIMapping.SETRANGE("Partner Code",rEDIPartner."Mapping Partner");
+      rEDIMapping.FIND('-');
+
+      iLineID := GetEDILineNo(iHeaderID);
+      //H1361 14.07.14 EHN +++++++++++++
+      EntryNoOffsetL := 0;
+      //H1361 14.07.14 EHN -------------
+      REPEAT
+        FieldValue := '';
+
+        rOutboundEDILines.INIT;
+        rOutboundEDILines."EDI Message No." := rOutboundEDIMessage."EDI Message No.";
+        rOutboundEDILines."EDI Header No." := iHeaderID;
+        rOutboundEDILines."EDI Line No." := iLineID;
+
+        TransMappingEDILine(rEDIMapping,rOutboundEDILines);
+        //H1361 14.07.14 EHN ++++++++++++++++++++++++++++++++++++
+        rOutboundEDILines."Entry No." += EntryNoOffsetL;
+        SubsectionInsertedL := FALSE;
+        //H1361 14.07.14 EHN ------------------------------------
+        CASE rEDIMapping."Table ID" OF
+          82864: GetFieldValue(rEDIMapping,rOutboundEDIDocumentList,FieldValue);
+          82865: GetFieldValue(rEDIMapping,rOutboundEDIDocumentHeader,FieldValue);
+          82866:
+          // H3929  19.03.15  MKR +++++++++++++++++++++++++++++++++++++++++++
+          BEGIN
+            IF rEDIMapping."Field ID" = 50019 THEN BEGIN
+              PurchaseLineL.SETRANGE("Document Type", PurchaseLineL."Document Type"::Order);
+              PurchaseLineL.SETRANGE("Document No.", rOutboundEDIDocumentLine."Document No.");
+              PurchaseLineL.SETRANGE("Line No.", rOutboundEDIDocumentLine."Line No.");
+              IF PurchaseLineL.FINDSET THEN BEGIN
+                IF NOT ItemL.GET(PurchaseLineL."No.") THEN
+                  ItemL.INIT;
+                ItemL.CALCFIELDS("Parcels Number");
+                ItemParcelsTotalL := ItemL."Parcels Number";
+                IF ItemParcelsTotalL = 0 THEN ItemParcelsTotalL := 1;
+
+                ParcelNoForBarcodeL := HesTFormLabMgtL.CalcParcelNosBeforeLines(PurchaseLineL,FALSE);
+                //H3988 30.03.15 MKR +++++++++++++++++++++++
+                IF HesTFormLabMgtL.IsHermesOrderPO(PurchaseLineL) THEN BEGIN
+                //H3988 30.03.15 MKR -----------------------
+                  FOR ItemParcelCountL := 1 TO ItemParcelsTotalL DO BEGIN
+                    rOutboundEDILines."Field Value Text" := HesTFormLabMgtL.GenerateHermesBarcode(PurchaseLineL, ParcelNoForBarcodeL);
+                    IF SubsectionInsertedL THEN BEGIN
+                      EntryNoOffsetL += 1;
+                      rOutboundEDILines."Entry No." += 1;
+                    END ELSE BEGIN
+                      SubsectionInsertedL := TRUE;
+                    END;
+                    rOutboundEDILines."Belongs To Entry No." := rEDIMapping."Belongs To Entry No.";
+                    rOutboundEDILines."Field Type" := rEDIMapping."Field Type";
+                    rOutboundEDILines."Field Qualifier" := rEDIMapping."Field Qualifier";
+                    rOutboundEDILines."Field Datatype" := rEDIMapping."Field Datatype";
+
+                    rFieldTypeQualifierCodes.GET(rFieldTypeQualifierCodes.Type::"Field Type",rOutboundEDILines."Field Type");
+                    rOutboundEDILines."EDIFACT Segment" := rFieldTypeQualifierCodes."EDIFACT Data Element";
+                    IF rOutboundEDILines."Field Qualifier" <> '' THEN BEGIN
+                      rFieldTypeQualifierCodes.GET(rFieldTypeQualifierCodes.Type::"Field Qualifier",
+                                                   rOutboundEDILines."Field Qualifier");
+                      rOutboundEDILines."EDIFACT Data Element" := rFieldTypeQualifierCodes."EDIFACT Data Element";
+                    END;
+                    rOutboundEDILines.INSERT;
+                  END;  // FOR loop
+                //H3988 30.03.15 MKR +++++++++++++++++++++++
+                END;
+                //H3988 30.03.15 MKR -----------------------
+              END;
+            END ELSE
+              GetFieldValue(rEDIMapping,rOutboundEDIDocumentLine,FieldValue);
+          END;
+          // H3929  19.03.15  MKR -------------------------------------------
+
+          // S/P1181
+          50112:
+          BEGIN
+            OutboundEDIDHLShipmentCode_l.SETRANGE("Header Document Type",rOutboundEDIDocumentLine."Header Document Type");
+            OutboundEDIDHLShipmentCode_l.SETRANGE("Header Document No.",rOutboundEDIDocumentLine."Header Document No.");
+            OutboundEDIDHLShipmentCode_l.SETRANGE("Document Type",rOutboundEDIDocumentLine."Document Type");
+            OutboundEDIDHLShipmentCode_l.SETRANGE("Document No.",rOutboundEDIDocumentLine."Document No.");
+            OutboundEDIDHLShipmentCode_l.SETRANGE("Line No.",rOutboundEDIDocumentLine."Line No.");
+            OutboundEDIDHLShipmentCode_l.SETRANGE(Direction,OutboundEDIDHLShipmentCode_l.Direction::Outbound);
+            IF OutboundEDIDHLShipmentCode_l.FINDSET THEN BEGIN
+              REPEAT
+                rOutboundEDILines."Field Value Text" := OutboundEDIDHLShipmentCode_l."DHL Shipment Code";
+                //H1361 14.07.14 EHN ++++++++++++++++++++++++++++++++++++++++++++++
+                IF SubsectionInsertedL THEN BEGIN
+                  EntryNoOffsetL += 1;
+                  rOutboundEDILines."Entry No." += 1;
+                END ELSE BEGIN
+                  SubsectionInsertedL := TRUE;
+                END;
+                //H1361 14.07.14 EHN ----------------------------------------------
+                rOutboundEDILines."Belongs To Entry No." := rEDIMapping."Belongs To Entry No.";
+                rOutboundEDILines."Field Type" := rEDIMapping."Field Type";
+                rOutboundEDILines."Field Qualifier" := rEDIMapping."Field Qualifier";
+                rOutboundEDILines."Field Datatype" := rEDIMapping."Field Datatype";
+
+                rFieldTypeQualifierCodes.GET(rFieldTypeQualifierCodes.Type::"Field Type",rOutboundEDILines."Field Type");
+                rOutboundEDILines."EDIFACT Segment" := rFieldTypeQualifierCodes."EDIFACT Data Element";
+                IF rOutboundEDILines."Field Qualifier" <> '' THEN BEGIN
+                  rFieldTypeQualifierCodes.GET(rFieldTypeQualifierCodes.Type::"Field Qualifier",
+                                               rOutboundEDILines."Field Qualifier");
+                  rOutboundEDILines."EDIFACT Data Element" := rFieldTypeQualifierCodes."EDIFACT Data Element";
+                END;
+                rOutboundEDILines.INSERT;
+              UNTIL OutboundEDIDHLShipmentCode_l.NEXT = 0;
+            END;
+          END;
+          // E/P1181
+          //H1361 14.07.14 EHN ++++++++++++++++++++++++++++++++++++++++++++++
+          50182:
+          BEGIN
+            RHDSetupL.GET();
+            RHDSalesExportLineL.RESET;
+            RHDSalesExportLineL.SETRANGE("Purchase Order No.",rOutboundEDIDocumentLine."Document No.");
+            RHDSalesExportLineL.SETRANGE("Purch. Order Line No.",rOutboundEDIDocumentLine."Line No.");
+            RHDSalesExportLineL.SETRANGE("Record Type",RHDSetupL."Record Type KAP");
+            IF RHDSalesExportLineL.FINDFIRST THEN BEGIN
+              RHDSalesExportSubLineL.RESET;
+              RHDSalesExportSubLineL.SETRANGE("Entry No.",RHDSalesExportLineL."Entry No.");
+              RHDSalesExportSubLineL.SETRANGE("Attached to Pos. No.",RHDSalesExportLineL."Pos. No.");
+              RHDSalesExportSubLineL.SETRANGE("Record Type",RHDSetupL."Record Type KAB");
+              IF RHDSalesExportSubLineL.FINDSET THEN BEGIN
+                REPEAT
+                  rOutboundEDILines."Field Value Text" := RHDSalesExportSubLineL.Barcode;
+                  IF SubsectionInsertedL THEN BEGIN
+                    EntryNoOffsetL += 1;
+                    rOutboundEDILines."Entry No." += 1;
+                  END ELSE BEGIN
+                    SubsectionInsertedL := TRUE;
+                  END;
+                  rOutboundEDILines."Belongs To Entry No." := rEDIMapping."Belongs To Entry No.";
+                  rOutboundEDILines."Field Type" := rEDIMapping."Field Type";
+                  rOutboundEDILines."Field Qualifier" := rEDIMapping."Field Qualifier";
+                  rOutboundEDILines."Field Datatype" := rEDIMapping."Field Datatype";
+
+                  rFieldTypeQualifierCodes.GET(rFieldTypeQualifierCodes.Type::"Field Type",rOutboundEDILines."Field Type");
+                  rOutboundEDILines."EDIFACT Segment" := rFieldTypeQualifierCodes."EDIFACT Data Element";
+                  IF rOutboundEDILines."Field Qualifier" <> '' THEN BEGIN
+                    rFieldTypeQualifierCodes.GET(rFieldTypeQualifierCodes.Type::"Field Qualifier",
+                                                 rOutboundEDILines."Field Qualifier");
+                    rOutboundEDILines."EDIFACT Data Element" := rFieldTypeQualifierCodes."EDIFACT Data Element";
+                  END;
+                  rOutboundEDILines.INSERT;
+                UNTIL RHDSalesExportSubLineL.NEXT = 0;
+              END;
+            END;
+          END;
+          //H1361 14.07.14 EHN ----------------------------------------------
+          // H1700  02.02.15  MKR +++++++++++++++++++++++++++++++++++++++++++
+          27: GetItemValue(rEDIMapping, rOutboundEDIDocumentLine, FieldValue);
+          // H1700  02.02.15  MKR -------------------------------------------
+        END;
+
+        //H1361 14.07.14 EHN +++++++++++++++++++++++++
+        IF NOT SubsectionInsertedL THEN BEGIN
+        //H1361 14.07.14 EHN -------------------------
+          CASE rEDIMapping."Field Datatype" OF
+            rEDIMapping."Field Datatype"::Decimal:
+              BEGIN
+                IF FieldValue.ISDECIMAL OR FieldValue.ISINTEGER THEN
+                  rOutboundEDILines."Field Value Decimal" := FieldValue;
+              END;
+            rEDIMapping."Field Datatype"::Date:
+              BEGIN
+                IF FieldValue.ISDATE THEN
+                  rOutboundEDILines."Field Value Date" := FieldValue;
+              END;
+            rEDIMapping."Field Datatype"::Text:
+              BEGIN
+                IF FieldValue.ISINTEGER THEN
+                  IF FORMAT(FieldValue) <> '0' THEN
+                    rOutboundEDILines."Field Value Text" := FORMAT(FieldValue);
+                IF FieldValue.ISTEXT OR FieldValue.ISCODE THEN
+                  IF rEDIMapping."Convert to Number" THEN BEGIN
+                    rOutboundEDILines."Field Value Text" := TrimToNumber(FORMAT(FieldValue));
+                  END ELSE BEGIN
+                    rOutboundEDILines."Field Value Text" := ConvertUmlaut(FORMAT(FieldValue));
+                  END;
+              END;
+          END;
+
+          IF (rEDIMapping."Field Datatype" = rEDIMapping."Field Datatype"::Decimal) AND (rEDIMapping."Field Value Decimal" <> 0) THEN
+            rOutboundEDILines."Field Value Decimal" := rEDIMapping."Field Value Decimal";
+
+          IF (rEDIMapping."Field Datatype" = rEDIMapping."Field Datatype"::Date) AND (rEDIMapping."Field Value Date" <> 0D) THEN
+            rOutboundEDILines."Field Value Date" := rEDIMapping."Field Value Date";
+
+          IF (rEDIMapping."Field Datatype" = rEDIMapping."Field Datatype"::Text) AND (rEDIMapping."Field Value Text" <> '') THEN
+            rOutboundEDILines."Field Value Text" := ConvertUmlaut(rEDIMapping."Field Value Text");
+
+          bIsEmpty := FALSE;
+          IF (rOutboundEDILines."Field Datatype" = rOutboundEDILines."Field Datatype"::Decimal) AND
+            (rOutboundEDILines."Field Value Decimal" = 0) THEN
+            bIsEmpty := TRUE;
+          IF (rOutboundEDILines."Field Datatype" = rOutboundEDILines."Field Datatype"::Date) AND
+            (rOutboundEDILines."Field Value Date" = 0D) THEN
+            bIsEmpty := TRUE;
+          IF (rOutboundEDILines."Field Datatype" = rOutboundEDILines."Field Datatype"::Text) AND
+            (rOutboundEDILines."Field Value Text" = '') THEN
+            bIsEmpty := TRUE;
+
+          rFieldTypeQualifierCodes.GET(rFieldTypeQualifierCodes.Type::"Field Type",rOutboundEDILines."Field Type");
+          rOutboundEDILines."EDIFACT Segment" := rFieldTypeQualifierCodes."EDIFACT Data Element";
+          IF rOutboundEDILines."Field Qualifier" <> '' THEN BEGIN
+            rFieldTypeQualifierCodes.GET(rFieldTypeQualifierCodes.Type::"Field Qualifier",rOutboundEDILines."Field Qualifier");
+            rOutboundEDILines."EDIFACT Data Element" := rFieldTypeQualifierCodes."EDIFACT Data Element";
+          END;
+
+          IF NOT bIsEmpty THEN
+            rOutboundEDILines.INSERT
+          ELSE IF rEDIMapping."Keep Empty" THEN
+              rOutboundEDILines.INSERT;
+        //H1361 14.07.14 EHN +++++++++++++++++++++++++
+        END;
+        //H1361 14.07.14 EHN -------------------------
+      UNTIL rEDIMapping.NEXT = 0;
+
+      //FÅr DESADV untergeordnete Outbound EDI Lines erzeugen
+      rOutboundEDISubDocumentLine.SETRANGE("Header Document Type",rOutboundEDIDocumentLine."Header Document Type");
+      rOutboundEDISubDocumentLine.SETRANGE("Header Document No.",rOutboundEDIDocumentLine."Header Document No.");
+      rOutboundEDISubDocumentLine.SETRANGE("Document No.",rOutboundEDIDocumentHeader."Document No.");
+      rOutboundEDISubDocumentLine.SETRANGE("Belongs To Pack. Inf. Line",rOutboundEDIDocumentLine."EDI Line No.");
+      IF NOT rOutboundEDISubDocumentLine.ISEMPTY THEN BEGIN
+        rOutboundEDISubDocumentLine.FIND('-');
+        REPEAT
+          IF rEDIPartnerDocumentType."DESADV Structure" = rEDIPartnerDocumentType."DESADV Structure"::"1-CPS 1-LIN" THEN
+            iLineID := GetEDILineNo(iHeaderID);
+          Create_EDIMessageSubLine(rOutboundEDIDocumentList,rOutboundEDIDocumentHeader,rOutboundEDISubDocumentLine,iHeaderID,iLineID);
+        UNTIL rOutboundEDISubDocumentLine.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE Create_EDIMessageSubLine@1108200001(rOutboundEDIDocumentList@1115500003 : Record 82864;rOutboundEDIDocumentHeader@1115500000 : Record 82865;rOutboundEDIDocumentLine@1115500007 : Record 82866;iHeaderID@1115500006 : Integer;iLineID@1108200001 : Integer);
+    VAR
+      rEDIPartner@1000000000 : Record 82851;
+      rEDIMapping@1115500002 : Record 82854;
+      rFieldTypeQualifierCodes@1108200000 : Record 82855;
+      rOutboundEDILines@1115500001 : Record 82861;
+      FieldValue@1115500004 : Variant;
+      bIsEmpty@1115500005 : Boolean;
+    BEGIN
+      //Sicherstellen, dass es sich wirklich um DESADV handelt
+      IF rOutboundEDIDocumentList."Document Type" <> rOutboundEDIDocumentList."Document Type"::DESADV THEN
+        rEDIMapping.SETRANGE("In-/Outbound Document",rEDIMapping."In-/Outbound Document"::Outbound);
+
+      CASE rOutboundEDIDocumentList."Document Type" OF
+        rOutboundEDIDocumentList."Document Type"::INVOIC:
+          BEGIN
+            rEDIMapping.SETRANGE("Document Type",rEDIMapping."Document Type"::INVOIC);
+            IF rOutboundEDIDocumentHeader."Document Type" = rOutboundEDIDocumentHeader."Document Type"::"Sales Invoice" THEN
+              rEDIMapping.SETRANGE("Navision Document Type",rEDIMapping."Navision Document Type"::"Sales Invoice")
+            ELSE
+              rEDIMapping.SETRANGE("Navision Document Type",rEDIMapping."Navision Document Type"::"Sales Credit Memo");
+          END;
+        rOutboundEDIDocumentList."Document Type"::DESADV: rEDIMapping.SETRANGE("Document Type",rEDIMapping."Document Type"::DESADV);
+        rOutboundEDIDocumentList."Document Type"::PRICAT: rEDIMapping.SETRANGE("Document Type",rEDIMapping."Document Type"::PRICAT);
+        rOutboundEDIDocumentList."Document Type"::ORDERS: rEDIMapping.SETRANGE("Document Type",rEDIMapping."Document Type"::ORDERS);
+        //A,gob-dst,21.05.2013,P0924
+        rOutboundEDIDocumentList."Document Type"::IFTMIN: rEDIMapping.SETRANGE("Document Type",rEDIMapping."Document Type"::IFTMIN);
+        //E,gob-dst,21.05.2013,P0924
+      END;
+
+      rEDIMapping.SETRANGE(Type,rEDIMapping.Type::Line);
+      rEDIPartner.GET(rOutboundEDIDocumentList."Partner Code");
+      IF rEDIPartner."Mapping Partner" = '' THEN
+        rEDIMapping.SETRANGE("Partner Code",rEDIPartner.Code)
+      ELSE
+        rEDIMapping.SETRANGE("Partner Code",rEDIPartner."Mapping Partner");
+      rEDIMapping.FIND('-');
+
+      REPEAT
+        FieldValue := '';
+
+        rOutboundEDILines.INIT;
+        rOutboundEDILines."EDI Message No." := rOutboundEDIMessage."EDI Message No.";
+        rOutboundEDILines."EDI Header No." := iHeaderID;
+        rOutboundEDILines."EDI Line No." := iLineID;
+
+        TransMappingEDILine(rEDIMapping,rOutboundEDILines);
+        CASE rEDIMapping."Table ID" OF
+          82864: GetFieldValue(rEDIMapping,rOutboundEDIDocumentList,FieldValue);
+          82865: GetFieldValue(rEDIMapping,rOutboundEDIDocumentHeader,FieldValue);
+          82866: GetFieldValue(rEDIMapping,rOutboundEDIDocumentLine,FieldValue);
+        END;
+
+        CASE rEDIMapping."Field Datatype" OF
+          rEDIMapping."Field Datatype"::Decimal:
+            BEGIN
+              IF FieldValue.ISDECIMAL OR FieldValue.ISINTEGER THEN
+                rOutboundEDILines."Field Value Decimal" := FieldValue;
+            END;
+          rEDIMapping."Field Datatype"::Date:
+            BEGIN
+              IF FieldValue.ISDATE THEN
+                rOutboundEDILines."Field Value Date" := FieldValue;
+            END;
+          rEDIMapping."Field Datatype"::Text:
+            BEGIN
+              IF FieldValue.ISINTEGER THEN
+                IF FORMAT(FieldValue) <> '0' THEN
+                  rOutboundEDILines."Field Value Text" := FORMAT(FieldValue);
+              IF FieldValue.ISTEXT OR FieldValue.ISCODE THEN
+                IF rEDIMapping."Convert to Number" THEN
+                  rOutboundEDILines."Field Value Text" := TrimToNumber(FORMAT(FieldValue))
+                ELSE BEGIN
+                  rOutboundEDILines."Field Value Text" := ConvertUmlaut(FORMAT(FieldValue));
+                END;
+            END;
+        END;
+
+        IF (rEDIMapping."Field Datatype" = rEDIMapping."Field Datatype"::Decimal) AND (rEDIMapping."Field Value Decimal" <> 0) THEN
+          rOutboundEDILines."Field Value Decimal" := rEDIMapping."Field Value Decimal";
+
+        IF (rEDIMapping."Field Datatype" = rEDIMapping."Field Datatype"::Date) AND (rEDIMapping."Field Value Date" <> 0D) THEN
+          rOutboundEDILines."Field Value Date" := rEDIMapping."Field Value Date";
+
+        IF (rEDIMapping."Field Datatype" = rEDIMapping."Field Datatype"::Text) AND (rEDIMapping."Field Value Text" <> '') THEN
+          rOutboundEDILines."Field Value Text" := ConvertUmlaut(rEDIMapping."Field Value Text");
+
+        bIsEmpty := FALSE;
+        IF (rOutboundEDILines."Field Datatype" = rOutboundEDILines."Field Datatype"::Decimal) AND
+          (rOutboundEDILines."Field Value Decimal" = 0) THEN
+          bIsEmpty := TRUE;
+        IF (rOutboundEDILines."Field Datatype" = rOutboundEDILines."Field Datatype"::Date) AND
+          (rOutboundEDILines."Field Value Date" = 0D) THEN
+          bIsEmpty := TRUE;
+        IF (rOutboundEDILines."Field Datatype" = rOutboundEDILines."Field Datatype"::Text) AND
+          (rOutboundEDILines."Field Value Text" = '') THEN
+          bIsEmpty := TRUE;
+
+        rFieldTypeQualifierCodes.GET(rFieldTypeQualifierCodes.Type::"Field Type",rOutboundEDILines."Field Type");
+        rOutboundEDILines."EDIFACT Segment" := rFieldTypeQualifierCodes."EDIFACT Data Element";
+        IF rOutboundEDILines."Field Qualifier" <> '' THEN BEGIN
+          rFieldTypeQualifierCodes.GET(rFieldTypeQualifierCodes.Type::"Field Qualifier",rOutboundEDILines."Field Qualifier");
+          rOutboundEDILines."EDIFACT Data Element" := rFieldTypeQualifierCodes."EDIFACT Data Element";
+        END;
+
+        IF NOT bIsEmpty THEN
+          rOutboundEDILines.INSERT
+        ELSE
+          IF rEDIMapping."Keep Empty" THEN
+            rOutboundEDILines.INSERT;
+      UNTIL rEDIMapping.NEXT = 0;
+    END;
+
+    PROCEDURE TransMappingEDIHeader@1000000012(rEDIMapping@1000000000 : Record 82854;VAR rOutboundEDIHeaderFooter@1000000001 : Record 82860);
+    BEGIN
+      rOutboundEDIHeaderFooter."Entry No." := rEDIMapping."Entry No.";
+      rOutboundEDIHeaderFooter."Belongs To Entry No." := rEDIMapping."Belongs To Entry No.";
+      rOutboundEDIHeaderFooter."Field Type" := rEDIMapping."Field Type";
+      rOutboundEDIHeaderFooter."Field Qualifier" := rEDIMapping."Field Qualifier";
+      rOutboundEDIHeaderFooter."Field Datatype" := rEDIMapping."Field Datatype";
+    END;
+
+    PROCEDURE TransMappingEDILine@1115500012(rEDIMapping@1000000000 : Record 82854;VAR rOutboundEDILines@1000000001 : Record 82861);
+    BEGIN
+      rOutboundEDILines."Entry No." := rEDIMapping."Entry No.";
+      rOutboundEDILines."Belongs To Entry No." := rEDIMapping."Belongs To Entry No.";
+      rOutboundEDILines."Field Type" := rEDIMapping."Field Type";
+      rOutboundEDILines."Field Qualifier" := rEDIMapping."Field Qualifier";
+      rOutboundEDILines."Field Datatype" := rEDIMapping."Field Datatype";
+    END;
+
+    PROCEDURE GetEDIMessageNo@1115500002() : Integer;
+    VAR
+      rLocOutboundEDIMessage@1115500000 : Record 82859;
+    BEGIN
+      IF rLocOutboundEDIMessage.FINDLAST THEN
+        EXIT(rLocOutboundEDIMessage."EDI Message No." + 1)
+      ELSE
+        EXIT(1);
+    END;
+
+    PROCEDURE GetEDIHeaderNo@1115500003() : Integer;
+    VAR
+      rOutboundEDIHeaderFooter@1115500000 : Record 82860;
+    BEGIN
+      rOutboundEDIHeaderFooter.SETRANGE("EDI Message No.",rOutboundEDIMessage."EDI Message No.");
+      IF rOutboundEDIHeaderFooter.FINDLAST THEN
+        EXIT(rOutboundEDIHeaderFooter."EDI Header No." + 1)
+      ELSE
+        EXIT(1);
+    END;
+
+    PROCEDURE GetEDILineNo@1115500011(iHeaderID@1115500001 : Integer) : Integer;
+    VAR
+      rOutboundEDILines@1115500000 : Record 82861;
+    BEGIN
+      rOutboundEDILines.SETRANGE("EDI Message No.",rOutboundEDIMessage."EDI Message No.");
+      rOutboundEDILines.SETRANGE("EDI Header No.",iHeaderID);
+      IF rOutboundEDILines.FINDLAST THEN
+        EXIT(rOutboundEDILines."EDI Line No." + 1)
+      ELSE
+        EXIT(1);
+    END;
+
+    PROCEDURE GetFieldValue@1115500005(rEDIMapping@1115500006 : Record 82854;InValue@1115500001 : Variant;VAR ReturnValue@1115500000 : Variant);
+    VAR
+      Tab82864@1115500002 : Record 82864;
+      Tab82865@1115500003 : Record 82865;
+      Tab82866@1115500004 : Record 82866;
+      rField@1000000000 : Record 2000000041;
+      oRecRef@1115500007 : RecordRef;
+      oFieldRef@1115500008 : FieldRef;
+      TempDecimal@1115500009 : Decimal;
+    BEGIN
+      CASE rEDIMapping."Table ID" OF
+        82864:
+          BEGIN
+            Tab82864 := InValue;
+            oRecRef.GETTABLE(Tab82864);
+            oFieldRef := oRecRef.FIELD(rEDIMapping."Field ID");
+          END;
+        82865:
+          BEGIN
+            Tab82865 := InValue;
+            oRecRef.GETTABLE(Tab82865);
+            oFieldRef := oRecRef.FIELD(rEDIMapping."Field ID");
+          END;
+        82866:
+          BEGIN
+            Tab82866 := InValue;
+            oRecRef.GETTABLE(Tab82866);
+            oFieldRef := oRecRef.FIELD(rEDIMapping."Field ID");
+          END;
+        {
+        82867:
+          BEGIN
+            Tab82867 := InValue;
+            oRecRef.GETTABLE(Tab82867);
+            oFieldRef := oRecRef.FIELD(rEDIMapping."Field ID");
+          END;
+        }
+      END;
+
+      rField.GET(rEDIMapping."Table ID",rEDIMapping."Field ID");
+      IF rField.Class = rField.Class::FlowField THEN
+        oFieldRef.CALCFIELD;
+      CASE rField.Type OF
+        rField.Type::Decimal: BEGIN
+          TempDecimal := oFieldRef.VALUE; //Workaround, da in alten NAV Versionen automatisch auf 4 Stellen gerundet wird
+          ReturnValue := TempDecimal;
+        END;
+        rField.Type::Date: BEGIN
+          IF FORMAT(oFieldRef.VALUE) = '' THEN
+            ReturnValue := 0D
+          ELSE
+            ReturnValue := oFieldRef.VALUE;
+        END;
+        rField.Type::Text,rField.Type::Code:
+          ReturnValue := FORMAT(oFieldRef.VALUE);
+        ELSE
+          ReturnValue := oFieldRef.VALUE;
+      END;
+    END;
+
+    PROCEDURE GetItemValue@1000000001(EDIMappingV@1000000002 : Record 82854;OutboundEDIDocumentLineV@1000000001 : Record 82866;VAR ReturnValueR@1000000000 : Variant);
+    VAR
+      ItemL@1000000003 : Record 27;
+    BEGIN
+      // H1700  02.02.15  MKR +++++++++++++++++++++++++++++++++++++++++++
+      ItemL.GET(OutboundEDIDocumentLineV."Item No.");
+
+      CASE EDIMappingV."Field ID" OF
+        3:
+        BEGIN
+          // A little trick here to provide this kind of description
+          ReturnValueR := OutboundEDIDocumentLineV.Description + ' ' + OutboundEDIDocumentLineV."Description 2";
+        END;
+        31:
+        BEGIN
+          ReturnValueR := ItemL."Vendor No.";
+        END;
+        50020:
+        BEGIN
+          ItemL.CALCFIELDS("Parcels Number");
+          ReturnValueR := ItemL."Parcels Number";
+        END;
+        5095864:
+        BEGIN
+          ReturnValueR := ItemL.EAN;
+        END;
+      END;
+      // H1700  02.02.15  MKR -------------------------------------------
+    END;
+
+    PROCEDURE GetLocationValue@1000000002(EDIMappingV@1000000002 : Record 82854;OutboundEDIDocumentHeaderV@1000000001 : Record 82865;VAR ReturnValueR@1000000000 : Variant);
+    VAR
+      LocationL@1000000003 : Record 14;
+      PurchaseHeaderL@1000000004 : Record 38;
+    BEGIN
+      // H1700  04.02.15  MKR ++++++++++++++++++++++++++++++++++++++
+      IF OutboundEDIDocumentHeaderV."Document Type" = OutboundEDIDocumentHeaderV."Document Type"::"Purchase Order" THEN BEGIN
+        IF PurchaseHeaderL.GET(PurchaseHeaderL."Document Type"::Order, OutboundEDIDocumentHeaderV."Document No.") THEN BEGIN
+          IF NOT LocationL.GET(PurchaseHeaderL."Location Code") THEN
+            EXIT;
+        END;
+      END;
+
+      CASE EDIMappingV."Field ID" OF
+        50003:
+        BEGIN
+          ReturnValueR := LocationL."Branch Code";
+        END;
+        50201:
+        BEGIN
+          ReturnValueR := LocationL."Hermes Location EDI ID";
+        END;
+      END;
+      // H1700  04.02.15  MKR --------------------------------------
+    END;
+
+    PROCEDURE IsFlowField@1115500006(TableID@1115500000 : Integer;FieldID@1115500001 : Integer) : Boolean;
+    VAR
+      rField@1115500002 : Record 2000000041;
+    BEGIN
+      rField.GET(TableID,FieldID);
+      EXIT(rField.Class = rField.Class::FlowField);
+    END;
+
+    PROCEDURE IsDecimal@1115500007(TableID@1115500000 : Integer;FieldID@1115500001 : Integer) : Boolean;
+    VAR
+      rField@1115500002 : Record 2000000041;
+    BEGIN
+      rField.GET(TableID,FieldID);
+      EXIT(rField.Type = rField.Type::Decimal);
+    END;
+
+    PROCEDURE TrimToNumber@1000000059(InputString@1000000000 : Text[100]) : Text[100];
+    BEGIN
+      //Entfernt alle Buchstaben aus einen Zeichenfolge
+      EXIT(DELCHR(InputString,'=','ABCDEFGHIJKLMNOPQRSTUVWXYZéôöabcdefghijklmnopqrstuvwxyzÑîÅ·-'));
+    END;
+
+    PROCEDURE ConvertUmlaut@1115500008(InText@1115500000 : Text[1024]) : Text[1024];
+    BEGIN
+      IF rEDIPartnerDocumentType."Syntax identifier" IN
+        [rEDIPartnerDocumentType."Syntax identifier"::UNOA,rEDIPartnerDocumentType."Syntax identifier"::UNOB] THEN
+
+        IF (STRPOS(UPPERCASE(InText),'é') > 0) OR (STRPOS(UPPERCASE(InText),'ö') > 0) OR (STRPOS(UPPERCASE(InText),'ô') > 0) OR
+          (STRPOS(UPPERCASE(InText),'·') > 0) THEN BEGIN
+
+          WHILE STRPOS(InText,'é') > 0 DO BEGIN
+            InText := COPYSTR(InText,1,STRPOS(InText,'é') - 1) + 'AE' +
+              COPYSTR(InText,STRPOS(InText,'é') + 1,STRLEN(InText) - STRPOS(InText,'é'));
+          END;
+          WHILE STRPOS(InText,'Ñ') > 0 DO BEGIN
+            InText := COPYSTR(InText,1,STRPOS(InText,'Ñ') - 1) + 'ae' +
+              COPYSTR(InText,STRPOS(InText,'Ñ') + 1,STRLEN(InText) - STRPOS(InText,'Ñ'));
+          END;
+          WHILE STRPOS(InText,'ô') > 0 DO BEGIN
+            InText := COPYSTR(InText,1,STRPOS(InText,'ô') - 1) + 'OE' +
+              COPYSTR(InText,STRPOS(InText,'ô') + 1,STRLEN(InText) - STRPOS(InText,'ô'));
+          END;
+          WHILE STRPOS(InText,'î') > 0 DO BEGIN
+            InText := COPYSTR(InText,1,STRPOS(InText,'î') - 1) + 'oe' +
+              COPYSTR(InText,STRPOS(InText,'î') + 1,STRLEN(InText) - STRPOS(InText,'î'));
+          END;
+          WHILE STRPOS(InText,'ö') > 0 DO BEGIN
+            InText := COPYSTR(InText,1,STRPOS(InText,'ö') - 1) + 'UE' +
+              COPYSTR(InText,STRPOS(InText,'ö') + 1,STRLEN(InText) - STRPOS(InText,'ö'));
+          END;
+          WHILE STRPOS(InText,'Å') > 0 DO BEGIN
+            InText := COPYSTR(InText,1,STRPOS(InText,'Å') - 1) + 'ue' +
+              COPYSTR(InText,STRPOS(InText,'Å') + 1,STRLEN(InText) - STRPOS(InText,'Å'));
+          END;
+          WHILE STRPOS(InText,'·') > 0 DO BEGIN
+            InText := COPYSTR(InText,1,STRPOS(InText,'·') - 1) + 'ss' +
+              COPYSTR(InText,STRPOS(InText,'·') + 1,STRLEN(InText) - STRPOS(InText,'·'));
+          END;
+        END;
+
+      IF rEDIPartnerDocumentType."Syntax identifier" = rEDIPartnerDocumentType."Syntax identifier"::UNOA THEN
+        InText := UPPERCASE(InText);
+
+      EXIT(InText);
+    END;
+
+    PROCEDURE GetPartnerDocumentType@10(Partner@1000 : Code[20];DocumentTypeCode@1001 : Text[30]);
+    BEGIN
+      rEDIPartnerDocumentType.SETRANGE("Partner Code",Partner);
+      rEDIPartnerDocumentType.SETRANGE("Document Type",DocumentTypeCode);
+      rEDIPartnerDocumentType.FINDFIRST;
+    END;
+
+    PROCEDURE PDFPaths@1000000000(LabelPath_r@1000000000 : Text[250];DNPath_r@1000000001 : Text[250]);
+    BEGIN
+      LabelPath_g := LabelPath_r;
+      DNPath_g := DNPath_r;
+    END;
+
+    BEGIN
+    {
+      EDIINT6.02   29.06.2011   gob-dst   - Anpassung fÅr automatisiertes Senden Åber die Projektwarteschlange
+                                          - Entfernen Tabelle MessageFooter
+      EDIINT6.03   20.11.2012   gob-lku   - Anpassung fÅr GIN
+      P0876        25.03.2013   gob-mlan  - Schreibe Sendedatum/-zeit in Bestellung zurÅck
+      P0924        21.05.2013   gob-dst   - Erweiterung IFTMIN
+      P1181        06.02.2014   gob-lku   - Erweiterung IFTMIN Schweiz
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date        Shortcut  Description
+      _____________________________________________
+      *** Module: EDI ***
+      H0552       13.09.13    FX        GUIALLOWED Added to prevent many error messages
+      H1361       14.07.14    EHN       EDI: Extend EDI ORDERS File with RHD Barcode
+      H1218       08.08.14    EHN       Export crossborder VAT Registration No. via EDI and CSV File
+      H1700       04.02.15    MKR       Hermes 2MH: Generation and transmission of IFTMIN: New Mapping fields, Barcode handling
+      H3929       19.03.15    MKR       Hermes: send barcodes in EDI ORDERS: export Hermes Barcodes like it is done for RHD
+      H3988       30.03.15    MKR       EDI-Warehouse Purchase Order creation fails
+    }
+    END.
+  }
+}
+

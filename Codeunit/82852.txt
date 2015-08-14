@@ -1,0 +1,179 @@
+OBJECT Codeunit 82852 Auto. create / send EDI Lists
+{
+  OBJECT-PROPERTIES
+  {
+    Date=01.12.14;
+    Time=17:25:21;
+    Modified=Yes;
+    Version List=EDIINT6.00,HME0960,P1262;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=VAR
+            InbEDIParcelInformation@1000000000 : Codeunit 50110;
+            InboundEdiIFTSTA@1000000001 : Codeunit 50239;
+          BEGIN
+            //S,gob-Fuchs,06.10.14,P1286
+
+            //A,gob-dst,05.06.2013,P0939
+            //IF "Parameter String" = 'VIR' THEN BEGIN
+            //  IF InbEDIParcelInformation.RUN() THEN
+            //    ;
+            //END ELSE
+            //E,gob-dst,05.06.2013,P0939
+
+            //MapInboundMessages();
+
+            CASE "Parameter String" OF
+              'VIR': IF InbEDIParcelInformation.RUN() THEN;
+              'IFTSTA': IF InboundEdiIFTSTA.RUN() THEN;
+              ELSE
+                MapInboundMessages("Parameter String");
+            END;
+            //E,gob-Fuchs,06.10.14,P1286
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text001@1000000000 : TextConst 'ENU=edi@home24.de';
+      Text002@1000000001 : TextConst 'ENU="Incoming Message "';
+      Text003@1000000002 : TextConst 'ENU=" could not be converted. Last Error text: "';
+      Text004@1000000003 : TextConst 'ENU=Inbound EDI Purch. Document was not generated from EDI Message %1';
+
+    PROCEDURE MapInboundMessages@1108200003(ParameterString@1000000011 : Text[250]);
+    VAR
+      InboundEDIMessage@1108200001 : Record 82856;
+      InboundEDIMessage2@1000000000 : Record 82856;
+      EDIIntegratorSetup@1000000001 : Record 82850;
+      AdminMailQueueSetup@1000000002 : Record 50092;
+      InboundEDIServices@1108200000 : Codeunit 82850;
+      AdminMailQueueFunctions@1000000003 : Codeunit 50019;
+      "--- P1083 Locals ---"@1000000004 : Integer;
+      LastErrorText@1000000005 : Text[1024];
+      LastErrorText1@1000000006 : Text[250];
+      LastErrorText2@1000000007 : Text[250];
+      LastErrorText3@1000000008 : Text[250];
+      LastErrorText4@1000000009 : Text[250];
+      LastErrorText5@1000000010 : Text[30];
+      "--- P1298 Locals ---"@1000000012 : Integer;
+      EDIMessageNo@1000000013 : Integer;
+    BEGIN
+      //P1262 30.11.14 gob-FUCHSK +++++++++++++++++
+      IF ParameterString <> '' THEN BEGIN
+        IF EVALUATE(EDIMessageNo,ParameterString) THEN
+          InboundEDIMessage.SETRANGE("EDI Message No.",EDIMessageNo);
+      END;
+      //P1262 30.11.14 gob-FUCHSK +++++++++++++++++
+      InboundEDIMessage.SETRANGE("Commited Record", TRUE);
+      InboundEDIMessage.SETRANGE("NAV Processed", FALSE);
+      IF InboundEDIMessage.FINDFIRST THEN
+        REPEAT
+          CASE InboundEDIMessage."Document Type" OF
+            InboundEDIMessage."Document Type"::ORDERS,
+            InboundEDIMessage."Document Type"::ORDRSP,
+            //S/P1259
+            InboundEDIMessage."Document Type"::IFTSTA,
+            //E/P1259
+            //S/P1262
+            InboundEDIMessage."Document Type"::INVOIC,
+            //E/P1262
+            InboundEDIMessage."Document Type"::DESADV:
+              BEGIN
+                // H0552 FX 12.09.13 +++++++++++++++++++++++++++
+                CLEARLASTERROR;
+                // H0552 FX 12.09.13 -------------------------
+                IF GUIALLOWED THEN
+                  InboundEDIServices.MapInboundMessage(InboundEDIMessage)
+                ELSE BEGIN
+                  COMMIT;
+                  InboundEDIMessage2.GET(InboundEDIMessage."EDI Message No.");
+                  IF NOT InboundEDIServices.RUN(InboundEDIMessage2) THEN BEGIN
+                  //S/P1083
+                    LastErrorText := GETLASTERRORTEXT();
+                    LastErrorText1 := COPYSTR(LastErrorText, 1, 250);
+                    IF STRLEN(LastErrorText) > 250 THEN
+                      LastErrorText2 := COPYSTR(LastErrorText, 251, 250);
+                    IF STRLEN(LastErrorText) > 500 THEN
+                      LastErrorText3 := COPYSTR(LastErrorText, 501, 250);
+                    IF STRLEN(LastErrorText) > 750 THEN
+                      LastErrorText4 := COPYSTR(LastErrorText, 751, 250);
+                    IF STRLEN(LastErrorText) > 1000 THEN
+                      LastErrorText5 := COPYSTR(LastErrorText, 1001, 250);
+                    IF (STRPOS(UPPERCASE(LastErrorText), 'LOCKED BY') = 0) AND
+                      (STRPOS(UPPERCASE(LastErrorText), 'DEADLOCKED') = 0) THEN BEGIN
+                      //E/P1083
+                      InboundEDIMessage2."NAV Processed" := TRUE;
+                      InboundEDIMessage2."Workflow Send" := TRUE;
+                      // H0552 FX 12.09.13 ++++++++++++++++++++++
+                      InboundEDIMessage2."Error Message 1" := COPYSTR(LastErrorText, 1, 250);
+                      IF STRLEN(LastErrorText) > 250 THEN
+                        InboundEDIMessage2."Error Message 2" := COPYSTR(LastErrorText, 251, 250);
+                      IF STRLEN(LastErrorText) > 500 THEN
+                        InboundEDIMessage2."Error Message 3" := COPYSTR(LastErrorText, 501, 250);
+                      IF STRLEN(LastErrorText) > 1000 THEN
+                        InboundEDIMessage2."Error Message 4" := COPYSTR(LastErrorText, 751, 250);
+                      // H0552 FX 12.09.13 ------------------
+                      InboundEDIMessage2.MODIFY;
+
+                      EDIIntegratorSetup.GET;
+                      AdminMailQueueSetup.GET;
+
+                      AdminMailQueueFunctions.InitMail(AdminMailQueueSetup."EDI Mail Code", Text001);
+                      AdminMailQueueFunctions.AddRecipient(EDIIntegratorSetup."Error Mail Address");
+                      IF EDIIntegratorSetup."Error CC Mail Address" <> '' THEN
+                        AdminMailQueueFunctions.AddRecipientCC(EDIIntegratorSetup."Error CC Mail Address");
+                      // H0960 FX 14.03.14 +++++++++++++++++++++++++++++++++++++++++++++
+                      // AdminMailQueueFunctions.AddSubject(COPYSTR(LastErrorText, 1, 78));
+                      AdminMailQueueFunctions.AddSubject(STRSUBSTNO(Text004, InboundEDIMessage."EDI Message No."));
+                      // H0960 FX 14.03.14 ------------------------------------------
+                      AdminMailQueueFunctions.AddText(Text002 + FORMAT(InboundEDIMessage2."EDI Message No.")
+                      //S/P1083
+                        + Text003);
+                      AdminMailQueueFunctions.AddText(LastErrorText1);
+                      AdminMailQueueFunctions.AddText(LastErrorText2);
+                      AdminMailQueueFunctions.AddText(LastErrorText3);
+                      AdminMailQueueFunctions.AddText(LastErrorText4);
+                      AdminMailQueueFunctions.AddText(LastErrorText5);
+                      //E/P1083
+                      AdminMailQueueFunctions.FinishMail;
+                    //S/P1083
+                    END;
+                    //E/P1083
+                  END;
+                END;
+              END;
+          END;
+        UNTIL InboundEDIMessage.NEXT = 0;
+    END;
+
+    BEGIN
+    {
+      P0939   05.06.2013   gob-dst     Anpassung fÅr VIR Verarbeitung
+      P1083   22.08.2013   gob-dst     Anpassungen fÅr besseres Errorhandling EDI Inbound
+      P1259   12.06.2014   gob-dst     IFTSTA automatisch umwandeln
+      P1262   01.07.2014   gob-dst     Erweiterung Iwofurn INVOIC
+      P1286   06.10.2014   gob-Fuchs   Added automatic Process
+      P1262   30.11.2014   gob-FUCHSK  Parameter String to Filter on Inbound EDI Message
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      *** Module: EDI ***
+      H0552       12.09.13  FX        - Include standard error message into header of EDI error tool
+                                      - Removed hardcoded DEU messages
+                                      - Code cleaned and standardized
+      H0960       14.03.14  FX        Bugfix for EDI Error email
+    }
+    END.
+  }
+}
+

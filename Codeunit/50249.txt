@@ -1,0 +1,884 @@
+OBJECT Codeunit 50249 FOTO - Return Warehouse Mgt
+{
+  OBJECT-PROPERTIES
+  {
+    Date=30.01.15;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=GOB,HME1993;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      WarehouseSetup@1000000001 : Record 5769;
+      NoSeriesManagement@1000000000 : Codeunit 396;
+      HMEText001@1000000003 : TextConst 'ENU=You must specify %1.';
+      HMEText002@1000000004 : TextConst 'ENU=Transfer Order successfully created.';
+      HMEText003@1000000005 : TextConst 'ENU=Are you sure you want to post negative adjustments for%1 location?';
+      GOB001@1000000006 : TextConst 'ENU=The quantity to dispose, is not available on Location "%2" for Item "%1".';
+      NextLineNo@1000000007 : Integer;
+      GOB002@1000000008 : TextConst 'ENU=The location %1 is neither a RHD nor a WHLF Location.';
+      GOB003@1000000002 : TextConst 'ENU=Transfer Order(s) successfully created:\%1';
+
+    PROCEDURE CheckAvailableQuantity@1000000002(VAR rFOTOItemImport@1000000004 : Record 50220);
+    VAR
+      TransferOrderLineL@1000000000 : Record 5741;
+      ItemJournalLineL@1000000002 : Record 83;
+      ItemL@1000000005 : Record 27;
+      QuantityOnTransferOrdersL@1000000001 : Integer;
+      QtyOnItemDisposalJournalsL@1000000003 : Integer;
+      ERR_NO_INVENTORY@1000000006 : TextConst 'ENU="There is no enough inventory of %1 on location %2. "';
+    BEGIN
+      IF rFOTOItemImport.FIND('-') THEN BEGIN
+        REPEAT
+          TransferOrderLineL.RESET;
+          TransferOrderLineL.SETCURRENTKEY("Transfer-from Code","Item No.");
+          // S/P1278
+          TransferOrderLineL.SETRANGE("Transfer-from Code", rFOTOItemImport."Location Code");
+          TransferOrderLineL.SETRANGE("Item No.",rFOTOItemImport."Item No.");
+          // E/P1278
+          TransferOrderLineL.CALCSUMS(Quantity);
+          QuantityOnTransferOrdersL := TransferOrderLineL.Quantity;
+
+          ItemJournalLineL.RESET;
+          ItemJournalLineL.SETCURRENTKEY("Journal Template Name","Journal Batch Name","Entry Type");
+          ItemJournalLineL.SETRANGE("Entry Type",ItemJournalLineL."Entry Type"::"Negative Adjmt.");
+          ItemJournalLineL.SETRANGE("Journal Template Name",WarehouseSetup."Disposal Journal Template Name");
+          ItemJournalLineL.SETRANGE("Journal Batch Name",WarehouseSetup."Disposal Journal Batch Name");
+          ItemJournalLineL.CALCSUMS(Quantity);
+          QtyOnItemDisposalJournalsL := ItemJournalLineL.Quantity;
+
+          // S/P1278
+          ItemL.GET(rFOTOItemImport."Item No.");
+          ItemL.SETRANGE("Location Filter", rFOTOItemImport."Location Code");
+          // E/P1278
+          ItemL.CALCFIELDS(Inventory);
+
+          IF ((QuantityOnTransferOrdersL + QtyOnItemDisposalJournalsL) > ItemL.Inventory) THEN
+            // S/P1278
+            ERROR(STRSUBSTNO(GOB001, rFOTOItemImport."Item No.", rFOTOItemImport."Location Code"));
+            // E/P1278
+
+        UNTIL rFOTOItemImport.NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE PostTransferOrderShipment@1000000003(VAR TransferHeaderV@1000000000 : Record 5740;VAR FotoItemImport@1000000008 : Record 50220);
+    VAR
+      RhenusChangeLogL@1000000003 : Record 50070;
+      TransferLineL@1000000006 : Record 5741;
+      LocationL@1000000010 : Record 14;
+      TransferOrderPostShipmentL@1000000001 : Codeunit 5704;
+      ReleaseTransferDocumentL@1000000002 : Codeunit 5708;
+      MessageTextL@1000000004 : Text[80];
+      TransferPostShipmentL@1000000007 : Codeunit 5704;
+      RHDExportHeaderEntryNoL@1000000009 : Integer;
+      WHLFExportHeaderEntryNoL@1000000011 : Integer;
+    BEGIN
+      WarehouseSetup.GET;
+      CASE TransferHeaderV."Transfer-to Code" OF
+        //RHD/WHLF To FOTO
+        WarehouseSetup."Foto Studio Location Code": BEGIN
+          //RHD to Foto
+          // S/P1278
+          LocationL.GET(TransferHeaderV."Transfer-from Code");
+          IF LocationL."Rhenus Location" THEN BEGIN
+          // E/P1278
+            TransferLineL.SETRANGE("Document No.",TransferHeaderV."No.");
+            //A/GOB-tri/26.08.14/P1254
+            TransferLineL.SETFILTER("Qty. to Ship",'<>0');
+            //E/GOB-tri/26.08.14/P1254
+
+            IF TransferLineL.FINDFIRST THEN BEGIN
+              RHDExportHeaderEntryNoL := CreateRhenusShipmentHeader(TransferLineL, FotoItemImport);
+              // S/P1282
+              NextLineNo := 0;
+              // E/P1282
+              REPEAT
+                //Create Export Line
+                CreateRhenusShipmentLine(TransferLineL, RHDExportHeaderEntryNoL, FotoItemImport."Purchasing Code");
+              UNTIL TransferLineL.NEXT = 0;
+            END;
+          // S/P1278
+          END;
+          IF LocationL."Docdata Location" THEN BEGIN
+          // E/P1278
+            //Release and post document
+            ReleaseTransferDocumentL.RUN(TransferHeaderV);
+            TransferOrderPostShipmentL.RUN(TransferHeaderV);
+          END;
+          //H1841, P1278 28.01.15 EHN +++++++++++++++++++++++++++++++++++++++++++++++
+          IF LocationL."Is LF Whse." THEN BEGIN
+            TransferLineL.SETRANGE("Document No.",TransferHeaderV."No.");
+            TransferLineL.SETFILTER("Qty. to Ship",'<>0');
+
+            IF TransferLineL.FINDFIRST THEN BEGIN
+              WHLFExportHeaderEntryNoL := CreateWHLFShipmentHeader(TransferLineL, FotoItemImport);
+              NextLineNo := 0;
+              REPEAT
+                //Create Export Line
+                CreateWHLFShipmentLine(TransferLineL, WHLFExportHeaderEntryNoL, FotoItemImport."Purchasing Code");
+              UNTIL TransferLineL.NEXT = 0;
+            END;
+          END;
+
+          IF NOT LocationL."Rhenus Location" AND NOT LocationL."Is LF Whse." THEN
+            ERROR(STRSUBSTNO(GOB002,TransferHeaderV."Transfer-from Code"));
+          //H1841, P1278 28.01.15 EHN -----------------------------------------------
+        END;
+        //Foto To RET
+        WarehouseSetup."Return Warehouse Location Code": BEGIN
+          //Release and post document
+          ReleaseTransferDocumentL.RUN(TransferHeaderV);
+          TransferOrderPostShipmentL.RUN(TransferHeaderV);
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE CreateRhenusShipmentHeader@1000000006(VAR TransferLine@1000000000 : Record 5741;VAR FotoItemImport@1000000003 : Record 50220) EntryNo : Integer;
+    VAR
+      RhdSalesInterfaceMgt@1000000001 : Codeunit 50153;
+      RHDSalesExportHeader@1000000002 : Record 50181;
+      RHDSetup@1000000004 : Record 50177;
+      Location@1000000006 : Record 14;
+    BEGIN
+      //Create KAD-File:
+      RHDSalesExportHeader.INIT;
+      RHDSalesExportHeader."Entry No." := RHDSalesExportHeader.GetNextEntryNo;
+      RHDSalesExportHeader.Status := RHDSalesExportHeader.Status::Creation;
+      RHDSalesExportHeader.INSERT;
+      RHDSalesExportHeader."Document Type" := RHDSalesExportHeader."Document Type"::Order;
+      RHDSalesExportHeader."Document No." := TransferLine."Document No.";
+      RHDSalesExportHeader."Sequence No." := '001';
+      RHDSalesExportHeader."Rhenus Order No." := RHDSalesExportHeader."Document No." + RHDSalesExportHeader."Sequence No.";
+      RHDSalesExportHeader."Transmission Mode" := RHDSalesExportHeader."Transmission Mode"::New;
+      RHDSalesExportHeader."Transmission No." := RhdSalesInterfaceMgt.GetNextTransmissionNo(RHDSalesExportHeader);
+      RHDSalesExportHeader."Branch Code" := RhdSalesInterfaceMgt.GetBrachCodeFromPurchasingCode(FotoItemImport."Purchasing Code");
+      RHDSetup.GET;
+      RHDSalesExportHeader."Record Type" := RHDSetup."Record Type KAK";
+      RHDSalesExportHeader."Website No." := 0;
+      RHDSalesExportHeader.Status := RHDSalesExportHeader.Status::Unprocessed;
+      RHDSalesExportHeader."Insert Timestamp" := CURRENTDATETIME;
+      RHDSalesExportHeader."Process Timestamp" := 0DT;
+      RHDSalesExportHeader.Filename := '';
+
+      Location.GET(WarehouseSetup."Foto Studio Location Code");
+      RHDSalesExportHeader.Salutation := RHDSalesExportHeader.Salutation::Company;
+      RHDSalesExportHeader."Ship-to Name" := Location.Name;
+      RHDSalesExportHeader."Ship-to Name 2" := Location."Name 2";
+
+      RHDSalesExportHeader."Ship-to Address" := Location.Address;
+      RHDSalesExportHeader."Ship-to Address 2" := Location."Address 2";
+      RHDSalesExportHeader."Ship-to City" := Location.City;
+      RHDSalesExportHeader."Ship-to Post Code" := Location."Post Code";
+      RHDSalesExportHeader."Ship-to Country/Region Code" := Location."Country/Region Code";
+      RHDSalesExportHeader."Phone No." := Location."Phone No.";
+      RHDSalesExportHeader."E-Mail" := Location."E-Mail";
+      //ToDo: Customer?
+      RHDSalesExportHeader."Ship-to Customer No." := Location.Code;
+
+      RHDSalesExportHeader."Order Date" := TODAY;
+      RHDSalesExportHeader."Desired Time From" := 0T;
+      RHDSalesExportHeader."Desired Time To" := 0T;
+      RHDSalesExportHeader."Shipment Date" := 0D;
+
+      //H1011 20140327 DMA ++++++++++++++++++++++++++++++++++++++++++++
+      RHDSalesExportHeader."Change Sales Order" := FALSE;
+      //H1011 20140327 DMA --------------------------------------------
+
+      //H1012 20140416 DMA ++++++++++++++++++++++++++++++++++++++++++++
+      RHDSalesExportHeader."Sales Return Order" := FALSE;
+      //H1012 20140416 DMA --------------------------------------------
+      RHDSalesExportHeader.MODIFY;
+
+      EXIT(RHDSalesExportHeader."Entry No.");
+    END;
+
+    PROCEDURE CreateRhenusShipmentLine@1000000007(VAR TransferLine@1000000000 : Record 5741;HeaderEntryNo@1000000001 : Integer;PurchasingCode@1000000005 : Code[10]);
+    VAR
+      RHDSalesExportHeader@1000000002 : Record 50181;
+      RHDSalesExportLine@1000000003 : Record 50182;
+      Purchasing@1000000004 : Record 5721;
+      Item@1000000006 : Record 27;
+      RHDSetup@1000000008 : Record 50177;
+      RhdSalesInterfaceMgt@1000000007 : Codeunit 50153;
+    BEGIN
+      RHDSalesExportHeader.GET(HeaderEntryNo);
+
+      NextLineNo += 10000;
+      RHDSalesExportLine.INIT;
+      RHDSalesExportLine."Entry No." := RHDSalesExportHeader."Entry No.";
+      RHDSalesExportLine."Entry Line No." := NextLineNo;
+      RHDSalesExportLine.INSERT;
+      RHDSalesExportLine."Attached to Document Type" := RHDSalesExportHeader."Document Type";
+      RHDSalesExportLine."Attached to Document No." := RHDSalesExportHeader."Document No.";
+      RHDSetup.GET;
+      RHDSalesExportLine."Record Type" := RHDSetup."Record Type KAP";
+      RHDSalesExportLine.Type := RHDSalesExportLine.Type::Item;
+      RHDSalesExportLine."No." := TransferLine."Item No.";
+      RHDSalesExportLine.Description := TransferLine.Description;
+      RHDSalesExportLine."Attached to Pos. No." := 0;
+      RHDSalesExportLine."Location Code" := TransferLine."Transfer-from Code";
+      RHDSalesExportLine.Quantity := TransferLine.Quantity;
+      IF Purchasing.GET(PurchasingCode) THEN
+        RHDSalesExportLine.Crossdock := Purchasing."RHD Real Crossdocking";
+      //RHDSalesExportLine."Purchase Order No." := SalesLine."Special Order Purchase No.";
+      //RHDSalesExportLine."Purch. Order Line No." := SalesLine."Special Order Purch. Line No.";
+      RHDSalesExportLine."Partial Delivery" := FALSE;
+      RHDSalesExportLine.Barcode := '';
+      RHDSalesExportLine."Purchasing Code" := PurchasingCode;
+      Item.GET(RHDSalesExportLine."No.");
+      Item.CALCFIELDS("Parcels Number");
+      IF Item."Parcels Number" = 0 THEN
+        RHDSalesExportLine."No. of Packages" := 1
+      ELSE
+        RHDSalesExportLine."No. of Packages" := Item."Parcels Number";
+      RHDSalesExportLine."Package Entry No." := 0;
+      RHDSalesExportLine."Pos. No." := RHDSalesExportLine."Entry Line No." / 10000;
+      RHDSalesExportLine."Unit Volume" := RhdSalesInterfaceMgt.GetVolumeRounding(Item."Unit Volume");
+      RHDSalesExportLine."Unit Weight" := Item."Net Weight" * TransferLine."Qty. to Ship";
+
+      //GetPosNoForExportLine(RHDSalesExportHeader,RHDSalesExportLine);
+
+      //H1012 20140416 DMA +++++++++++++++++++++++++++
+      RHDSalesExportLine."Return Line" := FALSE;
+      //H1012 20140416 DMA ---------------------------
+
+      RHDSalesExportLine.MODIFY;
+      // Create Barcodes
+      //RhdSalesInterfaceMgt.CheckAndInsertBarcodes(RHDSalesExportHeader,RHDSalesExportLine,NextLineNo);
+      // Create Assembly
+      //RhdSalesInterfaceMgt.CheckAndInsertAttachedAssembly(RHDSalesExportLine,SalesLine,NextLineNo);
+    END;
+
+    PROCEDURE CreateTransferOrderFOTO@1000000004(VAR FotoItemImport@1000000003 : Record 50220);
+    VAR
+      TransferHeaderL@1000000001 : Record 5740;
+      TransferLineL@1000000004 : Record 5741;
+      rLocationTemp@1000000007 : TEMPORARY Record 14;
+      NoSeriesMngtL@1000000002 : Codeunit 396;
+      LineNoL@1000000005 : Integer;
+      CountL@1000000006 : Integer;
+      CountAll@1000000000 : Integer;
+      Window@1000000008 : Dialog;
+      TransferOrderNos@1000000009 : Text[1024];
+    BEGIN
+      WarehouseSetup.GET;
+      CountL := 1;
+      CountAll := FotoItemImport.COUNT;
+      IF GUIALLOWED THEN BEGIN
+        Window.OPEN('#1#################\#2#################\@3@@@@@@@@@@@@@@@@@@@@\');
+        Window.UPDATE(1,FORMAT(FotoItemImport."Handling Type"));
+        Window.UPDATE(2,FotoItemImport."Item No.");
+        Window.UPDATE(3,ROUND(CountL/CountAll*10000, 1));
+      END;
+
+      // S/P1278
+      IF FotoItemImport.FINDSET THEN
+        REPEAT
+          rLocationTemp.RESET;
+          rLocationTemp.SETRANGE(Code,FotoItemImport."Source Location Code");
+          IF rLocationTemp.ISEMPTY THEN BEGIN
+            rLocationTemp.INIT;
+            rLocationTemp.Code := FotoItemImport."Source Location Code";
+            rLocationTemp.INSERT;
+          END;
+        UNTIL FotoItemImport.NEXT = 0;
+
+      rLocationTemp.RESET;
+      IF rLocationTemp.FINDSET THEN
+        REPEAT
+          FotoItemImport.SETRANGE("Source Location Code",rLocationTemp.Code);
+      // E/P1278
+
+          IF FotoItemImport.FIND('-') THEN BEGIN
+            //H1841 28.01.15 EHN ++++++++++++++++++++++++++++++++++++++++++++++++
+            TransferHeaderL.RESET;
+            TransferHeaderL.INIT;
+            TransferHeaderL.VALIDATE("No. Series",WarehouseSetup."Ret. Whse. Tran. Order Nos.");
+            TransferHeaderL.VALIDATE("No.",NoSeriesMngtL.GetNextNo(WarehouseSetup."Ret. Whse. Tran. Order Nos.",WORKDATE,TRUE));
+            TransferHeaderL.INSERT;
+            TransferHeaderL.VALIDATE("Transfer-from Code",FotoItemImport."Source Location Code");
+            TransferHeaderL.VALIDATE("Transfer-to Code",WarehouseSetup."Foto Studio Location Code");
+            TransferHeaderL.VALIDATE("In-Transit Code", WarehouseSetup."Foto Transit Location Code");
+            //H1993 16.01.15 EHN ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            TransferHeaderL.VALIDATE("Posting Date",FotoItemImport."Posting Date");
+            TransferHeaderL.VALIDATE("Shipment Date",FotoItemImport."Posting Date");
+            //H1993 16.01.15 EHN --------------------------------------------------------------------
+            TransferHeaderL.MODIFY;
+            LineNoL := 10000;
+            //H1841 28.01.15 EHN ------------------------------------------------
+
+            REPEAT
+              IF GUIALLOWED THEN BEGIN
+                Window.UPDATE(2,FotoItemImport."Item No.");
+                Window.UPDATE(3,ROUND(CountL/CountAll*10000, 1));
+              END;
+
+              FotoItemImport.TESTFIELD("Location Code", WarehouseSetup."Foto Studio Location Code");
+              FotoItemImport.TESTFIELD("Source Location Code");
+              //H1993 16.01.15 EHN +++++++++++
+              FotoItemImport.TESTFIELD("Posting Date");
+              //H1993 16.01.15 EHN -----------
+
+              //H1841 28.01.15 EHN ++++++++++++++++++++++++++++++++++++++++++++++++
+              TransferLineL.INIT;
+              TransferLineL."Document No." := TransferHeaderL."No.";
+              TransferLineL."Line No." := LineNoL;
+              LineNoL := LineNoL + 10000;
+              TransferLineL.VALIDATE("Item No.",FotoItemImport."Item No.");
+              TransferLineL.VALIDATE(Quantity,FotoItemImport."Imported Quantity");
+              //Initialize quantity to ship!
+              TransferLineL.VALIDATE("Qty. to Ship",FotoItemImport."Imported Quantity");
+              TransferLineL.INSERT(TRUE);
+              IF GUIALLOWED THEN BEGIN
+                Window.UPDATE(2,FotoItemImport."Item No.");
+                Window.UPDATE(3,ROUND(CountL/CountAll*10000, 1));
+              END;
+              CountL += 1;
+              //H1841 28.01.15 EHN ------------------------------------------------
+
+            UNTIL FotoItemImport.NEXT = 0;
+
+          END;
+
+          IF WarehouseSetup."Post Trans. Order / Create WEA" THEN
+            PostTransferOrderShipment(TransferHeaderL, FotoItemImport);
+
+      // S/P1278
+          TransferOrderNos += TransferHeaderL."No." + '\';
+
+          FotoItemImport.DELETEALL;
+          COMMIT; //! If error after posting Transfer Orders, the imported Lines are still deleted
+        UNTIL rLocationTemp.NEXT = 0;
+
+      // E/P1278
+      MESSAGE(STRSUBSTNO(GOB003,TransferOrderNos));
+
+      IF GUIALLOWED THEN
+        Window.CLOSE;
+    END;
+
+    PROCEDURE CreateTransferOrderRET@1000000000(VAR FotoItemImport@1000000003 : Record 50220);
+    VAR
+      TransferHeaderL@1000000001 : Record 5740;
+      TransferLineL@1000000004 : Record 5741;
+      NoSeriesMngtL@1000000002 : Codeunit 396;
+      LineNoL@1000000005 : Integer;
+      CountL@1000000006 : Integer;
+      CountAll@1000000000 : Integer;
+      Window@1000000007 : Dialog;
+    BEGIN
+      WarehouseSetup.GET;
+      CountL := 1;
+      CountAll := FotoItemImport.COUNT;
+      IF GUIALLOWED THEN BEGIN
+        Window.OPEN('#1#################\#2#################\@3@@@@@@@@@@@@@@@@@@@@\');
+        Window.UPDATE(1,FORMAT(FotoItemImport."Handling Type"));
+        Window.UPDATE(2,FotoItemImport."Item No.");
+        Window.UPDATE(3,ROUND(CountL/CountAll*10000, 1));
+      END;
+
+      IF FotoItemImport.FIND('-') THEN BEGIN
+        REPEAT
+          IF GUIALLOWED THEN BEGIN
+            Window.UPDATE(2,FotoItemImport."Item No.");
+            Window.UPDATE(3,ROUND(CountL/CountAll*10000, 1));
+          END;
+
+          FotoItemImport.TESTFIELD("Location Code", WarehouseSetup."Return Warehouse Location Code");
+          FotoItemImport.TESTFIELD("Source Location Code", WarehouseSetup."Foto Studio Location Code");
+          //H1993 16.01.15 EHN +++++++++++
+          FotoItemImport.TESTFIELD("Posting Date");
+          //H1993 16.01.15 EHN -----------
+
+          TransferHeaderL.RESET;
+          TransferHeaderL.INIT;
+          TransferHeaderL.VALIDATE("No. Series",WarehouseSetup."Ret. Whse. Tran. Order Nos.");
+          TransferHeaderL.VALIDATE("No.",NoSeriesMngtL.GetNextNo(WarehouseSetup."Ret. Whse. Tran. Order Nos.",WORKDATE,TRUE));
+          TransferHeaderL.INSERT;
+          TransferHeaderL.VALIDATE("Transfer-from Code", WarehouseSetup."Foto Studio Location Code");
+          TransferHeaderL.VALIDATE("Transfer-to Code",WarehouseSetup."Return Warehouse Location Code");
+          TransferHeaderL.VALIDATE("In-Transit Code", WarehouseSetup."Ret. Transit Location Code");
+          //H1993 16.01.2015 EHN +++++++++++++++++++++++++++
+          TransferHeaderL.VALIDATE("Posting Date",FotoItemImport."Posting Date");
+          TransferHeaderL.VALIDATE("Shipment Date",FotoItemImport."Posting Date");
+          //H1993 16.01.2015 EHN ---------------------------
+          TransferHeaderL.MODIFY;
+
+          LineNoL := 10000;
+
+          IF FotoItemImport.FIND('-') THEN BEGIN
+            REPEAT
+              TransferLineL.INIT;
+              TransferLineL."Document No." := TransferHeaderL."No.";
+              TransferLineL."Line No." := LineNoL;
+              LineNoL := LineNoL + 10000;
+              TransferLineL.VALIDATE("Item No.",FotoItemImport."Item No.");
+              TransferLineL.VALIDATE(Quantity,FotoItemImport."Imported Quantity");
+              TransferLineL.VALIDATE("Qty. to Ship",FotoItemImport."Imported Quantity");
+              TransferLineL.INSERT(TRUE);
+              IF GUIALLOWED THEN BEGIN
+                Window.UPDATE(2,FotoItemImport."Item No.");
+                Window.UPDATE(3,ROUND(CountL/CountAll*10000, 1));
+              END;
+              CountL += 1;
+            UNTIL FotoItemImport.NEXT = 0;
+          END;
+
+        UNTIL FotoItemImport.NEXT = 0;
+
+      END;
+
+      IF WarehouseSetup."Post Trans. Order / Create WEA" THEN
+          PostTransferOrderShipment(TransferHeaderL, FotoItemImport);
+
+      FotoItemImport.DELETEALL;
+
+      IF GUIALLOWED THEN
+        Window.CLOSE;
+    END;
+
+    PROCEDURE CreateNegativeAdjustments@1000000005(VAR FotoItemImport@1000000003 : Record 50220);
+    VAR
+      ItemJournalLineL@1000000001 : Record 83;
+      ItemJnlPostBatchL@1000000004 : Codeunit 23;
+      NoSeriesMngtL@1000000002 : Codeunit 396;
+      DocumentNoL@1000000000 : Code[20];
+      LineNoL@1000000005 : Integer;
+      CountL@1000000006 : Integer;
+      Window@1000000007 : Dialog;
+    BEGIN
+      WarehouseSetup.GET;
+
+      IF NOT CONFIRM(STRSUBSTNO(HMEText003, WarehouseSetup."Foto Studio Location Code")) THEN
+        EXIT;
+
+      IF GUIALLOWED THEN
+        Window.OPEN('#1####### / #2#######');
+
+      IF GUIALLOWED THEN
+        Window.UPDATE(2,FORMAT(FotoItemImport.COUNT));
+
+      CountL := 1;
+
+      ItemJournalLineL.RESET;
+      ItemJournalLineL.SETRANGE("Journal Template Name",WarehouseSetup."Disposal Journal Template Name");
+      ItemJournalLineL.SETRANGE("Journal Batch Name",WarehouseSetup."Disposal Journal Batch Name");
+      IF ItemJournalLineL.FINDLAST THEN
+        LineNoL := ItemJournalLineL."Line No." + 10000
+      ELSE
+        LineNoL := 10000;
+
+      FotoItemImport.SETRANGE("Handling Type", FotoItemImport."Handling Type"::Disposal);
+      IF FotoItemImport.FIND('-') THEN BEGIN
+        DocumentNoL := NoSeriesMngtL.GetNextNo(WarehouseSetup."Ret. Whse. Item Jnl. Nos.",WORKDATE,FALSE);
+        REPEAT
+          IF GUIALLOWED THEN
+            Window.UPDATE(1,FORMAT(CountL));
+          //H1993 16.01.15 EHN +++++++++++
+          FotoItemImport.TESTFIELD("Posting Date");
+          //H1993 16.01.15 EHN -----------
+
+          ItemJournalLineL.INIT;
+          ItemJournalLineL.VALIDATE("Journal Template Name",WarehouseSetup."Disposal Journal Template Name");
+          ItemJournalLineL.VALIDATE("Journal Batch Name",WarehouseSetup."Disposal Journal Batch Name");
+          ItemJournalLineL.VALIDATE("Line No.",LineNoL);
+          LineNoL += 10000;
+          ItemJournalLineL.VALIDATE("Item No.",FotoItemImport."Item No.");
+          //H1993 16.01.2015 EHN +++++++++++++++++++++++++++++
+          ItemJournalLineL.VALIDATE("Posting Date",FotoItemImport."Posting Date");
+          //H1993 16.01.2015 EHN -----------------------------
+          ItemJournalLineL.VALIDATE("Entry Type",ItemJournalLineL."Entry Type"::"Negative Adjmt.");
+          IF WarehouseSetup."Ret. Whse. Item Jnl. Nos." <> '' THEN
+            ItemJournalLineL.VALIDATE("Document No.",DocumentNoL);
+          ItemJournalLineL.VALIDATE("Location Code", WarehouseSetup."Foto Studio Location Code");
+          ItemJournalLineL.VALIDATE(Quantity,FotoItemImport."Imported Quantity");
+          ItemJournalLineL.INSERT(TRUE);
+
+        UNTIL FotoItemImport.NEXT = 0;
+        FotoItemImport.DELETEALL;
+        COMMIT;
+        IF WarehouseSetup."Post Negative Adjmts." THEN BEGIN
+          NoSeriesMngtL.GetNextNo(WarehouseSetup."Ret. Whse. Item Jnl. Nos.",WORKDATE,TRUE);
+          ItemJournalLineL.RESET;
+          ItemJournalLineL.SETRANGE("Journal Template Name",WarehouseSetup."Disposal Journal Template Name");
+          ItemJournalLineL.SETRANGE("Journal Batch Name",WarehouseSetup."Disposal Journal Batch Name");
+          IF ItemJournalLineL.FINDSET THEN BEGIN
+            ItemJnlPostBatchL.RUN(ItemJournalLineL);
+          END;
+        END;
+
+      END;
+
+      IF GUIALLOWED THEN
+        Window.CLOSE;
+    END;
+
+    PROCEDURE CheckTransferOrder@1000000001(p_RHDSalesImport@1000000007 : Record 50183) : Boolean;
+    VAR
+      SalesHeader@1000000003 : Record 36;
+      TransferHeader@1000000004 : Record 5740;
+      TransferLine@1000000005 : Record 5741;
+      TransferPostShipment@1000000002 : Codeunit 5704;
+      TransferPostReceipt@1000000000 : Codeunit 5705;
+    BEGIN
+      //S /P1254
+      IF p_RHDSalesImport.ISEMPTY THEN
+        EXIT;
+
+      // S/P1282
+      FillOldNewParcelStatusHistory(p_RHDSalesImport);
+      // E/P1282
+
+      IF p_RHDSalesImport."Record Type" <> 'STA' THEN
+        EXIT;
+
+      IF p_RHDSalesImport."Order Status" <> '50' THEN
+        EXIT;
+
+      SalesHeader.SETRANGE("No.",p_RHDSalesImport."Customer Order No. 2");
+      IF NOT SalesHeader.FIND('-') THEN
+        IF TransferHeader.GET(p_RHDSalesImport."Customer Order No. 2") THEN BEGIN
+          TransferLine.SETRANGE(TransferLine."Document No.", TransferHeader."No.");
+          TransferLine.MODIFYALL("Qty. to Ship", 0, TRUE);
+          TransferLine.MODIFYALL("Qty. to Receive", 0, TRUE);
+          TransferLine.SETRANGE(TransferLine."Item No.", p_RHDSalesImport."Item No.");
+          IF TransferLine.FINDFIRST THEN
+            IF (TransferLine."Qty. to Ship" = 0) OR (p_RHDSalesImport.Quantity <> TransferLine."Qty. to Ship") THEN BEGIN
+              TransferLine.VALIDATE("Qty. to Ship", p_RHDSalesImport.Quantity);
+              TransferLine.MODIFY;
+            END;
+          //ToDo: Only Post complete transfer orders
+          TransferPostShipment.SetHideValidationDialog(TRUE);
+          TransferPostShipment.RUN(TransferHeader);
+          //CODEUNIT.RUN(CODEUNIT::"TransferOrder-Post (Yes/No)", TransferHeader);
+          EXIT(TRUE);
+        END;
+      //E /P1254
+    END;
+
+    PROCEDURE "*** HME **********************"@1000000009();
+    BEGIN
+    END;
+
+    PROCEDURE CheckTransferOrderLF@1000000008(WhseLFSalesImportV@1000000007 : Record 50306);
+    VAR
+      SalesHeaderL@1000000003 : Record 36;
+      TransferHeaderL@1000000004 : Record 5740;
+      TransferLineL@1000000005 : Record 5741;
+      TransferPostShipmentL@1000000002 : Codeunit 5704;
+      TransferPostReceiptL@1000000000 : Codeunit 5705;
+    BEGIN
+      //H1408 05.08.14 DMA +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF WhseLFSalesImportV.ISEMPTY THEN
+        EXIT;
+      IF WhseLFSalesImportV."Record Type" <> 'STA' THEN
+        EXIT;
+      IF WhseLFSalesImportV."Record Type" <> '50' THEN
+        EXIT;
+
+      SalesHeaderL.SETRANGE("No.",WhseLFSalesImportV."Customer Order No. 2");
+      IF NOT SalesHeaderL.FIND('-') THEN
+        IF TransferHeaderL.GET(WhseLFSalesImportV."Customer Order No. 2") THEN BEGIN
+          TransferLineL.SETRANGE(TransferLineL."Document No.", TransferHeaderL."No.");
+          TransferLineL.MODIFYALL("Qty. to Ship", 0, TRUE);
+          TransferLineL.MODIFYALL("Qty. to Receive", 0, TRUE);
+          TransferLineL.SETRANGE(TransferLineL."Item No.", WhseLFSalesImportV."Item No.");
+          IF TransferLineL.FINDFIRST THEN
+            IF (TransferLineL."Qty. to Ship" = 0) OR (WhseLFSalesImportV.Quantity <> TransferLineL."Qty. to Ship") THEN BEGIN
+              TransferLineL.VALIDATE("Qty. to Ship", WhseLFSalesImportV.Quantity);
+              TransferLineL.MODIFY;
+            END;
+          TransferPostShipmentL.SetHideValidationDialog(TRUE);
+          TransferPostShipmentL.RUN(TransferHeaderL);
+        END;
+      //H1408 05.08.14 DMA +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    END;
+
+    LOCAL PROCEDURE CreateWHLFShipmentHeader@1000000018(VAR TransferLineR@1000000000 : Record 5741;VAR FotoItemImportR@1000000003 : Record 50220) EntryNo : Integer;
+    VAR
+      WHLFSalesInterfaceMgtL@1000000001 : Codeunit 50303;
+      WHLFSalesExportHeaderL@1000000002 : Record 50304;
+      WHLFSetupL@1000000004 : Record 50300;
+      LocationL@1000000006 : Record 14;
+    BEGIN
+      //H1841 28.01.15 EHN +++++++++++++++++++++++++++++++++++++++++++++++
+
+      //Create KAD-File.
+      WHLFSalesExportHeaderL.INIT;
+      WHLFSalesExportHeaderL."Entry No." := WHLFSalesExportHeaderL.GetNextEntryNo;
+      WHLFSalesExportHeaderL.Status := WHLFSalesExportHeaderL.Status::Creation;
+      WHLFSalesExportHeaderL.INSERT;
+      WHLFSalesExportHeaderL."Document Type" := WHLFSalesExportHeaderL."Document Type"::Order;
+      WHLFSalesExportHeaderL."Document No." := TransferLineR."Document No.";
+      WHLFSalesExportHeaderL."Sequence No." := '001';
+      WHLFSalesExportHeaderL."LF Order No." := WHLFSalesExportHeaderL."Document No." + WHLFSalesExportHeaderL."Sequence No.";
+      WHLFSalesExportHeaderL."Transmission Mode" := WHLFSalesExportHeaderL."Transmission Mode"::New;
+      WHLFSalesExportHeaderL."Transmission No." := WHLFSalesInterfaceMgtL.InsertIntoParcelStatusHistory(WHLFSalesExportHeaderL);
+      WHLFSalesExportHeaderL."Branch Code" := WHLFSalesInterfaceMgtL.GetBrachCodeFromPurchasingCode(FotoItemImportR."Purchasing Code");
+      WHLFSetupL.GET;
+      WHLFSalesExportHeaderL."Record Type" := WHLFSetupL."Record Type KAK";
+      WHLFSalesExportHeaderL."Website No." := 0;
+      WHLFSalesExportHeaderL.Status := WHLFSalesExportHeaderL.Status::Unprocessed;
+      WHLFSalesExportHeaderL."Insert Timestamp" := CURRENTDATETIME;
+      WHLFSalesExportHeaderL."Process Timestamp" := 0DT;
+      WHLFSalesExportHeaderL.Filename := '';
+
+      LocationL.GET(WarehouseSetup."Foto Studio Location Code");
+      WHLFSalesExportHeaderL.Salutation := WHLFSalesExportHeaderL.Salutation::Company;
+      WHLFSalesExportHeaderL."Ship-to Name" := LocationL.Name;
+      WHLFSalesExportHeaderL."Ship-to Name 2" := LocationL."Name 2";
+
+      WHLFSalesExportHeaderL."Ship-to Address" := LocationL.Address;
+      WHLFSalesExportHeaderL."Ship-to Address 2" := LocationL."Address 2";
+      WHLFSalesExportHeaderL."Ship-to City" := LocationL.City;
+      WHLFSalesExportHeaderL."Ship-to Post Code" := LocationL."Post Code";
+      WHLFSalesExportHeaderL."Ship-to Country/Region Code" := LocationL."Country/Region Code";
+      WHLFSalesExportHeaderL."Phone No." := LocationL."Phone No.";
+      WHLFSalesExportHeaderL."E-Mail" := LocationL."E-Mail";
+      WHLFSalesExportHeaderL."Ship-to Customer No." := LocationL.Code;
+
+      WHLFSalesExportHeaderL."Order Date" := TODAY;
+      WHLFSalesExportHeaderL."Desired Time From" := 0T;
+      WHLFSalesExportHeaderL."Desired Time To" := 0T;
+      WHLFSalesExportHeaderL."Shipment Date" := 0D;
+
+      WHLFSalesExportHeaderL."Change Sales Order" := FALSE;
+      WHLFSalesExportHeaderL."Sales Return Order" := FALSE;
+      WHLFSalesExportHeaderL.MODIFY;
+
+      EXIT(WHLFSalesExportHeaderL."Entry No.");
+      //H1841 28.01.15 EHN -----------------------------------------------
+    END;
+
+    PROCEDURE CreateWHLFShipmentLine@1000000017(VAR TransferLineR@1000000000 : Record 5741;HeaderEntryNoV@1000000001 : Integer;PurchasingCodeV@1000000005 : Code[10]);
+    VAR
+      WHLFSalesExportHeaderL@1000000002 : Record 50304;
+      WHLFSalesExportLineL@1000000003 : Record 50305;
+      PurchasingL@1000000004 : Record 5721;
+      ItemL@1000000006 : Record 27;
+      WHLFSetupL@1000000008 : Record 50300;
+      WHLFSalesInterfaceMgtL@1000000007 : Codeunit 50303;
+    BEGIN
+      //H1841 28.01.15 EHN +++++++++++++++++++++++++++++++++++++++++++++++
+      WHLFSalesExportHeaderL.GET(HeaderEntryNoV);
+
+      NextLineNo += 10000;
+      WHLFSalesExportLineL.INIT;
+      WHLFSalesExportLineL."Entry No." := WHLFSalesExportHeaderL."Entry No.";
+      WHLFSalesExportLineL."Entry Line No." := NextLineNo;
+      WHLFSalesExportLineL.INSERT;
+      WHLFSalesExportLineL."Attached to Document Type" := WHLFSalesExportHeaderL."Document Type";
+      WHLFSalesExportLineL."Attached to Document No." := WHLFSalesExportHeaderL."Document No.";
+      WHLFSetupL.GET;
+      WHLFSalesExportLineL."Record Type" := WHLFSetupL."Record Type KAP";
+      WHLFSalesExportLineL.Type := WHLFSalesExportLineL.Type::Item;
+      WHLFSalesExportLineL."No." := TransferLineR."Item No.";
+      WHLFSalesExportLineL.Description := TransferLineR.Description;
+      WHLFSalesExportLineL."Attached to Pos. No." := 0;
+      WHLFSalesExportLineL."Location Code" := TransferLineR."Transfer-from Code";
+      WHLFSalesExportLineL.Quantity := TransferLineR.Quantity;
+      IF PurchasingL.GET(PurchasingCodeV) THEN
+        WHLFSalesExportLineL.Crossdock := PurchasingL."Whse. LF Real Crossdocking";
+      WHLFSalesExportLineL."Partial Delivery" := FALSE;
+      WHLFSalesExportLineL.Barcode := '';
+      WHLFSalesExportLineL."Purchasing Code" := PurchasingCodeV;
+      ItemL.GET(WHLFSalesExportLineL."No.");
+      ItemL.CALCFIELDS("Parcels Number");
+      IF ItemL."Parcels Number" = 0 THEN
+        WHLFSalesExportLineL."No. of Packages" := 1
+      ELSE
+        WHLFSalesExportLineL."No. of Packages" := ItemL."Parcels Number";
+      WHLFSalesExportLineL."Pos. No." := WHLFSalesExportLineL."Entry Line No." / 10000;
+      WHLFSalesExportLineL."Unit Volume" := WHLFSalesInterfaceMgtL.GetVolumeRounding(ItemL."Unit Volume");
+      WHLFSalesExportLineL."Unit Weight" := ItemL."Net Weight" * TransferLineR."Qty. to Ship";
+      WHLFSalesExportLineL."Shipping Agent Code" := WHLFSalesExportHeaderL."Ship-to Customer No.";
+
+      WHLFSalesExportLineL.MODIFY;
+      //H1841 28.01.15 EHN -----------------------------------------------
+    END;
+
+    PROCEDURE "***P1282***"@1000000010();
+    BEGIN
+    END;
+
+    PROCEDURE FillOldNewParcelStatusHistory@1000000011(pRHDSalesImport@1000000005 : Record 50183);
+    VAR
+      FPCGeneralSetup@1000000000 : Record 50055;
+      DHLParcelStatusHistory@1000000002 : Record 50021;
+      DHLParcelStatusHistoryCheck@1000000001 : Record 50021;
+      ParcelStatusHistory@1000000007 : Record 80013;
+      TransferLine@1000000006 : Record 5741;
+      CUParcelStatusHistoryMgmt@1000000015 : Codeunit 80011;
+      RecRef@1000000014 : RecordRef;
+      GoOn@1000000003 : Boolean;
+      Text004@1000000004 : TextConst 'DEU=Der Status %1 fÅr die Auftragszeile: "Belegnr.: %2, Zeilennr. %3" wurde bereits mit dem Zeitstempel %4 eingelesen.;ENU=The status %1 was already imported for Sales Line: "Order No.: %2, Line No.: %3" with timestamp %4.';
+      DateL@1000000013 : Date;
+      TimeL@1000000012 : Time;
+      DateStrL@1000000011 : Text[30];
+      DayL@1000000010 : Integer;
+      MonthL@1000000009 : Integer;
+      YearL@1000000008 : Integer;
+    BEGIN
+      FPCGeneralSetup.GET;
+
+      CLEAR(GoOn);
+      CASE FPCGeneralSetup."Active Parcel Status History" OF
+        FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old":
+          BEGIN
+            // S/ P1282
+            DHLParcelStatusHistoryCheck.SETRANGE("Document Type",DHLParcelStatusHistory."Document Type"::"Transfer Order");
+            DHLParcelStatusHistoryCheck.SETRANGE("Document No.",pRHDSalesImport."Customer Order No. 2");
+            DHLParcelStatusHistoryCheck.SETRANGE("Document Line No.",pRHDSalesImport."Order Pos. No." * 10000);
+            // E/ P1282
+            DHLParcelStatusHistoryCheck.SETRANGE("Status Code",pRHDSalesImport."Order Status");
+            DHLParcelStatusHistoryCheck.SETRANGE("Import Time Stamp",pRHDSalesImport."Import Timestamp");
+            IF DHLParcelStatusHistoryCheck.ISEMPTY THEN
+              GoOn := TRUE;
+          END;
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+        FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History":
+          BEGIN
+            WITH ParcelStatusHistory DO BEGIN
+              RESET;
+              SETRANGE("Document Type","Document Type"::"Transfer Order");
+              SETRANGE("Document No.",pRHDSalesImport."Customer Order No. 2");
+              SETRANGE("Document Line No.",pRHDSalesImport."Order Pos. No." * 10000);
+              SETRANGE("Status Sub Code",pRHDSalesImport."Order Status");
+              SETRANGE("Timestamp Interface",pRHDSalesImport."Import Timestamp");
+              IF ISEMPTY THEN
+                GoOn := TRUE;
+            END;
+          END;
+      END;
+
+      IF NOT GoOn THEN BEGIN
+        ERROR(
+          STRSUBSTNO(
+          Text004,
+          pRHDSalesImport."Order Status",
+          pRHDSalesImport."Customer Order No. 2",
+          pRHDSalesImport."Order Pos. No." * 10000,
+          pRHDSalesImport."Import Timestamp"));
+      END ELSE BEGIN
+        IF FPCGeneralSetup."Active Parcel Status History" IN
+          [FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+           FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+           FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New"]
+        THEN BEGIN
+          DHLParcelStatusHistory.INIT;
+          DHLParcelStatusHistory."Entry No." := 0;
+          IF STRPOS(pRHDSalesImport."Carry Out Date",'-') <> 0 THEN BEGIN
+            IF EVALUATE(DateL,COPYSTR(pRHDSalesImport."Carry Out Date",1,STRPOS(pRHDSalesImport."Carry Out Date",'-')-1)) AND
+               EVALUATE(TimeL,COPYSTR(pRHDSalesImport."Carry Out Date",STRPOS(pRHDSalesImport."Carry Out Date",'-')+1)) THEN
+              DHLParcelStatusHistory."Time Stamp" := CREATEDATETIME(DateL,TimeL)
+          END;
+          IF (DHLParcelStatusHistory."Time Stamp"  = 0DT) AND (STRPOS(pRHDSalesImport.Timestamp,'-') <> 0) THEN BEGIN
+            IF EVALUATE(DateL,COPYSTR(pRHDSalesImport.Timestamp,1,STRPOS(pRHDSalesImport.Timestamp,'-')-1)) AND
+               EVALUATE(TimeL,COPYSTR(pRHDSalesImport.Timestamp,STRPOS(pRHDSalesImport.Timestamp,'-')+1)) THEN
+              DHLParcelStatusHistory."Time Stamp" := CREATEDATETIME(DateL,TimeL)
+          END;
+          IF DHLParcelStatusHistory."Time Stamp"  = 0DT THEN
+            DHLParcelStatusHistory."Time Stamp" := CURRENTDATETIME;
+
+          DHLParcelStatusHistory."Status Code" := pRHDSalesImport."Order Status";
+          // S/ P1282
+          DHLParcelStatusHistory."Document Type" := DHLParcelStatusHistory."Document Type"::"Transfer Order";
+          DHLParcelStatusHistory."Document No." := pRHDSalesImport."Customer Order No. 2";
+          DHLParcelStatusHistory."Document Line No." := pRHDSalesImport."Order Pos. No." * 10000;
+          // E/ P1282
+          DHLParcelStatusHistory."Rhenus Entry" := TRUE;
+          DHLParcelStatusHistory."Import Time Stamp" := pRHDSalesImport."Import Timestamp";
+          DHLParcelStatusHistory."Time Difference" := DHLParcelStatusHistory."Time Stamp" - DHLParcelStatusHistory."Import Time Stamp";
+          EVALUATE(DHLParcelStatusHistory."Order Date",pRHDSalesImport."Order Date");
+          DHLParcelStatusHistory."Shipment through" := DHLParcelStatusHistory."Shipment through"::Rhenus;
+          DHLParcelStatusHistory."Delivery Time Slot-from" := pRHDSalesImport."Delivery Time Slot-from";
+          DHLParcelStatusHistory."Delivery Time Slot-to"   := pRHDSalesImport."Delivery Time Slot-to";
+          DHLParcelStatusHistory.INSERT(TRUE);
+        END;
+
+        IF FPCGeneralSetup."Active Parcel Status History" IN
+           [FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+           FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+           FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History"]
+        THEN BEGIN
+          CLEAR(RecRef);
+          CLEAR(CUParcelStatusHistoryMgmt);
+          IF TransferLine.GET(
+            pRHDSalesImport."Customer Order No. 2",
+            pRHDSalesImport."Order Pos. No." * 10000)
+          THEN
+            RecRef.GETTABLE(TransferLine);
+
+          IF NOT RecRef.ISEMPTY THEN BEGIN
+            CLEAR(CUParcelStatusHistoryMgmt);
+            CUParcelStatusHistoryMgmt.SetDateTimeGlobal(pRHDSalesImport."Import Timestamp");
+            DateStrL := DELCHR(pRHDSalesImport."Order Date",'=');
+            IF (DateStrL <> '') AND (DELCHR(pRHDSalesImport."Order Status",'=') = '3') THEN BEGIN
+              DateStrL := CONVERTSTR(pRHDSalesImport."Order Date",'.',',');
+              EVALUATE(DayL, SELECTSTR(1,DateStrL));
+              EVALUATE(MonthL, SELECTSTR(2,DateStrL));
+              EVALUATE(YearL, SELECTSTR(3,DateStrL));
+              CUParcelStatusHistoryMgmt.SetDateGlobals(0D,DMY2DATE(DayL,MonthL,YearL),0D);
+            END;
+            CUParcelStatusHistoryMgmt.FillHistoryByDocLine(
+            RecRef,                          // Rec
+            1,                               // p_Command
+            0,                               // p_InfoDirection::  Incoming,Outgoing
+            5,                               // p_UsedInterface::  ,EDI,DHL,DocData,Drop Shipment,Rhenus,UPS
+            'RHEHD',                         // p_ShippingAgentCode
+            '',                              // p_TrackingCode
+            '',                              // p_PieceCode
+            '',                              // p_StatusCode
+            pRHDSalesImport."Order Status",  // p_StatusRICCode
+            '',                              // p_Comment
+            0);                              // p_HowToHandleStatusDescription
+          END;
+        END;
+      END;
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------------+
+      |                   ∏  Copyright                   |
+      |       GOB Software & Systeme GmbH & Co. KG       |
+      +--------------------------------------------------+
+      |                      home24                      |
+      +--------------------------------------------------+
+
+      Project   Date        Consultant  Comment
+      ------------------------------------------------------
+      P1254     11.06.14    gob-tri     Object Created from "RET - Return Warehouse Mngt"
+      P1254     13.06.14    gob-rhg     New Function: Check Transfer Order
+      P1254     26.08.14    gob-tri     Wrong filter-criteria: "Quantity Shipped"
+      P1278     11.09.14    GOB-AEL     Transfer Order per Location Code, Location Code from imported line
+      P1282     24.09.14    gob-ael     Changes: NextLineNo := 0 instead of 10000
+                                        New function: FillOldNewParcelStatusHistory
+      P1282     21.10.14    gob-ael     Changes: use renamed fields instead of new (deleted) fields
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+      H1408       05.08.14    DMA      Copy RHD Interface, rename and implement as Whs LF Interface, NEWFUNCTION
+      H1993       16.01.15    EHN      BUG - Inventory has been posted to wrong month Return whs
+      H1841       28.01.15    EHN      Transfers from LF to FOTO
+    }
+    END.
+  }
+}
+

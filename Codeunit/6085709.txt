@@ -1,0 +1,1255 @@
+OBJECT Codeunit 6085709 Purch. Doc. - Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=23.01.14;
+    Time=01:00:00;
+    Version List=DCW13.70.00.3.50.06;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      CaptureMgnt@1000000000 : Codeunit 6085576;
+      Text022@1000000023 : TextConst 'DEU=Der Beleg wurde nicht gefunden;ENU=The document was not found.';
+      Text024@161024020 : TextConst 'DEU=Vollst„ndige Zuordnung;ENU=Completely Receipt Match';
+      Text025@161024021 : TextConst 'DEU=Teilweise Zuordnung;ENU=Partial Receipt Match';
+      Text026@161024022 : TextConst 'DEU=Keine Zuordnung;ENU=No Receipt Match';
+
+    PROCEDURE GetIsInvoice@1000000000(VAR Document@1000000000 : Record 6085590) : Boolean;
+    VAR
+      Field@1000000001 : Record 6085580;
+      FieldRule@1000000002 : Record 6085583;
+    BEGIN
+      Field.GET(Document."Template No.",Field.Type::Header,'DOCTYPE');
+      CaptureMgnt.FilterRule(Field,FieldRule);
+      FieldRule.FINDFIRST;
+      EXIT(UPPERCASE(FieldRule.Rule) <> UPPERCASE(CaptureMgnt.GetText(Document,Field.Type::Header,'DOCTYPE',0)));
+    END;
+
+    PROCEDURE GetDocumentNo@1000000001(VAR Document@1000000000 : Record 6085590) : Code[50];
+    VAR
+      Field@161024012 : Record 6085580;
+    BEGIN
+      EXIT(COPYSTR(CaptureMgnt.GetText(Document,Field.Type::Header,'DOCNO',0),1,50));
+    END;
+
+    PROCEDURE GetDocumentDate@1000000003(VAR Document@1000000000 : Record 6085590) : Date;
+    VAR
+      Field@161024012 : Record 6085580;
+    BEGIN
+      EXIT(CaptureMgnt.GetDate(Document,Field.Type::Header,'DOCDATE',0));
+    END;
+
+    PROCEDURE GetDueDate@1000000002(VAR Document@1000000000 : Record 6085590) : Date;
+    VAR
+      Field@161024012 : Record 6085580;
+    BEGIN
+      EXIT(CaptureMgnt.GetDate(Document,Field.Type::Header,'DUEDATE',0));
+    END;
+
+    PROCEDURE GetOurContact@1000000004(VAR Document@1000000000 : Record 6085590) : Text[250];
+    VAR
+      Field@161024012 : Record 6085580;
+    BEGIN
+      EXIT(CaptureMgnt.GetText(Document,Field.Type::Header,'OURCONTACT',0));
+    END;
+
+    PROCEDURE GetOurDocumentNo@1000000005(VAR Document@1000000000 : Record 6085590) : Text[250];
+    VAR
+      Field@161024012 : Record 6085580;
+    BEGIN
+      EXIT(CaptureMgnt.GetText(Document,Field.Type::Header,'OURDOCNO',0));
+    END;
+
+    PROCEDURE GetCurrencyCode@1000000006(VAR Document@1000000000 : Record 6085590) : Code[20];
+    VAR
+      Field@161024012 : Record 6085580;
+    BEGIN
+      EXIT(COPYSTR(CaptureMgnt.GetText(Document,Field.Type::Header,'CURRCODE',0),1,20));
+    END;
+
+    PROCEDURE GetAmountExclVAT@1000000007(VAR Document@1000000000 : Record 6085590) : Decimal;
+    VAR
+      Field@161024012 : Record 6085580;
+    BEGIN
+      EXIT(CaptureMgnt.GetDecimal(Document,Field.Type::Header,'AMOUNTEXCLVAT',0));
+    END;
+
+    PROCEDURE GetAllAmountsExclVAT@161024023(VAR Document@1000000000 : Record 6085590) TotalAmount : Decimal;
+    VAR
+      Field@161024012 : Record 6085580;
+    BEGIN
+      Field.SETRANGE("Template No.",Document."Template No.");
+      Field.SETRANGE(Type,Field.Type::Header);
+      Field.SETFILTER("Transfer Amount to Purch. Doc.",'<>%1',Field."Transfer Amount to Purch. Doc."::" ");
+      Field.SETRANGE("Subtract from Amount Field",'');
+      Field.SETRANGE("Data Type",Field."Data Type"::Number);
+      IF Field.FINDFIRST THEN
+        REPEAT
+          TotalAmount := TotalAmount + CaptureMgnt.GetDecimal(Document,Field.Type::Header,Field.Code,0);
+        UNTIL Field.NEXT = 0;
+    END;
+
+    PROCEDURE GetAmountInclVAT@1000000008(VAR Document@1000000000 : Record 6085590) : Decimal;
+    VAR
+      Field@161024012 : Record 6085580;
+    BEGIN
+      EXIT(CaptureMgnt.GetDecimal(Document,Field.Type::Header,'AMOUNTINCLVAT',0));
+    END;
+
+    PROCEDURE GetVATAmount@1000000009(VAR Document@1000000000 : Record 6085590) : Decimal;
+    VAR
+      Field@161024012 : Record 6085580;
+    BEGIN
+      EXIT(CaptureMgnt.GetDecimal(Document,Field.Type::Header,'VATAMOUNT',0));
+    END;
+
+    PROCEDURE GetLineTotalHeaderAmount@1000000010(VAR Document@1000000000 : Record 6085590) : Decimal;
+    VAR
+      Template@161024012 : Record 6085579;
+    BEGIN
+      Template.GET(Document."Template No.");
+      Template."Line Total Header Formula" := CaptureMgnt.CalcFieldFormula(Document,Template."Line Total Header Formula",TRUE,0);
+      EXIT(CaptureMgnt.CalcExpression(Template."Line Total Header Formula"));
+    END;
+
+    PROCEDURE GetAmountToMatch@161024031(VAR Document@161024012 : Record 6085590) Amount : Decimal;
+    VAR
+      Field@161024013 : Record 6085580;
+      TemplField@161024014 : Record 6085580;
+    BEGIN
+      Field.SETRANGE("Template No.",Document."Template No.");
+      Field.SETRANGE(Type,Field.Type::Header);
+      Field.SETRANGE("Data Type",Field."Data Type"::Number);
+      Field.SETRANGE("Transfer Amount to Purch. Doc.",Field."Transfer Amount to Purch. Doc."::"If lines are not recognised");
+      Field.SETRANGE("Subtract from Amount Field",'');
+
+      IF Field.FINDFIRST THEN
+        REPEAT
+          Amount := Amount + CaptureMgnt.GetDecimal(Document,Field.Type,Field.Code,0);
+
+      // *****************************************************************************************************************************
+          // FIND POTENTIAL AMOUNTS (FROM OTHER TEMPLATE FIELDS) TO BE SUBTRACTED
+      // *****************************************************************************************************************************
+          TemplField.SETRANGE("Template No.",Field."Template No.");
+          TemplField.SETRANGE(Type,Field.Type);
+          TemplField.SETRANGE("Subtract from Amount Field",Field.Code);
+          IF TemplField.FINDFIRST THEN
+            REPEAT
+              Amount := Amount - CaptureMgnt.GetDecimal(Document,TemplField.Type,TemplField.Code,0);
+            UNTIL TemplField.NEXT = 0;
+        UNTIL Field.NEXT = 0;
+    END;
+
+    PROCEDURE GetPaymentId@1000000011(VAR Document@1000000000 : Record 6085590) : Text[50];
+    VAR
+      Field@161024012 : Record 6085580;
+    BEGIN
+      EXIT(COPYSTR(CaptureMgnt.GetText(Document,Field.Type::Header,'PAYMENT-ID',0),1,50));
+    END;
+
+    PROCEDURE GetPostingDescription@1000000012(VAR Document@1000000000 : Record 6085590) : Text[250];
+    VAR
+      Field@161024012 : Record 6085580;
+    BEGIN
+      EXIT(CaptureMgnt.GetText(Document,Field.Type::Header,'POSTINGDESC',0));
+    END;
+
+    PROCEDURE GetGLAccountNo@161024022(VAR Document@1000000000 : Record 6085590;Suffex@161024012 : Code[10]) : Text[250];
+    VAR
+      Field@161024013 : Record 6085580;
+    BEGIN
+      EXIT(CaptureMgnt.GetText(Document,Field.Type::Header,'GLACCOUNTNO' + Suffex,0));
+    END;
+
+    PROCEDURE GetLineAccountNo@1000000013(VAR Document@1000000000 : Record 6085590;LineNo@1000000001 : Integer) : Code[250];
+    VAR
+      Field@161024012 : Record 6085580;
+    BEGIN
+      EXIT(CaptureMgnt.GetText(Document,Field.Type::Line,'NO',LineNo));
+    END;
+
+    PROCEDURE GetLineDescription@1000000014(VAR Document@1000000001 : Record 6085590;LineNo@1000000000 : Integer) : Text[250];
+    VAR
+      Field@161024012 : Record 6085580;
+    BEGIN
+      EXIT(CaptureMgnt.GetText(Document,Field.Type::Line,'DESC',LineNo));
+    END;
+
+    PROCEDURE GetLineQuantity@1000000015(VAR Document@1000000001 : Record 6085590;LineNo@1000000000 : Integer) : Decimal;
+    VAR
+      Field@161024012 : Record 6085580;
+    BEGIN
+      EXIT(CaptureMgnt.GetDecimal(Document,Field.Type::Line,'QUANTITY',LineNo));
+    END;
+
+    PROCEDURE GetLineUnitCost@1000000016(VAR Document@1000000001 : Record 6085590;LineNo@1000000000 : Integer) : Decimal;
+    VAR
+      Field@161024012 : Record 6085580;
+    BEGIN
+      EXIT(CaptureMgnt.GetDecimal(Document,Field.Type::Line,'UNITCOST',LineNo));
+    END;
+
+    PROCEDURE GetLineDiscAmount@1000000017(VAR Document@1000000001 : Record 6085590;LineNo@1000000000 : Integer) : Decimal;
+    VAR
+      Field@161024012 : Record 6085580;
+    BEGIN
+      EXIT(CaptureMgnt.GetDecimal(Document,Field.Type::Line,'DISCAMOUNT',LineNo));
+    END;
+
+    PROCEDURE GetLineDiscPct@1000000018(VAR Document@1000000001 : Record 6085590;LineNo@1000000000 : Integer) : Decimal;
+    VAR
+      Field@161024012 : Record 6085580;
+    BEGIN
+      EXIT(CaptureMgnt.GetDecimal(Document,Field.Type::Line,'DISCPCT',LineNo));
+    END;
+
+    PROCEDURE GetLineAmount@1000000019(VAR Document@1000000001 : Record 6085590;LineNo@1000000000 : Integer) : Decimal;
+    VAR
+      Field@161024012 : Record 6085580;
+    BEGIN
+      EXIT(CaptureMgnt.GetDecimal(Document,Field.Type::Line,'LINEAMOUNT',LineNo));
+    END;
+
+    PROCEDURE GetOurDocNoDesc@1000000025(VAR Document@1000000000 : Record 6085590) : Text[250];
+    VAR
+      Field@161024012 : Record 6085580;
+    BEGIN
+      IF Field.GET(Document."Template No.",Field.Type::Header,'OURDOCNO') THEN
+        EXIT(Field."Field Name");
+    END;
+
+    PROCEDURE GetAmountExclVATDesc@1000000027(VAR Document@1000000000 : Record 6085590) : Text[250];
+    VAR
+      Field@161024012 : Record 6085580;
+    BEGIN
+      IF Field.GET(Document."Template No.",Field.Type::Header,'AMOUNTEXCLVAT') THEN
+        EXIT(Field."Field Name");
+    END;
+
+    PROCEDURE GetDocDateDesc@1000000026(VAR Document@1000000000 : Record 6085590) : Text[250];
+    VAR
+      Field@161024012 : Record 6085580;
+    BEGIN
+      IF Field.GET(Document."Template No.",Field.Type::Header,'DOCDATE') THEN
+        EXIT(Field."Field Name");
+    END;
+
+    PROCEDURE GetDueDateDesc@1000000029(VAR Document@1000000000 : Record 6085590) : Text[250];
+    VAR
+      Field@161024012 : Record 6085580;
+    BEGIN
+      IF Field.GET(Document."Template No.",Field.Type::Header,'DUEDATE') THEN
+        EXIT(Field."Field Name");
+    END;
+
+    PROCEDURE AutoMatch@1000000023(VAR Document@1000000000 : Record 6085590);
+    BEGIN
+      AutoMatchWithOrderNo(Document,'');
+    END;
+
+    PROCEDURE AutoMatchWithOrderNo@161024048(VAR Document@1000000000 : Record 6085590;OrderNo@161024016 : Code[20]);
+    VAR
+      Field@161024014 : Record 6085580;
+      Comment@1000000001 : Record 6085594;
+      Template@161024015 : Record 6085579;
+      MatchedAmount@161024013 : Decimal;
+      Matched@161024012 : Boolean;
+    BEGIN
+      Document.DeleteComments(Comment.Area::Match);
+      IF GetIsInvoice(Document) THEN
+        Matched := AutoMatchReceipt(Document,OrderNo)
+      ELSE
+        Matched := AutoMatchReturnShpt(Document,OrderNo);
+
+      IF Matched THEN BEGIN
+        Document."Match Status" := Document."Match Status"::"Automatically Matched";
+        Document.MODIFY(TRUE);
+
+        Template.GET(Document."Template No.");
+
+        IF GetIsInvoice(Document) THEN
+          MatchedAmount := GetMatchedRcptAmount(Document)
+        ELSE
+          MatchedAmount := GetMatchedShptAmount(Document);
+
+        IF AmountsWithinTolerance(Template,GetAmountToMatch(Document),MatchedAmount) THEN
+          Comment.Add(Document,Field,0,Comment.Area::Match,Comment."Comment Type"::Information,Text024)
+        ELSE
+          Comment.Add(Document,Field,0,Comment.Area::Match,Comment."Comment Type"::Information,Text025)
+      END ELSE
+        Comment.Add(Document,Field,0,Comment.Area::Match,Comment."Comment Type"::Information,Text026);
+    END;
+
+    PROCEDURE AutoMatchReceipt@1000000024(VAR Document@1000000000 : Record 6085590;OrderNo@161024014 : Code[20]) Matched : Boolean;
+    VAR
+      DCSetup@1000000004 : Record 6085573;
+      GLSetup@1000000003 : Record 98;
+      Template@1000000001 : Record 6085579;
+      Field@1000000006 : Record 6085580;
+      PurchRcptLine@1000000002 : Record 121;
+      PurchRcptLine2@161024013 : Record 121;
+      PurchLine@1160040000 : Record 39;
+      DocumentLine@1000000005 : TEMPORARY Record 6085596;
+      PurchDocMatch@1000000016 : Record 6085700;
+      AccountType@1000000011 : Integer;
+      AccountNo@1000000010 : Code[20];
+      VariantCode@1000000009 : Code[10];
+      UnitOfMeasureCode@1000000008 : Code[10];
+      Description@1000000007 : Text[50];
+      Stop@1000000012 : Boolean;
+      MatchQty@1000000013 : Decimal;
+      AvailMatchQty@1000000014 : Decimal;
+      RemMatchQty@1000000015 : Decimal;
+      TotalMatchAmount@161024012 : Decimal;
+    BEGIN
+      PurchDocMatch.SETRANGE("Document No.",Document."No.");
+      PurchDocMatch.DELETEALL(TRUE);
+
+      GLSetup.GET;
+      DCSetup.GET;
+
+      Template.GET(Document."Template No.");
+
+      IF OrderNo = '' THEN
+        OrderNo := COPYSTR(GetOurDocumentNo(Document),1,MAXSTRLEN(PurchRcptLine."Order No."));
+
+      PurchRcptLine.SETCURRENTKEY("Pay-to Vendor No.");
+      PurchRcptLine.SETRANGE("Pay-to Vendor No.",Document.GetSourceID);
+      PurchRcptLine.SETFILTER("Qty. Rcd. Not Invoiced",'<>0');
+
+      IF (GetCurrencyCode(Document) = GLSetup."LCY Code") AND (NOT DCSetup."Fill-out LCY") THEN BEGIN
+        PurchRcptLine.SETRANGE("Currency Code",'');
+      END ELSE
+        PurchRcptLine.SETRANGE("Currency Code",COPYSTR(GetCurrencyCode(Document),1,MAXSTRLEN(PurchRcptLine."Currency Code")));
+
+      Document.BuildTempLinesTable(DocumentLine);
+      IF DocumentLine.ISEMPTY THEN BEGIN
+      // *******************************************************************************************************************************
+        // MATCH WITHOUT LINES
+      // *******************************************************************************************************************************
+        PurchRcptLine.SETRANGE("Order No.",OrderNo);
+        PurchRcptLine2.COPY(PurchRcptLine);
+        IF PurchRcptLine2.FINDFIRST THEN
+          REPEAT
+            PurchRcptLine.SETRANGE("Document No.",PurchRcptLine2."Document No.");
+            IF PurchRcptLine.FINDSET(FALSE,FALSE) THEN
+              REPEAT
+                AvailMatchQty := PurchRcptLine."Qty. Rcd. Not Invoiced" - GetRcptLineMatchedQty(PurchRcptLine);
+                IF AvailMatchQty <> 0 THEN BEGIN
+                  IF (PurchLine."Document Type" <> PurchLine."Document Type"::Order) OR
+                    (PurchLine."No." <> PurchRcptLine."Order No.") OR
+                    (PurchLine."Line No." <> PurchRcptLine."Order Line No.")
+                  THEN
+                    PurchLine.GET(PurchLine."Document Type"::Order,PurchRcptLine."Order No.",PurchRcptLine."Order Line No.");
+                  PurchDocMatch.INIT;
+                  PurchDocMatch."Document No." := Document."No.";
+                  PurchDocMatch."Document Line No." := 0;
+                  PurchDocMatch."Purch. Doc. Type" := PurchDocMatch."Purch. Doc. Type"::Receipt;
+                  PurchDocMatch."Purch. Doc. No." := PurchRcptLine."Document No.";
+                  PurchDocMatch."Purch. Line No." := PurchRcptLine."Line No.";
+                  PurchDocMatch.Quantity := AvailMatchQty;
+                  PurchDocMatch."Direct Unit Cost" := PurchLine."Direct Unit Cost";
+                  PurchDocMatch."Line Discount %" := PurchLine."Line Discount %";
+                  PurchDocMatch.INSERT;
+
+                  Matched := TRUE;
+                END;
+              UNTIL PurchRcptLine.NEXT = 0;
+
+              IF (AmountsWithinTolerance(Template,GetAmountToMatch(Document),GetMatchedRcptAmount(Document))) AND Matched THEN
+                EXIT(TRUE)
+              ELSE BEGIN
+                PurchDocMatch.SETRANGE("Document No.",Document."No.");
+                PurchDocMatch.DELETEALL(TRUE);
+              END;
+            PurchRcptLine2 := PurchRcptLine;
+          UNTIL PurchRcptLine2.NEXT = 0;
+
+        PurchRcptLine.SETRANGE("Document No.");
+        IF PurchRcptLine.FINDSET(FALSE,FALSE) THEN
+          REPEAT
+            AvailMatchQty := PurchRcptLine."Qty. Rcd. Not Invoiced" - GetRcptLineMatchedQty(PurchRcptLine);
+            IF AvailMatchQty <> 0 THEN BEGIN
+              IF (PurchLine."Document Type" <> PurchLine."Document Type"::Order) OR
+                (PurchLine."No." <> PurchRcptLine."Order No.") OR
+                (PurchLine."Line No." <> PurchRcptLine."Order Line No.")
+              THEN
+                PurchLine.GET(PurchLine."Document Type"::Order,PurchRcptLine."Order No.",PurchRcptLine."Order Line No.");
+
+              PurchDocMatch.INIT;
+              PurchDocMatch."Document No." := Document."No.";
+              PurchDocMatch."Document Line No." := 0;
+              PurchDocMatch."Purch. Doc. Type" := PurchDocMatch."Purch. Doc. Type"::Receipt;
+              PurchDocMatch."Purch. Doc. No." := PurchRcptLine."Document No.";
+              PurchDocMatch."Purch. Line No." := PurchRcptLine."Line No.";
+              PurchDocMatch.Quantity := AvailMatchQty;
+              PurchDocMatch."Direct Unit Cost" := PurchLine."Direct Unit Cost";
+              PurchDocMatch."Line Discount %" := PurchLine."Line Discount %";
+              PurchDocMatch.INSERT;
+
+              Matched := TRUE;
+            END;
+          UNTIL PurchRcptLine.NEXT = 0;
+
+          IF (AmountsWithinTolerance(Template,GetAmountToMatch(Document),GetMatchedRcptAmount(Document))) AND Matched THEN
+            EXIT(TRUE)
+          ELSE BEGIN
+            PurchDocMatch.SETRANGE("Document No.",Document."No.");
+            PurchDocMatch.DELETEALL(TRUE);
+            EXIT(FALSE);
+          END;
+      END;
+
+      CASE Template."Purch. Match Order No." OF
+        Template."Purch. Match Order No."::No:
+          PurchRcptLine.SETRANGE("Order No.");
+        Template."Purch. Match Order No."::"Yes - always":
+          PurchRcptLine.SETRANGE("Order No.",OrderNo);
+        Template."Purch. Match Order No."::"Yes - if present":
+          IF OrderNo <> '' THEN
+            PurchRcptLine.SETRANGE("Order No.",OrderNo);
+      END;
+
+      DocumentLine.FINDSET(FALSE,FALSE);
+      REPEAT
+        Stop := FALSE;
+        PurchRcptLine.SETRANGE(Type);
+        PurchRcptLine.SETRANGE("No.");
+        PurchRcptLine.SETRANGE("Variant Code");
+        PurchRcptLine.SETRANGE("Unit of Measure Code");
+        PurchRcptLine.SETRANGE("Direct Unit Cost");
+        PurchRcptLine.SETRANGE(Quantity);
+
+        AccountNo := COPYSTR(GetLineAccountNo(Document,DocumentLine."Line No."),1,MAXSTRLEN(AccountNo));
+        CASE Template."Purch. Match Account No." OF
+          Template."Purch. Match Account No."::"Yes - always":
+            BEGIN
+              IF AccountNo = '' THEN
+                Stop := TRUE
+              ELSE
+                IF GetLineMatchAccount(Document,AccountNo,AccountType,AccountNo,VariantCode,UnitOfMeasureCode,Description) THEN BEGIN
+                  PurchRcptLine.SETRANGE(Type,AccountType);
+                  PurchRcptLine.SETRANGE("No.",AccountNo);
+                  IF VariantCode <> '' THEN
+                    PurchRcptLine.SETRANGE("Variant Code",VariantCode);
+                  IF UnitOfMeasureCode <> '' THEN
+                    PurchRcptLine.SETRANGE("Unit of Measure Code",UnitOfMeasureCode);
+                END ELSE
+                  Stop := TRUE;
+            END;
+          Template."Purch. Match Account No."::"Yes - if present":
+            BEGIN
+              IF AccountNo <> '' THEN BEGIN
+                IF GetLineMatchAccount(Document,AccountNo,AccountType,AccountNo,VariantCode,UnitOfMeasureCode,Description) THEN BEGIN
+                  PurchRcptLine.SETRANGE(Type,AccountType);
+                  PurchRcptLine.SETRANGE("No.",AccountNo);
+                  IF VariantCode <> '' THEN
+                    PurchRcptLine.SETRANGE("Variant Code",VariantCode);
+                  IF UnitOfMeasureCode <> '' THEN
+                    PurchRcptLine.SETRANGE("Unit of Measure Code",UnitOfMeasureCode);
+                END ELSE
+                  Stop := TRUE;
+              END;
+            END;
+        END;
+
+        CASE Template."Purch. Match Quantity" OF
+          Template."Purch. Match Quantity"::"Yes - always":
+            PurchRcptLine.SETRANGE(Quantity,GetLineQuantity(Document,DocumentLine."Line No."));
+          Template."Purch. Match Quantity"::"Yes - if present":
+            IF GetLineQuantity(Document,DocumentLine."Line No.") <> 0 THEN
+              PurchRcptLine.SETRANGE(Quantity,GetLineQuantity(Document,DocumentLine."Line No."));
+        END;
+
+
+        CASE Template."Purch. Match Unit Cost" OF
+          Template."Purch. Match Unit Cost"::"Yes - always":
+            PurchRcptLine.SETRANGE("Direct Unit Cost",GetLineUnitCost(Document,DocumentLine."Line No."));
+          Template."Purch. Match Unit Cost"::"Yes - if present":
+            IF GetLineUnitCost(Document,DocumentLine."Line No.") <> 0 THEN
+              PurchRcptLine.SETRANGE("Direct Unit Cost",GetLineUnitCost(Document,DocumentLine."Line No."));
+        END;
+
+        RemMatchQty := GetLineQuantity(Document,DocumentLine."Line No.") - GetDocLineMatchedQty(DocumentLine);
+        IF (NOT Stop) AND PurchRcptLine.FINDSET(FALSE,FALSE) THEN
+          REPEAT
+            AvailMatchQty := PurchRcptLine."Qty. Rcd. Not Invoiced" - GetRcptLineMatchedQty(PurchRcptLine);
+            IF AvailMatchQty <> 0 THEN BEGIN
+              IF AvailMatchQty > RemMatchQty THEN
+                MatchQty := RemMatchQty
+              ELSE
+                MatchQty := AvailMatchQty;
+
+              PurchDocMatch."Document No." := DocumentLine."Document No.";
+              PurchDocMatch."Document Line No." := DocumentLine."Line No.";
+              PurchDocMatch."Purch. Doc. Type" := PurchDocMatch."Purch. Doc. Type"::Receipt;
+              PurchDocMatch."Purch. Doc. No." := PurchRcptLine."Document No.";
+              PurchDocMatch."Purch. Line No." := PurchRcptLine."Line No.";
+              PurchDocMatch.Quantity := MatchQty;
+              PurchDocMatch."Direct Unit Cost" := PurchRcptLine."Direct Unit Cost";
+              PurchDocMatch."Line Discount %" := PurchRcptLine."Line Discount %";
+              PurchDocMatch.INSERT;
+
+              RemMatchQty := RemMatchQty - MatchQty;
+
+              Matched := TRUE;
+            END;
+          UNTIL (PurchRcptLine.NEXT = 0) OR (RemMatchQty <= 0);
+
+      UNTIL DocumentLine.NEXT = 0;
+    END;
+
+    PROCEDURE AutoMatchReturnShpt@1000000038(VAR Document@1000000000 : Record 6085590;OrderNo@161024013 : Code[20]) Matched : Boolean;
+    VAR
+      DCSetup@1000000004 : Record 6085573;
+      GLSetup@1000000003 : Record 98;
+      Template@1000000001 : Record 6085579;
+      Field@1000000006 : Record 6085580;
+      ReturnShptLine@1000000002 : Record 6651;
+      ReturnShptLine2@161024012 : Record 6651;
+      DocumentLine@1000000005 : TEMPORARY Record 6085596;
+      PurchLine@1160040000 : Record 39;
+      PurchDocMatch@1000000016 : Record 6085700;
+      AccountType@1000000011 : Integer;
+      AccountNo@1000000010 : Code[20];
+      VariantCode@1000000009 : Code[10];
+      UnitOfMeasureCode@1000000008 : Code[10];
+      Description@1000000007 : Text[50];
+      Stop@1000000012 : Boolean;
+      MatchQty@1000000013 : Decimal;
+      AvailMatchQty@1000000014 : Decimal;
+      RemMatchQty@1000000015 : Decimal;
+    BEGIN
+      PurchDocMatch.SETRANGE("Document No.",Document."No.");
+      PurchDocMatch.DELETEALL(TRUE);
+
+      GLSetup.GET;
+      DCSetup.GET;
+
+      Template.GET(Document."Template No.");
+
+      IF OrderNo = '' THEN
+        OrderNo := COPYSTR(GetOurDocumentNo(Document),1,MAXSTRLEN(ReturnShptLine."Return Order No."));
+
+      ReturnShptLine.SETCURRENTKEY("Pay-to Vendor No.");
+      ReturnShptLine.SETRANGE("Pay-to Vendor No.",Document.GetSourceID);
+      ReturnShptLine.SETFILTER("Return Qty. Shipped Not Invd.",'<>0');
+
+      IF (GetCurrencyCode(Document) = GLSetup."LCY Code") AND (NOT DCSetup."Fill-out LCY") THEN BEGIN
+        ReturnShptLine.SETRANGE("Currency Code",'');
+      END ELSE
+        ReturnShptLine.SETRANGE("Currency Code",COPYSTR(GetCurrencyCode(Document),1,MAXSTRLEN(ReturnShptLine."Currency Code")));
+
+      Document.BuildTempLinesTable(DocumentLine);
+      IF DocumentLine.ISEMPTY THEN BEGIN
+      // *******************************************************************************************************************************
+      // MATCH WITHOUT LINES
+      // *******************************************************************************************************************************
+        ReturnShptLine.SETRANGE("Return Order No.",OrderNo);
+        ReturnShptLine2.COPY(ReturnShptLine);
+        IF ReturnShptLine2.FINDFIRST THEN
+          REPEAT
+            ReturnShptLine.SETRANGE("Document No.",ReturnShptLine2."Document No.");
+            IF ReturnShptLine.FINDSET(FALSE,FALSE) THEN
+              REPEAT
+                AvailMatchQty := ReturnShptLine."Return Qty. Shipped Not Invd." - GetReturnShptLineMatchedQty(ReturnShptLine);
+                IF AvailMatchQty <> 0 THEN BEGIN
+                  IF (PurchLine."Document Type" <> PurchLine."Document Type"::"Return Order") OR
+                    (PurchLine."No." <> ReturnShptLine."Return Order No.") OR
+                    (PurchLine."Line No." <> ReturnShptLine."Return Order Line No.")
+                  THEN
+                    PurchLine.GET(PurchLine."Document Type"::"Return Order",
+                      ReturnShptLine."Return Order No.",ReturnShptLine."Return Order Line No.");
+
+                  PurchDocMatch.INIT;
+                  PurchDocMatch."Document No." := Document."No.";
+                  PurchDocMatch."Document Line No." := 0;
+                  PurchDocMatch."Purch. Doc. Type" := PurchDocMatch."Purch. Doc. Type"::"Return Shipment";
+                  PurchDocMatch."Purch. Doc. No." := ReturnShptLine."Document No.";
+                  PurchDocMatch."Purch. Line No." := ReturnShptLine."Line No.";
+                  PurchDocMatch.Quantity := AvailMatchQty;
+                  PurchDocMatch."Direct Unit Cost" := PurchLine."Direct Unit Cost";
+                  PurchDocMatch."Line Discount %" := PurchLine."Line Discount %";
+                  PurchDocMatch.INSERT;
+
+                  Matched := TRUE;
+                END;
+              UNTIL ReturnShptLine.NEXT = 0;
+
+              IF (AmountsWithinTolerance(Template,GetAmountToMatch(Document),GetMatchedRcptAmount(Document))) AND Matched THEN
+                EXIT(TRUE)
+              ELSE BEGIN
+                PurchDocMatch.SETRANGE("Document No.",Document."No.");
+                PurchDocMatch.DELETEALL(TRUE);
+              END;
+            ReturnShptLine2 := ReturnShptLine;
+          UNTIL ReturnShptLine2.NEXT = 0;
+
+
+        IF ReturnShptLine.FINDSET(FALSE,FALSE) THEN
+          REPEAT
+            AvailMatchQty := ReturnShptLine."Return Qty. Shipped Not Invd." - GetReturnShptLineMatchedQty(ReturnShptLine);
+            IF AvailMatchQty <> 0 THEN BEGIN
+              IF (PurchLine."Document Type" <> PurchLine."Document Type"::"Return Order") OR
+                (PurchLine."No." <> ReturnShptLine."Return Order No.") OR
+                (PurchLine."Line No." <> ReturnShptLine."Return Order Line No.")
+              THEN
+                PurchLine.GET(PurchLine."Document Type"::"Return Order",ReturnShptLine."Return Order No.",
+                  ReturnShptLine."Return Order Line No.");
+
+              PurchDocMatch.INIT;
+              PurchDocMatch."Document No." := Document."No.";
+              PurchDocMatch."Document Line No." := 0;
+              PurchDocMatch."Purch. Doc. Type" := PurchDocMatch."Purch. Doc. Type"::"Return Shipment";
+              PurchDocMatch."Purch. Doc. No." := ReturnShptLine."Document No.";
+              PurchDocMatch."Purch. Line No." := ReturnShptLine."Line No.";
+              PurchDocMatch.Quantity := AvailMatchQty;
+              PurchDocMatch."Direct Unit Cost" := PurchLine."Direct Unit Cost";
+              PurchDocMatch."Line Discount %" := PurchLine."Line Discount %";
+              PurchDocMatch.INSERT;
+
+              Matched := TRUE;
+            END;
+          UNTIL ReturnShptLine.NEXT = 0;
+
+          IF (AmountsWithinTolerance(Template,GetAmountToMatch(Document),GetMatchedShptAmount(Document))) AND Matched THEN
+            EXIT(TRUE)
+          ELSE BEGIN
+            PurchDocMatch.SETRANGE("Document No.",Document."No.");
+            PurchDocMatch.DELETEALL(TRUE);
+            EXIT(FALSE);
+          END;
+      END;
+
+
+      CASE Template."Purch. Match Order No." OF
+        Template."Purch. Match Order No."::No:
+          ReturnShptLine.SETRANGE("Return Order No.");
+        Template."Purch. Match Order No."::"Yes - always":
+          ReturnShptLine.SETRANGE("Return Order No.",OrderNo);
+        Template."Purch. Match Order No."::"Yes - if present":
+          IF OrderNo <> '' THEN
+            ReturnShptLine.SETRANGE("Return Order No.",OrderNo);
+      END;
+
+      DocumentLine.FINDSET(FALSE,FALSE);
+      REPEAT
+        Stop := FALSE;
+        ReturnShptLine.SETRANGE(Type);
+        ReturnShptLine.SETRANGE("No.");
+        ReturnShptLine.SETRANGE("Variant Code");
+        ReturnShptLine.SETRANGE("Unit of Measure Code");
+        ReturnShptLine.SETRANGE("Direct Unit Cost");
+        ReturnShptLine.SETRANGE(Quantity);
+
+        AccountNo := COPYSTR(GetLineAccountNo(Document,DocumentLine."Line No."),1,MAXSTRLEN(AccountNo));
+        CASE Template."Purch. Match Account No." OF
+          Template."Purch. Match Account No."::"Yes - always":
+            BEGIN
+              IF AccountNo = '' THEN
+                Stop := TRUE
+              ELSE
+                IF GetLineMatchAccount(Document,AccountNo,AccountType,AccountNo,VariantCode,UnitOfMeasureCode,Description) THEN BEGIN
+                  ReturnShptLine.SETRANGE(Type,AccountType);
+                  ReturnShptLine.SETRANGE("No.",AccountNo);
+                  IF VariantCode <> '' THEN
+                    ReturnShptLine.SETRANGE("Variant Code",VariantCode);
+                  IF UnitOfMeasureCode <> '' THEN
+                    ReturnShptLine.SETRANGE("Unit of Measure Code",UnitOfMeasureCode);
+                END ELSE
+                  Stop := TRUE;
+            END;
+          Template."Purch. Match Account No."::"Yes - if present":
+            BEGIN
+              IF AccountNo <> '' THEN BEGIN
+                IF GetLineMatchAccount(Document,AccountNo,AccountType,AccountNo,VariantCode,UnitOfMeasureCode,Description) THEN BEGIN
+                  ReturnShptLine.SETRANGE(Type,AccountType);
+                  ReturnShptLine.SETRANGE("No.",AccountNo);
+                  IF VariantCode <> '' THEN
+                    ReturnShptLine.SETRANGE("Variant Code",VariantCode);
+                  IF UnitOfMeasureCode <> '' THEN
+                    ReturnShptLine.SETRANGE("Unit of Measure Code",UnitOfMeasureCode);
+                END ELSE
+                  Stop := TRUE;
+              END;
+            END;
+        END;
+
+        CASE Template."Purch. Match Quantity" OF
+          Template."Purch. Match Quantity"::"Yes - always":
+            ReturnShptLine.SETRANGE(Quantity,GetLineQuantity(Document,DocumentLine."Line No."));
+          Template."Purch. Match Quantity"::"Yes - if present":
+            IF GetLineQuantity(Document,DocumentLine."Line No.") <> 0 THEN
+              ReturnShptLine.SETRANGE(Quantity,GetLineQuantity(Document,DocumentLine."Line No."));
+        END;
+
+
+        CASE Template."Purch. Match Unit Cost" OF
+          Template."Purch. Match Unit Cost"::"Yes - always":
+            ReturnShptLine.SETRANGE("Direct Unit Cost",GetLineUnitCost(Document,DocumentLine."Line No."));
+          Template."Purch. Match Unit Cost"::"Yes - if present":
+            IF GetLineUnitCost(Document,DocumentLine."Line No.") <> 0 THEN
+              ReturnShptLine.SETRANGE("Direct Unit Cost",GetLineUnitCost(Document,DocumentLine."Line No."));
+        END;
+
+        RemMatchQty := GetLineQuantity(Document,DocumentLine."Line No.") - GetDocLineMatchedQty(DocumentLine);
+        IF (NOT Stop) AND ReturnShptLine.FINDSET(FALSE,FALSE) THEN
+          REPEAT
+            AvailMatchQty := ReturnShptLine."Return Qty. Shipped Not Invd." - GetReturnShptLineMatchedQty(ReturnShptLine);
+            IF AvailMatchQty <> 0 THEN BEGIN
+              IF AvailMatchQty > RemMatchQty THEN
+                MatchQty := RemMatchQty
+              ELSE
+                MatchQty := AvailMatchQty;
+
+              PurchDocMatch."Document No." := DocumentLine."Document No.";
+              PurchDocMatch."Document Line No." := DocumentLine."Line No.";
+              PurchDocMatch."Purch. Doc. Type" := PurchDocMatch."Purch. Doc. Type"::"Return Shipment";
+              PurchDocMatch."Purch. Doc. No." := ReturnShptLine."Document No.";
+              PurchDocMatch."Purch. Line No." := ReturnShptLine."Line No.";
+              PurchDocMatch.Quantity := MatchQty;
+              PurchDocMatch."Direct Unit Cost" := ReturnShptLine."Direct Unit Cost";
+              PurchDocMatch."Line Discount %" := ReturnShptLine."Line Discount %";
+              PurchDocMatch.INSERT;
+
+              RemMatchQty := RemMatchQty - MatchQty;
+
+              Matched := TRUE;
+            END;
+          UNTIL (ReturnShptLine.NEXT = 0) OR (RemMatchQty <= 0);
+
+      UNTIL DocumentLine.NEXT = 0;
+    END;
+
+    PROCEDURE GetLineMatchAccount@1000000022(VAR Document@1000000002 : Record 6085590;TranslateFrom@1000000010 : Code[150];VAR AccountType@1000000000 : Integer;VAR AccountNo@1000000001 : Code[20];VAR Variant@1000000007 : Code[10];VAR UnitOfMeasure@1000000006 : Code[10];VAR Description@1000000008 : Text[50]) : Boolean;
+    VAR
+      LineMatch@1000000003 : Record 6085584;
+      Field@1000000004 : Record 6085580;
+      ItemCrossRef@1000000009 : Record 5717;
+      ItemVendor@161024013 : Record 99;
+      Item@161024012 : Record 27;
+    BEGIN
+      LineMatch.SETRANGE("Template No.",Document."Template No.");
+      LineMatch.SETRANGE(Type,Field.Type::Line);
+      LineMatch.SETRANGE("Field Code",'NO');
+      LineMatch.SETRANGE("Translate From",TranslateFrom);
+      IF LineMatch.FINDFIRST THEN BEGIN
+        AccountType := LineMatch."Translate to Type";
+        AccountNo := LineMatch."Translate to No.";
+        Variant := LineMatch."Translate to Variant Code";
+        UnitOfMeasure := LineMatch."Translate to UOM Code";
+        Description := LineMatch."Translate to (Text)";
+        EXIT(TRUE);
+      END;
+
+      IF TranslateFrom = '' THEN
+        EXIT;
+
+      ItemCrossRef.SETCURRENTKEY("Cross-Reference Type","Cross-Reference Type No.");
+      ItemCrossRef.SETRANGE("Cross-Reference Type",ItemCrossRef."Cross-Reference Type"::Vendor);
+      ItemCrossRef.SETRANGE("Cross-Reference Type No.",Document.GetSourceID);
+      ItemCrossRef.SETRANGE("Cross-Reference No.",TranslateFrom);
+      IF ItemCrossRef.FINDFIRST THEN BEGIN
+        AccountType := LineMatch."Translate to Type"::Item;
+        AccountNo := ItemCrossRef."Item No.";
+        Variant := ItemCrossRef."Variant Code";
+        UnitOfMeasure := ItemCrossRef."Unit of Measure";
+        EXIT(TRUE);
+      END;
+
+      ItemVendor.SETCURRENTKEY("Vendor No.","Vendor Item No.");
+      ItemVendor.SETRANGE("Vendor No.",Document.GetSourceID);
+      ItemVendor.SETRANGE("Vendor Item No.",TranslateFrom);
+      IF ItemVendor.FINDFIRST THEN BEGIN
+        IF Item.GET(ItemVendor."Item No.") THEN BEGIN
+          AccountType := LineMatch."Translate to Type"::Item;
+          AccountNo := ItemVendor."Item No.";
+          UnitOfMeasure := Item."Purch. Unit of Measure";
+          EXIT(TRUE);
+        END;
+      END;
+
+      Item.SETCURRENTKEY("Vendor Item No.","Vendor No.");
+      Item.SETRANGE("Vendor Item No.",TranslateFrom);
+      Item.SETRANGE("Vendor No.",Document.GetSourceID);
+      IF Item.FINDFIRST THEN BEGIN
+        AccountType := LineMatch."Translate to Type"::Item;
+        AccountNo := Item."No.";
+        UnitOfMeasure := Item."Purch. Unit of Measure";
+        EXIT(TRUE);
+      END;
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE GetRcptLineMatchedQty@1000000021(VAR PurchRcptLine@1000000002 : Record 121) : Decimal;
+    VAR
+      PurchDocMatch@1000000000 : Record 6085700;
+    BEGIN
+      PurchDocMatch.SETRANGE("Purch. Doc. Type",PurchDocMatch."Purch. Doc. Type"::Receipt);
+      PurchDocMatch.SETRANGE("Purch. Doc. No.",PurchRcptLine."Document No.");
+      PurchDocMatch.SETRANGE("Purch. Line No.",PurchRcptLine."Line No.");
+      PurchDocMatch.CALCSUMS(Quantity);
+      EXIT(PurchDocMatch.Quantity);
+    END;
+
+    PROCEDURE GetReturnShptLineMatchedQty@1000000036(VAR ReturnShptLine@1000000002 : Record 6651) : Decimal;
+    VAR
+      PurchDocMatch@1000000000 : Record 6085700;
+    BEGIN
+      PurchDocMatch.SETRANGE("Purch. Doc. Type",PurchDocMatch."Purch. Doc. Type"::"Return Shipment");
+      PurchDocMatch.SETRANGE("Purch. Doc. No.",ReturnShptLine."Document No.");
+      PurchDocMatch.SETRANGE("Purch. Line No.",ReturnShptLine."Line No.");
+      PurchDocMatch.CALCSUMS(Quantity);
+      EXIT(PurchDocMatch.Quantity);
+    END;
+
+    PROCEDURE GetDocLineMatchedQty@1000000020(VAR DocumentLine@1000000002 : Record 6085596) : Decimal;
+    VAR
+      PurchDocMatch@1000000000 : Record 6085700;
+    BEGIN
+      PurchDocMatch.SETRANGE("Document No.",DocumentLine."Document No.");
+      PurchDocMatch.SETRANGE("Document Line No.",DocumentLine."Line No.");
+      PurchDocMatch.CALCSUMS(Quantity);
+      EXIT(PurchDocMatch.Quantity);
+    END;
+
+    PROCEDURE GetMatchedRcptAmount@1000000028(VAR Document@1000000002 : Record 6085590) Amount : Decimal;
+    VAR
+      PurchDocMatch@1000000000 : Record 6085700;
+      Vendor@161024013 : Record 23;
+      Currency@161024012 : Record 4;
+      DiscAmount@161024014 : Decimal;
+    BEGIN
+      Vendor.GET(Document.GetSourceID);
+      IF Vendor."Currency Code" <> '' THEN
+        Currency.GET(Vendor."Currency Code");
+      Currency.InitRoundingPrecision;
+
+      PurchDocMatch.SETRANGE("Document No.",Document."No.");
+      PurchDocMatch.SETRANGE("Purch. Doc. Type",PurchDocMatch."Purch. Doc. Type"::Receipt);
+      IF PurchDocMatch.FINDSET(FALSE,FALSE) THEN
+        REPEAT
+          DiscAmount :=
+            ROUND(
+              ROUND(PurchDocMatch.Quantity * PurchDocMatch."Direct Unit Cost",Currency."Amount Rounding Precision") *
+              PurchDocMatch."Line Discount %" / 100,
+              Currency."Amount Rounding Precision");
+
+          Amount += ROUND(PurchDocMatch."Direct Unit Cost" * PurchDocMatch.Quantity) - DiscAmount;
+        UNTIL PurchDocMatch.NEXT = 0;
+    END;
+
+    PROCEDURE GetMatchedShptAmount@1000000037(VAR Document@1000000002 : Record 6085590) Amount : Decimal;
+    VAR
+      PurchDocMatch@1000000000 : Record 6085700;
+      Vendor@161024014 : Record 23;
+      Currency@161024013 : Record 4;
+      DiscAmount@161024012 : Decimal;
+    BEGIN
+      Vendor.GET(Document.GetSourceID);
+      IF Vendor."Currency Code" <> '' THEN
+        Currency.GET(Vendor."Currency Code");
+      Currency.InitRoundingPrecision;
+
+      PurchDocMatch.SETRANGE("Document No.",Document."No.");
+      PurchDocMatch.SETRANGE("Purch. Doc. Type",PurchDocMatch."Purch. Doc. Type"::"Return Shipment");
+      IF PurchDocMatch.FINDSET(FALSE,FALSE) THEN
+        REPEAT
+          DiscAmount :=
+            ROUND(
+              ROUND(PurchDocMatch.Quantity * PurchDocMatch."Direct Unit Cost",Currency."Amount Rounding Precision") *
+              PurchDocMatch."Line Discount %" / 100,
+              Currency."Amount Rounding Precision");
+
+          Amount += ROUND(PurchDocMatch."Direct Unit Cost" * PurchDocMatch.Quantity) - DiscAmount;
+        UNTIL PurchDocMatch.NEXT = 0;
+      Amount := ROUND(Amount);
+    END;
+
+    PROCEDURE ShowDocFromPurchDoc@161024029(PurchHeader@1000000002 : Record 38);
+    VAR
+      Document@1000000000 : Record 6085590;
+    BEGIN
+      Document.SETCURRENTKEY("Created Doc. Type","Created Doc. Subtype","Created Doc. ID","Created Doc. Ref. No.");
+      Document.SETRANGE("Created Doc. Type",DATABASE::"Purchase Header");
+      Document.SETRANGE("Created Doc. Subtype",PurchHeader."Document Type");
+      Document.SETRANGE("Created Doc. ID",PurchHeader."No.");
+      IF NOT Document.FINDFIRST THEN
+        ERROR(Text022);
+      Document.OpenPDFFile;
+    END;
+
+    PROCEDURE ShowDocFromPostedInv@1000000030(PurchInvHeader@1000000002 : Record 122);
+    VAR
+      Document@1000000000 : Record 6085590;
+      PurchHeader@1000000001 : Record 38;
+    BEGIN
+      Document.SETCURRENTKEY("Created Doc. Type","Created Doc. Subtype","Created Doc. ID","Created Doc. Ref. No.");
+      Document.SETRANGE("Created Doc. Type",DATABASE::"Purchase Header");
+      Document.SETRANGE("Created Doc. Subtype",PurchHeader."Document Type"::Invoice);
+      Document.SETRANGE("Created Doc. ID",PurchInvHeader."Pre-Assigned No.");
+      IF NOT Document.FINDFIRST THEN
+        ERROR(Text022);
+      Document.OpenPDFFile;
+    END;
+
+    PROCEDURE ShowDocFromPostedCrMemo@1000000032(PurchCrMemoHeader@1000000002 : Record 124);
+    VAR
+      Document@1000000000 : Record 6085590;
+      PurchHeader@1000000001 : Record 38;
+    BEGIN
+      Document.SETCURRENTKEY("Created Doc. Type","Created Doc. Subtype","Created Doc. ID","Created Doc. Ref. No.");
+      Document.SETRANGE("Created Doc. Type",DATABASE::"Purchase Header");
+      Document.SETRANGE("Created Doc. Subtype",PurchHeader."Document Type"::"Credit Memo");
+      Document.SETRANGE("Created Doc. ID",PurchCrMemoHeader."Pre-Assigned No.");
+      IF NOT Document.FINDFIRST THEN
+        ERROR(Text022);
+      Document.OpenPDFFile;
+    END;
+
+    PROCEDURE ShowDocFromVendLedgEntry@1000000034(VendLedgEntry@1000000002 : Record 25);
+    VAR
+      Document@1000000000 : Record 6085590;
+      PurchCrMemoHeader@1000000003 : Record 124;
+      PurchInvHeader@1000000004 : Record 122;
+      PurchHeader@1000000001 : Record 38;
+    BEGIN
+      Document.SETCURRENTKEY("Created Doc. Type","Created Doc. Subtype","Created Doc. ID","Created Doc. Ref. No.");
+      Document.SETRANGE("Created Doc. Type",DATABASE::"Purchase Header");
+
+      IF VendLedgEntry."Document Type" = VendLedgEntry."Document Type"::Invoice THEN BEGIN
+        PurchInvHeader.GET(VendLedgEntry."Document No.");
+        Document.SETRANGE("Created Doc. Subtype",PurchHeader."Document Type"::Invoice);
+        Document.SETRANGE("Created Doc. ID",PurchInvHeader."Pre-Assigned No.");
+      END ELSE IF VendLedgEntry."Document Type" = VendLedgEntry."Document Type"::"Credit Memo" THEN BEGIN
+        PurchCrMemoHeader.GET(VendLedgEntry."Document No.");
+        Document.SETRANGE("Created Doc. Subtype",PurchHeader."Document Type"::"Credit Memo");
+        Document.SETRANGE("Created Doc. ID",PurchCrMemoHeader."Pre-Assigned No.");
+      END ELSE
+        ERROR(Text022);
+
+      IF NOT Document.FINDFIRST THEN
+        ERROR(Text022);
+      Document.OpenPDFFile;
+    END;
+
+    PROCEDURE ShowDocFromDocFromNoAndDate@161024032(DocNo@161024012 : Code[20];PostingDate@161024013 : Date;ShowError@161024020 : Boolean);
+    VAR
+      Document@161024019 : Record 6085590;
+      PurchInvHeader@161024014 : Record 122;
+      PurchCrMemoHeader@161024018 : Record 124;
+      PurchHeader@161024017 : Record 38;
+      DocSubType@161024015 : Integer;
+      DocId@161024016 : Code[20];
+    BEGIN
+      IF PurchInvHeader.GET(DocNo) AND (PurchInvHeader."Posting Date" = PostingDate) THEN BEGIN
+        DocSubType := PurchHeader."Document Type"::Invoice;
+        DocId := PurchInvHeader."Pre-Assigned No.";
+      END ELSE IF PurchCrMemoHeader.GET(DocNo) AND (PurchCrMemoHeader."Posting Date" = PostingDate) THEN BEGIN
+        DocSubType := PurchHeader."Document Type"::"Credit Memo";
+        DocId := PurchCrMemoHeader."Pre-Assigned No.";
+      END;
+
+      IF DocId = '' THEN BEGIN
+        IF ShowError THEN
+          ERROR(Text022)
+        ELSE
+          EXIT;
+      END;
+
+      Document.SETCURRENTKEY("Created Doc. Type","Created Doc. Subtype","Created Doc. ID","Created Doc. Ref. No.");
+      Document.SETRANGE("Created Doc. Type",DATABASE::"Purchase Header");
+      Document.SETRANGE("Created Doc. Subtype",DocSubType);
+      Document.SETRANGE("Created Doc. ID",DocId);
+
+      IF NOT Document.FINDFIRST THEN BEGIN
+        IF ShowError THEN
+          ERROR(Text022)
+        ELSE
+          EXIT;
+      END;
+      Document.OpenPDFFile;
+    END;
+
+    PROCEDURE GetTotalAmounts@1000000039(VAR PurchHeader@1000000000 : Record 38;VAR TotalAmountExclVAT@1000000001 : Decimal;VAR TotalVATAmount@1000000002 : Decimal);
+    VAR
+      Currency@161024012 : Record 4;
+      PurchLine@1000000004 : Record 39;
+      VATAmount@1000000005 : Decimal;
+    BEGIN
+      IF PurchHeader."Currency Code" = '' THEN
+        Currency.InitRoundingPrecision
+      ELSE BEGIN
+        PurchHeader.TESTFIELD("Currency Factor");
+        Currency.GET(PurchHeader."Currency Code");
+        Currency.TESTFIELD("Amount Rounding Precision");
+      END;
+
+      PurchLine.SETRANGE("Document Type",PurchHeader."Document Type");
+      PurchLine.SETRANGE("Document No.",PurchHeader."No.");
+      PurchLine.SETFILTER("Line Amount",'<>0');
+      PurchLine.SETFILTER(Quantity,'<>0');
+      IF PurchLine.FINDSET(FALSE,FALSE) THEN
+        REPEAT
+          IF PurchHeader."Prices Including VAT" THEN BEGIN
+            VATAmount := ROUND((PurchLine."Line Amount" / PurchLine.Quantity * PurchLine."Qty. to Invoice") *
+              PurchLine."VAT %" / (1 + PurchLine."VAT %" / 100) / 100,Currency."Amount Rounding Precision");
+            TotalAmountExclVAT := TotalAmountExclVAT + (PurchLine."Line Amount" / PurchLine.Quantity * PurchLine."Qty. to Invoice") -
+              VATAmount;
+          END ELSE BEGIN
+            TotalAmountExclVAT := TotalAmountExclVAT + (PurchLine."Line Amount" / PurchLine.Quantity * PurchLine."Qty. to Invoice");
+            VATAmount := ROUND((PurchLine."Line Amount" / PurchLine.Quantity * PurchLine."Qty. to Invoice") *
+              (PurchLine."VAT %" / 100),Currency."Amount Rounding Precision");
+          END;
+
+          TotalVATAmount := TotalVATAmount + VATAmount;
+        UNTIL PurchLine.NEXT = 0;
+    END;
+
+    PROCEDURE GetNoOfPurchOrders@161024014(VAR Document@161024012 : Record 6085590) : Integer;
+    VAR
+      PurchHeader@161024013 : Record 38;
+    BEGIN
+      IF Document.GetSourceID = '' THEN
+        EXIT;
+
+      PurchHeader.SETRANGE("Document Type",PurchHeader."Document Type"::Order);
+      PurchHeader.SETRANGE("Pay-to Vendor No.",Document.GetSourceID);
+      EXIT(PurchHeader.COUNT);
+    END;
+
+    PROCEDURE GetNoOfPurchReturnOrders@161024018(VAR Document@161024012 : Record 6085590) : Integer;
+    VAR
+      PurchHeader@161024013 : Record 38;
+    BEGIN
+      IF Document.GetSourceID = '' THEN
+        EXIT;
+
+      PurchHeader.SETRANGE("Document Type",PurchHeader."Document Type"::"Return Order");
+      PurchHeader.SETRANGE("Pay-to Vendor No.",Document.GetSourceID);
+      EXIT(PurchHeader.COUNT);
+    END;
+
+    PROCEDURE LookupNoOfPurchOrders@161024021(VAR Document@161024012 : Record 6085590) : Integer;
+    VAR
+      PurchHeader@161024013 : Record 38;
+    BEGIN
+      IF Document.GetSourceID = '' THEN
+        EXIT;
+
+      PurchHeader.SETRANGE("Document Type",PurchHeader."Document Type"::Order);
+      PurchHeader.SETRANGE("Pay-to Vendor No.",Document.GetSourceID);
+      FORM.RUN(0,PurchHeader);
+    END;
+
+    PROCEDURE LookupNoOfPurchReturnOrders@161024020(VAR Document@161024012 : Record 6085590) : Integer;
+    VAR
+      PurchHeader@161024013 : Record 38;
+    BEGIN
+      IF Document.GetSourceID = '' THEN
+        EXIT;
+
+      PurchHeader.SETRANGE("Document Type",PurchHeader."Document Type"::"Return Order");
+      PurchHeader.SETRANGE("Pay-to Vendor No.",Document.GetSourceID);
+      FORM.RUN(0,PurchHeader);
+    END;
+
+    PROCEDURE GetComparableAmounts@161024016(VAR PurchHeader@161024012 : Record 38;VAR PurchAmountExclVAT@161024013 : Decimal;VAR PurchAmountInclVAT@161024015 : Decimal;VAR DocAmountExclVAT@161024016 : Decimal;VAR DocAmountInclVAT@161024014 : Decimal);
+    VAR
+      Document@161024019 : Record 6085590;
+      VATAmount@161024018 : Decimal;
+      ZeroRatedAmount@161024017 : Decimal;
+    BEGIN
+      GetTotalAmounts(PurchHeader,PurchAmountExclVAT,VATAmount);
+      PurchAmountExclVAT := PurchAmountExclVAT + ZeroRatedAmount;
+      PurchAmountInclVAT := PurchAmountExclVAT + VATAmount;
+
+      Document.SETCURRENTKEY("Created Doc. Type","Created Doc. Subtype","Created Doc. ID","Created Doc. Ref. No.");
+      Document.SETRANGE("Created Doc. Type",DATABASE::"Purchase Header");
+      Document.SETRANGE("Created Doc. Subtype",PurchHeader."Document Type");
+      Document.SETRANGE("Created Doc. ID",PurchHeader."No.");
+      IF Document.FINDFIRST THEN BEGIN
+        DocAmountExclVAT := GetAllAmountsExclVAT(Document);
+        DocAmountInclVAT := GetAmountInclVAT(Document);
+      END ELSE BEGIN
+        DocAmountExclVAT := 0;
+        DocAmountInclVAT := 0;
+      END;
+    END;
+
+    PROCEDURE GetDocumentHeaderAmounts@161024033(PurchHeader@161024014 : Record 38;VAR AmountExclVAT@161024013 : Decimal;VAR AmountInclVAT@161024012 : Decimal;VAR AmountExclVATLCY@161024017 : Decimal;VAR AmountInclVATLCY@161024015 : Decimal) : Boolean;
+    VAR
+      Document@161024016 : Record 6085590;
+    BEGIN
+      AmountExclVAT := 0;
+      AmountInclVAT := 0;
+      AmountExclVATLCY := 0;
+      AmountInclVATLCY := 0;
+
+      Document.SETCURRENTKEY("Created Doc. Type","Created Doc. Subtype","Created Doc. ID","Created Doc. Ref. No.");
+      Document.SETRANGE("Created Doc. Type",DATABASE::"Purchase Header");
+      Document.SETRANGE("Created Doc. Subtype",PurchHeader."Document Type");
+      Document.SETRANGE("Created Doc. ID",PurchHeader."No.");
+      IF NOT Document.FINDFIRST THEN
+        EXIT;
+
+      AmountExclVAT := Document."Amount Excl. VAT";
+      AmountInclVAT := Document."Amount Incl. VAT";
+      IF PurchHeader."Currency Factor" = 0 THEN
+        PurchHeader."Currency Factor" := 1;
+      AmountExclVATLCY := ROUND(Document."Amount Excl. VAT" / PurchHeader."Currency Factor");
+      AmountInclVATLCY := ROUND(Document."Amount Incl. VAT" / PurchHeader."Currency Factor");
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE GetPurchStatusAmounts@161024034(VAR PurchHeader@161024016 : Record 38;VAR AmountExclVAT@161024015 : Decimal;VAR AmountInclVAT@161024014 : Decimal;VAR LineAmountExclVAT@161024013 : Decimal;VAR LineAmountInclVAT@161024012 : Decimal);
+    VAR
+      TempPurchLine@161024023 : TEMPORARY Record 39;
+      TotalPurchLine@161024022 : Record 39;
+      TotalPurchLineLCY@161024021 : Record 39;
+      PurchasePost@161024020 : Codeunit 90;
+      TempAmount@161024018 : Decimal;
+      VATText@161024017 : Text[30];
+    BEGIN
+      AmountExclVAT := 0;
+      AmountInclVAT := 0;
+      LineAmountExclVAT := 0;
+      LineAmountInclVAT := 0;
+
+      IF (PurchHeader."No." = '') OR (PurchHeader."Pay-to Vendor No." = '') THEN
+        EXIT;
+      PurchasePost.GetPurchLines(PurchHeader,TempPurchLine,0);
+      CLEAR(PurchasePost);
+      PurchasePost.SumPurchLinesTemp(PurchHeader,TempPurchLine,0,TotalPurchLine,TotalPurchLineLCY,TempAmount,VATText);
+      LineAmountExclVAT := TotalPurchLine.Amount;
+      LineAmountInclVAT := TotalPurchLine."Amount Including VAT";
+
+      GetDocumentHeaderAmounts(PurchHeader,AmountExclVAT,AmountInclVAT,TempAmount,TempAmount);
+    END;
+
+    PROCEDURE ChangeDocAmounts@161024035(PurchHeader@161024013 : Record 38);
+    VAR
+      Document@161024014 : Record 6085590;
+      DocAmount@161024012 : Form 6085721;
+    BEGIN
+      PurchHeader.TESTFIELD(Status,PurchHeader.Status::Open);
+
+      Document.SETCURRENTKEY("Created Doc. Type","Created Doc. Subtype","Created Doc. ID","Created Doc. Ref. No.");
+      Document.SETRANGE("Created Doc. Type",DATABASE::"Purchase Header");
+      Document.SETRANGE("Created Doc. Subtype",PurchHeader."Document Type");
+      Document.SETRANGE("Created Doc. ID",PurchHeader."No.");
+      Document.FINDFIRST;
+
+      PurchHeader.FILTERGROUP(2);
+      PurchHeader.SETRECFILTER;
+      PurchHeader.FILTERGROUP(0);
+      DocAmount.SETRECORD(PurchHeader);
+      DocAmount.SETTABLEVIEW(PurchHeader);
+      DocAmount.LOOKUPMODE(TRUE);
+      DocAmount.SetAmounts(Document."Amount Excl. VAT",Document."Amount Incl. VAT");
+      IF DocAmount.RUNMODAL <> ACTION::LookupOK THEN
+        EXIT;
+
+      DocAmount.GetAmounts(Document."Amount Excl. VAT",Document."Amount Incl. VAT");
+      Document.MODIFY;
+    END;
+
+    PROCEDURE GetVendOutstaAllocAmt@161024039(VAR Vendor@161024013 : Record 23) : Decimal;
+    VAR
+      PurchAllocEntry@161024012 : Record 6085732;
+    BEGIN
+      PurchAllocEntry.SETCURRENTKEY("Vendor No.",Open);
+      PurchAllocEntry.SETRANGE("Vendor No.",Vendor."No.");
+      PurchAllocEntry.SETRANGE(Open,TRUE);
+      Vendor.COPYFILTER("Global Dimension 1 Filter",PurchAllocEntry."Shortcut Dimension 1 Code");
+      Vendor.COPYFILTER("Global Dimension 2 Filter",PurchAllocEntry."Shortcut Dimension 2 Code");
+      Vendor.COPYFILTER("Currency Filter",PurchAllocEntry."Currency Code");
+      PurchAllocEntry.CALCSUMS("Amount Including VAT (LCY)");
+      EXIT(PurchAllocEntry."Amount Including VAT (LCY)");
+    END;
+
+    PROCEDURE DrillDownVendOutstaAllocAmt@161024040(VAR Vendor@161024013 : Record 23);
+    VAR
+      PurchAllocEntry@161024012 : Record 6085732;
+    BEGIN
+      PurchAllocEntry.SETCURRENTKEY("Vendor No.");
+      PurchAllocEntry.SETRANGE("Vendor No.",Vendor."No.");
+      PurchAllocEntry.SETRANGE(Open,TRUE);
+      Vendor.COPYFILTER("Global Dimension 1 Filter",PurchAllocEntry."Shortcut Dimension 1 Code");
+      Vendor.COPYFILTER("Global Dimension 2 Filter",PurchAllocEntry."Shortcut Dimension 2 Code");
+      Vendor.COPYFILTER("Currency Filter",PurchAllocEntry."Currency Code");
+      FORM.RUN(0,PurchAllocEntry);
+    END;
+
+    PROCEDURE GetPurchAllocAmount@161024041(VAR PurchHeader@161024012 : Record 38;VAR AmountExclVAT@161024013 : Decimal;VAR AmountInclVAT@161024014 : Decimal);
+    VAR
+      PurchAllocEntry@161024015 : Record 6085732;
+    BEGIN
+      PurchAllocEntry.SETCURRENTKEY("Source Type","Source No.");
+      PurchAllocEntry.SETRANGE("Source Type",PurchHeader."Document Type");
+      PurchAllocEntry.SETRANGE("Source No.",PurchHeader."No.");
+      PurchAllocEntry.CALCSUMS(Amount,"Amount Including VAT");
+      AmountExclVAT := PurchAllocEntry.Amount;
+      AmountInclVAT := PurchAllocEntry."Amount Including VAT";
+    END;
+
+    PROCEDURE DrillDownPurchAllocAmount@161024042(VAR PurchHeader@161024012 : Record 38);
+    VAR
+      PurchAllocEntry@161024015 : Record 6085732;
+    BEGIN
+      PurchAllocEntry.SETCURRENTKEY("Source Type","Source No.");
+      PurchAllocEntry.SETRANGE("Source Type",PurchHeader."Document Type");
+      PurchAllocEntry.SETRANGE("Source No.",PurchHeader."No.");
+      FORM.RUN(0,PurchAllocEntry);
+    END;
+
+    PROCEDURE PurchHeaderOnDelete@161024050(PurchHeader@161024012 : Record 38);
+    VAR
+      PurchAllocHeader@161024013 : Record 6085730;
+      WebSearchMgnt@161024014 : Codeunit 6085748;
+    BEGIN
+      PurchAllocHeader.ReverseAll(PurchHeader);
+
+      WebSearchMgnt.UpdateWebSearchFromPurchHeader(PurchHeader,TRUE);
+    END;
+
+    PROCEDURE PurchHeaderOnModify@161024055(PurchHeader@161024012 : Record 38;xPurchHeader@161024013 : Record 38;Force@161024014 : Boolean);
+    VAR
+      WebSearchMgnt@161024015 : Codeunit 6085748;
+    BEGIN
+      IF (PurchHeader."Posting Date" <> xPurchHeader."Posting Date") OR
+        (PurchHeader."Document Date" <> xPurchHeader."Document Date") OR
+        (PurchHeader."Vendor Invoice No." <> xPurchHeader."Vendor Invoice No.") OR
+        (PurchHeader."Vendor Cr. Memo No." <> xPurchHeader."Vendor Cr. Memo No.") OR
+        (PurchHeader."Purchaser Code" <> xPurchHeader."Purchaser Code") OR
+        (Force)
+      THEN
+        WebSearchMgnt.UpdateWebSearchFromPurchHeader(PurchHeader,FALSE);
+    END;
+
+    PROCEDURE GetResponsibillityCenter@1160760000(VAR Document@161024012 : Record 6085590) : Code[20];
+    VAR
+      Field@161024013 : Record 6085580;
+    BEGIN
+      EXIT(CaptureMgnt.GetText(Document,Field.Type::Header,'RESPCENTER',0));
+    END;
+
+    PROCEDURE AmountsWithinTolerance@161024012(Template@161024014 : Record 6085579;Amount1@161024012 : Decimal;Amount2@161024013 : Decimal) : Boolean;
+    BEGIN
+      EXIT(ABS(Amount1 - Amount2) <= Template."Purch. Allowed Variance Amount");
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

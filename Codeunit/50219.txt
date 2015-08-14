@@ -1,0 +1,312 @@
+OBJECT Codeunit 50219 Sales Quote
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02.09.13;
+    Time=14:59:54;
+    Version List=HME0513;
+  }
+  PROPERTIES
+  {
+    Subtype=Test;
+    OnRun=BEGIN
+            isInitialized := FALSE;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Assert@1003 : Codeunit 50200;
+      LibrarySCM@1002 : Codeunit 50210;
+      LibraryFinance@1102601000 : Codeunit 50207;
+      isInitialized@1000 : Boolean;
+      VATAmountErrorMessage@1005 : TextConst 'ENU=%1 must be %2 in %3.';
+      FieldError@1004 : TextConst 'ENU=%1 not updated correctly.';
+      ToDoMessage@1006 : TextConst 'ENU=Do you want to create a follow-up to-do?';
+
+    [Normal]
+    LOCAL PROCEDURE Initialize@8();
+    VAR
+      BackupManagement@1001 : Codeunit 50201;
+    BEGIN
+      RANDOMIZE(1);  // Seed RANDOM function.
+
+      // Lazy Setup.
+      IF isInitialized THEN
+        EXIT;
+
+      BackupManagement.DefaultFixture;
+
+      LibraryFinance.InitializeGeneralPostingSetup;
+      LibraryFinance.InitializeVATPostingSetup;
+
+      isInitialized := TRUE;
+      COMMIT;
+    END;
+
+    [Test]
+    PROCEDURE SalesQuoteCreation@2();
+    VAR
+      SalesHeader@1000 : Record 36;
+      SalesLine@1001 : Record 37;
+    BEGIN
+      // Test New Sales Quote creation.
+
+      // Setup.
+      Initialize;
+      LibrarySCM.SetStockoutWarning(FALSE);
+
+      // Exercise: Create Sales Quote.
+      CreateSalesQuote(SalesHeader,SalesLine);
+
+      // Verify: Verify Blanket Sales Quote.
+      SalesHeader.GET(SalesHeader."Document Type",SalesHeader."No.");
+      SalesLine.GET(SalesLine."Document Type",SalesLine."Document No.",SalesLine."Line No.");
+
+      // Tear Down: Cleanup of Setup Done.
+      LibrarySCM.SetStockoutWarning(TRUE);
+    END;
+
+    [Test]
+    PROCEDURE VATAmountOnSalesQuote@4();
+    VAR
+      GeneralLedgerSetup@1008 : Record 98;
+      SalesHeader@1001 : Record 36;
+      SalesLine@1000 : Record 37;
+      VATAmountLine@1002 : Record 290;
+      ReleaseSalesDocument@1006 : Codeunit 414;
+      QtyType@1003 : 'General,Invoicing,Shipping';
+    BEGIN
+      // Test if the system calculates applicable VAT for a VAT Posting Group in Sales Quote.
+
+      // Setup.
+      Initialize;
+      LibrarySCM.SetStockoutWarning(FALSE);
+      CreateSalesQuote(SalesHeader,SalesLine);
+
+      // Calculate VAT Amount on Sales Quote.
+      SalesLine.CalcVATAmountLines(QtyType::Invoicing,SalesHeader,SalesLine,VATAmountLine);
+
+      // Verify: Verify VAT Amount on Sales Quote.
+      GeneralLedgerSetup.GET;
+      ReleaseSalesDocument.PerformManualRelease(SalesHeader);
+      SalesHeader.CALCFIELDS(Amount);
+      Assert.AreNearlyEqual(
+        SalesHeader.Amount * SalesLine."VAT %" / 100,VATAmountLine."VAT Amount",GeneralLedgerSetup."Amount Rounding Precision",
+        STRSUBSTNO(VATAmountErrorMessage,VATAmountLine.FIELDCAPTION("VAT Amount"),SalesHeader.Amount * SalesLine."VAT %" / 100,
+          VATAmountLine.TABLECAPTION));
+
+      // Tear Down: Cleanup of Setup Done.
+      LibrarySCM.SetStockoutWarning(TRUE);
+    END;
+
+    [Test]
+    [HandlerFunctions(SalesQuoteReportConfirmHandler)]
+    PROCEDURE SalesQuoteReport@3();
+    VAR
+      SalesHeader@1001 : Record 36;
+      SalesLine@1000 : Record 37;
+      SalesQuote@1002 : Report 204;
+      LibraryUtility@1004 : Codeunit 50206;
+      FilePath@1003 : Text[1024];
+    BEGIN
+      // Test if the system generates Sales Quote Report.
+
+      // Setup.
+      Initialize;
+      LibrarySCM.SetStockoutWarning(FALSE);
+      CreateSalesQuote(SalesHeader,SalesLine);
+
+      // Exercise: Generate Report as external file for Sales Quote.
+      SalesHeader.SETRANGE("Document Type",SalesHeader."Document Type"::Quote);
+      SalesHeader.SETRANGE("No.",SalesHeader."No.");
+      SalesQuote.SETTABLEVIEW(SalesHeader);
+      IF ISSERVICETIER THEN BEGIN
+        FilePath := TEMPORARYPATH + FORMAT(SalesHeader."Document Type") + SalesHeader."No." + '.xls';
+        SalesQuote.SAVEASEXCEL(FilePath)
+      END ELSE BEGIN
+        FilePath := TEMPORARYPATH + FORMAT(SalesHeader."Document Type") + SalesHeader."No." + '.xml';
+        SalesQuote.SAVEASXML(FilePath);
+        ExecuteUIHandlers;  // Always execute UI Handler to run test case in CSIDE.
+      END;
+
+      // Verify: Verify that saved files have some data.
+      LibraryUtility.CheckFileNotEmpty(FilePath);
+
+      // Tear Down: Cleanup of Setup Done.
+      LibrarySCM.SetStockoutWarning(TRUE);
+    END;
+
+    [Test]
+    PROCEDURE SalesOrderFromSalesQuote@5();
+    VAR
+      SalesHeader@1002 : Record 36;
+      SalesLine@1001 : Record 37;
+      LineCount@1004 : Integer;
+    BEGIN
+      // Test to Create Sales Order from Sales Quote using Make Order functionality and Verify No. of Lines are equal for both document.
+
+      // Setup: Create Sales Quote and store Total no. of Lines count in a variable.
+      Initialize;
+      LibrarySCM.SetStockoutWarning(FALSE);
+      CreateSalesQuote(SalesHeader,SalesLine);
+      SalesLine.SETRANGE("Document No.",SalesHeader."No.");
+      SalesLine.SETRANGE("Document Type",SalesLine."Document Type"::Quote);
+      LineCount := SalesLine.COUNT;
+
+      // Exercise: Create Sales Order form Sales Quote.
+      CODEUNIT.RUN(CODEUNIT::"Sales-Quote to Order",SalesHeader);
+
+      // Verify: Verify that New Sales Order created from Sales Quote.
+      SalesHeader.SETRANGE("Quote No.",SalesHeader."No.");
+      SalesHeader.FINDFIRST;
+      SalesLine.SETRANGE("Document Type",SalesLine."Document Type"::Order);
+      SalesLine.SETRANGE("Document No.",SalesHeader."No.");
+      Assert.AreEqual(LineCount,SalesLine.COUNT,'No. of Lines must be Equal.');
+
+      // Tear Down: Cleanup of Setup Done.
+      LibrarySCM.SetStockoutWarning(TRUE);
+    END;
+
+    [Test]
+    PROCEDURE SalesQuoteWithContact@11();
+    VAR
+      ContactBusinessRelation@1004 : Record 5054;
+      SalesHeader@1001 : Record 36;
+    BEGIN
+      // Test to Create new Sales Quote for existing Contact and verify Sell to Customer No. field updated according Customer relation
+      // with Contact.
+
+      // Setup: Find Contact from Contact Business Relation that have setup for a Customer.
+      Initialize;
+      ContactBusinessRelation.SETRANGE("Link to Table",ContactBusinessRelation."Link to Table"::Customer);
+      ContactBusinessRelation.FINDFIRST;
+
+      // Exercise: Create Sales Quote for Contact.
+      SalesHeader.INIT;
+      SalesHeader.VALIDATE("Posting Date",WORKDATE);
+      SalesHeader.VALIDATE("Sell-to Contact No.",ContactBusinessRelation."Contact No.");
+      SalesHeader.INSERT(TRUE);
+
+      // Verify: Verify that New Sales Quote updated correct Sell to Customer No.
+      Assert.AreEqual(
+        ContactBusinessRelation."No.",SalesHeader."Sell-to Customer No.",
+        STRSUBSTNO(FieldError,SalesHeader.FIELDCAPTION("Sell-to Customer No.")));
+    END;
+
+    [Test]
+    [HandlerFunctions(ConfirmHandler)]
+    PROCEDURE SalesQuoteWithCustomer@12();
+    VAR
+      SalesHeader@1001 : Record 36;
+      SalesLine@1000 : Record 37;
+    BEGIN
+      // Test to Create new Sales Quote and verify if user update Sell to Customer No. on Sales Header with different Customer then
+      // Sales Line also updated.
+
+      // Setup.
+      Initialize;
+      LibrarySCM.SetStockoutWarning(FALSE);
+      CreateSalesQuote(SalesHeader,SalesLine);
+
+      // Exercise: Update Sales Header with different Sell to Customer No.
+      SalesHeader.VALIDATE("Sell-to Customer No.",CreateCustomer);
+      SalesHeader.MODIFY(TRUE);
+
+      // Verify: Verify Sell to Customer No in Sales Line table.
+      SalesLine.GET(SalesLine."Document Type",SalesLine."Document No.",SalesLine."Line No.");
+      Assert.AreEqual(
+        SalesHeader."Sell-to Customer No.",SalesLine."Sell-to Customer No.",
+        STRSUBSTNO(FieldError,SalesLine.FIELDCAPTION("Sell-to Customer No.")));
+    END;
+
+    LOCAL PROCEDURE CreateSalesQuote@10(VAR SalesHeader@1000 : Record 36;VAR SalesLine@1001 : Record 37);
+    VAR
+      Counter@1002 : Integer;
+    BEGIN
+      LibrarySCM.CreateSalesHeader(SalesHeader,SalesHeader."Document Type"::Quote,CreateCustomer);
+
+      // Create Random Sales Lines. Make sure that No. of Sales Lines always greater than 1.
+      // Using Random for Quantity, value not important for Quantity.
+      FOR Counter := 1 TO 1 + RANDOM(8) DO
+        LibrarySCM.CreateSalesLine(SalesHeader,SalesLine,SalesLine.Type::Item,CreateItem,RANDOM(10));
+    END;
+
+    LOCAL PROCEDURE CreateCustomer@1() : Code[20];
+    VAR
+      Customer@1001 : Record 18;
+      VATPostingSetup@1000 : Record 325;
+    BEGIN
+      FindVATPostingSetup(VATPostingSetup);
+      LibrarySCM.CreateCustomer(Customer);
+      Customer.VALIDATE("VAT Bus. Posting Group",VATPostingSetup."VAT Bus. Posting Group");
+      Customer.MODIFY(TRUE);
+      EXIT(Customer."No.");
+    END;
+
+    LOCAL PROCEDURE CreateItem@9() : Code[20];
+    VAR
+      Item@1000 : Record 27;
+      InventorySetup@1003 : Record 313;
+      VATPostingSetup@1002 : Record 325;
+      LibraryUtility@1004 : Codeunit 50206;
+      LibrarySCM@1001 : Codeunit 50210;
+    BEGIN
+      FindVATPostingSetup(VATPostingSetup);
+
+      // Modify Item No. Series in Inventory setup.
+      InventorySetup.GET;
+      InventorySetup.VALIDATE("Item Nos.",LibraryUtility.GetNoSeriesCode);
+      InventorySetup.MODIFY(TRUE);
+      LibrarySCM.CreateItem(Item);
+      Item.VALIDATE("VAT Prod. Posting Group",VATPostingSetup."VAT Prod. Posting Group");
+      Item.VALIDATE("Unit Price",RANDOM(100));
+      Item.MODIFY(TRUE);
+      EXIT(Item."No.");
+    END;
+
+    LOCAL PROCEDURE FindVATPostingSetup@13(VAR VATPostingSetup@1000 : Record 325);
+    BEGIN
+      VATPostingSetup.SETFILTER("VAT Bus. Posting Group",'<>''''');
+      VATPostingSetup.SETFILTER("VAT Prod. Posting Group",'<>''''');
+      VATPostingSetup.SETRANGE("VAT Calculation Type",VATPostingSetup."VAT Calculation Type"::"Normal VAT");
+      VATPostingSetup.SETFILTER("VAT %",'>0');
+      VATPostingSetup.FINDFIRST;
+    END;
+
+    [ConfirmHandler]
+    PROCEDURE ConfirmHandler@32(Question@1001 : Text[1024];VAR Reply@1000 : Boolean);
+    BEGIN
+      // Confirm Handler.
+      Reply := TRUE;
+    END;
+
+    [ConfirmHandler]
+    PROCEDURE SalesQuoteReportConfirmHandler@14(Question@1001 : Text[1024];VAR Reply@1000 : Boolean);
+    BEGIN
+      // Confirm Handler.
+      Reply := FALSE;
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE ExecuteUIHandlers@78();
+    BEGIN
+      // Generate Dummy Messages.
+      IF CONFIRM(ToDoMessage) THEN ;
+    END;
+
+    BEGIN
+    {
+      Check the functionalities of Blanket Sales Quote.
+      1. Test if the system allows to create New Sales Quote for Customer.
+      2. Test if the system calculates applicable VAT in Sales Quote.
+      3. Test if the system generates Sales Quote Report.
+      4. Test Create Sales Order from Sales Quote.
+      5. Create Sales Quote with Contact and check Sell to Customer is getting updated.
+      6. Check if the system allows changing Sell to Contact No. in Sales Quote and Check Sales Line updated for the same.
+    }
+    END.
+  }
+}
+

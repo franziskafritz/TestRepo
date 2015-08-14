@@ -1,0 +1,362 @@
+OBJECT Codeunit 50151 RHD Sales Export Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02.09.14;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=GOB,HME1161;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+            RHDSetup.GET;
+            RHDSetup.TESTFIELD("Interface Code KAD");
+            //S/
+            RHDSetup.TESTFIELD("home24 Branch No.");
+            //E/
+            // ...
+
+            CASE InterfaceCode OF
+              RHDSetup."Interface Code KAD": ExportKAD;              // KAD-EXPORT
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      FPCInterfaceSetup@1000000006 : Record 50014;
+      RHDSetup@1000000001 : Record 50177;
+      RHDSalesExpHeader@1000000002 : Record 50181;
+      InterfaceCode@1000000000 : Code[10];
+      Filename@1000000003 : Text[250];
+      TextDatetime@1000000004 : Text[30];
+      RHDGenMgt@1000000005 : Codeunit 50157;
+
+    PROCEDURE SetInterfaceCode@1000000001(ParInterfaceCode@1000000000 : Code[10]);
+    BEGIN
+      InterfaceCode := ParInterfaceCode;
+    END;
+
+    PROCEDURE SetRHDSalesExpHeader@1000000004(ParRHDSalesExpHeader@1000000000 : Record 50181);
+    BEGIN
+      RHDSalesExpHeader := ParRHDSalesExpHeader;
+    END;
+
+    LOCAL PROCEDURE ExportKAD@1000000002();
+    VAR
+      Purchasing@1000000004 : Record 5721;
+      RHDSalesExportLine@1000000006 : Record 50182;
+      RHDSalesExportLineItem@1000000003 : Record 50182;
+      RHDSalesExportLineAssembly@1000000002 : Record 50182;
+      RHDSalesExportLineBarcode@1000000012 : Record 50182;
+      Location@1000000010 : Record 14;
+      Item@1000000011 : Record 27;
+      ItemText@1000000005 : Text[250];
+      RHDImportExportFiles@1000000000 : Record 50192;
+      OutStream@1000000008 : OutStream;
+      Instream@1000000001 : InStream;
+      FileVar@1000000007 : File;
+      CountryRegion@1000000009 : Record 9;
+      TransmissionNoInt@1000000013 : Integer;
+      "*** HME **********************"@1000000014 : Integer;
+      FPCManagementL@1000000015 : Codeunit 50003;
+      ActionTypeL@1000000016 : Integer;
+    BEGIN
+      // KAK = KAK + KAL + x*KAP + y*KAB + z*KAS
+
+      FPCInterfaceSetup.GET(RHDSetup."Interface Code KAD");
+      FPCInterfaceSetup.TESTFIELD("Export Folder");
+
+      Filename := CreateKADFile;
+      RHDGenMgt.FileCreate(FPCInterfaceSetup."Export Folder",Filename);
+
+      // Export KAK (Header)
+      RHDGenMgt.FileOpen(FPCInterfaceSetup."Export Folder",Filename);
+      RHDGenMgt.FileAddLine(PADSTR(RHDSalesExpHeader."Record Type",3,' '),FALSE);
+      RHDGenMgt.FileAddLine(PADSTR(RHDSetup."Rhenus Client Identifier",4,' '),FALSE);
+      RHDGenMgt.FileAddLine(PADSTR(RHDSalesExpHeader."Branch Code",6,' '),FALSE);
+      //S/
+      //RHDGenMgt.FileAddLine(PADSTR(FORMAT(RHDSalesExpHeader."Website No."),20,' '),FALSE);
+      RHDGenMgt.FileAddLine(PADSTR(FORMAT(RHDSetup."home24 Branch No."),20,' '),FALSE);
+      //E/
+      RHDGenMgt.FileAddLine(PADSTR(RHDSalesExpHeader."Rhenus Order No.",20,' '),FALSE);
+      RHDGenMgt.FileAddLine(PADSTR(RHDSalesExpHeader."Document No.",20,' '),FALSE);
+      RHDGenMgt.FileAddLine(PADSTR(RHDSalesExpHeader."Ship-to Customer No.",15,' '),FALSE);
+      CASE RHDSalesExpHeader."Transmission Mode" OF
+        RHDSalesExpHeader."Transmission Mode"::New: RHDGenMgt.FileAddLine('1',FALSE);
+        RHDSalesExpHeader."Transmission Mode"::Update: RHDGenMgt.FileAddLine('2',FALSE);
+        RHDSalesExpHeader."Transmission Mode"::Delete: RHDGenMgt.FileAddLine('3',FALSE);
+      END;
+      //RHDGenMgt.FileAddLine(PADSTR(RHDSalesExpHeader."Transmission No.",10,' '),FALSE);
+      EVALUATE(TransmissionNoInt,RHDSalesExpHeader."Transmission No.");
+      RHDGenMgt.FileAddLine(PADSTR(FORMAT(TransmissionNoInt),10,' '),FALSE);
+      TextDatetime := FORMAT(RHDSalesExpHeader."Order Date",0,'<Day,2>.<Month,2>.<Year4>') +
+        '-' +
+      //A,03.02.2014,gob-dst,P1187
+        //FORMAT(TIME,0,'<Hours24>:<Minutes,2>:<Seconds,2>');
+        FORMAT(TIME,0,'<Hours24,2><Filler Character,0>:<Minutes,2>:<Seconds,2>');
+      //E,03.02.2014,gob-dst,P1187
+      RHDGenMgt.FileAddLine(PADSTR(TextDatetime,19,' '),FALSE);
+      RHDSalesExportLine.SETRANGE("Entry No.",RHDSalesExpHeader."Entry No.");
+      IF RHDSalesExportLine.FINDFIRST THEN BEGIN
+        Purchasing.GET(RHDSalesExportLine."Purchasing Code");
+        CASE Purchasing."Delivery Type" OF
+          Purchasing."Delivery Type"::Kunde: RHDGenMgt.FileAddLine(PADSTR('K',32,' '),FALSE);
+          Purchasing."Delivery Type"::Selbstabholer: RHDGenMgt.FileAddLine(PADSTR('S',32,' '),FALSE);
+        END;
+      END;
+      RHDSalesExportLineAssembly.SETRANGE("Entry No.",RHDSalesExpHeader."Entry No.");
+      RHDSalesExportLineAssembly.SETRANGE(Type,RHDSalesExportLine.Type::Assembly);
+      IF RHDSalesExportLineAssembly.FINDSET THEN
+        REPEAT
+          RHDSalesExportLineItem.SETRANGE("Entry No.",RHDSalesExpHeader."Entry No.");
+          RHDSalesExportLineItem.SETRANGE(Type,RHDSalesExportLine.Type::Item);
+          RHDSalesExportLineItem.SETRANGE("Pos. No.",RHDSalesExportLineAssembly."Attached to Pos. No.");
+          IF RHDSalesExportLineItem.FINDFIRST THEN
+            ItemText += RHDSalesExportLineItem."No." + ',';
+        UNTIL RHDSalesExportLineAssembly.NEXT = 0;
+
+      ItemText := DELCHR(ItemText,'>',',');
+      IF ItemText <> '' THEN
+        ItemText := COPYSTR('Montage fÅr: ' + ItemText,1,250);
+      RHDGenMgt.FileAddLine(PADSTR(ItemText,250,' '),FALSE);
+
+      RHDGenMgt.FileAddLine(';',TRUE);
+
+      // Export KAL (Header)
+      //H1012,H1161 18.07.2014 EHN +++++++++++++++++++++++++++++++++
+      IF RHDSalesExpHeader."Sales Return Order" THEN
+        RHDGenMgt.FileAddLine(PADSTR(RHDSetup."Record Type KAA",3,' '),FALSE)
+      ELSE
+      //H1012,H1161 18.07.2014 EHN ---------------------------------
+        RHDGenMgt.FileAddLine(PADSTR(RHDSetup."Record Type KAL",3,' '),FALSE);
+      CASE RHDSalesExpHeader.Salutation OF
+        RHDSalesExpHeader.Salutation::Mr: RHDGenMgt.FileAddLine('1',FALSE);
+        RHDSalesExpHeader.Salutation::Mrs: RHDGenMgt.FileAddLine('2',FALSE);
+        RHDSalesExpHeader.Salutation::Company: RHDGenMgt.FileAddLine('3',FALSE);
+      END;
+      //H1327 04.07.14 DMA +++++++++++++++++++++++++++++++++++++++++++++++++++++
+      {
+      //H1327 04.07.14 DMA -----------------------------------------------------
+      RHDGenMgt.FileAddLine(PADSTR(RHDSalesExpHeader."Ship-to Name",60,' '),FALSE);
+      RHDGenMgt.FileAddLine(PADSTR(RHDSalesExpHeader."Ship-to Name 2",30,' '),FALSE);
+      RHDGenMgt.FileAddLine(PADSTR(RHDSalesExpHeader."Ship-to Address 2",60,' '),FALSE);
+      RHDGenMgt.FileAddLine(PADSTR(RHDSalesExpHeader."Ship-to Address",58,' '),FALSE);
+      RHDGenMgt.FileAddLine(PADSTR(RHDSalesExpHeader."Ship-to Post Code",8,' '),FALSE);
+      RHDGenMgt.FileAddLine(PADSTR(RHDSalesExpHeader."Ship-to City",50,' '),FALSE);
+      //H1327 04.07.14 DMA +++++++++++++++++++++++++++++++++++++++++++++++++++++
+      }
+      RHDGenMgt.FileAddLine(PADSTR(FPCManagementL.DeleteCRLF(RHDSalesExpHeader."Ship-to Name", FALSE),60,' '),FALSE);
+      RHDGenMgt.FileAddLine(PADSTR(FPCManagementL.DeleteCRLF(RHDSalesExpHeader."Ship-to Name 2", FALSE),30,' '),FALSE);
+      RHDGenMgt.FileAddLine(PADSTR(FPCManagementL.DeleteCRLF(RHDSalesExpHeader."Ship-to Address 2", FALSE),60,' '),FALSE);
+      RHDGenMgt.FileAddLine(PADSTR(FPCManagementL.DeleteCRLF(RHDSalesExpHeader."Ship-to Address", FALSE),58,' '),FALSE);
+      RHDGenMgt.FileAddLine(PADSTR(FPCManagementL.DeleteCRLF(RHDSalesExpHeader."Ship-to Post Code", FALSE),8,' '),FALSE);
+      RHDGenMgt.FileAddLine(PADSTR(FPCManagementL.DeleteCRLF(RHDSalesExpHeader."Ship-to City", FALSE),50,' '),FALSE);
+      //H1327 04.07.14 DMA -----------------------------------------------------
+
+      //S/gob-rste
+      //RHDGenMgt.FileAddLine(PADSTR(RHDSalesExpHeader."Ship-to Country/Region Code",3,' '),FALSE);
+      IF NOT CountryRegion.GET(RHDSalesExpHeader."Ship-to Country/Region Code") THEN BEGIN
+        CountryRegion.INIT;
+        CountryRegion."Country Code Rhenus" := 'D';
+      END;
+      RHDGenMgt.FileAddLine(PADSTR(CountryRegion."Country Code Rhenus",3,' '),FALSE);
+      //E/gob-rste
+      RHDGenMgt.FileAddLine(PADSTR(RHDSalesExpHeader."Phone No.",60,' '),FALSE);
+      RHDGenMgt.FileAddLine(PADSTR(RHDSalesExpHeader."E-Mail",70,' '),FALSE);
+      RHDGenMgt.FileAddLine(PADSTR(FORMAT(RHDSalesExpHeader."Shipment Date"),20,' '),FALSE);
+      RHDGenMgt.FileAddLine(';',TRUE);
+
+      // Export KAP
+      RHDSalesExportLineItem.RESET;
+      RHDSalesExportLineItem.SETRANGE("Entry No.",RHDSalesExpHeader."Entry No.");
+      RHDSalesExportLineItem.SETRANGE(Type,RHDSalesExportLineItem.Type::Item);
+      IF RHDSalesExportLineItem.FINDSET THEN
+        REPEAT
+          RHDGenMgt.FileAddLine(PADSTR(RHDSalesExportLineItem."Record Type",3,' '),FALSE);
+          RHDGenMgt.FileAddLine(PADSTR(FORMAT(RHDSalesExportLineItem."Pos. No."),5,' '),FALSE);
+          //H1011,H1012,H1161 17.07.14 EHN ++++++++++++++++++++++++++++++++
+          {
+          IF (RHDSalesExportLineItem."Change Line") THEN
+            RHDGenMgt.FileAddLine(PADSTR('2',3,' '),FALSE)
+          ELSE IF (RHDSalesExportLineItem."Return Line") THEN
+            RHDGenMgt.FileAddLine(PADSTR('2',3,' '),FALSE)
+          ELSE
+            RHDGenMgt.FileAddLine(PADSTR('1',3,' '),FALSE);
+          }
+          ActionTypeL := RHDSalesExportLineItem."Action Type";
+          RHDGenMgt.FileAddLine(PADSTR(FORMAT(ActionTypeL),3,' '),FALSE);
+          //H1011,H1012,H1161 17.07.14 EHN --------------------------------
+          RHDGenMgt.FileAddLine(PADSTR(FORMAT(RHDSalesExportLineItem.Quantity),5,' '),FALSE);
+
+          //H1012 20140425 DMA ++++++++++++++++++++++++++++++++
+          IF NOT (RHDSalesExportLineItem."Return Line") THEN BEGIN
+          //H1012 20140425 DMA --------------------------------
+          Location.GET(RHDSalesExportLineItem."Location Code");
+          RHDGenMgt.FileAddLine(PADSTR(Location."Item Quality Code",1,' '),FALSE);
+          //H1012 20140425 DMA ++++++++++++++++++++++++++++++++
+          END ELSE BEGIN
+            RHDGenMgt.FileAddLine(PADSTR('M',1,' '),FALSE);
+          END;
+          //H1012 20140425 DMA --------------------------------
+
+          IF RHDSalesExportLineItem.Crossdock THEN
+            RHDGenMgt.FileAddLine('1',FALSE)
+          ELSE
+            RHDGenMgt.FileAddLine('0',FALSE);
+
+          //H1012 20140425 DMA ++++++++++++++++++++++++++++++++
+          IF RHDSalesExportLineItem."Return Line" THEN
+            RHDGenMgt.FileAddLine('0',FALSE)
+          ELSE
+          //H1012 20140425 DMA --------------------------------
+          RHDGenMgt.FileAddLine(' ',FALSE);
+
+          RHDGenMgt.FileAddLine(PADSTR(RHDSalesExportLineItem."No.",30,' '),FALSE);
+          RHDGenMgt.FileAddLine(PADSTR(RHDSalesExportLineItem.Description,50,' '),FALSE);
+          //Item.GET(RHDSalesExportLineItem."No.");
+          //RHDGenMgt.FileAddLine(PADSTR(FORMAT(Item."Parcels Number"),2,' '),FALSE);
+          RHDGenMgt.FileAddLine(PADSTR(FORMAT(RHDSalesExportLineItem."No. of Packages"),2,' '),FALSE);
+          RHDGenMgt.FileAddLine(PADSTR(COPYSTR(FORMAT(RHDSalesExportLineItem."Unit Volume"),1,5),5,' '),FALSE);
+          //H1270 20.06.14 EHN +++++++++++++++++++++++++++++++++
+          //RHDGenMgt.FileAddLine(PADSTR(COPYSTR(FORMAT(RHDSalesExportLineItem."Unit Weight"),1,4),4,' '),FALSE);
+          RHDGenMgt.FileAddLine(PADSTR(COPYSTR(FORMAT(ROUND(RHDSalesExportLineItem."Unit Weight",1)),1,4),4,' '),FALSE);
+          //H1270 20.06.14 EHN ---------------------------------
+          RHDGenMgt.FileAddLine(';',TRUE);
+
+          // Export KAB
+          RHDSalesExportLineBarcode.RESET;
+          RHDSalesExportLineBarcode.SETRANGE("Entry No.",RHDSalesExpHeader."Entry No.");
+          RHDSalesExportLineBarcode.SETRANGE(Type,RHDSalesExportLineBarcode.Type::Barcode);
+          RHDSalesExportLineBarcode.SETRANGE("Attached to Pos. No.",RHDSalesExportLineItem."Pos. No.");
+          IF RHDSalesExportLineBarcode.FINDSET THEN
+            REPEAT
+              RHDGenMgt.FileAddLine(PADSTR(RHDSalesExportLineBarcode."Record Type",3,' '),FALSE);
+              RHDGenMgt.FileAddLine(PADSTR(FORMAT(RHDSalesExportLineBarcode."Attached to Pos. No."),3,' '),FALSE);
+              RHDGenMgt.FileAddLine(PADSTR(RHDSalesExportLineBarcode.Description,32,' '),FALSE);
+              RHDGenMgt.FileAddLine(PADSTR(RHDSalesExportLineBarcode.Barcode,35,' '),FALSE);
+              RHDGenMgt.FileAddLine(';',TRUE);
+            UNTIL RHDSalesExportLineBarcode.NEXT = 0;
+            // Export KAS
+          RHDSalesExportLineAssembly.RESET;
+          RHDSalesExportLineAssembly.SETRANGE("Entry No.",RHDSalesExpHeader."Entry No.");
+          RHDSalesExportLineAssembly.SETRANGE(Type,RHDSalesExportLineAssembly.Type::Assembly);
+          RHDSalesExportLineAssembly.SETRANGE("Attached to Pos. No.",RHDSalesExportLineItem."Pos. No.");
+          IF RHDSalesExportLineAssembly.FINDSET THEN
+            REPEAT
+              RHDGenMgt.FileAddLine(PADSTR(RHDSalesExportLineAssembly."Record Type",3,' '),FALSE);
+              RHDGenMgt.FileAddLine(PADSTR(FORMAT(RHDSalesExportLineAssembly."Pos. No."),5,' '),FALSE);
+              RHDGenMgt.FileAddLine(PADSTR('272',3,' '),FALSE);
+              RHDGenMgt.FileAddLine(PADSTR(FORMAT(RHDSalesExportLineAssembly.Quantity),5,' '),FALSE);
+              RHDGenMgt.FileAddLine(PADSTR(FORMAT(RHDSalesExportLineAssembly.Amount,0,'<integer><decimals,3>'),7,' '),FALSE);
+              RHDGenMgt.FileAddLine(';',TRUE);
+            UNTIL RHDSalesExportLineAssembly.NEXT = 0;
+        UNTIL RHDSalesExportLineItem.NEXT = 0;
+
+      RHDGenMgt.FileSave;
+      RHDGenMgt.FileConvertToUTF8(FPCInterfaceSetup."Export Folder",Filename);
+      //S/
+      IF NOT RHDImportExportFiles.GET(0,0,RHDSalesExpHeader."Entry No.") THEN BEGIN
+        RHDImportExportFiles."Entry Type" := RHDImportExportFiles."Entry Type"::Sales;
+        RHDImportExportFiles."Entry Subtype" := RHDImportExportFiles."Entry Subtype"::Export;
+        RHDImportExportFiles."Entry No." := RHDSalesExpHeader."Entry No.";
+        RHDImportExportFiles.INSERT;
+      END;
+      //RHDImportExportFiles.File.IMPORT(FPCInterfaceSetup."Export Folder" + Filename,FALSE);
+      FileVar.OPEN(FPCInterfaceSetup."Export Folder" + Filename);
+      FileVar.CREATEINSTREAM(Instream);
+      RHDImportExportFiles.File.CREATEOUTSTREAM(OutStream);
+      COPYSTREAM(OutStream,Instream);
+      RHDImportExportFiles.MODIFY;
+
+      // S/P1157
+      RHDSalesExpHeader.Filename := Filename;
+      //A,03.02.2014,gob-dst,P1187
+      RHDSalesExpHeader."Process Timestamp" := CURRENTDATETIME;
+      //E,03.02.2014,gob-dst,P1187
+      RHDSalesExpHeader.MODIFY;
+      // E/P1157
+    END;
+
+    LOCAL PROCEDURE CreateKADFile@1000000005() : Text[70];
+    VAR
+      KADIdent@1000000000 : Code[10];
+      ClientIdent@1000000001 : Code[10];
+      TimestampTxt@1000000003 : Text[50];
+    BEGIN
+      RHDSetup.TESTFIELD("Record Type KAD");
+      RHDSetup.TESTFIELD("Rhenus Client Identifier");
+      KADIdent := RHDSetup."Record Type KAD";
+      ClientIdent := RHDSetup."Rhenus Client Identifier";
+      //S/P1210
+      //TimestampTxt := FORMAT(CURRENTDATETIME,0,'<Day,2><Month,2><Year><Hours24><Minutes,2><Seconds,2><Thousands,3>');
+      TimestampTxt :=
+        FORMAT(CURRENTDATETIME,
+          0,
+      //S/P1213
+          //'<Day,2><Month,2><Year><Hours24,2><Minutes,2><Seconds,2><Thousands,3>');
+          '<Year4><Month,2><Day,2><Hours24,2><Minutes,2><Seconds,2><Thousands,3>');
+      //E/P1213
+      //E/P1210
+      EXIT(KADIdent + ClientIdent + TimestampTxt + '.txt');
+    END;
+
+    PROCEDURE GetFilename@1000000003() : Text[250];
+    BEGIN
+      EXIT(Filename);
+    END;
+
+    PROCEDURE DeleteFileAfterError@1000000012();
+    BEGIN
+      RHDGenMgt.FileSave;
+      RHDGenMgt.FileDeleteAfterError(FPCInterfaceSetup."Export Folder",Filename);
+    END;
+
+    PROCEDURE FillRhenusExportTables@1000000000(p_SalesLine@1000000000 : Record 37);
+    BEGIN
+      IF p_SalesLine.FINDSET THEN BEGIN
+        REPEAT
+        UNTIL p_SalesLine.NEXT = 0;
+      END;
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------------+
+      |                   ∏  Copyright                   |
+      |       GOB Software & Systeme GmbH & Co. KG       |
+      +--------------------------------------------------+
+      |                      home24                      |
+      +--------------------------------------------------+
+
+      Project   Date      Consultant  Comment
+      ----------------------------------------------------
+      P1090     29.08.13  gob-rste    New Fields Interface Code STA, Interface Code WEM, Interface Code Post Code
+      P1103     10.09.13  gob-ael     OnRun, new functions for Export KAD
+      P1070     23.10.13  gob-rste    OM Guidelines
+      P1157     27.11.13  gob-ael     Filename in KAD-Export Sales Header schreiben
+      P1187     03.02.14  gob-dst     Zeitstempel mit zweistelliger Stunde
+      P1210     26.02.14  gob-rste    Filler Character Hours 0 KAD Filenames
+      P1213     28.02.14  gob-rste    RHD Filename YYYYMMDDHHMMSSTTT
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+      H1011       27.03.14 DMA       Export KAD File for Sales Change Order
+      H1012       16.04.14 DMA       RHD KAD Creation - Create KAD Files for SO Return-Orders from NAV
+      H1270       20.06.14 EHN       Round UnitWeight in KAD file according to request from Rhenus
+      H1327       04.07.14 DMA       RHD: Special Characters in KAL Segment cause error in File Creation > Housenumber is missing
+      H1161       17.07.14 EHN       Export Action Type to KAP line: Delivery or Pickup
+    }
+    END.
+  }
+}
+

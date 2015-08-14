@@ -1,0 +1,1325 @@
+OBJECT Codeunit 50111 DHL Label Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=23.01.15;
+    Time=00:00:00;
+    Modified=Yes;
+    Version List=GOB,HME2003;
+  }
+  PROPERTIES
+  {
+    OnRun=VAR
+            PurchLine@1000000000 : Record 39;
+            Sperrgut@1000000001 : Boolean;
+            Printtext@1000000002 : Code[50];
+          BEGIN
+            PurchLine.RESET;
+            PurchLine.SETRANGE("Document Type",PurchLine."Document Type"::Order);
+            PurchLine.SETRANGE("Document No.",'DS12022087');
+            PurchLine.SETRANGE("Line No.",10000);
+            IF PurchLine.FINDSET THEN BEGIN
+              MESSAGE(GetLeitcode(PurchLine,Printtext,Sperrgut));
+              MESSAGE(Printtext);
+              MESSAGE(FORMAT(Sperrgut));
+              MESSAGE(GetIdentCode(PurchLine,Printtext));
+              MESSAGE(Printtext);
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      FPCGeneralSetup@1000000000 : Record 50055;
+      HMEText001@1000000003 : TextConst 'DEU="Keine Paketverfolgungsnemmer verfÅgbar fÅr %1 %2 ";ENU=No Tracking info available for %1 %2 %3';
+      HMEText002@1000000002 : TextConst 'DEU=Der DHL Nachforchungsauftrag %1 %2 wurde bereits gebucht;ENU=This DHL Parcel Inquiry is already posted %1 %2';
+      HMEText003@1000000001 : TextConst 'DEU=Gelîschter Beleg;ENU=Gelîschter Beleg';
+      PurchasesPayablesSetup@1000000004 : Record 312;
+
+    PROCEDURE GetChecksum@1108200000(p_IdentCode@1108200000 : Code[13]) r_Checksum : Integer;
+    VAR
+      Step1@1108200001 : Integer;
+      Step2@1108200002 : Integer;
+      i@1108200003 : Integer;
+      IdentCodeValue@1108200004 : Integer;
+    BEGIN
+      FOR i := 1 TO STRLEN(p_IdentCode) DO BEGIN
+        CLEAR(IdentCodeValue);
+        EVALUATE(IdentCodeValue,COPYSTR(p_IdentCode,STRLEN(p_IdentCode) + 1 - i,1));
+        IF i MOD 2 = 0 THEN
+          Step2 += IdentCodeValue
+        ELSE
+          Step1 += IdentCodeValue;
+      END;
+      Step1 := Step1 * 4;
+      Step2 := Step2 * 9;
+      r_Checksum := Step1 + Step2;
+      i := 0;
+      IF r_Checksum MOD 10 = 0 THEN BEGIN
+        r_Checksum := 0
+      END ELSE BEGIN
+        REPEAT
+          i +=1;
+          r_Checksum +=1;
+        UNTIL r_Checksum MOD 10 = 0;
+        r_Checksum := i;
+      END;
+
+      EXIT(r_Checksum);
+    END;
+
+    PROCEDURE GetLeitcode@1108200001(p_PurchaseLine@1108200010 : Record 39;VAR p_LeitCodeText_Var@1000000003 : Code[50];VAR p_IsBulkyGood_Var@1000000002 : Boolean) r_Leitcode : Code[20];
+    VAR
+      DHLSetup@1000000004 : Record 50022;
+      DHLStreetcodes@1108200004 : Record 50047;
+      PLZ_Leitcode@1108200005 : Code[8];
+      StreetCode_Leitcode@1108200006 : Code[3];
+      Hausnr_Leitcode@1108200007 : Code[3];
+      Frachtcode_Leitcode@1108200008 : Code[2];
+      CheckSum_Leitcode@1108200009 : Code[1];
+      FPCManagement@1000000000 : Codeunit 50003;
+      Filename@1000000005 : Text[1024];
+      SalesHeader@1000000006 : Record 36;
+      SalesHeaderArch@1000000008 : Record 5107;
+      StreetSearchName@1000000007 : Text[50];
+      "4DigitHouseNo"@1000000001 : Integer;
+      ShipToAddress@1000000009 : Text[50];
+      ShipToPostCode@1000000010 : Code[20];
+      ShipToCity@1000000011 : Text[30];
+    BEGIN
+      "4DigitHouseNo" := 0;
+      PLZ_Leitcode := '';
+      StreetCode_Leitcode := '';
+      Hausnr_Leitcode := '';
+      Frachtcode_Leitcode := '';
+      CheckSum_Leitcode := '';
+      SalesHeader.RESET;
+
+      // H0524 FX 02.09.13  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      SalesHeaderArch.RESET;
+      // SalesHeader.GET(1, p_PurchaseLine."Sales Order No.");
+      IF SalesHeader.GET(1, p_PurchaseLine."Sales Order No.") THEN BEGIN
+        ShipToAddress := SalesHeader."Ship-to Address";
+        ShipToPostCode := SalesHeader."Ship-to Post Code";
+        ShipToCity := SalesHeader."Ship-to City";
+      END ELSE BEGIN
+        SalesHeaderArch.SETRANGE("No.", p_PurchaseLine."Sales Order No.");
+        SalesHeaderArch.FINDLAST;
+        ShipToAddress := SalesHeaderArch."Ship-to Address";
+        ShipToPostCode := SalesHeaderArch."Ship-to Post Code";
+        ShipToCity := SalesHeaderArch."Ship-to City";
+      END;
+      Hausnr_Leitcode := HausnummerToCode(ShipToAddress, "4DigitHouseNo");
+      StreetSearchName := GetStreetSearchName(ShipToAddress);
+      // Hausnr_Leitcode := HausnummerToCode(SalesHeader."Ship-to Address", "4DigitHouseNo");
+      // StreetSearchName := GetStreetSearchName(SalesHeader."Ship-to Address");
+      // H0524 FX 02.09.13  ------------------------------------------------------------
+
+      DHLStreetcodes.RESET;
+      // DHLStreetcodes.SETRANGE(plz, SalesHeader."Ship-to Post Code");
+      DHLStreetcodes.SETRANGE(plz, ShipToPostCode);
+
+      DHLStreetcodes.SETFILTER(str_name_sort,'@' + StreetSearchName);
+
+      IF DHLStreetcodes.FIND('-') THEN BEGIN
+        IF "4DigitHouseNo" > 0 THEN
+          DHLStreetcodes.NEXT("4DigitHouseNo");
+          IF (DHLStreetcodes.COUNT = 1) OR ("4DigitHouseNo" = 0) THEN BEGIN
+            PLZ_Leitcode := DHLStreetcodes.plz;
+            StreetCode_Leitcode := DHLStreetcodes.str_code;
+          END ELSE BEGIN
+            IF "4DigitHouseNo" > 0 THEN BEGIN
+              DHLStreetcodes.NEXT("4DigitHouseNo")
+            END ELSE BEGIN
+      // H0524 FX 26.08.13  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      //        DHLStreetcodes.SETFILTER(city,'@' + SalesHeader."Ship-to City");
+              DHLStreetcodes.SETFILTER(city,'@' + ShipToCity);
+      // H0524 FX 26.08.13  ------------------------------------------------------------
+              IF DHLStreetcodes.FINDFIRST THEN BEGIN
+                PLZ_Leitcode := DHLStreetcodes.plz;
+                StreetCode_Leitcode := DHLStreetcodes.str_code;
+              END ELSE BEGIN
+      // H0524 FX 26.08.13  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      //          PLZ_Leitcode := SalesHeader."Ship-to Post Code";
+                PLZ_Leitcode := ShipToPostCode;
+      // H0524 FX 26.08.13  ------------------------------------------------------------
+                StreetCode_Leitcode := '000';
+              END;
+            END;
+          END;
+      END ELSE BEGIN
+      // H0524 FX 26.08.13  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      //  PLZ_Leitcode := SalesHeader."Ship-to Post Code";
+        PLZ_Leitcode := ShipToPostCode;
+      // H0524 FX 26.08.13  ------------------------------------------------------------
+        StreetCode_Leitcode := '000';
+      END;
+
+      IF IsBulkyGood(p_PurchaseLine."No.",p_PurchaseLine."Purchasing Code") THEN BEGIN
+        Frachtcode_Leitcode := '10';
+        p_IsBulkyGood_Var := TRUE;
+      END ELSE BEGIN
+        Frachtcode_Leitcode := '00';
+        p_IsBulkyGood_Var := FALSE;
+      END;
+
+      r_Leitcode := PLZ_Leitcode + StreetCode_Leitcode + Hausnr_Leitcode + Frachtcode_Leitcode;
+      r_Leitcode := r_Leitcode + FORMAT(GetChecksum(r_Leitcode));
+      p_LeitCodeText_Var := COPYSTR(r_Leitcode,1,5) + ' . ' + COPYSTR(r_Leitcode,6,3) + ' . ' +
+        COPYSTR(r_Leitcode,9,3) + ' . ' + COPYSTR(r_Leitcode,12,2) + '  ' + COPYSTR(r_Leitcode,14,1);
+
+      EXIT(r_Leitcode);
+    END;
+
+    PROCEDURE GetIdentCode@1108200003(p_PurchLine@1108200000 : Record 39;VAR p_IdentCodeKlartext_Var@1000000000 : Code[50]) r_IdentCode : Code[20];
+    VAR
+      DHLSetup@1000000001 : Record 50022;
+      ClientID@1000000002 : Text[30];
+      Vendor@1000000003 : Record 23;
+      DHLVendIDCodes@1000000004 : Record 50161;
+    BEGIN
+      p_IdentCodeKlartext_Var := '';
+      DHLSetup.RESET;
+      DHLSetup.GET;
+      DHLSetup.TESTFIELD("Home24 DHL Client ID");
+      Vendor.RESET;
+      Vendor.GET(p_PurchLine."Buy-from Vendor No.");
+      // A/P0903
+      DHLVendIDCodes.GET(Vendor."No.",'DE');
+      // IF Vendor."DHL Client ID" <> '' THEN BEGIN
+        // ClientID := DELCHR(Vendor."DHL Client ID",'=','0123456789');
+      IF DHLVendIDCodes."DHL Client ID" <> '' THEN BEGIN
+        ClientID := DELCHR(DHLVendIDCodes."DHL Client ID",'=','0123456789');
+      // E/P0903
+        IF STRLEN(ClientID) = 0 THEN
+          // A/P0903
+          //ClientID := Vendor."DHL Client ID"
+          ClientID := DHLVendIDCodes."DHL Client ID"
+          // E/P0903
+        ELSE
+          ClientID := DHLSetup."Home24 DHL Client ID";
+      END ELSE
+        ClientID := DHLSetup."Home24 DHL Client ID";
+
+      // A/P0903
+      //r_IdentCode := ClientID + DHLShipmentCount(Vendor,ClientID);
+      r_IdentCode := ClientID + DHLShipmentCount(DHLVendIDCodes,ClientID);
+      // E/P0903
+      r_IdentCode := r_IdentCode + FORMAT(GetChecksum(r_IdentCode));
+      p_IdentCodeKlartext_Var := COPYSTR(r_IdentCode,1,2) + ' . ' + COPYSTR(r_IdentCode,3,3) + '  ' +
+                                 COPYSTR(r_IdentCode,6,3) + ' . ' + COPYSTR(r_IdentCode,9,3) + '  ' + COPYSTR(r_IdentCode,12,1);
+      EXIT(r_IdentCode);
+    END;
+
+    PROCEDURE HausnummerToCode@1108200008(p_Address@1108200000 : Text[50];VAR p_4DigitHouseNo_Var@1000000002 : Integer) r_HausNr : Code[3];
+    VAR
+      FPCManagement@1000000000 : Codeunit 50003;
+      LocText001@1000000001 : TextConst 'DEU=" abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!""ı$%&/()=?·Ô`^+*~''#-_:.;,<>|@∞[]}{\¸ÅÑîôéö†ÖÉÇäà°çå¢ïì£óñµ∑∂ê‘“÷ﬁ◊‡„‚ÈÎÍ";ENU=" abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!""ı$%&/()=?·Ô`^+*~''#-_:.;,<>|@∞[]}{\¸ÅÑîôéö†ÖÉÇäà°çå¢ïì£óñµ∑∂ê‘“÷ﬁ◊‡„‚ÈÎÍ"';
+    BEGIN
+      p_Address := DELCHR(UPPERCASE(p_Address),'=',LocText001);
+      p_Address := FPCManagement.DeleteCRLF(p_Address,TRUE);
+      IF STRLEN(p_Address) > 3 THEN BEGIN
+        IF EVALUATE(p_4DigitHouseNo_Var,COPYSTR(p_Address,1,1)) THEN;
+        r_HausNr := COPYSTR(p_Address,STRLEN(p_Address) - 2,STRLEN(p_Address));
+        EXIT(r_HausNr);
+      END ELSE BEGIN
+        r_HausNr := p_Address;
+        IF STRLEN(p_Address) < 3 THEN BEGIN
+          REPEAT
+            r_HausNr := '0' + r_HausNr;
+          UNTIL STRLEN(r_HausNr) = 3;
+          EXIT(r_HausNr);
+        END ELSE
+          EXIT(r_HausNr);
+      END;
+
+      r_HausNr := '000';
+      EXIT(r_HausNr);
+    END;
+
+    PROCEDURE GetStreetSearchName@1108200002(p_Address@1108200000 : Text[50]) : Code[50];
+    VAR
+      i@1108200001 : Integer;
+      FPCManagement@1000000000 : Codeunit 50003;
+    BEGIN
+      FOR i := 1 TO 10 DO BEGIN
+        IF STRPOS(p_Address,FORMAT(i)) > 0 THEN BEGIN
+          p_Address := COPYSTR(p_Address,1,STRPOS(p_Address,FORMAT(i)));
+          i := 10;
+        END;
+      END;
+
+      p_Address := DELCHR(p_Address,'=','1234567890.,;:-_#+*~!"ı$%&/()=');
+      p_Address := DELCHR(p_Address,'=',' ');
+      p_Address := CONVERTSTR(p_Address,'|<>()&=?*','?????????');
+      p_Address := UPPERCASE(p_Address);
+      p_Address := ReplaceString(p_Address,'é','AE');
+      p_Address := ReplaceString(p_Address,'ô','OE');
+      p_Address := ReplaceString(p_Address,'ö','UE');
+      p_Address := ReplaceString(p_Address,'·','SS');
+      p_Address := CONVERTSTR(p_Address, '''', '.');
+      p_Address := CONVERTSTR(p_Address, ',', '.');
+      p_Address := CONVERTSTR(p_Address, ':', '.');
+      p_Address := CONVERTSTR(p_Address, 'É', 'A');
+      p_Address := CONVERTSTR(p_Address, '†', 'A');
+      p_Address := CONVERTSTR(p_Address, 'Ö', 'A');
+      p_Address := CONVERTSTR(p_Address, 'à', 'E');
+      p_Address := CONVERTSTR(p_Address, 'Ç', 'E');
+      p_Address := CONVERTSTR(p_Address, 'ä', 'E');
+      p_Address := CONVERTSTR(p_Address, 'å', 'I');
+      p_Address := CONVERTSTR(p_Address, '°', 'I');
+      p_Address := CONVERTSTR(p_Address, 'ç', 'I');
+      p_Address := CONVERTSTR(p_Address, 'ì', 'U');
+      p_Address := CONVERTSTR(p_Address, '¢', 'U');
+      p_Address := CONVERTSTR(p_Address, 'ï', 'U');
+      p_Address := CONVERTSTR(p_Address, 'ñ', 'U');
+      p_Address := CONVERTSTR(p_Address, '£', 'U');
+      p_Address := CONVERTSTR(p_Address, 'ó', 'U');
+      p_Address := CONVERTSTR(p_Address, '∂', 'A');
+      p_Address := CONVERTSTR(p_Address, 'µ', 'A');
+      p_Address := CONVERTSTR(p_Address, '∑', 'A');
+      p_Address := CONVERTSTR(p_Address, '“', 'E');
+      p_Address := CONVERTSTR(p_Address, 'ê', 'E');
+      p_Address := CONVERTSTR(p_Address, '‘', 'E');
+      p_Address := CONVERTSTR(p_Address, '◊', 'I');
+      p_Address := CONVERTSTR(p_Address, '÷', 'I');
+      p_Address := CONVERTSTR(p_Address, 'ﬁ', 'I');
+      p_Address := CONVERTSTR(p_Address, '‚', 'U');
+      p_Address := CONVERTSTR(p_Address, '‡', 'U');
+      p_Address := CONVERTSTR(p_Address, '„', 'U');
+      p_Address := CONVERTSTR(p_Address, 'Í', 'U');
+      p_Address := CONVERTSTR(p_Address, 'È', 'U');
+      p_Address := CONVERTSTR(p_Address, 'Î', 'U');
+      p_Address := DELCHR(p_Address,'=',' ');
+      IF STRPOS(p_Address,'STRASSE') <> 0 THEN
+        IF STRPOS(p_Address,'STRASSE') = STRLEN(p_Address) - 6 THEN
+         p_Address := ReplaceString(p_Address,'STRASSE','STR');
+      p_Address := FPCManagement.DeleteCRLF(p_Address,TRUE);
+      p_Address := DELCHR(p_Address,'=',' ');
+      p_Address := FPCManagement.DeleteCRLF(p_Address,TRUE);
+      EXIT(p_Address);
+    END;
+
+    PROCEDURE GetBillingNo@1108200004(p_PurchaseLine@1000000000 : Record 39;national@1000000003 : Boolean) r_BillingNo : Code[20];
+    VAR
+      DHL_HerstellerID@1108200000 : Code[10];
+      tempString@1108200001 : Text[30];
+      Vendor@1000000001 : Record 23;
+      DHLVendorIDCodes@1000000002 : Record 50161;
+    BEGIN
+      // A/P0903
+      IF national THEN BEGIN
+        IF DHLVendorIDCodes.GET(p_PurchaseLine."Buy-from Vendor No.",'DE') THEN BEGIN
+          IF DHLVendorIDCodes."DHL Partner ID" <> '' THEN BEGIN
+            CASE STRLEN(DHLVendorIDCodes."DHL Partner ID") OF
+              1: DHL_HerstellerID := '0000' + DHLVendorIDCodes."DHL Partner ID";
+              2: DHL_HerstellerID := '000' + DHLVendorIDCodes."DHL Partner ID";
+              3: DHL_HerstellerID := '00' + DHLVendorIDCodes."DHL Partner ID";
+              4: DHL_HerstellerID := '0' + DHLVendorIDCodes."DHL Partner ID";
+            ELSE
+              DHL_HerstellerID := COPYSTR(DHLVendorIDCodes."DHL Partner ID",1,5);
+            END;
+          END ELSE
+            DHL_HerstellerID := '00003';
+
+          r_BillingNo := '6212684059' + '01' + DHL_HerstellerID;
+        END;
+      END ELSE
+        r_BillingNo := '6212684059' + ' 53 ' + '01';
+      // E/P0903
+    END;
+
+    PROCEDURE DHLShipmentCount@1108200005(p_DHLVendorIDCodes@1000000010 : Record 50161;p_ClientID@1000000012 : Code[10]) r_ShipmentCount : Code[8];
+    VAR
+      DHLSetupLoc@1108200000 : Record 50022;
+      j@1108200001 : Integer;
+      "***P0748 local***"@1000000000 : Integer;
+      lDHLHistory@1000000001 : Record 50021;
+      lStartTrackingNo@1000000003 : Integer;
+      lMaxEntryNoTracking@1000000004 : Integer;
+      lNecessaryLength@1000000005 : Integer;
+      IsHome24Track@1000000006 : Boolean;
+      AllowDoubleTrack@1000000007 : Boolean;
+      TrackingNoCounterLoc@1000000008 : Integer;
+      DHLSetup@1000000009 : Record 50022;
+      LocText001@1000000011 : TextConst 'DEU=Keine freie Tracking Nr.;ENU=No free Tracking No.';
+      ParcelStatusHistory@1000000002 : Record 80013;
+      ParcelStatusHistoryArchive@1000000013 : Record 50187;
+      RecIsEmpty@1000000014 : Boolean;
+    BEGIN
+      //S/P1133
+      FPCGeneralSetup.GET;
+      //E/P1133
+
+      // Filter fÅr Zeitrahmen setzen
+      DHLSetup.RESET;
+      DHLSetup.GET;
+      DHLSetup.TESTFIELD("Datefilter Check Tracking");
+      DHLSetup.TESTFIELD("Home24 DHL Client ID");
+      //S/P1133
+      CASE FPCGeneralSetup."Active Parcel Status History" OF
+        FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old":
+          BEGIN
+            lDHLHistory.RESET;
+            lDHLHistory.SETCURRENTKEY("Piece-Code (Identifier)","Time Stamp");
+            lDHLHistory.SETRANGE("Time Stamp",CREATEDATETIME(CALCDATE('-' + DHLSetup."Datefilter Check Tracking",WORKDATE),0T),
+                                              CREATEDATETIME(WORKDATE + 1,235959T));
+          END;
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+        FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History":
+          BEGIN
+            ParcelStatusHistory.RESET;
+            ParcelStatusHistory.SETCURRENTKEY("Timestamp Insert");
+            ParcelStatusHistory.SETRANGE(
+              "Timestamp Insert",
+              CREATEDATETIME(CALCDATE('-' + DHLSetup."Datefilter Check Tracking",WORKDATE),0T),
+              CREATEDATETIME(WORKDATE + 1,235959T));
+            ParcelStatusHistoryArchive.RESET;
+            ParcelStatusHistoryArchive.SETCURRENTKEY("Timestamp Insert");
+            ParcelStatusHistoryArchive.SETRANGE(
+              "Timestamp Insert",
+              CREATEDATETIME(CALCDATE('-' + DHLSetup."Datefilter Check Tracking",WORKDATE),0T),
+              CREATEDATETIME(WORKDATE + 1,235959T));
+          END;
+      END;
+
+      CLEAR(RecIsEmpty);
+      //E/P1133
+
+      // fÅr globalen ZÑhler Initialiserung durchfÅhren
+      TrackingNoCounterLoc := 0;
+      IsHome24Track := FALSE;
+      AllowDoubleTrack := FALSE;
+      IF (DHLSetup."Home24 DHL Client ID" = p_ClientID) THEN BEGIN
+        IsHome24Track := TRUE;
+        AllowDoubleTrack := DHLSetup."Allow double Tracking Codes";
+        TrackingNoCounterLoc := DHLSetup."DHL Packet Count Shipment";
+      END ELSE BEGIN
+        // A/P0903
+        // AllowDoubleTrack := p_Vendor."Allow double Tracking Codes";
+        // TrackingNoCounterLoc := p_Vendor."Last Entry No. Tracking";
+        AllowDoubleTrack := p_DHLVendorIDCodes."Allow Double Tracking";
+        TrackingNoCounterLoc := p_DHLVendorIDCodes."Last Entry No. Tracking";
+        // E/P0903
+      END;
+      lStartTrackingNo := TrackingNoCounterLoc;
+      lNecessaryLength := STRLEN(p_ClientID);
+      EVALUATE(lMaxEntryNoTracking,COPYSTR('99999999',1,(11 - lNecessaryLength)));
+      IF lStartTrackingNo = 0 THEN
+        lStartTrackingNo := lMaxEntryNoTracking;
+      REPEAT
+        IF (lMaxEntryNoTracking <= TrackingNoCounterLoc) THEN BEGIN
+          TrackingNoCounterLoc := 1;
+        END ELSE BEGIN
+          TrackingNoCounterLoc +=1;
+        END;
+        r_ShipmentCount := FORMAT(TrackingNoCounterLoc);
+        WHILE (STRLEN(r_ShipmentCount) + lNecessaryLength < 11) DO BEGIN
+          r_ShipmentCount := '0' + r_ShipmentCount;
+        END;
+      //S/P1133
+      //  lDHLHistory.SETFILTER("Piece-Code (Identifier)",'%1',(p_ClientID + r_ShipmentCount + '?'));
+      //UNTIL lDHLHistory.ISEMPTY OR (lStartTrackingNo = TrackingNoCounterLoc);
+        CASE FPCGeneralSetup."Active Parcel Status History" OF
+          FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+          FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old":
+            BEGIN
+              lDHLHistory.SETFILTER("Piece-Code (Identifier)",'%1',(p_ClientID + r_ShipmentCount + '?'));
+              RecIsEmpty := lDHLHistory.ISEMPTY;
+            END;
+          FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+          FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History":
+            BEGIN
+              ParcelStatusHistory.SETFILTER("Piece Code",'%1',(p_ClientID + r_ShipmentCount + '?'));
+              ParcelStatusHistoryArchive.SETFILTER("Piece Code",'%1',(p_ClientID + r_ShipmentCount + '?'));
+              RecIsEmpty := ParcelStatusHistory.ISEMPTY AND ParcelStatusHistoryArchive.ISEMPTY;
+            END;
+        END;
+      UNTIL RecIsEmpty OR (lStartTrackingNo = TrackingNoCounterLoc);
+      //E/P1133
+
+      IF (lStartTrackingNo = TrackingNoCounterLoc) THEN
+        IF NOT AllowDoubleTrack THEN BEGIN
+          ERROR(LocText001);
+        END ELSE BEGIN
+          TrackingNoCounterLoc := lStartTrackingNo;
+          IF (lMaxEntryNoTracking <= TrackingNoCounterLoc) THEN
+            TrackingNoCounterLoc := 1
+          ELSE
+            TrackingNoCounterLoc +=1;
+          r_ShipmentCount := FORMAT(TrackingNoCounterLoc);
+          WHILE (STRLEN(r_ShipmentCount) + lNecessaryLength < 11) DO BEGIN
+            r_ShipmentCount := '0' + r_ShipmentCount;
+          END;
+        END;
+
+      IF (DHLSetup."Home24 DHL Client ID" = p_ClientID) THEN BEGIN
+        DHLSetup."DHL Packet Count Shipment" := TrackingNoCounterLoc;
+        DHLSetup.MODIFY
+      END ELSE BEGIN
+        // A/P0903
+        // p_Vendor."Last Entry No. Tracking" := TrackingNoCounterLoc;
+        // p_Vendor.MODIFY;
+        p_DHLVendorIDCodes.RESET;
+        p_DHLVendorIDCodes.SETRANGE("DHL Client ID",p_DHLVendorIDCodes."DHL Client ID");
+        IF p_DHLVendorIDCodes.FINDSET THEN
+          p_DHLVendorIDCodes.MODIFYALL("Last Entry No. Tracking",TrackingNoCounterLoc);
+        // E/P0903
+      END;
+    END;
+
+    PROCEDURE ReplaceString@2(parText@1108200000 : Text[50];parSearchText@1108200001 : Text[50];parReplaceText@1108200002 : Text[50]) retValue : Text[50];
+    VAR
+      Dummy@1108200003 : Text[50];
+    BEGIN
+      retValue := parText;
+      WHILE (STRPOS(parText,parSearchText) < STRLEN(parText)) AND (STRPOS(parText,parSearchText) > 0) DO BEGIN
+        Dummy := DELSTR(parText,STRPOS(parText,parSearchText),STRLEN(parSearchText));
+        retValue := PADSTR(INSSTR(Dummy,parReplaceText,STRPOS(parText,parSearchText)),30,' ');
+        parText := retValue;
+      END;
+    END;
+
+    PROCEDURE FillShipToAddress@1108200007(p_SalesHeader@1108200000 : Record 36;VAR p_ShipToValue1_Var@1000000000 : Text[50];VAR p_ShipToValue2_Var@1000000001 : Text[50];VAR p_ShipToValue3_Var@1000000002 : Text[50];VAR p_ShipToValue4_Var@1000000003 : Text[50];VAR p_ShipToValue5_Var@1000000004 : Text[50]);
+    VAR
+      Cu_FormatAddress@1000000005 : Codeunit 365;
+      Rec_ShipToAddress@1000000006 : Record 222;
+      Rec_Cust@1000000008 : Record 18;
+    BEGIN
+      p_ShipToValue1_Var := '';
+      p_ShipToValue2_Var := '';
+      p_ShipToValue3_Var := '';
+      p_ShipToValue4_Var := '';
+      p_ShipToValue5_Var := '';
+
+      IF (p_SalesHeader."Ship-to Name 2" = '') AND (p_SalesHeader."Ship-to Address 2" = '') THEN BEGIN
+        p_ShipToValue1_Var := UPPERCASE(p_SalesHeader."Ship-to Name");
+        p_ShipToValue2_Var := UPPERCASE(p_SalesHeader."Ship-to Address");
+        p_ShipToValue3_Var := UPPERCASE(p_SalesHeader."Ship-to Country/Region Code" +
+                                        '-' +
+                                        p_SalesHeader."Ship-to Post Code" +
+                                        ' ' +
+                                        p_SalesHeader."Ship-to City");
+        p_ShipToValue4_Var := '';
+        p_ShipToValue5_Var := '';
+      END;
+
+      IF (p_SalesHeader."Ship-to Name 2" <> '') AND (p_SalesHeader."Ship-to Address 2" = '') THEN BEGIN
+
+        p_ShipToValue1_Var := UPPERCASE(p_SalesHeader."Ship-to Name");
+        p_ShipToValue2_Var := UPPERCASE(p_SalesHeader."Ship-to Name 2");
+        p_ShipToValue3_Var := UPPERCASE(p_SalesHeader."Ship-to Address");
+        p_ShipToValue4_Var := UPPERCASE(p_SalesHeader."Ship-to Country/Region Code" + '-' +
+                                        p_SalesHeader."Ship-to Post Code" +
+                                        ' ' +
+                                        p_SalesHeader."Ship-to City");
+        p_ShipToValue5_Var := '';
+      END;
+
+      IF (p_SalesHeader."Ship-to Name 2" = '') AND (p_SalesHeader."Ship-to Address 2" <> '') THEN BEGIN
+        p_ShipToValue1_Var := UPPERCASE(p_SalesHeader."Ship-to Name");
+        p_ShipToValue2_Var := UPPERCASE(p_SalesHeader."Ship-to Address");
+        p_ShipToValue3_Var := UPPERCASE(p_SalesHeader."Ship-to Address 2");
+        p_ShipToValue4_Var := UPPERCASE(p_SalesHeader."Ship-to Country/Region Code" + '-' +
+                                        p_SalesHeader."Ship-to Post Code" +
+                                        ' ' +
+                                        p_SalesHeader."Ship-to City");
+        p_ShipToValue5_Var := '';
+      END;
+
+      IF (p_SalesHeader."Ship-to Name 2" <> '') AND (p_SalesHeader."Ship-to Address 2" <> '') THEN BEGIN
+        p_ShipToValue1_Var := UPPERCASE(p_SalesHeader."Ship-to Name");
+        p_ShipToValue2_Var := UPPERCASE(p_SalesHeader."Ship-to Name 2");
+        p_ShipToValue3_Var := UPPERCASE(p_SalesHeader."Ship-to Address");
+        p_ShipToValue4_Var := UPPERCASE(p_SalesHeader."Ship-to Address 2");
+        p_ShipToValue5_Var := UPPERCASE(p_SalesHeader."Ship-to Country/Region Code" + '-' +
+                                        p_SalesHeader."Ship-to Post Code" +
+                                        ' ' +
+                                        p_SalesHeader."Ship-to City");
+      END;
+    END;
+
+    PROCEDURE IsBulkyGood@1000000000(p_ItemNo@1000000002 : Code[20];p_PurchCode@1000000003 : Code[20]) : Boolean;
+    VAR
+      FPCGeneralSetup@1000000000 : Record 50055;
+      ItemShippingRelation@1000000001 : Record 50116;
+    BEGIN
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Shipping Releation Bulky Goods");
+      ItemShippingRelation.RESET;
+      ItemShippingRelation.SETRANGE("Item No.",p_ItemNo);
+      ItemShippingRelation.SETRANGE(Purchasing,p_PurchCode);
+      ItemShippingRelation.SETRANGE("Shipping Agent",FPCGeneralSetup."Shipping Releation Bulky Goods");
+      IF NOT ItemShippingRelation.ISEMPTY THEN
+        EXIT(TRUE);
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE GetExistingIdentCodeForSL@1000000001(p_SalesLine@1000000000 : Record 37;p_LabelSendCode@1000000002 : Code[10];p_ParcelNo@1000000001 : Integer;VAR p_IdentCodeKlartext_Var@1000000004 : Code[30]) r_IdentCode : Code[20];
+    VAR
+      DHLParcelsStatusHistory@1000000003 : Record 50021;
+      ParcelStatusHistory@1000000005 : Record 80013;
+    BEGIN
+      //S/P1133
+      FPCGeneralSetup.GET;
+
+      CASE FPCGeneralSetup."Active Parcel Status History" OF
+        FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old":
+          BEGIN
+      //E/P1133
+            DHLParcelsStatusHistory.RESET;
+            DHLParcelsStatusHistory.SETCURRENTKEY("Document No.","Document Line No.","Current Status","Time Stamp","DHL Shipment Code",
+            "Rhenus Entry")
+            ;
+            DHLParcelsStatusHistory.SETRANGE("Document No.",p_SalesLine."Document No.");
+            DHLParcelsStatusHistory.SETRANGE("Document Type",p_SalesLine."Document Type");
+            DHLParcelsStatusHistory.SETRANGE("Document Line No.",p_SalesLine."Line No.");
+            DHLParcelsStatusHistory.SETFILTER("DHL Shipment Code",'<>%1','');
+            DHLParcelsStatusHistory.SETRANGE("Status Event",p_LabelSendCode);
+            IF NOT DHLParcelsStatusHistory.ISEMPTY THEN BEGIN
+              DHLParcelsStatusHistory.FINDFIRST;
+              IF (p_ParcelNo <> 1) AND (p_ParcelNo <> 0) THEN
+                DHLParcelsStatusHistory.NEXT(p_ParcelNo - 1);
+              r_IdentCode := DHLParcelsStatusHistory."Piece-Code (Identifier)";
+              p_IdentCodeKlartext_Var := COPYSTR(r_IdentCode,1,2) + ' . ' + COPYSTR(r_IdentCode,3,3) + '  ' +
+                                         COPYSTR(r_IdentCode,6,3) + ' . ' + COPYSTR(r_IdentCode,9,3) + '  ' + COPYSTR(r_IdentCode,12,1);
+            END;
+      //S/P1133
+          END;
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+        FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History":
+          BEGIN
+            ParcelStatusHistory.RESET;
+            ParcelStatusHistory.SETCURRENTKEY("Document No.","Document Line No.","Document Type");
+            ParcelStatusHistory.SETRANGE("Document No.",p_SalesLine."Document No.");
+            ParcelStatusHistory.SETRANGE("Document Line No.",p_SalesLine."Line No.");
+            ParcelStatusHistory.SETRANGE("Document Type",p_SalesLine."Document Type");
+            ParcelStatusHistory.SETFILTER("Tracking Code",'<>%1','');
+            ParcelStatusHistory.SETRANGE("Status Code",p_LabelSendCode);
+            IF NOT ParcelStatusHistory.ISEMPTY THEN BEGIN
+              ParcelStatusHistory.FINDFIRST;
+              IF (p_ParcelNo <> 1) AND (p_ParcelNo <> 0) THEN
+                ParcelStatusHistory.NEXT(p_ParcelNo - 1);
+              r_IdentCode := ParcelStatusHistory."Piece Code";
+              p_IdentCodeKlartext_Var :=
+                COPYSTR(r_IdentCode,1,2) + ' . ' + COPYSTR(r_IdentCode,3,3) + '  ' +
+                COPYSTR(r_IdentCode,6,3) + ' . ' + COPYSTR(r_IdentCode,9,3) + '  ' + COPYSTR(r_IdentCode,12,1);
+            END;
+          END;
+      END;
+      //E/P1133
+    END;
+
+    PROCEDURE GetInternationalIdentCode@1000000004(p_PurchLine@1108200000 : Record 39;VAR p_IdentCodeKlartext_Var@1000000000 : Code[50]) r_IdentCode : Code[20];
+    VAR
+      DHLSetup@1000000001 : Record 50022;
+      DHLVendIDCodes@1000000003 : Record 50161;
+      PurchPayabSetup@1000000004 : Record 312;
+      ClientID@1000000002 : Text[30];
+      PurchHeader@1000000005 : Record 38;
+    BEGIN
+      // A/P0903
+      p_IdentCodeKlartext_Var := '';
+      DHLSetup.RESET;
+      DHLSetup.GET;
+      DHLSetup.TESTFIELD("Home24 DHL Internat. Client ID");
+
+
+      // Search in new "Vendor ID Codes" Table for International DHL Client ID
+      // If not found take Home24 International DHL Client ID
+      PurchHeader.GET(p_PurchLine."Document Type",p_PurchLine."Document No.");
+
+      DHLVendIDCodes.GET(p_PurchLine."Buy-from Vendor No.",PurchHeader."Ship-to Country/Region Code");
+      IF DHLVendIDCodes."DHL Client ID" <> '' THEN BEGIN
+
+        ClientID := DELCHR(DHLVendIDCodes."DHL Client ID",'=','0123456789');
+        IF STRLEN(ClientID) = 0 THEN
+          ClientID := DHLVendIDCodes."DHL Client ID"
+        ELSE
+          ClientID := DHLSetup."Home24 DHL Internat. Client ID";
+      END ELSE
+        ClientID := DHLSetup."Home24 DHL Internat. Client ID";
+
+      r_IdentCode := ClientID + DHLInternationalShipmentCount(DHLVendIDCodes,ClientID);
+      r_IdentCode := r_IdentCode + FORMAT(GetChecksum(r_IdentCode));
+      p_IdentCodeKlartext_Var := COPYSTR(r_IdentCode,1,2) + ' . ' + COPYSTR(r_IdentCode,3,3) + '  ' +
+                                 COPYSTR(r_IdentCode,6,3) + ' . ' + COPYSTR(r_IdentCode,9,3) + '  ' + COPYSTR(r_IdentCode,12,1);
+      EXIT(r_IdentCode);
+      // E/P0903
+    END;
+
+    PROCEDURE DHLInternationalShipmentCount@1000000003(p_DHLVendorIDCodes@1000000002 : Record 50161;p_ClientID@1000000012 : Code[10]) r_ShipmentCount : Code[8];
+    VAR
+      DHLSetupLoc@1108200000 : Record 50022;
+      j@1108200001 : Integer;
+      "***P0748 local***"@1000000000 : Integer;
+      lDHLHistory@1000000001 : Record 50021;
+      lStartTrackingNo@1000000003 : Integer;
+      lMaxEntryNoTracking@1000000004 : Integer;
+      lNecessaryLength@1000000005 : Integer;
+      IsHome24Track@1000000006 : Boolean;
+      AllowDoubleTrack@1000000007 : Boolean;
+      TrackingNoCounterLoc@1000000008 : Integer;
+      DHLSetup@1000000009 : Record 50022;
+      LocText001@1000000011 : TextConst 'DEU=Keine freie Tracking Nr.;ENU=No free Tracking No.';
+      ParcelStatusHistory@1000000010 : Record 80013;
+      ParcelStatusHistoryArchive@1000000013 : Record 50187;
+      RecIsEmpty@1000000014 : Boolean;
+    BEGIN
+      //S/P1133
+      FPCGeneralSetup.GET;
+      CLEAR(RecIsEmpty);
+      //E/P1133
+
+      // A/P0903
+      // Filter fÅr Zeitrahmen setzen
+      DHLSetup.RESET;
+      DHLSetup.GET;
+      DHLSetup.TESTFIELD("Datefilter Check Tracking");
+      DHLSetup.TESTFIELD("Home24 DHL Internat. Client ID");
+      //S/P1133
+      CASE FPCGeneralSetup."Active Parcel Status History" OF
+        FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old":
+          BEGIN
+            lDHLHistory.RESET;
+            lDHLHistory.SETCURRENTKEY("Piece-Code (Identifier)","Time Stamp");
+            lDHLHistory.SETRANGE("Time Stamp",CREATEDATETIME(CALCDATE('-' + DHLSetup."Datefilter Check Tracking",WORKDATE),0T),
+                                              CREATEDATETIME(WORKDATE + 1,235959T));
+          END;
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+        FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History":
+          BEGIN
+            ParcelStatusHistory.RESET;
+            ParcelStatusHistory.SETCURRENTKEY("Timestamp Insert");
+            ParcelStatusHistory.SETRANGE(
+              "Timestamp Insert",
+              CREATEDATETIME(CALCDATE('-' + DHLSetup."Datefilter Check Tracking",WORKDATE),0T),
+              CREATEDATETIME(WORKDATE + 1,235959T));
+            ParcelStatusHistoryArchive.RESET;
+            ParcelStatusHistoryArchive.SETCURRENTKEY("Timestamp Insert");
+            ParcelStatusHistoryArchive.SETRANGE(
+              "Timestamp Insert",
+              CREATEDATETIME(CALCDATE('-' + DHLSetup."Datefilter Check Tracking",WORKDATE),0T),
+              CREATEDATETIME(WORKDATE + 1,235959T));
+          END;
+      END;
+      //E/P1133
+
+      // fÅr globalen ZÑhler Initialisierung durchfÅhren
+      TrackingNoCounterLoc := 0;
+      IsHome24Track := FALSE;
+      AllowDoubleTrack := FALSE;
+
+      IF (DHLSetup."Home24 DHL Internat. Client ID" = p_ClientID) THEN BEGIN
+        IsHome24Track := TRUE;
+        AllowDoubleTrack := DHLSetup."Allow double Tracking Codes";
+        TrackingNoCounterLoc := DHLSetup."DHL Packet Count Shipment Int.";
+      END ELSE BEGIN
+        AllowDoubleTrack := p_DHLVendorIDCodes."Allow Double Tracking";
+        TrackingNoCounterLoc := p_DHLVendorIDCodes."Last Entry No. Tracking";
+      END;
+
+      lStartTrackingNo := TrackingNoCounterLoc;
+      lNecessaryLength := STRLEN(p_ClientID);
+      EVALUATE(lMaxEntryNoTracking,COPYSTR('99999999',1,(11 - lNecessaryLength)));
+
+      IF lStartTrackingNo = 0 THEN
+        lStartTrackingNo := lMaxEntryNoTracking;
+      REPEAT
+        IF (lMaxEntryNoTracking <= TrackingNoCounterLoc) THEN BEGIN
+          TrackingNoCounterLoc := 1;
+        END ELSE BEGIN
+          TrackingNoCounterLoc +=1;
+        END;
+        r_ShipmentCount := FORMAT(TrackingNoCounterLoc);
+        WHILE (STRLEN(r_ShipmentCount) + lNecessaryLength < 11) DO BEGIN
+          r_ShipmentCount := '0' + r_ShipmentCount;
+        END;
+      //S/P1133
+      //  lDHLHistory.SETFILTER("Piece-Code (Identifier)",'%1',(p_ClientID + r_ShipmentCount + '?'));
+      //UNTIL lDHLHistory.ISEMPTY OR (lStartTrackingNo = TrackingNoCounterLoc);
+        CASE FPCGeneralSetup."Active Parcel Status History" OF
+          FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+          FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old":
+            BEGIN
+              lDHLHistory.SETFILTER("Piece-Code (Identifier)",'%1',(p_ClientID + r_ShipmentCount + '?'));
+              RecIsEmpty := lDHLHistory.ISEMPTY;
+            END;
+          FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+          FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History":
+            BEGIN
+              ParcelStatusHistory.SETFILTER("Piece Code",'%1',(p_ClientID + r_ShipmentCount + '?'));
+              ParcelStatusHistoryArchive.SETFILTER("Piece Code",'%1',(p_ClientID + r_ShipmentCount + '?'));
+              RecIsEmpty := ParcelStatusHistory.ISEMPTY AND ParcelStatusHistoryArchive.ISEMPTY;
+            END;
+        END;
+      UNTIL RecIsEmpty OR (lStartTrackingNo = TrackingNoCounterLoc);
+      //E/P1133
+
+      IF (lStartTrackingNo = TrackingNoCounterLoc) THEN
+        IF NOT AllowDoubleTrack THEN BEGIN
+          ERROR(LocText001);
+        END ELSE BEGIN
+          TrackingNoCounterLoc := lStartTrackingNo;
+          IF (lMaxEntryNoTracking <= TrackingNoCounterLoc) THEN
+            TrackingNoCounterLoc := 1
+          ELSE
+            TrackingNoCounterLoc +=1;
+          r_ShipmentCount := FORMAT(TrackingNoCounterLoc);
+          WHILE (STRLEN(r_ShipmentCount) + lNecessaryLength < 11) DO BEGIN
+            r_ShipmentCount := '0' + r_ShipmentCount;
+          END;
+        END;
+
+      IF (DHLSetup."Home24 DHL Internat. Client ID" = p_ClientID) THEN BEGIN
+        DHLSetup."DHL Packet Count Shipment Int." := TrackingNoCounterLoc;
+        DHLSetup.MODIFY
+      END ELSE BEGIN
+        p_DHLVendorIDCodes.RESET;
+        p_DHLVendorIDCodes.SETRANGE("DHL Client ID",p_DHLVendorIDCodes."DHL Client ID");
+        IF p_DHLVendorIDCodes.FINDSET THEN
+          p_DHLVendorIDCodes.MODIFYALL("Last Entry No. Tracking",TrackingNoCounterLoc);
+      END;
+      // E/P0903
+    END;
+
+    PROCEDURE GetRoutingcode@1000000005(p_PurchaseLine@1108200010 : Record 39;VAR p_RoutingCodeText_Var@1000000003 : Code[50];VAR p_IsBulkyGood_Var@1000000002 : Boolean) r_Routingcode : Code[25];
+    VAR
+      SalesHeader@1000000006 : Record 36;
+      "InhaltINT.DAT"@1000000000 : Record 50172;
+      Datenbezeichner@1000000009 : Code[4];
+      LÑnderkennung@1000000010 : Code[2];
+      PLZ@1000000011 : Code[10];
+      Trennzeichen@1000000012 : Code[1];
+      ProduktcodeBasis@1000000013 : Code[2];
+      TagUhrzeit@1000000014 : Code[3];
+      Feature@1000000015 : Code[3];
+    BEGIN
+      // A/P0903
+      SalesHeader.RESET;
+      SalesHeader.GET(1,p_PurchaseLine."Sales Order No.");
+
+      //Datenbezeichner := '(2L)';
+      Datenbezeichner := '403';
+
+      "InhaltINT.DAT".SETRANGE(LÑndercode,SalesHeader."Ship-to Country/Region Code");
+      IF "InhaltINT.DAT".FINDFIRST THEN BEGIN
+        LÑnderkennung := "InhaltINT.DAT".LÑnderkennung;
+        IF "InhaltINT.DAT"."Nur Premium" THEN
+          ProduktcodeBasis := '67'
+        ELSE
+          ProduktcodeBasis := '66';
+      END;
+
+      PLZ := UPPERCASE(DELCHR(SalesHeader."Ship-to Post Code",'=',' -*+#ı$%&/()=?\}][{'));
+
+      Trennzeichen := '+';
+
+
+      TagUhrzeit := '000';
+
+      IF IsBulkyGood(p_PurchaseLine."No.",p_PurchaseLine."Purchasing Code") THEN BEGIN
+        Feature := '032';
+        p_IsBulkyGood_Var := TRUE;
+      END ELSE BEGIN
+        Feature := '000';
+        p_IsBulkyGood_Var := FALSE;
+      END;
+
+      p_RoutingCodeText_Var := '('+Datenbezeichner+')'+
+                               ' '+LÑnderkennung+' '+PLZ+' '+Trennzeichen+' '+ProduktcodeBasis+' '+TagUhrzeit+' '+Feature;
+      r_Routingcode := Datenbezeichner + LÑnderkennung+PLZ + Trennzeichen + ProduktcodeBasis + TagUhrzeit + Feature;
+
+      // p_RoutingCodeText_Var := r_Routingcode;
+      EXIT(r_Routingcode);
+      // E/P0903
+    END;
+
+    PROCEDURE FillShipToAddressInternational@1000000007(p_SalesHeader@1108200000 : Record 36;VAR p_ShipToValue1_Var@1000000000 : Text[50];VAR p_ShipToValue2_Var@1000000001 : Text[50];VAR p_ShipToValue3_Var@1000000002 : Text[50];VAR p_ShipToValue4_Var@1000000003 : Text[50];VAR p_ShipToValue5_Var@1000000004 : Text[50];VAR p_ShipToValue6_Var@1000000011 : Text[50]);
+    VAR
+      Cu_FormatAddress@1000000005 : Codeunit 365;
+      Rec_ShipToAddress@1000000006 : Record 222;
+      Rec_Cust@1000000008 : Record 18;
+      Txt_Salutation@1000000007 : Text[30];
+      IsCompany@1000000009 : Boolean;
+      RecCountryRegion@1000000010 : Record 9;
+    BEGIN
+      // A/P0903
+      p_ShipToValue1_Var := '';
+      p_ShipToValue2_Var := '';
+      p_ShipToValue3_Var := '';
+      p_ShipToValue4_Var := '';
+      p_ShipToValue5_Var := '';
+      p_ShipToValue6_Var := '';
+
+      IF p_SalesHeader."Ship-to Country/Region Code" <> '' THEN
+        RecCountryRegion.GET(p_SalesHeader."Ship-to Country/Region Code");
+
+      IF (p_SalesHeader."Ship-to Name 2" = '') AND (p_SalesHeader."Ship-to Address 2" = '') THEN BEGIN
+        p_ShipToValue1_Var := UPPERCASE(p_SalesHeader."Ship-to Name");
+        p_ShipToValue2_Var := UPPERCASE(p_SalesHeader."Ship-to Address");
+        p_ShipToValue3_Var := UPPERCASE(p_SalesHeader."Ship-to Post Code" +
+                                        ' ' +
+                                        p_SalesHeader."Ship-to City");
+        p_ShipToValue4_Var := RecCountryRegion.Name;
+        p_ShipToValue5_Var := '';
+      END;
+
+      IF (p_SalesHeader."Ship-to Name 2" <> '') AND (p_SalesHeader."Ship-to Address 2" = '') THEN BEGIN
+
+        p_ShipToValue1_Var := UPPERCASE(p_SalesHeader."Ship-to Name");
+        p_ShipToValue2_Var := UPPERCASE(p_SalesHeader."Ship-to Name 2");
+        p_ShipToValue3_Var := UPPERCASE(p_SalesHeader."Ship-to Address");
+        p_ShipToValue4_Var := UPPERCASE(p_SalesHeader."Ship-to Post Code" +
+                                        ' ' +
+                                        p_SalesHeader."Ship-to City");
+        p_ShipToValue5_Var := RecCountryRegion.Name;;
+      END;
+
+      IF (p_SalesHeader."Ship-to Name 2" = '') AND (p_SalesHeader."Ship-to Address 2" <> '') THEN BEGIN
+        p_ShipToValue1_Var := UPPERCASE(p_SalesHeader."Ship-to Name");
+        p_ShipToValue2_Var := UPPERCASE(p_SalesHeader."Ship-to Address");
+        p_ShipToValue3_Var := UPPERCASE(p_SalesHeader."Ship-to Address 2");
+        p_ShipToValue4_Var := UPPERCASE(p_SalesHeader."Ship-to Post Code" +
+                                        ' ' +
+                                        p_SalesHeader."Ship-to City");
+        p_ShipToValue5_Var := RecCountryRegion.Name;;
+      END;
+
+      IF (p_SalesHeader."Ship-to Name 2" <> '') AND (p_SalesHeader."Ship-to Address 2" <> '') THEN BEGIN
+        p_ShipToValue1_Var := UPPERCASE(p_SalesHeader."Ship-to Name");
+        p_ShipToValue2_Var := UPPERCASE(p_SalesHeader."Ship-to Name 2");
+        p_ShipToValue3_Var := UPPERCASE(p_SalesHeader."Ship-to Address");
+        p_ShipToValue4_Var := UPPERCASE(p_SalesHeader."Ship-to Address 2");
+        p_ShipToValue5_Var := UPPERCASE(p_SalesHeader."Ship-to Post Code" +
+                                        ' ' +
+                                        p_SalesHeader."Ship-to City");
+        p_ShipToValue6_Var := RecCountryRegion.Name;;
+      END;
+
+      // E/P0903
+    END;
+
+    PROCEDURE GetLeitcodeInt@1000000006(p_PurchaseLine@1108200010 : Record 39;VAR p_LeitCodeText_Var@1000000003 : Code[50];VAR p_IsBulkyGood_Var@1000000002 : Boolean;VAR p_Paketzentrum@1000000008 : Code[20]) r_Leitcode : Code[20];
+    VAR
+      SalesHeader@1000000000 : Record 36;
+      "InhaltAUSPC.DAT"@1000000007 : Record 50171;
+      "InhaltINT.DAT"@1000000009 : Record 50172;
+      FiktivePLZ@1000000001 : Code[8];
+      LÑndercode@1000000004 : Code[3];
+      Produkt@1000000005 : Code[3];
+      KennungAusland@1000000006 : Code[2];
+      "***P1099 loc***"@1000000010 : Integer;
+      lSalesHeaderArchive@1000000011 : Record 5107;
+    BEGIN
+      // A/P0903
+      SalesHeader.RESET;
+      // S/P1099
+      //SalesHeader.GET(1,p_PurchaseLine."Sales Order No.");
+      IF SalesHeader.GET(1,p_PurchaseLine."Sales Order No.") THEN BEGIN
+      // E/P1099
+      "InhaltINT.DAT".SETRANGE(LÑndercode,SalesHeader."Ship-to Country/Region Code");
+      // S/P1099
+      END ELSE BEGIN
+        lSalesHeaderArchive.RESET;
+        lSalesHeaderArchive.SETRANGE("Document Type",lSalesHeaderArchive."Document Type"::Order);
+        lSalesHeaderArchive.SETRANGE("No.",p_PurchaseLine."Sales Order No.");
+        lSalesHeaderArchive.FINDLAST;
+        "InhaltINT.DAT".SETRANGE(LÑndercode,lSalesHeaderArchive."Ship-to Country/Region Code");
+      END;
+      // E/P1099
+      IF "InhaltINT.DAT".FINDFIRST THEN BEGIN
+        LÑndercode := "InhaltINT.DAT".LÑnderkennung;
+        IF "InhaltINT.DAT"."Nur Premium" THEN
+          FiktivePLZ := "InhaltINT.DAT"."PLZ Premium-Paket"
+        ELSE
+          FiktivePLZ := "InhaltINT.DAT"."PLZ Economy-Paket";
+      END;
+
+      IF IsBulkyGood(p_PurchaseLine."No.",p_PurchaseLine."Purchasing Code") THEN BEGIN
+        "InhaltAUSPC.DAT".SETRANGE(Basis,TRUE);
+        "InhaltAUSPC.DAT".SETRANGE(Sperrgut,TRUE);
+        IF "InhaltAUSPC.DAT".FINDFIRST THEN BEGIN
+          Produkt := "InhaltAUSPC.DAT".Code;
+          p_IsBulkyGood_Var := TRUE;
+        END;
+      END ELSE BEGIN
+        "InhaltAUSPC.DAT".SETRANGE(Basis,TRUE);
+        IF "InhaltAUSPC.DAT".FINDFIRST THEN BEGIN
+          Produkt := "InhaltAUSPC.DAT".Code;
+          p_IsBulkyGood_Var := FALSE;
+        END;
+      END;
+
+      KennungAusland := '80';
+
+      p_Paketzentrum := COPYSTR(FiktivePLZ,3,2);
+
+
+      r_Leitcode := FiktivePLZ + LÑndercode + Produkt + KennungAusland;
+      r_Leitcode := r_Leitcode + FORMAT(GetChecksum(r_Leitcode));
+
+      p_LeitCodeText_Var := COPYSTR(r_Leitcode,1,5) + ' . ' + COPYSTR(r_Leitcode,6,3) + ' . ' + COPYSTR(r_Leitcode,9,3) + ' . ' +
+                            COPYSTR(r_Leitcode,12,2) + '  ' + COPYSTR(r_Leitcode,14,1);
+      EXIT(r_Leitcode);
+      // E/P0903
+    END;
+
+    PROCEDURE CreateParcelInquiryArchive@1000000008(SalesLineArchiveV@1000000000 : Record 5108);
+    VAR
+      VendorL@1000000003 : Record 23;
+      PurchCrMemoHeaderL@1000000012 : Record 124;
+      PurchCrMemoLineL@1000000011 : Record 125;
+      PurchaseHeaderL@1000000005 : Record 38;
+      SalesHeaderArchiveL@1000000007 : Record 5107;
+      PurchaseLineL@1000000006 : Record 39;
+      LocationL@1000000010 : Record 14;
+      ErrorTextL@1000000002 : Text[250];
+      LibrarySCML@1000000004 : Codeunit 50210;
+      PurchaseCreditMemoCardL@1000000009 : Form 52;
+      DimMgtL@1000000013 : Codeunit 408;
+      UnitCostL@1000000014 : Decimal;
+    BEGIN
+      // H0846       21.08.14  JM ++++++++++++++++++
+      SalesHeaderArchiveL.GET(SalesLineArchiveV."Document Type",
+          SalesLineArchiveV."Document No.",SalesLineArchiveV."Doc. No. Occurrence",SalesLineArchiveV."Version No.");
+      IF SalesLineArchiveV."DHL Shipment Number" = '' THEN BEGIN
+        ErrorTextL := STRSUBSTNO(HMEText001,SalesLineArchiveV.TABLECAPTION,
+           SalesLineArchiveV."Document Type",SalesLineArchiveV."Document No.");
+        ERROR(ErrorTextL);
+      END;
+      CLEAR(VendorL);
+      LookupVendorAsCarrier(VendorL);
+      PurchasesPayablesSetup.GET;
+      PurchasesPayablesSetup.TESTFIELD("Lost Parcels Refund Account");
+      IF VendorL."No." <> '' THEN BEGIN // Create Credit Memo
+        // test if this document was already posted
+        PurchCrMemoHeaderL.SETRANGE("DHL Parcel Inquiry Order No.",SalesLineArchiveV."Document No.");
+        PurchCrMemoHeaderL.SETRANGE("DHL Parcel Inq. Order Line No.",SalesLineArchiveV."Line No.");
+        IF PurchCrMemoHeaderL.FINDFIRST THEN BEGIN
+          IF PurchCrMemoLineL.GET(PurchCrMemoHeaderL."No.",10000) THEN BEGIN
+            IF PurchCrMemoLineL.Description = HMEText003 THEN BEGIN
+            END ELSE BEGIN
+              ErrorTextL := STRSUBSTNO(HMEText002,PurchCrMemoHeaderL.TABLECAPTION,PurchCrMemoHeaderL."No.");
+              ERROR(ErrorTextL);
+            END;
+          END;
+        END;
+        // run if this document was already created
+        PurchaseHeaderL.SETRANGE("DHL Parcel Inquiry Order No.",SalesLineArchiveV."Document No.");
+        PurchaseHeaderL.SETRANGE("DHL Parcel Inq. Order Line No.",SalesLineArchiveV."Line No.");
+        IF PurchaseHeaderL.FINDFIRST THEN BEGIN
+          PurchaseCreditMemoCardL.SETRECORD(PurchaseHeaderL);
+          PurchaseCreditMemoCardL.RUN;
+          EXIT;
+        END;
+        // Create new Credit Memo
+        LibrarySCML.CreatePurchaseHeader(PurchaseHeaderL,PurchaseHeaderL."Document Type"::"Credit Memo",VendorL."No.");
+        // transfer DHL Shipment Number
+        PurchaseHeaderL.VALIDATE("Order Date",SalesHeaderArchiveL."Order Date");
+        // transfer handle sender / recpient
+        LocationL.GET(GetReturnLocationCode);
+        // ship to customer Adress
+        PurchaseHeaderL."Ship-to Name" := SalesHeaderArchiveL."Ship-to Name";
+        PurchaseHeaderL."Ship-to Name 2" := SalesHeaderArchiveL."Ship-to Name 2";
+        PurchaseHeaderL."Ship-to Address" := SalesHeaderArchiveL."Ship-to Address";
+        PurchaseHeaderL."Ship-to Address 2" := SalesHeaderArchiveL."Ship-to Address 2";
+        PurchaseHeaderL."Ship-to Post Code" := SalesHeaderArchiveL."Ship-to Post Code";
+        PurchaseHeaderL."Ship-to County" := SalesHeaderArchiveL."Ship-to County";
+        PurchaseHeaderL."Ship-to Country/Region Code" := PurchaseHeaderL."Ship-to Country/Region Code";
+        PurchaseHeaderL."Ship-to City" := SalesHeaderArchiveL."Ship-to City";
+        PurchaseHeaderL."Ship-to Contact" := SalesHeaderArchiveL."Ship-to Contact";
+        // test if this document was already created
+        PurchaseHeaderL."DHL Parcel Inquiry Order No." := SalesLineArchiveV."Document No.";
+        PurchaseHeaderL."DHL Parcel Inq. Order Line No." := SalesLineArchiveV."Line No.";
+        PurchaseHeaderL."Location Code" := LocationL.Code;
+        // only LCY because Unit Cost (LCY) in PurchLine
+        PurchaseHeaderL."Currency Code" := '';
+        // H2003       15.01.15  JM +++++++
+        PurchaseHeaderL."Posting Description" := SalesLineArchiveV.FIELDCAPTION("DHL Shipment Number")
+            + ' ' + SalesLineArchiveV."DHL Shipment Number";
+        // H2003       15.01.15  JM ------
+        PurchaseHeaderL.MODIFY(TRUE);
+        // step1:  Create new Credit Memo Lines G/L 4971
+        // G/L 4971 account Gen. Posting type must be purchase, wrong Vat !!!!!
+        // Spec change now G/L 5726
+        // for Return Orders unit costs from order
+        UnitCostL := GetUnitCostsFromRelatedOrder(SalesHeaderArchiveL."Document Type",SalesHeaderArchiveL."External Document No.",
+            SalesLineArchiveV."No.",SalesLineArchiveV."Unit Cost (LCY)");
+        LibrarySCML.CreatePurchaseLine(PurchaseHeaderL,PurchaseLineL,1,PurchasesPayablesSetup."Lost Parcels Refund Account",1);
+        PurchaseLineL.VALIDATE("Gen. Bus. Posting Group",VendorL."Gen. Bus. Posting Group");
+        PurchaseLineL.VALIDATE("Location Code",LocationL.Code);
+        PurchaseLineL.VALIDATE(Quantity,1);
+        PurchaseLineL.VALIDATE("Direct Unit Cost",UnitCostL);
+        PurchaseLineL.Description := SalesLineArchiveV."No.";
+        PurchaseLineL.MODIFY;
+        //DimMgt.InsertDocDim(39,PurchaseHeader."Document Type",PurchaseHeader."No.",
+           //PurchaseLine."Line No.",GlobalDim1Code,GlobalDim2Code)
+        //step2: Create new Credit Memo Lines Description
+        LibrarySCML.CreatePurchaseLine(PurchaseHeaderL,PurchaseLineL,1,'',0);
+        PurchaseLineL.Type := 0;
+        PurchaseLineL.VALIDATE(Type,0);
+        PurchaseLineL.VALIDATE("Location Code",LocationL.Code);
+        PurchaseLineL.Description := SalesLineArchiveV.Description;
+        PurchaseLineL.MODIFY;
+        // step3: Create new Credit Memo Lines G/L 6750
+        // Spec change now G/L 5726
+        LibrarySCML.CreatePurchaseLine(PurchaseHeaderL,PurchaseLineL,1,PurchasesPayablesSetup."Lost Parcels Refund Account",1);
+        PurchaseLineL.VALIDATE("Gen. Bus. Posting Group",VendorL."Gen. Bus. Posting Group");
+        PurchaseLineL.VALIDATE("Location Code",LocationL.Code);
+        PurchaseLineL.VALIDATE("Direct Unit Cost",0);
+        PurchaseLineL.Description := 'Versandkosten';
+        PurchaseLineL.MODIFY;
+        //DimMgt.InsertDocDim(39,PurchaseHeader."Document Type",PurchaseHeader."No.",
+           //PurchaseLine."Line No.",GlobalDim1Code,GlobalDim2Code)
+        // Open Document
+        PurchaseCreditMemoCardL.SETRECORD(PurchaseHeaderL);
+        PurchaseCreditMemoCardL.RUN;
+      END;
+      // H0846       21.08.14  JM ------------------
+    END;
+
+    PROCEDURE CreateParcelInquiry@1000000010(SalesLineV@1000000000 : Record 37);
+    VAR
+      VendorL@1000000003 : Record 23;
+      PurchCrMemoHeaderL@1000000012 : Record 124;
+      PurchCrMemoLineL@1000000011 : Record 125;
+      PurchaseHeaderL@1000000005 : Record 38;
+      SalesHeaderL@1000000007 : Record 36;
+      PurchaseLineL@1000000006 : Record 39;
+      LocationL@1000000010 : Record 14;
+      ErrorTextL@1000000002 : Text[250];
+      LibrarySCML@1000000004 : Codeunit 50210;
+      PurchaseCreditMemoL@1000000009 : Form 52;
+      DimMgtL@1000000013 : Codeunit 408;
+      UnitCostL@1000000014 : Decimal;
+    BEGIN
+      // H0846       21.08.14  JM ++++++++++++++++++
+      SalesHeaderL.GET(SalesLineV."Document Type",SalesLineV."Document No.");
+      IF SalesLineV."DHL Shipment Number" = '' THEN BEGIN
+        ErrorTextL := STRSUBSTNO(HMEText001,SalesLineV.TABLECAPTION,
+           SalesLineV."Document Type",SalesLineV."Document No.");
+        ERROR(ErrorTextL);
+        SalesLineV.TESTFIELD("Quantity Shipped",1);
+      END;
+      CLEAR(VendorL);
+      LookupVendorAsCarrier(VendorL);
+      PurchasesPayablesSetup.GET;
+      PurchasesPayablesSetup.TESTFIELD("Lost Parcels Refund Account");
+      IF VendorL."No." <> '' THEN BEGIN // Create Credit Memo
+        // test if this document was already posted
+        PurchCrMemoHeaderL.SETRANGE("DHL Parcel Inquiry Order No.",SalesLineV."Document No.");
+        PurchCrMemoHeaderL.SETRANGE("DHL Parcel Inq. Order Line No.",SalesLineV."Line No.");
+        IF PurchCrMemoHeaderL.FINDFIRST THEN BEGIN
+          IF PurchCrMemoLineL.GET(PurchCrMemoHeaderL."No.",10000) THEN BEGIN
+            IF PurchCrMemoLineL.Description = HMEText003 THEN BEGIN
+            END ELSE BEGIN
+              ErrorTextL := STRSUBSTNO(HMEText002,PurchCrMemoHeaderL.TABLECAPTION,PurchCrMemoHeaderL."No.");
+              ERROR(ErrorTextL);
+            END;
+          END;
+        END;
+        // run if this document was already created
+        PurchaseHeaderL.SETRANGE("DHL Parcel Inquiry Order No.",SalesLineV."Document No.");
+        PurchaseHeaderL.SETRANGE("DHL Parcel Inq. Order Line No.",SalesLineV."Line No.");
+        IF PurchaseHeaderL.FINDFIRST THEN BEGIN
+          PurchaseCreditMemoL.SETRECORD(PurchaseHeaderL);
+          PurchaseCreditMemoL.RUN;
+          EXIT;
+        END;
+        // Create new Credit Memo
+        LibrarySCML.CreatePurchaseHeader(PurchaseHeaderL,PurchaseHeaderL."Document Type"::"Credit Memo",VendorL."No.");
+        // transfer DHL Shipment Number
+        PurchaseHeaderL.VALIDATE("Order Date",SalesHeaderL."Order Date");
+        // transfer handle sender / recpient
+        LocationL.GET(GetReturnLocationCode);
+        // ship to customer Adress
+        PurchaseHeaderL."Ship-to Name" := SalesHeaderL."Ship-to Name";
+        PurchaseHeaderL."Ship-to Name 2" := SalesHeaderL."Ship-to Name 2";
+        PurchaseHeaderL."Ship-to Address" := SalesHeaderL."Ship-to Address";
+        PurchaseHeaderL."Ship-to Address 2" := SalesHeaderL."Ship-to Address 2";
+        PurchaseHeaderL."Ship-to Post Code" := SalesHeaderL."Ship-to Post Code";
+        PurchaseHeaderL."Ship-to County" := SalesHeaderL."Ship-to County";
+        PurchaseHeaderL."Ship-to Country/Region Code" := PurchaseHeaderL."Ship-to Country/Region Code";
+        PurchaseHeaderL."Ship-to City" := SalesHeaderL."Ship-to City";
+        PurchaseHeaderL."Ship-to Contact" := SalesHeaderL."Ship-to Contact";
+        // test if this document was already created
+        PurchaseHeaderL."DHL Parcel Inquiry Order No." := SalesLineV."Document No.";
+        PurchaseHeaderL."DHL Parcel Inq. Order Line No." := SalesLineV."Line No.";
+        PurchaseHeaderL."Location Code" := LocationL.Code;
+        // only LCY because Unit Cost (LCY) in PurchLine
+        PurchaseHeaderL."Currency Code" := '';
+        // H2003       15.01.15  JM +++++++
+        PurchaseHeaderL."Posting Description" := SalesLineV.FIELDCAPTION("DHL Shipment Number")
+            + ' ' + SalesLineV."DHL Shipment Number";
+        // H2003       15.01.15  JM -------
+        PurchaseHeaderL.MODIFY(TRUE);
+        // step1:  Create new Credit Memo Lines G/L 4971
+        // G/L 4971 account Gen. Posting type must be purchase, wrong Vat !!!!!
+        // Spec change now G/L 5726
+        // for Return Orders unit costs from order
+        UnitCostL := GetUnitCostsFromRelatedOrder(SalesHeaderL."Document Type",SalesHeaderL."External Document No.",
+            SalesLineV."No.",SalesLineV."Unit Cost (LCY)");
+        LibrarySCML.CreatePurchaseLine(PurchaseHeaderL,PurchaseLineL,1,PurchasesPayablesSetup."Lost Parcels Refund Account",1);
+        PurchaseLineL.VALIDATE("Gen. Bus. Posting Group",VendorL."Gen. Bus. Posting Group");
+        PurchaseLineL.VALIDATE("Location Code",LocationL.Code);
+        PurchaseLineL.VALIDATE(Quantity,1);
+        PurchaseLineL.VALIDATE("Direct Unit Cost",UnitCostL);
+        PurchaseLineL.Description := SalesLineV."No.";
+        PurchaseLineL.MODIFY;
+        //DimMgt.InsertDocDim(39,PurchaseHeader."Document Type",PurchaseHeader."No.",
+           //PurchaseLine."Line No.",GlobalDim1Code,GlobalDim2Code)
+        //step2: Create new Credit Memo Lines Description
+        LibrarySCML.CreatePurchaseLine(PurchaseHeaderL,PurchaseLineL,1,'',0);
+        PurchaseLineL.Type := 0;
+        PurchaseLineL.VALIDATE(Type,0);
+        PurchaseLineL.VALIDATE("Location Code",LocationL.Code);
+        PurchaseLineL.Description := SalesLineV.Description;
+        PurchaseLineL.MODIFY;
+        // step3: Create new Credit Memo Lines G/L 6750
+        // Spec change now G/L 5726
+        LibrarySCML.CreatePurchaseLine(PurchaseHeaderL,PurchaseLineL,1,PurchasesPayablesSetup."Lost Parcels Refund Account",1);
+        PurchaseLineL.VALIDATE("Gen. Bus. Posting Group",VendorL."Gen. Bus. Posting Group");
+        PurchaseLineL.VALIDATE("Location Code",LocationL.Code);
+        PurchaseLineL.VALIDATE("Direct Unit Cost",0);
+        PurchaseLineL.Description := 'Versandkosten';
+        PurchaseLineL.MODIFY;
+        //DimMgt.InsertDocDim(39,PurchaseHeader."Document Type",PurchaseHeader."No.",
+           //PurchaseLine."Line No.",GlobalDim1Code,GlobalDim2Code)
+        // Open Document
+        PurchaseCreditMemoL.SETRECORD(PurchaseHeaderL);
+        PurchaseCreditMemoL.RUN;
+      END;
+      // H0846       21.08.14  JM ------------------
+    END;
+
+    LOCAL PROCEDURE LookupVendorAsCarrier@1000000002(VAR VendorR@1000000002 : Record 23);
+    VAR
+      VendorListL@1000000001 : Form 27;
+    BEGIN
+      // H0846       21.08.14  JM ++++++++++++++++++
+      VendorR.RESET;
+      VendorR.SETRANGE("Allow Lost Parcel Inquiry",TRUE);
+      VendorListL.SETTABLEVIEW(VendorR);
+      VendorListL.LOOKUPMODE(TRUE);
+      IF VendorListL.RUNMODAL = ACTION::LookupOK THEN BEGIN
+        VendorListL.GETRECORD(VendorR);
+      END;
+      // H0846       21.08.14  JM -------------------
+    END;
+
+    PROCEDURE GetInquiryOrderLine@1000000009(OrderNoV@1000000001 : Code[50];OderLineV@1000000002 : Integer;VAR SalesOrderNo@1000000004 : Code[20];VAR TrackingNoR@1000000003 : Code[50];VAR OrderDateR@1000000005 : Date;VAR ItemNoR@1000000007 : Code[20];VAR SalesLineArchiveR@1000000006 : Record 5108;VAR SalesLineR@1000000000 : Record 37) IsArchived : Boolean;
+    VAR
+      SalesHeaderArchiveL@1000000008 : Record 5107;
+      SalesHeaderL@1000000009 : Record 36;
+      ItemL@1000000010 : Record 27;
+    BEGIN
+      // H2003       15.01.15  JM +++++++
+      SalesLineArchiveR.SETFILTER("Document Type",'%1|%2',
+          SalesLineArchiveR."Document Type"::Order,SalesLineArchiveR."Document Type"::"Return Order");
+      SalesLineArchiveR.SETRANGE("Document No.",OrderNoV);
+      SalesLineArchiveR.SETRANGE("Line No.",OderLineV);
+      SalesLineArchiveR.SETRANGE(Type,SalesLineArchiveR.Type::Item);
+      IF SalesLineArchiveR.FINDFIRST THEN BEGIN
+        SalesHeaderArchiveL.GET(SalesLineArchiveR."Document Type",SalesLineArchiveR."Document No.",
+            SalesLineArchiveR."Doc. No. Occurrence",SalesLineArchiveR."Version No.");
+        ItemL.GET(SalesLineArchiveR."No.");
+        SalesOrderNo := SalesHeaderArchiveL."No.";
+        TrackingNoR := SalesLineArchiveR."DHL Shipment Number";
+        OrderDateR := SalesHeaderArchiveL."Order Date";
+        ItemNoR := ItemL."No.";
+        EXIT(TRUE);
+      END;
+      SalesLineR.SETFILTER("Document Type",'%1|%2',
+          SalesLineR."Document Type"::Order,SalesLineR."Document Type"::"Return Order");
+      SalesLineR.SETRANGE("Document No.",OrderNoV);
+      SalesLineR.SETRANGE("Line No.",OderLineV);
+      SalesLineR.SETRANGE(Type,SalesLineR.Type::Item);
+      IF SalesLineR.FINDFIRST THEN BEGIN
+        SalesHeaderL.GET(SalesLineR."Document Type",SalesLineR."Document No.");
+        ItemL.GET(SalesLineR."No.");
+        SalesOrderNo := SalesHeaderL."No.";
+        TrackingNoR := SalesLineR."DHL Shipment Number";
+        OrderDateR := SalesHeaderL."Order Date";
+        ItemNoR := ItemL."No.";
+        EXIT(FALSE);
+      END;
+      // H2003       15.01.15  JM --------
+    END;
+
+    LOCAL PROCEDURE GetUnitCostsFromRelatedOrder@1000000011(DocumentTypeV@1000000004 : Integer;DocumentNoV@1000000003 : Code[20];ItemNoV@1000000002 : Code[20];DefaultUnitCostV@1000000000 : Decimal) DefaultUnitCostO : Decimal;
+    VAR
+      SalesLineArchiveL@1000000001 : Record 5108;
+    BEGIN
+      // H0846       29.08.14  JM ++++++++++++++++++
+      IF DocumentTypeV = 5 THEN BEGIN // Return Order
+        SalesLineArchiveL.SETRANGE("Document Type",SalesLineArchiveL."Document Type"::Order);
+        SalesLineArchiveL.SETRANGE("Document No.",DocumentNoV);
+        SalesLineArchiveL.SETRANGE(Type,SalesLineArchiveL.Type::Item);
+        SalesLineArchiveL.SETRANGE("No.",ItemNoV);
+        IF SalesLineArchiveL.FINDFIRST THEN BEGIN
+          IF SalesLineArchiveL."Unit Cost (LCY)" <> 0 THEN
+            EXIT(SalesLineArchiveL."Unit Cost (LCY)");
+        END;
+      END;
+      DefaultUnitCostO := DefaultUnitCostV;
+      EXIT(DefaultUnitCostO);
+      // H0846       29.08.14  JM ------------------
+    END;
+
+    PROCEDURE GetReturnLocationCode@1000000012() ReturnLocationCodeO : Code[10];
+    VAR
+      WarehouseSetupL@1000000000 : Record 5769;
+    BEGIN
+      // H0846       29.08.14  JM ++++++++++++++++++
+      WarehouseSetupL.GET;
+      EXIT(WarehouseSetupL."Return Warehouse Location Code");
+      // H0846       29.08.14  JM ------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------------+
+      |                   ∏  Copyright                   |
+      |       GOB Software & Systeme GmbH & Co. KG       |
+      +--------------------------------------------------+
+      |                     home24 GmbH                  |
+      +--------------------------------------------------+
+
+      Version   Date      Consultant  Comment
+      ____________________________________________________________________________________________________________________________________
+      P0819     27.02.13  gob-rste    Object Created
+      P0848     06.03.13  gob-rste    Get Existing Ident Code for Sales Line
+      P0889     02.05.13  gob-rste    HausnummerToCode LocText001 DELCHR †ÖÉÇäà°çå¢ïì£óñµ∑∂ê‘“÷ﬁ◊‡„‚ÈÎÍ
+      P0903     13.05.13  gob-ael     Neue Funktionen fÅr internat. DS: GetInternationalIdentCode, DHLInternationalShipmentCount,
+      P0903     28.05.13  gob-ael     Neue Funktion: FillShipToAddressInternational
+      P0903     03.06.13  gob-ael     Funktion GetBillingNo angepasst, Anpassung Funktion GetRoutingcode
+      P0921     07.06.13  gob-mab     Korrektur cust.get
+      P1099     04.09.13  gob-sil     Erweiterung fÅr Sales Header Archive
+      P1133     06.11.13  gob-mlan  - Redesign of "DHL Parcel Status History"
+
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      H0423       28.06.2013          Modifications for processing postcodes with code length of 8 - Fiktive PLZ & PLZ_Leitcode set to 8
+      H0524       02.09.13  FX        Fix for IFTMIN creation when Sales Header was archived
+      H1378       17.07.14  MSL       Non-sent Purchase Email: Overflow - GetStreetSearchName func. return value length changed to 50
+      H0846       21.08.14  JM        Inqiry / Lost Parcels new functions:
+      H2003       15.01.15  JM        Lost Parcel Inquiry move report ID/Tracking ID in Doc Header/Drop Name DHL valid for all carriers
+    }
+    END.
+  }
+}
+

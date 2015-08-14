@@ -1,0 +1,154 @@
+OBJECT Codeunit 50258 Create Sales Orders Batch
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09.07.15;
+    Time=17:31:53;
+    Modified=Yes;
+    Version List=HME4042;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=BEGIN
+            FunctionNoCode := "Parameter String";
+            FPCGeneralSetup.GET;
+            FPCGeneralSetup.TESTFIELD("Create Sales Orders by",FPCGeneralSetup."Create Sales Orders by"::Service);
+
+            IF FunctionNoCode = UPPERCASE('CreateSalesOrders') THEN
+              CreateSalesOrdersBatch;
+            IF FunctionNoCode = UPPERCASE('PostPrePayment') THEN
+              PostPrePaymentBatch;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      eBayNavCSalesHeader@1000000012 : Record 5251571;
+      SalesHeader@1000000004 : Record 36;
+      SalesHeaderArchive@1000000003 : Record 5107;
+      CreateSalesOrderMgt@1000000001 : Codeunit 50259;
+      ErrorText@1000000000 : Text[250];
+      FunctionNoCode@1000000007 : Code[250];
+      FPCGeneralSetup@1000000006 : Record 50055;
+      SalesPostPrepayments@1000000009 : Codeunit 442;
+      eBayNavCXMLLog@1000000002 : Record 5096060;
+
+    PROCEDURE CreateSalesOrdersBatch@1000000000();
+    VAR
+      ProcessingCounterL@1000000002 : Integer;
+      ErrorCounterL@1000000001 : Integer;
+      OpenOrderCounterL@1000000000 : Integer;
+    BEGIN
+      eBayNavCSalesHeader.SETCURRENTKEY(Status);
+      eBayNavCXMLLog.SETCURRENTKEY("Source No.");
+
+      eBayNavCSalesHeader.SETRANGE(Status,eBayNavCSalesHeader.Status::Unprocessed);
+      eBayNavCSalesHeader.SETRANGE("eBay Order rendered",TRUE);
+      eBayNavCSalesHeader.SETRANGE("Document Exists",FALSE);
+
+      IF eBayNavCSalesHeader.FINDSET(TRUE,TRUE) THEN BEGIN
+        REPEAT
+          IF IsSuccessXMLog(eBayNavCSalesHeader."External Document No.") THEN BEGIN
+            OpenOrderCounterL += 1;
+            CreateSalesOrderMgt.SetFunctionNo(0);
+            CreateSalesOrderMgt.SeteBayNavCSalesHeader(eBayNavCSalesHeader);
+            COMMIT; // because of CU.run
+            IF CreateSalesOrderMgt.RUN THEN BEGIN
+              CreateSalesOrderMgt.SetSuccesseBayNavCSalesHeader(eBayNavCSalesHeader);
+              ProcessingCounterL += 1;
+            END ELSE BEGIN
+              ErrorText := COPYSTR(GETLASTERRORTEXT,1,250);
+              CreateSalesOrderMgt.SetErroreBayNavCSalesHeader(eBayNavCSalesHeader,ErrorText);
+              ErrorCounterL += 1;
+
+              IF GUIALLOWED THEN
+                MESSAGE(ErrorText + ' ' + eBayNavCSalesHeader."No.");
+            END;
+          END;
+        UNTIL (eBayNavCSalesHeader.NEXT = 0); //OR (ProcessingCounter = 3) OR (ErrorCounter = 3);
+      END;
+
+      CLEAR(CreateSalesOrderMgt);
+      CLEARLASTERROR;
+
+      IF GUIALLOWED THEN
+        MESSAGE('Processing Counter %1\\'+
+                'Error Counter %2\\'+
+                'Open Order Counter %3',ProcessingCounterL,ErrorCounterL,OpenOrderCounterL);
+    END;
+
+    PROCEDURE PostPrePaymentBatch@1000000005();
+    VAR
+      PaymentMethodL@1000000000 : Record 289;
+      ProcessingCounterL@1000000003 : Integer;
+      ErrorCounterL@1000000002 : Integer;
+      OpenOrderCounterL@1000000001 : Integer;
+    BEGIN
+      SalesHeader.SETCURRENTKEY(Status,"Prepayment %");
+      SalesHeader.SETRANGE("Prepayment Status",SalesHeader."Prepayment Status"::Open);
+      SalesHeader.SETFILTER("Prepayment %" ,'<>%1',0);
+      SalesHeader.SETRANGE("Document Type",SalesHeader."Document Type"::Order);
+      SalesHeader.SETRANGE(Status,SalesHeader.Status::Released);
+
+      IF SalesHeader.FINDSET(TRUE,TRUE) THEN
+        REPEAT
+
+          IF NOT PaymentMethodL.CheckReleaseifPaid(SalesHeader."Payment Method Code") THEN BEGIN
+            IF SalesPostPrepayments.CheckOpenPrepaymentLines(SalesHeader,0) THEN BEGIN // Invoice
+              //IF NOT CreateSalesOrderMgt.IsPostedPrepayment(SalesHeader."No.",SalesHeader."Sell-to Customer No.") THEN BEGIN
+              CreateSalesOrderMgt.SetFunctionNo(1);
+              CreateSalesOrderMgt.SetSalesHeader(SalesHeader);
+              COMMIT; // because of CU.run
+              IF CreateSalesOrderMgt.RUN THEN BEGIN
+                CreateSalesOrderMgt.SetSuccessSalesHeader(SalesHeader);
+                ProcessingCounterL += 1;
+              END ELSE BEGIN
+                ErrorText := COPYSTR(GETLASTERRORTEXT,1,250);
+                CreateSalesOrderMgt.SetErrorSalesHeader(SalesHeader,ErrorText);
+                ErrorCounterL += 1;
+
+                IF GUIALLOWED THEN
+                  MESSAGE(ErrorText + ' ' + SalesHeader."No.");
+              END;
+            END;
+          END;
+
+        UNTIL (SalesHeader.NEXT = 0); // OR (ProcessingCounter = 3) OR (ErrorCounter = 3);
+
+      CLEAR(CreateSalesOrderMgt);
+      CLEARLASTERROR;
+
+      IF GUIALLOWED THEN
+        MESSAGE('Processing Counter %1\\'+
+                'Error Counter %2',ProcessingCounterL,ErrorCounterL);
+    END;
+
+    PROCEDURE IsSuccessXMLog@1000000001(OrderNoV@1000000000 : Code[20]) : Boolean;
+    BEGIN
+      eBayNavCXMLLog.SETRANGE("Source No.",OrderNoV);
+      eBayNavCXMLLog.SETRANGE("Source Type",eBayNavCXMLLog."Source Type"::"S.Order");
+      eBayNavCXMLLog.SETRANGE(Success,TRUE);
+      IF eBayNavCXMLLog.FINDLAST THEN
+        EXIT(TRUE);
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+
+      H4042       28.05.15 JM        Save Orders on NAVCSalesHeader without Processing, CU Created
+    }
+    END.
+  }
+}
+

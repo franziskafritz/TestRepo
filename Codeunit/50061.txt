@@ -1,0 +1,543 @@
+OBJECT Codeunit 50061 eBayNavCServer2
+{
+  OBJECT-PROPERTIES
+  {
+    Date=14.08.12;
+    Time=12:00:00;
+    Version List=eBay1.07.02,DYN002;
+  }
+  PROPERTIES
+  {
+    TableNo=5251552;
+    OnRun=VAR
+            SERVER_IS_ALREADY_RUNNING@1119423000 : TextConst 'DEU=Der Server lÑuft bereits.;ENU=The server is already running.';
+            START_SERVER@1119423001 : TextConst 'DEU=Mîchten Sie den Server wirklich im Dynamics NAV Client starten?;ENU=Do you really want to start the server within your Dynamics NAV client?';
+            SHOW_STATUS_WINDOW@1119423002 : TextConst 'DEU=Mîchten Sie ein Statusfenster anzeigen lassen?;ENU=Do you want to show a status window?';
+            STATUS_WINDOW@1119423003 : TextConst 'DEU=Webservice ist online\\Port:                     #1###########\Letzte AktivitÑt um:      #2###########\Letzte AktivitÑt von:     #3###########\AktivitÑten gesamt:       #4###########\\Statusmeldung:\#5#####################################;ENU=Webservice is online\\Port:                     #1###########\Last Activity at:         #2###########\Last Activity from:       #3###########\Total Activities:         #4###########\\Status Message:\#5#####################################';
+          BEGIN
+            IF NOT ISCLEAR(Server) THEN
+              ERROR(SERVER_IS_ALREADY_RUNNING);
+
+            ShowStatusWindow := FALSE;
+            TotalActivities := 0;
+            LastRequestShopCode := Rec.Code;
+            // CHR070512 +
+            LastDateTime := CURRENTDATETIME;
+            // CHR070512 -
+
+            IF GUIALLOWED THEN BEGIN
+              IF NOT CONFIRM(START_SERVER, FALSE) THEN BEGIN
+                EXIT;
+              END ELSE BEGIN
+                ShowStatusWindow := CONFIRM(SHOW_STATUS_WINDOW, FALSE);
+              END;
+            END;
+
+            Rec.TESTFIELD("TCP/IP Port");
+
+            CREATE(Server);
+
+            Server.Port := Rec."TCP/IP Port";
+            Server.SharedSecret := Rec."Shared Secret";
+            Server.UseEncryption := Rec."Use Encryption";
+            Server.LogFilename := Rec."TCP/IP Log File";
+            Server.EnableLogging := Rec."Enable TCP/IP Log";
+
+            IF NOT Server.Start() THEN
+              ERROR(Server.LastException);
+
+            ApplicationServerCode := Rec.Code;
+
+            Rec."Started at" := CURRENTDATETIME;
+            Rec.MODIFY(TRUE);
+
+            IF ShowStatusWindow THEN BEGIN
+              StatusWindow.OPEN(STATUS_WINDOW);
+              StatusWindow.UPDATE(1, Rec."TCP/IP Port");
+              StatusWindow.UPDATE(4, 0);
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      ApplicationServerCode@1119455000 : Code[10];
+      Server@1119423000 : Automation "{367D4D76-5C0E-43F2-A07F-FA24013DFCC9} 1.0:{7977235B-CE27-4465-8BF7-DBCB5813199E}:'Mp_Nav_SxtpServer'.Server" WITHEVENTS;
+      LastRequestShopCode@1119423001 : Code[10];
+      LastXmlLogLineNo@1119423002 : Integer;
+      LastDateTime@1170000000 : DateTime;
+      TotalActivities@1119423003 : Integer;
+      StatusWindow@1119423004 : Dialog;
+      ShowStatusWindow@1119423005 : Boolean;
+      LastErrorMessage@1119423006 : Text[1024];
+      SourceType@1170000001 : ' ,Customer,S.Order,Payment';
+      SourceNo@1170000002 : Code[20];
+
+    PROCEDURE Log@1119423000(isError@1119423000 : Boolean;description@1119423001 : Text[1024]);
+    VAR
+      eBayNavCLog@1119423002 : Record 5096052;
+      eBayUtil@1119423003 : Codeunit 5095800;
+      applicationServer@1119455000 : Record 5251552;
+    BEGIN
+      // Schreibt einen Eintrag in das NAVconnect Protokoll
+      // Strings > 250 werden gesplittet und hÑppchenweise
+      // in das Protokoll geschrieben
+
+      IF applicationServer.GET(ApplicationServerCode) THEN;
+
+      IF isError THEN BEGIN
+        LastErrorMessage := description;
+      END;
+
+      IF applicationServer."Log Only Errors" AND NOT isError THEN BEGIN
+        EXIT;
+      END;
+
+      IF ShowStatusWindow THEN BEGIN
+        StatusWindow.UPDATE(5, description);
+      END;
+
+      WHILE STRLEN(description) > 0 DO BEGIN
+        eBayNavCLog.INIT();
+        eBayNavCLog."Webshop Code" := LastRequestShopCode;
+
+        REPEAT
+          eBayNavCLog."Conducted at" := CURRENTDATETIME;
+        UNTIL eBayNavCLog.INSERT(TRUE);
+
+        eBayNavCLog.VALIDATE(Error, isError);
+        eBayNavCLog.VALIDATE(Comment, COPYSTR(description, 1, MAXSTRLEN(eBayNavCLog.Comment)));
+        eBayNavCLog.VALIDATE("XML Log Line No.", LastXmlLogLineNo);
+        eBayNavCLog.MODIFY(TRUE);
+
+        IF STRLEN(description) > MAXSTRLEN(eBayNavCLog.Comment) THEN BEGIN
+          description := COPYSTR(description, MAXSTRLEN(eBayNavCLog.Comment), STRLEN(description) - MAXSTRLEN(eBayNavCLog.Comment));
+        END ELSE BEGIN
+          description := '';
+        END;
+      END;
+    END;
+
+    PROCEDURE logRequestXml@1119423004(VAR requestXml@1119423000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{88D96A05-F192-11D4-A65F-0040963251E5}:'Microsoft XML, v6.0'.DOMDocument60");
+    VAR
+      eBayNavCXmlLog@1119423002 : Record 5096060;
+      outStream@1119423003 : OutStream;
+      applicationServer@1119455000 : Record 5251552;
+      rootNode@1170000005 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+      bodyNode@1170000001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+      xmlUtil@1170000000 : Codeunit 5095995;
+    BEGIN
+      // Protokolliert das Anfrage XML-Dokument
+
+      applicationServer.GET(ApplicationServerCode);
+
+      IF applicationServer."Log XML-Documents" AND
+         NOT ISCLEAR(requestXml) THEN
+      BEGIN
+        eBayNavCXmlLog.INIT();
+        eBayNavCXmlLog."Conducted at" := CURRENTDATETIME;
+        eBayNavCXmlLog.INSERT(TRUE);
+        eBayNavCXmlLog."Request Document".CREATEOUTSTREAM(outStream);
+        requestXml.save(outStream);
+        eBayNavCXmlLog.MODIFY(TRUE);
+
+        LastXmlLogLineNo := eBayNavCXmlLog."Line No.";
+
+      END;
+
+      // CHR070512 +
+      SourceType := 0;
+      SourceNo := '';
+      //03.08.12  nas fill Source No >>
+      rootNode := requestXml.documentElement;
+      IF xmlUtil.GetNode(rootNode, 'Body/PaymentUpdateRequest/Payment', bodyNode) THEN BEGIN
+        eBayNavCXmlLog."Source Type" := 3;
+        eBayNavCXmlLog."Source No." := xmlUtil.GetElementText(bodyNode, 'OrderNo');
+        eBayNavCXmlLog.MODIFY;
+      END;
+      IF xmlUtil.GetNode(rootNode, 'Body/CreateDocumentRequest/Document', bodyNode) THEN BEGIN
+        eBayNavCXmlLog."Source Type" := 2;
+        eBayNavCXmlLog."Source No." := xmlUtil.GetElementText(bodyNode, 'ExternalDocumentNo');
+        eBayNavCXmlLog.MODIFY;
+      END;
+      IF xmlUtil.GetNode(rootNode, 'Body/CreateAccountRequest/Account', bodyNode) THEN BEGIN
+        eBayNavCXmlLog."Source Type" := 1;
+        eBayNavCXmlLog."Source No." := xmlUtil.GetElementText(bodyNode, 'ExternalAccountNo');
+        eBayNavCXmlLog.MODIFY;
+      END;
+      //03.08.12  nas fill Source No <<
+
+      // CHR070512 -
+    END;
+
+    PROCEDURE logResponseXml@1119423005(VAR responseXml@1119423000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{88D96A05-F192-11D4-A65F-0040963251E5}:'Microsoft XML, v6.0'.DOMDocument60";success@1170000000 : Boolean);
+    VAR
+      eBaySetup@1119423001 : Record 5095800;
+      eBayNavCXmlLog@1119423002 : Record 5096060;
+      outStream@1119423003 : OutStream;
+      applicationServer@1119455000 : Record 5251552;
+    BEGIN
+      // Protokolliert das Antwort XML-Dokument
+
+      applicationServer.GET(ApplicationServerCode);
+
+      IF eBayNavCXmlLog.GET(LastXmlLogLineNo) AND
+         applicationServer."Log XML-Documents" AND
+         NOT ISCLEAR(responseXml) THEN
+      BEGIN
+        // CHR070512 +
+        IF SourceNo <> '' THEN BEGIN
+          eBayNavCXmlLog."Source Type" := SourceType;
+          eBayNavCXmlLog."Source No." := SourceNo;
+        END;
+        eBayNavCXmlLog.Success := success;
+        // CHR070512 -
+        eBayNavCXmlLog."Response Document".CREATEOUTSTREAM(outStream);
+        responseXml.save(outStream);
+        eBayNavCXmlLog.MODIFY(TRUE);
+      END;
+
+      LastXmlLogLineNo := 0;
+    END;
+
+    PROCEDURE validateRequestXml@1119423006(VAR requestXml@1119423000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{88D96A05-F192-11D4-A65F-0040963251E5}:'Microsoft XML, v6.0'.DOMDocument60") isValid : Boolean;
+    VAR
+      xmlUtil@1119423001 : Codeunit 5095995;
+      rootNode@1119423002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+      headerNode@1119423003 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+      detailArrayNode@1119423004 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+      bodyNode@1119423005 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+    BEGIN
+      // öberprÅft eine eingehende Anfrage auf GÅltigkeit
+
+      rootNode := requestXml.documentElement;
+      isValid := xmlUtil.GetNode(rootNode, 'Header', headerNode) AND
+                 xmlUtil.GetNode(rootNode, 'Body', bodyNode) AND
+                 // CHR070512 +
+                 //(xmlUtil.GetElementAttributeText(rootNode, 'Header', 'shopID') <> '') AND
+                 (xmlUtil.GetElementAttributeText(rootNode, 'Header', 'AppDom') <> '') AND
+                 // CHR070512 -
+                 (xmlUtil.GetElementAttributeText(rootNode, 'Header', 'object') <> '') AND
+                 (xmlUtil.GetElementAttributeText(rootNode, 'Header', 'action') <> '');
+    END;
+
+    PROCEDURE createErrorResponseXml@1119423002(VAR responseXml@1119423000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{88D96A05-F192-11D4-A65F-0040963251E5}:'Microsoft XML, v6.0'.DOMDocument60");
+    VAR
+      xmlUtil@1119423001 : Codeunit 5095995;
+      rootNode@1119423002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+      headerNode@1119423003 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+      errorNode@1170000000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+      bodyNode@1119423004 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+      eBayNavCLog@1170000001 : Record 5096052;
+    BEGIN
+      // Erstellt ein Antwort XML-Dokument mit einer Fehlermeldung
+
+      // BS100706
+      responseXml.loadXML('<?xml version="1.0" encoding="utf-8"?><Transfer xmls="http://schema.mp-gruppe.de/NAVconnect/Webshop/"/>');
+      rootNode := responseXml.documentElement;
+
+      xmlUtil.AddNode(rootNode, 'Header', headerNode);
+      // CHR070512 +
+      //xmlUtil.AddAttributeText('shopID', LastRequestShopCode);
+      xmlUtil.AddAttributeText('AppDom', LastRequestShopCode);
+      // CHR070512 -
+      xmlUtil.AddAttributeText('object', 'Error');
+      xmlUtil.AddAttributeText('action', 'Response');
+      // CHR070512 +
+      xmlUtil.AddNode(headerNode, 'Errors', errorNode);
+      eBayNavCLog.RESET;
+      eBayNavCLog.SETFILTER("Conducted at",'%1..',LastDateTime);
+      eBayNavCLog.SETRANGE("Webshop Code",LastRequestShopCode);
+      eBayNavCLog.SETRANGE(Error,TRUE);
+      IF eBayNavCLog.FINDSET THEN
+        REPEAT
+          xmlUtil.AddElementText(errorNode, 'Error', eBayNavCLog.Comment);
+        UNTIL eBayNavCLog.NEXT = 0
+      ELSE
+        xmlUtil.AddElementText(errorNode, 'Error', LastErrorMessage);
+      //xmlUtil.AddElementText(headerNode, 'Error', LastErrorMessage);
+      // CHR070512 -
+
+      xmlUtil.AddNode(rootNode, 'Body', bodyNode);
+    END;
+
+    PROCEDURE DispatchRequestXml@1119423003(VAR requestXml@1119423000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{88D96A05-F192-11D4-A65F-0040963251E5}:'Microsoft XML, v6.0'.DOMDocument60";VAR responseXml@1119423002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{88D96A05-F192-11D4-A65F-0040963251E5}:'Microsoft XML, v6.0'.DOMDocument60") success : Boolean;
+    VAR
+      rootNode@1119423012 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+      shopCode@1119423001 : Code[10];
+      object@1119423003 : Text[30];
+      action@1119423004 : Text[30];
+      xmlUtil@1119423014 : Codeunit 5095995;
+      eBayNavCItem@1119423005 : Codeunit 5096054;
+      eBayNavCOrder@1119423006 : Codeunit 5096057;
+      eBayNavCTransaction@1119423007 : Codeunit 5096058;
+      eBayNavCCategory@1119423009 : Codeunit 5096055;
+      eBayNavCCustomer@1119423011 : Codeunit 5096056;
+      INVALID_OBJECT@1119423013 : TextConst 'DEU=Das Anfrage XML-Dokument enthielt ein unbekanntes Objekt "%1".;ENU=The request XML document contained an invalid object "%1".';
+      INCOMING_REQUEST@1119423015 : TextConst 'DEU=Eingehende Anfrage "%1%2" erhalten...;ENU=Incoming request "%1%2"...';
+      eBayWRpc@1119423016 : Codeunit 50062;
+    BEGIN
+      // Verarbeitet ein Request XML und schickt es an die Untercodeunits weiter
+
+      rootNode := requestXml.documentElement;
+      // CHR070512 +
+      //shopCode := xmlUtil.GetElementAttributeText(rootNode, 'Header', 'shopID');
+      shopCode := xmlUtil.GetElementAttributeText(rootNode, 'Header', 'AppDom');
+      // CHR070512 +
+      object := xmlUtil.GetElementAttributeText(rootNode, 'Header', 'object');
+      action := xmlUtil.GetElementAttributeText(rootNode, 'Header', 'action');
+
+      // BS100705 +
+      LastRequestShopCode := shopCode;
+      // BS100705 -
+      // CHR070512 +
+      LastDateTime := CURRENTDATETIME;
+      // CHR070512 -
+
+      Log(FALSE, STRSUBSTNO(INCOMING_REQUEST, action, object));
+
+      CASE object OF
+        'Item'        : success := eBayNavCItem.VerarbeiteNachricht(shopCode, action, requestXml, responseXml, 0);
+        'Customer'    : success := eBayNavCCustomer.VerarbeiteNachricht(shopCode, action, requestXml, responseXml, 0);
+        'Order'       : success := eBayNavCOrder.VerarbeiteNachricht(shopCode, action, requestXml, responseXml, 0);
+        'Category'    : success := eBayNavCCategory.VerarbeiteNachricht(shopCode, action, requestXml, responseXml, 0);
+        'Transaction' : success := eBayNavCTransaction.VerarbeiteNachricht(shopCode, action, requestXml, responseXml, 0);
+        // BS100705 +
+        'RemoteProcedureCall': success := eBayWRpc.DispatchRequest(shopCode, requestXml, responseXml);
+        // BS100705 -
+      ELSE
+        Log(TRUE, STRSUBSTNO(INVALID_OBJECT, object));
+        success := FALSE;
+      END;
+    END;
+
+    PROCEDURE setSource@1170000000(sType@1170000000 : Integer;sNo@1170000001 : Code[20]);
+    BEGIN
+      // CHR070512 +
+      SourceType := sType;
+      SourceNo := sNo;
+      // CHR070512 -
+    END;
+
+    PROCEDURE reprocessRequestXml@1170000001();
+    VAR
+      eBayNavCXmlLog@1119423002 : Record 5096060;
+      inStream@1119423003 : InStream;
+      applicationServer@1119455000 : Record 5251552;
+      requestXml@1170000000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{88D96A05-F192-11D4-A65F-0040963251E5}:'Microsoft XML, v6.0'.DOMDocument60";
+      responseXml@1170000006 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{88D96A05-F192-11D4-A65F-0040963251E5}:'Microsoft XML, v6.0'.DOMDocument60";
+      rootNode@1170000002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+      bodyNode@1170000008 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+      requestRpcNode@1170000009 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+      object@1170000001 : Text[30];
+      shopCode@1170000007 : Code[10];
+      xmlUtil@1170000003 : Codeunit 5095995;
+      success@1170000004 : Boolean;
+      eBayWRpc@1170000005 : Codeunit 50062;
+      tag@1170000010 : Text[50];
+    BEGIN
+      // CHR070512 +
+      IF ISCLEAR(requestXml) THEN CREATE(requestXml);
+      IF ISCLEAR(responseXml) THEN CREATE(responseXml);
+      eBayNavCXmlLog.RESET;
+      eBayNavCXmlLog.SETRANGE("Source Type",eBayNavCXmlLog."Source Type"::Payment);
+      eBayNavCXmlLog.SETRANGE(Success,FALSE);
+      IF eBayNavCXmlLog.FINDSET THEN
+      REPEAT
+        SourceType := 0;
+        SourceNo := '';
+        eBayNavCXmlLog.CALCFIELDS("Request Document");
+        eBayNavCXmlLog."Request Document".CREATEINSTREAM(inStream);
+        IF requestXml.load(inStream) THEN BEGIN
+          rootNode := requestXml.documentElement;
+          shopCode := xmlUtil.GetElementAttributeText(rootNode, 'Header', 'AppDom');
+          object := xmlUtil.GetElementAttributeText(rootNode, 'Header', 'object');
+          IF object = 'RemoteProcedureCall' THEN BEGIN
+            IF xmlUtil.GetNode(rootNode, 'Body', bodyNode) THEN BEGIN
+              requestRpcNode := bodyNode.firstChild;
+              tag := requestRpcNode.tagName;
+              IF requestRpcNode.tagName = 'PaymentUpdateRequest' THEN BEGIN
+                success := eBayWRpc.DispatchRequest(shopCode, requestXml, responseXml);
+                eBayNavCXmlLog."Source Type" := SourceType;
+                eBayNavCXmlLog."Source No." := SourceNo;
+                eBayNavCXmlLog.Success := success;
+                eBayNavCXmlLog.MODIFY;
+              END;
+              IF xmlUtil.GetNode(rootNode, 'Body/CreateDocumentRequest/Document', bodyNode) THEN BEGIN
+                eBayNavCXmlLog."Source Type" := 2;
+                eBayNavCXmlLog."Source No." := xmlUtil.GetElementText(bodyNode, 'ExternalDocumentNo');
+                eBayNavCXmlLog.MODIFY;
+              END;
+              IF xmlUtil.GetNode(rootNode, 'Body/CreateAccountRequest/Account', bodyNode) THEN BEGIN
+                eBayNavCXmlLog."Source Type" := 1;
+                eBayNavCXmlLog."Source No." := xmlUtil.GetElementText(bodyNode, 'ExternalAccountNo');
+                eBayNavCXmlLog.MODIFY;
+              END;
+            END;
+          END;
+
+        END;
+      UNTIL eBayNavCXmlLog.NEXT = 0;
+      // CHR070512 -
+    END;
+
+    PROCEDURE SetAppCode@1170000002(AppCode@1170000000 : Code[10]);
+    BEGIN
+      ApplicationServerCode := AppCode;
+    END;
+
+    EVENT Server@1119423000::OnNewClient@1(address@1119423002 : Text[1024];Port@1119423001 : Integer;VAR dropClient@1119423000 : Boolean);
+    VAR
+      eBaySetup@1119423004 : Record 5095800;
+      INCOMING_CONNECTION@1119423005 : TextConst 'DEU=Eingehende Verbindung von %1:%2...;ENU=Incoming connection from %1:%2...';
+      CONNECTION_DENIED@1119423006 : TextConst 'DEU=Zugriff des Clients auf Dynamics NAV verhindert. Die IP-Adresse ist nicht als NAVconnect Einrichtung vorhanden.;ENU=Client access to Dynamics NAV has been denied. The IP address does not exist as a NAVconnect Setup.';
+      applicationServer@1119455000 : Record 5251552;
+      webshop@1119455001 : Record 5251553;
+    BEGIN
+      // PrÅft, ob ein Client auf den NAV Application Server zugreifen darf
+
+      eBaySetup.GET();
+
+      IF ShowStatusWindow THEN BEGIN
+        TotalActivities += 1;
+
+        StatusWindow.UPDATE(3, STRSUBSTNO('%1:%2', address, Port));
+        StatusWindow.UPDATE(2, CURRENTDATETIME);
+        StatusWindow.UPDATE(4, TotalActivities);
+      END;
+
+      Log(FALSE, STRSUBSTNO(INCOMING_CONNECTION, address, Port));
+
+      applicationServer.GET(ApplicationServerCode);
+
+      IF applicationServer."Restrict Access to Webshop IPs" THEN BEGIN
+        dropClient := TRUE;
+
+        // SETRANGE geht wegen Punkte nicht
+        IF webshop.FINDSET() THEN REPEAT
+          IF webshop."IP-Address" = address THEN BEGIN
+            dropClient := FALSE;
+          END;
+        UNTIL (dropClient = FALSE) OR (webshop.NEXT() = 0);
+
+        IF dropClient THEN BEGIN
+          Log(FALSE, CONNECTION_DENIED);
+        END;
+      END;
+    END;
+
+    EVENT Server@1119423000::OnException@2(errorNo@1119423001 : Integer;description@1119423000 : Text[1024]);
+    VAR
+      DOT_NET_EXCEPTION@1119423002 : TextConst 'DEU=Es trat ein .NET Fehler auf:;ENU=A .NET exception occured:';
+      MISSING_HEADER@1119423003 : TextConst 'DEU=Die Clientanfrage enthielt keine Kopfinformationen.;ENU=The clients request did not contain a header.';
+      PAYLOAD_IS_NO_XML@1119423004 : TextConst 'DEU=Die Clientanfrage enthielt ein ungÅltiges or beschÑdigtes XML-Dokument.;ENU=The clients request contained an invalid XML document.';
+      MISSING_HASH@1119423005 : TextConst 'DEU=Die Clientanfrage enthielt keinen Hash.;ENU=The clients request did not contain a hash.';
+      HASH_MISMATCH@1119423006 : TextConst 'DEU=Die PrÅfung der Nutzlast ist fehlgeschlagen. Mîglicherweise wurde diese manipuliert oder der Client besitzt ein anderes Shared Secret.;ENU=Hash validation of the payload failed. It seems like it has been manipulated or the client owns a different shared secret.';
+      PAYLOAD_IS_MISSING@1119423007 : TextConst 'DEU=Die Clientanfrage enthielt keine Nutzlast.;ENU="The clients request did not contain any payload. "';
+      CAL_ERROR@1119423008 : TextConst 'DEU=Es trat ein C/AL Fehler in Dynamics NAV auf:;ENU=A C/AL error occured in Dynamics NAV:';
+      NO_RESPONSE_XML@1119423009 : TextConst 'DEU=Dynamics NAV lieferte kein Antwort XML-Dokument.;ENU=Dynamics NAV did not supply a response XML document.';
+      CORRUPT_RESPONSE_XML@1119423010 : TextConst 'DEU=Dynamics NAV lieferte ein beschÑdigtes Antwort XML-Dokument.;ENU=Dynamics NAV supplied a corrupt response XML document.';
+      eBayNavCUtil@1119423011 : Codeunit 5096052;
+    BEGIN
+      // Schreibt eine Fehlermeldung von der Komponente
+      // in das NAVconnect Protokoll
+
+      CASE errorNo OF
+        1: Log(TRUE, DOT_NET_EXCEPTION);
+        2: description := MISSING_HEADER;
+        3: description := PAYLOAD_IS_NO_XML;
+        4: description := MISSING_HASH;
+        5: description := HASH_MISMATCH;
+        6: description := PAYLOAD_IS_MISSING;
+        7: Log(TRUE, CAL_ERROR);
+        8: description := NO_RESPONSE_XML;
+        9: description := CORRUPT_RESPONSE_XML;
+      END;
+
+      Log(TRUE, description);
+    END;
+
+    EVENT Server@1119423000::OnMessage@3(address@1119423003 : Text[1024];Port@1119423002 : Integer;requestMessage@1119423001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF96-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMDocument3";responseMessage@1119423000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF96-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMDocument3");
+    VAR
+      xmlUtil@1119423004 : Codeunit 5095995;
+      INVALID_XML_STRUCTURE@1119423005 : TextConst 'DEU=Das Anfrage XML-Dokument entspricht nicht der NAVconnect Stuktur.;ENU=The request XML document structure does not match the NAVconnects one.';
+      UNKNOWN_SHOPCODE@1119423006 : TextConst 'DEU=Unbekannter NAVconnect Einrichtungscode "%1".;ENU=Unknown NAVconnect setup code "%1".';
+      IP_MISMATCH@1119423007 : TextConst 'DEU=Die IP-Adresse "%1" stimmt nicht mit der NAVconnect Einrichtung "%2" Åberein.;ENU=The IP address "%1" does not match the NAVconnect setup "%2".';
+      shopCode@1119423008 : Code[10];
+      rootNode@1119423009 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+      success@1119423011 : Boolean;
+      webshop@1119455000 : Record 5251553;
+      applicationServer@1119455001 : Record 5251552;
+    BEGIN
+      // Wird aufgerufen, wenn eine neue XML-Nachricht eintrifft
+
+      logRequestXml(requestMessage);
+      success := FALSE;
+
+      applicationServer.GET(ApplicationServerCode);
+      applicationServer."Last Activity at" := CURRENTDATETIME;
+      applicationServer."No. of Activities" += 1;
+
+      COMMIT();
+
+      IF NOT validateRequestXml(requestMessage) THEN BEGIN
+        Log(TRUE, INVALID_XML_STRUCTURE);
+      END ELSE BEGIN
+        rootNode := requestMessage.documentElement;
+        // CHR070512 +
+        //shopCode := xmlUtil.GetElementAttributeText(rootNode, 'Header', 'shopID');
+        shopCode := xmlUtil.GetElementAttributeText(rootNode, 'Header', 'AppDom');
+        // CHR070512 -
+
+        IF NOT webshop.GET(shopCode) THEN BEGIN
+          Log(TRUE, STRSUBSTNO(UNKNOWN_SHOPCODE, shopCode));
+        END ELSE BEGIN
+          IF (webshop."IP-Address" <> address) AND applicationServer."Validate Webshop Codes by IPs" THEN BEGIN
+            Log(TRUE, STRSUBSTNO(IP_MISMATCH, address, shopCode));
+          END ELSE BEGIN
+            success := DispatchRequestXml(requestMessage, responseMessage);
+          END;
+        END;
+      END;
+
+      IF NOT success THEN BEGIN
+        createErrorResponseXml(responseMessage);
+      END;
+
+      logResponseXml(responseMessage,success);
+      //25.07.12  nas - save file on disc >>
+      IF applicationServer."Save XML-Documents" AND (applicationServer."Archive Folder" <> '') THEN BEGIN
+        requestMessage.save(applicationServer."Archive Folder" +
+          'Request_'+ FORMAT(SourceType,0,'<Text>') + '_' + SourceNo + '_' +
+          FORMAT(CURRENTDATETIME,0,'<Day,2><Month,2><Year,4><Hours24><Minutes,2><Seconds,2><Second dec>') + '.xml');
+        responseMessage.save(applicationServer."Archive Folder" +
+          'Response_'+ FORMAT(SourceType,0,'<Text>') + '_' + SourceNo + '_' +
+          FORMAT(CURRENTDATETIME,0,'<Day,2><Month,2><Year,4><Hours24><Minutes,2><Seconds,2><Second dec>') + '.xml');
+      END;
+      //25.07.12  nas - save file on disc <<
+    END;
+
+    BEGIN
+    {
+      BS100603 - Codeunit von Grund auf neu erstellt
+               - Komponente auf Mp.Nav.SxtpServer umgestellt
+      BS100705 - Objekt "RemoteProcedureCall" hinzugefÅgt
+               - Fehler mit LastRequestShopCode
+      BS100706 - ErrorResponse als Object und Action
+               - xmls="http://schema.mp-gruppe.de/NAVconnect/Webshop/"
+      BS101007 - Discount und Attributes gekillt
+
+      BSE110209 T00111 - Captions, Textkonstanten und Co. Åberarbeitet
+      LZR110512 T00130 - Multistore Anpassungen
+      CHR070512  - change shopID to AppDom
+                   handle multiply errors
+      25.07.12  nas - save file on disc
+      27.07.12  nas - make local functions - global
+      03.08.12  nas fill Source No
+      DYNY002 14.08.12 chrmu   new nav connector via webservice
+    }
+    END.
+  }
+}
+

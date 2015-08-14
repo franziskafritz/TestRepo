@@ -1,0 +1,138 @@
+OBJECT Codeunit 50113 Adjust Missing Qty Location
+{
+  OBJECT-PROPERTIES
+  {
+    Date=15.10.13;
+    Time=13:48:16;
+    Version List=P1045;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=BEGIN
+            IF "Parameter String" = 'JUSTINSERTJNL' THEN
+              CheckItemstoAdjust();
+            IF "Parameter String" = 'INSERTANDPOSTJNL' THEN BEGIN
+              CheckItemstoAdjust();
+              PostItemJnl();
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      FPCgenSetup@1000000000 : Record 50055;
+      LineNo@1000000001 : Integer;
+      ItemJnlLine@1000000002 : Record 83;
+      text001@1000000003 : TextConst 'DEU=Bitte hinterlegen Sie die Nr. Serie im Artikel Buchblatt %1;ENU=Please enter No. Series in Item Jnl. %1';
+      DocNo@1000000004 : Code[20];
+
+    PROCEDURE CheckItemstoAdjust@1000000001();
+    VAR
+      ItemLedgEntry@1000000001 : Record 32;
+      ItemNo@1000000002 : Code[20];
+      QtytoAdjust@1000000003 : Decimal;
+    BEGIN
+      //A/P1045
+      FPCgenSetup.GET;
+      FPCgenSetup.TESTFIELD("Missing Cont. Qty. Location C.");
+      FPCgenSetup.TESTFIELD("Item Jnl Template for Cont MQ");
+      FPCgenSetup.TESTFIELD("Item Jnl Batch for Cont MQ");
+
+      CLEAR(LineNo);
+      CLEAR(QtytoAdjust);
+      CLEAR(ItemNo);
+
+      ItemLedgEntry.RESET;
+      ItemLedgEntry.SETCURRENTKEY("Item No.",Open,"Entry Type","Location Code","Reason Location Code","Variant Code");
+      ItemLedgEntry.SETRANGE(Open,TRUE);
+      ItemLedgEntry.SETRANGE("Entry Type",ItemLedgEntry."Entry Type" :: Transfer);
+      ItemLedgEntry.SETRANGE("Location Code",FPCgenSetup."Missing Cont. Qty. Location C.");
+      IF NOT ItemLedgEntry.ISEMPTY THEN
+
+        IF ItemLedgEntry.FIND('-') THEN BEGIN
+          ItemNo := ItemLedgEntry."Item No.";
+
+          REPEAT
+            //nur wenn "entwertet" darf abgebucht werden
+            ItemLedgEntry.CALCFIELDS("Cost Amount (Actual)");
+            IF (ItemLedgEntry."Cost Amount (Actual)" = 0) THEN
+              QtytoAdjust := QtytoAdjust + ItemLedgEntry."Remaining Quantity";
+
+            //da Appl. to Entry gefÅllt werden muss jede Position einzeln
+            //IF (ItemNo <> ItemLedgEntry."Item No.") AND (QtytoAdjust <> 0) THEN BEGIN
+            IF (QtytoAdjust <> 0) THEN BEGIN
+              ItemNo := ItemLedgEntry."Item No.";
+              FillItemJnlLine(ItemNo,QtytoAdjust,ItemLedgEntry."Entry No.");
+              QtytoAdjust := 0;
+            END;
+          UNTIL (ItemLedgEntry.NEXT = 0);
+
+        END;
+      //E/P1045
+    END;
+
+    PROCEDURE FillItemJnlLine@1000000002(ItemNo@1000000000 : Code[20];QtytoAdjust@1000000001 : Decimal;AppltoEntry@1000000005 : Integer);
+    VAR
+      Item@1000000002 : Record 27;
+      ItemJnlBatch@1000000003 : Record 233;
+      NoSeriesMgt@1000000004 : Codeunit 396;
+    BEGIN
+      //A/P1045
+      Item.GET(ItemNo);
+
+      LineNo := LineNo + 10000;
+      //Buchblattzeile fÅllen...
+      ItemJnlLine.INIT;
+      ItemJnlLine.VALIDATE("Journal Template Name",FPCgenSetup."Item Jnl Template for Cont MQ");
+      ItemJnlLine.VALIDATE("Journal Batch Name",FPCgenSetup."Item Jnl Batch for Cont MQ");
+      ItemJnlLine.VALIDATE("Line No.",LineNo);
+
+      //Nr. Serie holen...
+      ItemJnlBatch.GET(FPCgenSetup."Item Jnl Template for Cont MQ",FPCgenSetup."Item Jnl Batch for Cont MQ");
+      IF (ItemJnlBatch."No. Series" = '') THEN
+        ERROR(text001);
+
+      IF (ItemJnlBatch."No. Series" <> '') AND (DocNo = '') THEN BEGIN
+        CLEAR(NoSeriesMgt);
+        DocNo := NoSeriesMgt.GetNextNo(ItemJnlBatch."No. Series",TODAY,FALSE);
+      END;
+      ItemJnlLine."Document No." := DocNo;
+      ItemJnlLine.VALIDATE("Item No.",Item."No.");
+      ItemJnlLine.VALIDATE("Posting Date",TODAY);
+      ItemJnlLine.VALIDATE("Entry Type",ItemJnlLine."Entry Type" :: "Negative Adjmt.");
+      ItemJnlLine.VALIDATE("Location Code",FPCgenSetup."Missing Cont. Qty. Location C.");
+      ItemJnlLine.VALIDATE(Quantity,QtytoAdjust);
+      ItemJnlLine.VALIDATE("Unit of Measure Code",Item."Base Unit of Measure");
+      ItemJnlLine.VALIDATE("Applies-to Entry",AppltoEntry);
+      ItemJnlLine.INSERT(TRUE);
+      //E/P1045
+    END;
+
+    PROCEDURE PostItemJnl@1000000000();
+    VAR
+      ItemJnlPost@1000000000 : Codeunit 241;
+    BEGIN
+      //A/P1045
+      COMMIT;
+      IF ItemJnlPost.RUN(ItemJnlLine) THEN;
+      //E/P1045
+    END;
+
+    BEGIN
+    {
+      +-----------------------------------------------------+
+      |               GOB Software & Systeme                |
+      +-----------------------------------------------------+
+      |                 Home24 Anpassungen                  |
+      -------------------------------------------------------
+
+      Projekt         Berater   Datum       Bemerkung
+      -------------------------------------------------------
+      P1045           gob-mab   25.07.13    Object created
+    }
+    END.
+  }
+}
+

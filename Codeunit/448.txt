@@ -1,0 +1,809 @@
+OBJECT Codeunit 448 Job Queue Dispacher
+{
+  OBJECT-PROPERTIES
+  {
+    Date=14.07.15;
+    Time=14:19:19;
+    Modified=Yes;
+    Version List=NAVW16.00,GOB1.00,HME2009,SII;
+  }
+  PROPERTIES
+  {
+    SingleInstance=Yes;
+    OnRun=VAR
+            JobQueueSetup@1000 : Record 470;
+          BEGIN
+            IF ISCLEAR(NavTimer) THEN
+              CREATE(NavTimer);
+            NavTimer.Interval := 2000;
+            NavTimer.Enabled := TRUE;
+            InsertJobQueueSession;
+            LastCleanupTime := CURRENTDATETIME;
+            //H0359  27.05.13  ABR  ++++++++++++++++++++++++++++
+            CleanUpJobQueueKill;
+            //H0359  27.05.13  ABR  ----------------------------
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      JobQueueProcess@1002 : Record 471;
+      NavTimer@1000 : Automation "{3B311C81-140E-11D5-8B18-00D0590B4EC5} 1.0:{3B311C92-140E-11D5-8B18-00D0590B4EC5}:'Navision Timer 1.0'.Timer" WITHEVENTS;
+      SessionID@1001 : Integer;
+      LastCleanupTime@1003 : DateTime;
+      "*HME**************************"@1000000002 : Integer;
+      AdminMailQueueSetup@1000000001 : Record 50092;
+      AdminMailQueueFunctions@1000000000 : Codeunit 50019;
+      TextHME001@1000000003 : TextConst 'ENU=table cannot be changed because it is locked by another user';
+      TextHME002@1000000004 : TextConst 'ENU=Your activity was deadlocked with another user who was modifying';
+      TextHME003@1000000005 : TextConst 'ENU=Job Queue was killed!';
+      ScheduledDateTime@1000000006 : DateTime;
+
+    LOCAL PROCEDURE HandleRequest@6();
+    VAR
+      JobQueueSetup@1004 : Record 470;
+      JobQueueEntry@1000 : Record 472;
+      JobQueueResponse@1001 : Record 473;
+      JobLogEntryNo@1002 : Integer;
+      WasSuccess@1003 : Boolean;
+      ThisSessionIsActive@1005 : Boolean;
+      MoreRequests@1006 : Boolean;
+      "***HME************************"@1000000001 : Integer;
+      JobQueueEntry2@1000000000 : Record 472;
+    BEGIN
+      JobQueueSetup.GET;
+      IF NOT JobQueueSetup."Job Queue Active" THEN
+        EXIT;
+
+      NavTimer.Enabled := FALSE;
+      ThisSessionIsActive := UpdateJobQueueSession(JobQueueEntry,FALSE);
+      COMMIT;
+      IF ThisSessionIsActive THEN
+        MoreRequests := GetNextRequest(JobQueueEntry);  // locks table
+
+      WHILE ThisSessionIsActive AND MoreRequests DO BEGIN
+        JobLogEntryNo := InsertLogEntry(JobQueueEntry);
+        ThisSessionIsActive := UpdateJobQueueSession(JobQueueEntry,TRUE);
+        COMMIT;
+        WasSuccess := CODEUNIT.RUN(CODEUNIT::"Job Queue Start Codeunit",JobQueueEntry);
+        //H0359  27.05.13  ABR  ++++++++++++++++++++++++++++
+        JobQueueEntry2 := JobQueueEntry;
+        JobQueueEntry2.FIND;
+        {
+        //H0359  27.05.13  ABR  ----------------------------
+        IF WasSuccess THEN BEGIN
+          IF JobQueueEntry."Recurring Job" THEN BEGIN
+            JobQueueEntry."No. of Attempts to Run" := 0;
+            JobQueueEntry.Status := JobQueueEntry.Status::Ready;
+            IF NOT JobQueueEntry.MODIFY THEN
+              JobQueueEntry.INSERT;
+          END;
+        END ELSE BEGIN
+          IF JobQueueEntry."Maximum No. of Attempts to Run" > JobQueueEntry."No. of Attempts to Run" THEN BEGIN
+            JobQueueEntry."No. of Attempts to Run" := JobQueueEntry."No. of Attempts to Run" + 1;
+            JobQueueEntry.Status := JobQueueEntry.Status::Ready;
+            IF NOT JobQueueEntry.INSERT THEN
+              JobQueueEntry.MODIFY;
+          END;
+        END;
+
+        InsertResponse(JobQueueEntry,JobQueueResponse,WasSuccess);
+        UpdateLogEntry(JobLogEntryNo,WasSuccess);
+        CLEARLASTERROR;
+        ThisSessionIsActive := UpdateJobQueueSession(JobQueueEntry,FALSE);
+        //H0359  27.05.13  ABR  ++++++++++++++++++++++++++++
+        }
+        IF WasSuccess THEN BEGIN
+          IF JobQueueEntry2."Recurring Job" THEN BEGIN
+            //H0395  11.06.13  ABR  +++++++++++++++++++++++++++++++++
+            IF JobQueueEntry2."No. of Attempts to Run" <> 0 THEN BEGIN
+              JobQueueEntry2."No. of Attempts to Run" := 0;
+              JobQueueEntry2."Earliest Start Date/Time" := CalcNextRunTime(JobQueueEntry2);
+            END ELSE
+            //H0395  11.06.13  ABR  ---------------------------------
+            JobQueueEntry2."No. of Attempts to Run" := 0;
+            JobQueueEntry2.Status := JobQueueEntry2.Status::Ready;
+            IF NOT JobQueueEntry2.MODIFY THEN
+              JobQueueEntry2.INSERT;
+          END;
+        END ELSE BEGIN
+          IF JobQueueEntry2."Maximum No. of Attempts to Run" > JobQueueEntry2."No. of Attempts to Run" THEN BEGIN
+            IF NOT IsLockingError(GETLASTERRORTEXT) THEN
+            JobQueueEntry2."No. of Attempts to Run" := JobQueueEntry2."No. of Attempts to Run" + 1;
+            JobQueueEntry2.Status := JobQueueEntry2.Status::Ready;
+            //H0395  11.06.13  ABR  +++++++++++++++++++++++++++++++++
+            JobQueueEntry2."Earliest Start Date/Time" := CalcNextRunTime(JobQueueEntry2);
+            //H0395  11.06.13  ABR  ---------------------------------
+            IF NOT JobQueueEntry2.INSERT THEN
+              JobQueueEntry2.MODIFY;
+          END ELSE BEGIN
+            JobQueueEntry2.Status := JobQueueEntry2.Status::Error;
+            //H0395  11.06.13  ABR  +++++++++++++++++++++++++++++++++
+            JobQueueEntry2."Earliest Start Date/Time" := CalcNextRunTime(JobQueueEntry2);
+            //H0395  11.06.13  ABR  ---------------------------------
+            IF NOT JobQueueEntry2.INSERT THEN
+              JobQueueEntry2.MODIFY;
+          END;
+        END;
+
+        InsertResponse(JobQueueEntry2,JobQueueResponse,WasSuccess);
+        UpdateLogEntry(JobLogEntryNo,WasSuccess);
+        CLEARLASTERROR;
+        ThisSessionIsActive := UpdateJobQueueSession(JobQueueEntry2,FALSE);
+        //H0359  27.05.13  ABR  ----------------------------
+        COMMIT;
+        IF ThisSessionIsActive THEN
+          MoreRequests := GetNextRequest(JobQueueEntry);  // locks table
+      END;
+      COMMIT;
+      CleanUpJobQueue;
+      COMMIT;
+
+      NavTimer.Enabled := TRUE;
+    END;
+
+    LOCAL PROCEDURE GetNextRequest@5(VAR JobQueueEntry@1000 : Record 472) : Boolean;
+    VAR
+      Found@1001 : Boolean;
+    BEGIN
+      //H0359  27.05.13  ABR  ++++++++++++++++++++++++++++
+      JobQueueEntry.RESET;
+      //H0359  27.05.13  ABR  ----------------------------
+      JobQueueEntry.LOCKTABLE;
+      JobQueueEntry.SETFILTER("Expiration Date/Time",'>%1|%2',CURRENTDATETIME,CREATEDATETIME(0D,0T));
+      JobQueueEntry.SETFILTER("Earliest Start Date/Time",'<=%1',CURRENTDATETIME);
+      IF JobQueueProcess."Maximum Job Queue Priority" <> 0 THEN
+        JobQueueEntry.SETRANGE(Priority,JobQueueProcess."Minimum Job Queue Priority",JobQueueProcess."Maximum Job Queue Priority")
+      ELSE
+        IF JobQueueProcess."Minimum Job Queue Priority" <> 0 THEN
+          //H0349  13.05.13  ABR  +++++++++++++++++++++++++++++++++++++
+          {
+          //H0349  13.05.13  ABR  -------------------------------------
+          JobQueueEntry.SETFILTER(Priority,'>=%1',JobQueueProcess."Maximum Job Queue Priority")
+          //H0349  13.05.13  ABR  +++++++++++++++++++++++++++++++++++++
+          }
+          JobQueueEntry.SETFILTER(Priority,'>=%1',JobQueueProcess."Minimum Job Queue Priority")
+          //H0349  13.05.13  ABR  -------------------------------------
+        ELSE
+          JobQueueEntry.SETRANGE(Priority);
+      JobQueueEntry.SETRANGE(Status,JobQueueEntry.Status::Ready);
+
+      //H0068  30.10.12  ABR  ++++++++++++++++++++++++++++++++++++++++++++++++
+      {
+      //H0068  30.10.12  ABR  ------------------------------------------------
+
+      JobQueueEntry.SETCURRENTKEY(Priority);
+
+      //H0068  30.10.12  ABR  ++++++++++++++++++++++++++++++++++++++++++++++++
+      }
+      JobQueueEntry.SETCURRENTKEY(Priority,"Earliest Start Date/Time");
+      //H0068  30.10.12  ABR  ------------------------------------------------
+
+      Found := JobQueueEntry.FINDFIRST;
+      IF Found THEN BEGIN
+        JobQueueEntry.CALCFIELDS(XML);
+        IF JobQueueEntry."Recurring Job" THEN BEGIN
+          //H1984  15.01.15  MBY  ++++++++++++++++++++++++++++
+          ScheduledDateTime := JobQueueEntry."Earliest Start Date/Time";
+          //H1984  15.01.15  MBY  ----------------------------
+          JobQueueEntry."Earliest Start Date/Time" := CalcNextRunTime(JobQueueEntry);
+          JobQueueEntry.Status := JobQueueEntry.Status::"In Process";
+          JobQueueEntry.MODIFY;
+        END ELSE
+          JobQueueEntry.DELETE;
+      END;
+      EXIT(Found);
+    END;
+
+    LOCAL PROCEDURE InsertLogEntry@7(VAR JobQueueEntry@1000 : Record 472) : Integer;
+    VAR
+      JobQueueLogEntry@1001 : Record 474;
+      "***HME************************"@1000000000 : Integer;
+      SessionL@1000000001 : Record 2000000009;
+    BEGIN
+      JobQueueLogEntry.INIT;
+      JobQueueLogEntry.ID := JobQueueEntry.ID;
+      JobQueueLogEntry."User ID" := JobQueueEntry."User ID";
+      JobQueueLogEntry."Start Date/Time" := CURRENTDATETIME;
+      //H1984  15.01.15  MBY  ++++++++++++++++++++++++++++
+      JobQueueLogEntry."Scheduled Date/Time" := ScheduledDateTime;
+      CLEAR(ScheduledDateTime);
+      //H1984  15.01.15  MBY  ----------------------------
+      JobQueueLogEntry."Object Type to Run" := JobQueueEntry."Object Type to Run";
+      JobQueueLogEntry."Object ID to Run" :=  JobQueueEntry."Object ID to Run";
+
+      //H0359  27.05.13  ABR  ++++++++++++++++++++++++++++
+      JobQueueLogEntry.Status := JobQueueLogEntry.Status::"In Process";
+      //H0359  27.05.13  ABR  ----------------------------
+
+      //A/P0879
+      JobQueueLogEntry."Parameter String" := JobQueueEntry."Parameter String";
+      //E/P0879
+      //H0350 14.05.13 PAU +++++++++++++++++++++++++++++++
+      JobQueueLogEntry.Priority := JobQueueEntry.Priority;
+      //H0350 14.05.13 PAU -------------------------------
+
+      //H0359  27.05.13  ABR  ++++++++++++++++++++++++++++
+      JobQueueLogEntry."Application Server User" := COPYSTR(USERID,1,MAXSTRLEN(JobQueueLogEntry."Application Server User"));
+      IF SessionL.GET(SessionID) THEN
+        JobQueueLogEntry."Application Server Host Name" := COPYSTR(SessionL."Host Name",1,
+                                                             MAXSTRLEN(JobQueueLogEntry."Application Server Host Name"));
+      //H0359  27.05.13  ABR  ----------------------------
+
+      JobQueueLogEntry.INSERT(TRUE);
+      //H0075  06.11.2012  PAD  ++++++++++++++++++++++++++++++++++++++++++++++++
+      UpdateLogEntryPause(JobQueueLogEntry."Entry No."-1);
+      //H0075  06.11.2012  PAD  ------------------------------------------------
+      EXIT(JobQueueLogEntry."Entry No.");
+    END;
+
+    LOCAL PROCEDURE UpdateLogEntry@8(LogEntryNo@1000 : Integer;WasSuccess@1002 : Boolean);
+    VAR
+      JobQueueLogEntry@1003 : Record 474;
+      rJobQueueEntry@1000000000 : Record 472;
+      rMailITSetup@1000000004 : Record 75402;
+      oMailIT@1000000003 : OCX "{C8C4804C-89BA-4291-AB58-4C6050B65175}:'ExpandIT.MailIT2'";
+      iPort@1000000001 : Integer;
+      AdminMailQueueCodesL@1000000002 : Record 50118;
+    BEGIN
+      JobQueueLogEntry.GET(LogEntryNo);
+      JobQueueLogEntry."End Date/Time" := CURRENTDATETIME;
+      //H0075  06.11.2012  PAD  ++++++++++++++++++++++++++++++++++++++++++++++++
+      JobQueueLogEntry.Duration := JobQueueLogEntry."End Date/Time" - JobQueueLogEntry."Start Date/Time";
+      //H0075  06.11.2012  PAD  ------------------------------------------------
+
+      //H4420,H2009,H0272  14.07.15  MSL  ++++++++++++++++++++++++++++++++++++++++++++++++
+      //JobQueueLogEntry."Average Duration Days go back" := GetAVGDurationDaysToGoBack(JobQueueLogEntry.ID);
+      JobQueueLogEntry."Average Duration" := CalculateAverageDuration(JobQueueLogEntry);
+      //H4420,H2009,H0272  14.07.15  MSL  ------------------------------------------------
+
+      IF WasSuccess THEN
+        JobQueueLogEntry.Status := JobQueueLogEntry.Status::Success
+      ELSE BEGIN
+        JobQueueLogEntry.Status := JobQueueLogEntry.Status::Error;
+        JobQueueLogEntry.SetErrorMessage(COPYSTR(GETLASTERRORTEXT,1,1000));
+        //FPC001 10.09.12  ABR  ++++++++++++++++++++++++++++++++++++++++
+        //H0359  27.05.13  ABR  ++++++++++++++++++++++++++++
+        {
+        //H0359  27.05.13  ABR  ----------------------------
+        IF rJobQueueEntry.GET(JobQueueLogEntry.ID) THEN BEGIN
+        //H0359  27.05.13  ABR  ++++++++++++++++++++++++++++
+        }
+        IF (rJobQueueEntry.GET(JobQueueLogEntry.ID)) AND (NOT IsLockingError(GETLASTERRORTEXT)) THEN BEGIN
+        //H0359  27.05.13  ABR  ----------------------------
+          AdminMailQueueSetup.GET;
+        //H0473  06.08.13  FF  +++++++++++++++++++++++++++++++++++++++++++++++
+        IF CheckMailDowntime(AdminMailQueueSetup."Job Queue Mail Code") = TRUE THEN
+          EXIT;
+        //H0473  06.08.13  FF  -----------------------------------------------
+
+          AdminMailQueueFunctions.InitMail(AdminMailQueueSetup."Job Queue Mail Code",'arthur.berganski@home24.de');
+          AdminMailQueueFunctions.AddRecipient(rJobQueueEntry."Error Mail Recipient 1");
+          AdminMailQueueFunctions.AddRecipient(rJobQueueEntry."Error Mail Recipient 2");
+          AdminMailQueueFunctions.AddRecipient(rJobQueueEntry."Error Mail Recipient 3");
+
+          //H0027 12.10.12  ABR  ++++++++++++++++++++++++++++++++++++++++
+          AdminMailQueueFunctions.AddRecipient(rJobQueueEntry."Error Mail Recipient 4");
+          AdminMailQueueFunctions.AddRecipient(rJobQueueEntry."Error Mail Recipient 5");
+          AdminMailQueueFunctions.AddRecipient(rJobQueueEntry."Error Mail Recipient 6");
+          AdminMailQueueFunctions.AddRecipient(rJobQueueEntry."Error Mail Recipient 7");
+          AdminMailQueueFunctions.AddRecipient(rJobQueueEntry."Error Mail Recipient 8");
+          AdminMailQueueFunctions.AddRecipient(rJobQueueEntry."Error Mail Recipient 9");
+          AdminMailQueueFunctions.AddRecipient(rJobQueueEntry."Error Mail Recipient 10");
+          //H0027 12.10.12  ABR  ----------------------------------------
+
+          //H0051  23.10.12  ABR  +++++++++++++++++++++++++++++++++++++++
+          rJobQueueEntry.CALCFIELDS("Object Name to Run");
+          AdminMailQueueFunctions.AddSubject('Fehler in Job Queue Prozess ' + FORMAT(rJobQueueEntry."Object Type to Run")
+                + ' ' + FORMAT(rJobQueueEntry."Object ID to Run") + ' - ' + rJobQueueEntry."Object Name to Run" + '.');
+          //H0051  23.10.12  ABR  ---------------------------------------
+
+          AdminMailQueueFunctions.AddText(GETLASTERRORTEXT);
+          AdminMailQueueFunctions.FinishMail;
+        END;
+        //FPC001 10.09.12  ABR  ----------------------------------------
+      END;
+      JobQueueLogEntry.MODIFY;
+      //H0075  06.11.2012  PAD  ++++++++++++++++++++++++++++++++++++++++++++++++
+      InsertLogEntryPause;
+      //H0075  06.11.2012  PAD  ------------------------------------------------
+    END;
+
+    LOCAL PROCEDURE InsertResponse@9(VAR JobQueueEntry@1000 : Record 472;VAR JobQueueResponse@1001 : Record 473;WasSuccess@1002 : Boolean);
+    BEGIN
+      JobQueueResponse.INIT;
+      JobQueueResponse.ID := JobQueueEntry.ID;
+      JobQueueResponse."User ID" := JobQueueEntry."User ID";
+      JobQueueResponse.XML := JobQueueEntry.XML;
+      JobQueueResponse."Creation Date/Time" := CURRENTDATETIME;
+      IF WasSuccess THEN
+        JobQueueResponse.Status := JobQueueResponse.Status::Success
+      ELSE BEGIN
+        JobQueueResponse.Status := JobQueueResponse.Status::Error;
+        JobQueueResponse.SetErrorMessage(COPYSTR(GETLASTERRORTEXT,1,1000));
+      END;
+      IF NOT JobQueueResponse.INSERT THEN
+        JobQueueResponse.MODIFY;
+    END;
+
+    LOCAL PROCEDURE CalcNextRunTime@1(VAR JobQueueEntry@1000 : Record 472) : DateTime;
+    VAR
+      NewRunTime@1001 : Time;
+      NewRunDateTime@1002 : DateTime;
+      RunOnDate@1003 : ARRAY [7] OF Boolean;
+      CurrWeekDay@1005 : Integer;
+      NoOfDays@1007 : Integer;
+      Found@1006 : Boolean;
+      "***HME************************"@1000000000 : Integer;
+      MinutesbetweenRuns@1000000001 : Integer;
+    BEGIN
+      RunOnDate[7] := JobQueueEntry."Run on Sundays";
+      RunOnDate[1] := JobQueueEntry."Run on Mondays";
+      RunOnDate[2] := JobQueueEntry."Run on Tuesdays";
+      RunOnDate[3] := JobQueueEntry."Run on Wednesdays";
+      RunOnDate[4] := JobQueueEntry."Run on Thursdays";
+      RunOnDate[5] := JobQueueEntry."Run on Fridays";
+      RunOnDate[6] := JobQueueEntry."Run on Saturdays";
+
+      //H0395  11.06.13  ABR  +++++++++++++++++++++++++++++++++
+      IF (JobQueueEntry."No. of Attempts to Run" <> 0) AND (JobQueueEntry."No. of Minutes after Error" <> 0) THEN BEGIN
+        MinutesbetweenRuns := JobQueueEntry."No. of Minutes between Runs";
+        JobQueueEntry."No. of Minutes between Runs" := JobQueueEntry."No. of Minutes after Error";
+      END;
+      //H0395  11.06.13  ABR  ---------------------------------
+
+      IF JobQueueEntry."No. of Minutes between Runs" > 0 THEN BEGIN
+        NewRunTime := TIME + 60000 * JobQueueEntry."No. of Minutes between Runs";
+        IF (JobQueueEntry."Ending Time" = 0T) AND (JobQueueEntry."No. of Minutes between Runs" * 60000 > 235900T - TIME) OR
+          (JobQueueEntry."Ending Time" <> 0T) AND
+            (JobQueueEntry."No. of Minutes between Runs" * 60000 > JobQueueEntry."Ending Time" - TIME)
+        THEN BEGIN
+          NewRunTime := JobQueueEntry."Starting Time";
+          NoOfDays := 1;
+        //H0078  07.11.12  ABR  +++++++++++++++++++++++++++
+        END ELSE BEGIN
+          IF NewRunTime < JobQueueEntry."Starting Time" THEN
+            NewRunTime := JobQueueEntry."Starting Time";
+        END;
+        //H0078  07.11.12  ABR  ---------------------------
+      END ELSE BEGIN
+        NewRunTime := DT2TIME(JobQueueEntry."Earliest Start Date/Time");
+        NoOfDays := 1;
+      END;                                                   ;
+
+      CurrWeekDay := DATE2DWY(TODAY,1);
+      Found := RunOnDate[(CurrWeekDay - 1 + NoOfDays) MOD 7 + 1];
+      WHILE NOT Found AND (NoOfDays < 7) DO BEGIN
+        NoOfDays := NoOfDays + 1;
+        Found := RunOnDate[(CurrWeekDay - 1 + NoOfDays) MOD 7 + 1];
+      END;
+      IF NOT Found THEN
+        NoOfDays := 10000;
+
+      //H0395  11.06.13  ABR  +++++++++++++++++++++++++++++++++
+      IF (JobQueueEntry."No. of Attempts to Run" <> 0) AND (JobQueueEntry."No. of Minutes after Error" <> 0) THEN
+        JobQueueEntry."No. of Minutes between Runs" := MinutesbetweenRuns;
+      //H0395  11.06.13  ABR  ---------------------------------
+
+      NewRunDateTime := CREATEDATETIME(TODAY + NoOfDays,NewRunTime);
+      EXIT(NewRunDateTime);
+    END;
+
+    LOCAL PROCEDURE InsertJobQueueSession@2();
+    VAR
+      Session@1002 : Record 2000000009;
+      RecRef@1000 : RecordRef;
+      FieldRef@1001 : FieldRef;
+      Found@1004 : Boolean;
+      i@1003 : Integer;
+      "***HME************************"@1000000000 : Integer;
+      JobQueueServiceSetupL@1000000002 : Record 50210;
+      RecordFoundL@1000000003 : Boolean;
+    BEGIN
+      //H1583  01.10.14  MBY  +++++++++++++++++++++++++++++++++++++
+      JobQueueServiceSetupL.RESET;
+      CLEAR(RecordFoundL);
+      //H1583  01.10.14  MBY  -------------------------------------
+      RecRef.OPEN(DATABASE::Session);
+      WHILE (i < RecRef.FIELDCOUNT) AND NOT Found DO BEGIN
+        i := i + 1;
+        FieldRef := RecRef.FIELDINDEX(i);
+        Found := FieldRef.NAME = Session.FIELDNAME("My Session");
+      END;
+      IF NOT Found THEN
+        EXIT;
+      FieldRef.SETRANGE(TRUE);
+      IF RecRef.FINDFIRST THEN BEGIN
+        FieldRef := RecRef.FIELDINDEX(1); // sessionID
+        SessionID := FieldRef.VALUE;
+        IF JobQueueProcess.GET(SessionID) THEN
+          JobQueueProcess.DELETE;
+        JobQueueProcess.INIT;
+        JobQueueProcess."Session ID" := SessionID;
+        JobQueueProcess."User ID" := USERID;
+        JobQueueProcess."Last Job Processed On" := CURRENTDATETIME;
+        JobQueueProcess.Active := TRUE;
+        //H1583,H0349,H0945  01.10.14  MBY  +++++++++++++++++++++++++++++++++++++
+        IF JobQueueServiceSetupL.FINDSET(FALSE,FALSE) THEN
+          REPEAT
+            IF UPPERCASE(USERID) = JobQueueServiceSetupL."User ID" THEN BEGIN
+              JobQueueProcess."Minimum Job Queue Priority" := JobQueueServiceSetupL."Minimum Priority";
+              JobQueueProcess."Maximum Job Queue Priority" := JobQueueServiceSetupL."Maximum Priority";
+              RecordFoundL := TRUE;
+            END;
+          UNTIL (JobQueueServiceSetupL.NEXT = 0) OR RecordFoundL;
+        //H1583  01.10.14  MBY  -------------------------------------
+        JobQueueProcess.INSERT;
+      END;
+      COMMIT;
+    END;
+
+    PROCEDURE UpdateJobQueueSession@13(VAR JobQueueEntry@1000 : Record 472;IsStartOfJob@1001 : Boolean) : Boolean;
+    BEGIN
+      IF IsStartOfJob OR (CURRENTDATETIME > JobQueueProcess."Last Job Processed On" + 10000) THEN BEGIN
+        IF NOT JobQueueProcess.GET(SessionID) THEN
+          JobQueueProcess.INSERT;
+        JobQueueProcess."Last Job Processed On" := CURRENTDATETIME;
+        IF IsStartOfJob THEN BEGIN
+          JobQueueProcess."Object Type Running" := JobQueueEntry."Object Type to Run";
+          JobQueueProcess."Object ID Running" := JobQueueEntry."Object ID to Run";
+          //H0359  27.05.13  ABR  ++++++++++++++++++++++++++++
+          JobQueueProcess."Job Queue Entry ID" := JobQueueEntry.ID;
+          //H0359  27.05.13  ABR  ----------------------------
+        END ELSE BEGIN
+          JobQueueProcess."Object Type Running" := 0;
+          JobQueueProcess."Object ID Running" := 0;
+          //H0359  27.05.13  ABR  ++++++++++++++++++++++++++++
+          CLEAR(JobQueueProcess."Job Queue Entry ID");
+          //H0359  27.05.13  ABR  ----------------------------
+        END;
+        JobQueueProcess.MODIFY;
+      END;
+      //H1583  01.10.14  MBY  +++++++++++++++++++++++++++++++++++++
+      {
+      EXIT(JobQueueProcess.Active);
+      }
+      EXIT(
+        JobQueueProcess.Active AND
+        (JobQueueProcess."Minimum Job Queue Priority" <> 0) AND
+        (JobQueueProcess."Maximum Job Queue Priority" <> 0));
+      //H1583  01.10.14  MBY  -------------------------------------
+    END;
+
+    LOCAL PROCEDURE CleanUpJobQueue@3();
+    VAR
+      JobQueueProcess2@1000 : Record 471;
+      JobQueueResponse2@1001 : Record 473;
+      StartDateTime@1002 : DateTime;
+    BEGIN
+      IF LastCleanupTime + 60000 > CURRENTDATETIME THEN
+        EXIT;
+      LastCleanupTime := CURRENTDATETIME;
+
+      JobQueueProcess2.SETFILTER("Session ID",'<>%1',SessionID);
+      //H0349  13.05.13  ABR  +++++++++++++++++++++++++++++++++++++
+      JobQueueProcess2.SETRANGE("User ID",USERID);
+      //H0349  13.05.13  ABR  -------------------------------------
+      IF NOT JobQueueProcess2.ISEMPTY THEN BEGIN
+        JobQueueProcess2.LOCKTABLE;
+        IF JobQueueProcess2.FINDSET THEN
+          REPEAT
+            //H0349  13.05.13  ABR  +++++++++++++++++++++++++++++++++++++
+            {
+            //H0349  13.05.13  ABR  -------------------------------------
+            IF NOT JobQueueProcess2.ProcessIsActive THEN
+            //H0349  13.05.13  ABR  +++++++++++++++++++++++++++++++++++++
+            }
+            //H0349  13.05.13  ABR  -------------------------------------
+              JobQueueProcess2.DELETE;
+          UNTIL JobQueueProcess2.NEXT = 0;
+      END;
+
+      StartDateTime := CREATEDATETIME(TODAY - 365,0T);
+      JobQueueResponse2.SETCURRENTKEY("Expiration Date/Time");
+      JobQueueResponse2.SETRANGE("Expiration Date/Time",StartDateTime,CURRENTDATETIME);
+      IF NOT JobQueueResponse2.ISEMPTY THEN BEGIN
+        JobQueueResponse2.LOCKTABLE;
+        JobQueueResponse2.DELETEALL;
+      END;
+    END;
+
+    PROCEDURE "***HME************************"@1000000006();
+    BEGIN
+    END;
+
+    LOCAL PROCEDURE InsertLogEntryPause@1000000000() : Integer;
+    VAR
+      JobQueueLogEntry@1001 : Record 474;
+      "***HME************************"@1000000000 : Integer;
+      SessionL@1000000001 : Record 2000000009;
+    BEGIN
+      //H0075  06.11.2012  PAD  ++++++++++++++++++++++++++++++++++++++++++++++++
+      JobQueueLogEntry.INIT;
+      JobQueueLogEntry."Start Date/Time" := CURRENTDATETIME;
+      JobQueueLogEntry."Entry Type" := JobQueueLogEntry."Entry Type"::Pause;
+      //H0350 14.05.13 PAU +++++++++++++++++++++++++++++
+      JobQueueLogEntry.Priority := 0;
+      //H0350 14.05.13 PAU -----------------------------
+
+      //H0395  11.06.13  ABR  +++++++++++++++++++++++++++++++++
+      JobQueueLogEntry."Application Server User" := COPYSTR(USERID,1,MAXSTRLEN(JobQueueLogEntry."Application Server User"));
+      IF SessionL.GET(SessionID) THEN
+        JobQueueLogEntry."Application Server Host Name" := COPYSTR(SessionL."Host Name",1,
+                                                             MAXSTRLEN(JobQueueLogEntry."Application Server Host Name"));
+      //H0395  11.06.13  ABR  ---------------------------------
+
+      JobQueueLogEntry.INSERT(TRUE);
+      EXIT(JobQueueLogEntry."Entry No.");
+      //H0075  06.11.2012  PAD  -----------------------------------------------
+    END;
+
+    LOCAL PROCEDURE UpdateLogEntryPause@1000000001(LogEntryNo@1000 : Integer);
+    VAR
+      JobQueueLogEntry@1003 : Record 474;
+      rJobQueueEntry@1000000000 : Record 472;
+      rMailITSetup@1000000004 : Record 75402;
+      oMailIT@1000000003 : OCX "{C8C4804C-89BA-4291-AB58-4C6050B65175}:'ExpandIT.MailIT2'";
+      iPort@1000000001 : Integer;
+    BEGIN
+      //H0075  06.11.2012  PAD  ++++++++++++++++++++++++++++++++++++++++++++++++
+      IF JobQueueLogEntry.GET(LogEntryNo) THEN;
+      IF JobQueueLogEntry."Entry Type" = JobQueueLogEntry."Entry Type"::Pause THEN BEGIN
+        JobQueueLogEntry."End Date/Time" := CURRENTDATETIME;
+        JobQueueLogEntry.Duration := JobQueueLogEntry."End Date/Time" - JobQueueLogEntry."Start Date/Time";
+        //H0350 14.05.13 PAU +++++++++++++++++++++++++++++
+        JobQueueLogEntry.Priority := 0;
+        //H0350 14.05.13 PAU -----------------------------
+
+        //H0395  11.06.13  ABR  +++++++++++++++++++++++++++++++++
+        IF JobQueueLogEntry.Duration < 000002T - 000000T THEN
+          JobQueueLogEntry.DELETE(TRUE)
+        ELSE
+        //H0395  11.06.13  ABR  ---------------------------------
+        JobQueueLogEntry.MODIFY;
+      END;
+      //H0075  06.11.2012  PAD  ------------------------------------------------
+    END;
+
+    PROCEDURE CalculateAverageDuration@1000000002(JobQueueLogEntryV@1000000000 : Record 474) AverageDurationO : Duration;
+    VAR
+      JobQueueEntryL@1000000001 : Record 472;
+      JobQueueEntryLogL@1000000002 : Record 474;
+      SumDurationL@1000000003 : Duration;
+      NoOfEntriesL@1000000004 : Integer;
+      i@1000000006 : Integer;
+      DateExpressionL@1000000007 : Text[30];
+      CurrentEntryIsValidForAvgL@1000000005 : Boolean;
+    BEGIN
+      //H4420,H2009  14.07.15  MSL +++++++++++++++++++++++++++++++++++++++++++
+      IF JobQueueEntryL.GET(JobQueueLogEntryV.ID) THEN BEGIN
+        //check if current log entry qualifies
+        IF ((JobQueueLogEntryV.Duration > JobQueueEntryL."Avg. Duration Min. Limit (sec)" * 1000 ) AND
+          (JobQueueEntryL.Status = JobQueueEntryLogL.Status::Success))
+        THEN
+          CurrentEntryIsValidForAvgL := TRUE;
+
+        //check entries in the DB
+        i:= 1;
+        JobQueueEntryLogL.SETRANGE(ID,JobQueueLogEntryV.ID);
+        JobQueueEntryLogL.SETFILTER(Duration,'>%1',(JobQueueEntryL."Avg. Duration Min. Limit (sec)" * 1000));
+        JobQueueEntryLogL.SETRANGE(Status,JobQueueEntryLogL.Status::Success);
+
+        REPEAT
+          DateExpressionL :=STRSUBSTNO('<-%1W>',FORMAT(i));
+          JobQueueEntryLogL.SETRANGE(
+            "Start Date/Time",
+            CREATEDATETIME(
+              (CALCDATE(DateExpressionL,DT2DATE(JobQueueLogEntryV."Start Date/Time"))),
+              DT2TIME(JobQueueLogEntryV."Start Date/Time")),
+            CREATEDATETIME(
+              (CALCDATE(DateExpressionL,DT2DATE(JobQueueLogEntryV."Start Date/Time"))),
+              235900T));
+
+          IF JobQueueEntryLogL.FINDFIRST THEN BEGIN
+            NoOfEntriesL := NoOfEntriesL + 1;
+            SumDurationL := SumDurationL + JobQueueEntryLogL.Duration;
+          END;
+          i:=i+1;
+        UNTIL i = 4 ;
+
+        IF NoOfEntriesL = 0 THEN BEGIN
+          IF CurrentEntryIsValidForAvgL THEN
+             EXIT(JobQueueLogEntryV.Duration)
+          ELSE
+             EXIT (0);
+        END
+        ELSE BEGIN
+          IF NOT CurrentEntryIsValidForAvgL THEN
+            EVALUATE(AverageDurationO,FORMAT((((SumDurationL)/3600000)/NoOfEntriesL)))
+          ELSE
+            EVALUATE(AverageDurationO,FORMAT((((SumDurationL+JobQueueLogEntryV.Duration)/3600000)/(NoOfEntriesL+1))));
+          EXIT(AverageDurationO);
+        END;
+      END
+      ELSE BEGIN
+        EXIT(0);
+      END;
+      //H4420,H2009  14.07.15  MSL -------------------------------------------
+    END;
+
+    PROCEDURE IsLockingError@1000000007(ErrorTextV@1000000000 : Text[1024]) : Boolean;
+    BEGIN
+      //H0359  27.05.13  ABR  ++++++++++++++++++++++++++++
+      IF (STRPOS(ErrorTextV,TextHME001) > 0) OR (STRPOS(ErrorTextV,TextHME002) > 0) THEN
+        EXIT(TRUE)
+      ELSE
+        EXIT(FALSE);
+      //H0359  27.05.13  ABR  ----------------------------
+    END;
+
+    PROCEDURE CleanUpJobQueueKill@1000000011() : Boolean;
+    VAR
+      "***HME************************"@1000000001 : Integer;
+      JobQueueEntryL@1000000003 : Record 472;
+      JobQueueEntry2L@1000000004 : Record 472;
+      JobQueueLogEntryL@1000000000 : Record 474;
+      JobQueueLogEntry2L@1000000002 : Record 474;
+      JobQueueServiceSetupL@1000000006 : Record 50210;
+      RecordFoundL@1000000005 : Boolean;
+    BEGIN
+      //H1583,H0359,H0395,H0945  01.10.14  MBY  +++++++++++++++++++++++++++++++++++++++
+      JobQueueServiceSetupL.RESET;
+      CLEAR(RecordFoundL);
+      IF JobQueueServiceSetupL.FINDSET(FALSE,FALSE) THEN
+        REPEAT
+          IF UPPERCASE(USERID) = JobQueueServiceSetupL."User ID" THEN BEGIN
+            JobQueueEntryL.SETRANGE(Priority,JobQueueServiceSetupL."Minimum Priority",JobQueueServiceSetupL."Maximum Priority");
+            JobQueueLogEntryL.SETRANGE(Priority,JobQueueServiceSetupL."Minimum Priority",JobQueueServiceSetupL."Maximum Priority");
+            RecordFoundL := TRUE;
+          END;
+        UNTIL (JobQueueServiceSetupL.NEXT = 0) OR RecordFoundL;
+      IF NOT RecordFoundL THEN
+        EXIT;
+
+      JobQueueEntryL.SETRANGE(Status,JobQueueEntryL.Status::"In Process",JobQueueEntryL.Status::Error);
+      IF JobQueueEntryL.FIND('-') THEN
+        REPEAT
+          JobQueueEntry2L := JobQueueEntryL;
+          JobQueueEntry2L.Status := JobQueueEntry2L.Status::Ready;
+          JobQueueEntry2L."Earliest Start Date/Time" := CURRENTDATETIME;
+          JobQueueEntry2L.MODIFY;
+        UNTIL JobQueueEntryL.NEXT = 0;
+
+      JobQueueLogEntryL.SETRANGE("End Date/Time",CREATEDATETIME(0D,0T));
+      JobQueueLogEntryL.SETRANGE(Status,JobQueueLogEntryL.Status::"In Process");
+      IF NOT JobQueueLogEntryL.FIND('+') THEN
+        EXIT;
+
+      JobQueueLogEntry2L := JobQueueLogEntryL;
+      JobQueueLogEntry2L."End Date/Time" := CURRENTDATETIME;
+      JobQueueLogEntry2L.Duration := JobQueueLogEntry2L."End Date/Time" - JobQueueLogEntry2L."Start Date/Time";
+      //H4420,H2009  14.07.15  MSL +++++++++++++++++++++++++++++++++++++++++++++++
+      //JobQueueLogEntry2L."Average Duration Days go back" := GetAVGDurationDaysToGoBack(JobQueueLogEntry2L.ID);
+      JobQueueLogEntry2L."Average Duration" := CalculateAverageDuration(JobQueueLogEntry2L);
+      //H4420,H2009  14.07.15  MSL -----------------------------------------------
+      JobQueueLogEntry2L.Status := JobQueueLogEntry2L.Status::Error;
+      JobQueueLogEntry2L.SetErrorMessage(COPYSTR(TextHME003,1,1000));
+      JobQueueLogEntry2L.MODIFY;
+      //H1583,H0359,H0395,H0945  01.10.14  MBY  -------------------------------------
+    END;
+
+    PROCEDURE ActivateRestartPriority@1000000003();
+    VAR
+      "***HME************************"@1000000005 : Integer;
+      JobQueueEntryL@1000000001 : Record 472;
+      JobQueueEntry2L@1000000000 : Record 472;
+      JobQueueCounterL@1000000003 : Integer;
+      DurationCounterL@1000000004 : Duration;
+      JobQueueServiceSetupL@1000000006 : Record 50210;
+    BEGIN
+      //H1583,H0395,H0945  01.10.14  MBY  +++++++++++++++++++++++++++++++++++++++
+      JobQueueServiceSetupL.RESET;
+      JobQueueEntryL.SETCURRENTKEY("Restart Priority");
+      IF JobQueueServiceSetupL.FINDSET(FALSE,FALSE) THEN BEGIN
+        REPEAT
+          IF UPPERCASE(USERID) = JobQueueServiceSetupL."User ID" THEN BEGIN
+            JobQueueEntryL.SETRANGE(Priority,JobQueueServiceSetupL."Minimum Priority",JobQueueServiceSetupL."Maximum Priority");
+            JobQueueEntryL.SETFILTER("Restart Priority",'>%1',0);
+            JobQueueEntryL.SETRANGE(Status,JobQueueEntryL.Status::Ready);
+            IF JobQueueEntryL.FIND('-') THEN
+              REPEAT
+                JobQueueEntry2L := JobQueueEntryL;
+                JobQueueEntry2L."Earliest Start Date/Time" := CREATEDATETIME(WORKDATE,000000T+DurationCounterL);
+                JobQueueEntry2L.MODIFY;
+                DurationCounterL += 000002T - 000000T;
+              UNTIL JobQueueEntryL.NEXT = 0;
+          END;
+        UNTIL JobQueueServiceSetupL.NEXT = 0;
+      END;
+      //H0395,H0395,H0945  11.06.13  ABR  ---------------------------------
+    END;
+
+    PROCEDURE CheckMailDowntime@1000000005(MailCodeV@1000000002 : Code[20]) DowntimeActive : Boolean;
+    VAR
+      AdminMailQueueSetupL@1000000000 : Record 50092;
+      AdminMailQueueCodesL@1000000001 : Record 50118;
+      DownOnDateL@1000000003 : ARRAY [7] OF Boolean;
+      CurrentWeekDayL@1000000004 : Integer;
+    BEGIN
+      //H0473 06.08.13  FF +++++++++++++++++++++++
+
+      DowntimeActive := FALSE;
+      IF AdminMailQueueCodesL.GET(MailCodeV) THEN;
+
+      //Check Singular Downtime
+      IF (CURRENTDATETIME >= AdminMailQueueCodesL."Singular Downtime Start") AND
+         (CURRENTDATETIME <= AdminMailQueueCodesL."Singular Downtime End") THEN
+        DowntimeActive := TRUE;
+
+      //Check Regular Downtime
+      CurrentWeekDayL := DATE2DWY(TODAY,1);
+
+      DownOnDateL[7] := AdminMailQueueCodesL."Downtime on Sundays";
+      DownOnDateL[1] := AdminMailQueueCodesL."Downtime on Mondays";
+      DownOnDateL[2] := AdminMailQueueCodesL."Downtime on Tuesdays";
+      DownOnDateL[3] := AdminMailQueueCodesL."Downtime on Wednesdays";
+      DownOnDateL[4] := AdminMailQueueCodesL."Downtime on Thursdays";
+      DownOnDateL[5] := AdminMailQueueCodesL."Downtime on Fridays";
+      DownOnDateL[6] := AdminMailQueueCodesL."Downtime on Saturdays";
+
+      IF (DT2TIME(CURRENTDATETIME) >= AdminMailQueueCodesL."Regular Downtime Start") AND
+         (DT2TIME(CURRENTDATETIME) <= AdminMailQueueCodesL."Regular Downtime End") AND
+         (DownOnDateL[CurrentWeekDayL] = TRUE) THEN
+        DowntimeActive := TRUE;
+
+      //H0473 06.08.13  FF -----------------------
+    END;
+
+    EVENT NavTimer@1000::Timer@1(Milliseconds@1000 : Integer);
+    BEGIN
+      HandleRequest;
+    END;
+
+    EVENT NavTimer@1000::TimerError@2(ErrorString@1000 : Text[1024]);
+    BEGIN
+    END;
+
+    BEGIN
+    {
+
+      P0200       15.08.12  gob-dst   Mail bei Job Queue Fehler verschicken
+      P0879       18.04.13  gob-rste  Fill Parameter String in Log Entry
+
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+
+      FPC001      06.09.12  ABR       Changed Mail to Admin Mail Log
+      H0027       12.10.12  ABR       New E-Mail Recipient
+      H0051       23.10.12  ABR       Fill Object Name in Subject
+      H0068       30.10.12  ABR       New Sorting
+      H0078       07.11.12  ABR       Set new Earliest Start Date/Time
+      H0075       06.11.12  PAD       Calculate Process Duration + Insert Pause Duration
+                                        InsertLogEntryPause - New Function
+                                        UpdateLogEntryPause - New Function
+      H0272       25.03.13  PAD       New Functions CalculateAverageDuration, FindeDateDuration
+      H0349       13.05.13  ABR       2. Job Queue
+      H0350       14.05.13  PAU       2. Job Queue Monitoring
+      H0359       27.05.13  ABR       Several improvements
+      H0395       11.06.13  ABR       Several Improvements
+      H0473       02.08.13  FF        Downtime for mails added
+      H0473       06.08.13  FF        New function CheckMailDowntime
+      H0945       12.06.14  MSL       Job Queue 3
+      H1583       01.10.14  MBY       Redesign JobQ to enable configuration only deployment
+      H1984       15.01.14  MBY       Add "scheduled start" column to Job Queue Log Entry Table
+      H2009       17.02.15  MSL       Check Average Job duration calc: func. CalculateAverageDuration chged, FindeDateDuration rnmed
+      H4420       14.07.15  MSL       Improve Job Queue Entry average calculation: func. "GetAVGDurationDaysToGoBack" removed
+    }
+    END.
+  }
+}
+

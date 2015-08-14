@@ -1,0 +1,250 @@
+OBJECT Codeunit 50267 Sales Batch Post Invoice
+{
+  OBJECT-PROPERTIES
+  {
+    Date=17.07.15;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=HME4177,T0082;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=BEGIN
+            SalesBatchPostSetup.GET;
+
+            SalesBatchPostHeader.SETCURRENTKEY("Planned Processing Date",Status,"Posting Type");
+
+            SalesBatchPostHeader.SETRANGE("Planned Processing Date",0D,WORKDATE);
+            SalesBatchPostHeader.SETRANGE(Status,SalesBatchPostHeader.Status::Open);
+            //T0011 17.06.14  tec-cs  +++++++++++++++++++++++++++++
+            // SalesBatchPostHeader.SETRANGE("Posting Type",SalesBatchPostHeader."Posting Type"::Invoice);
+            SalesBatchPostHeader.SETFILTER(
+              "Posting Type",
+              '%1|%2',
+              SalesBatchPostHeader."Posting Type"::Invoice,
+              SalesBatchPostHeader."Posting Type"::"Receive+Invoice");
+            //T0011 17.06.14  tec-cs  -----------------------------
+            //T0082 12.11.14 SH +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            IF (DocNoSalesHeader <> '') THEN BEGIN
+              SalesBatchPostHeader.SETRANGE(SalesBatchPostHeader."Document No.",DocNoSalesHeader);
+              SalesBatchPostHeader.SETRANGE("Manual Posting",TRUE);
+              SalesBatchPostHeader.LOCKTABLE;
+            END;
+            //T0082 12.11.14 SH -------------------------------------------------------------
+            IF "Parameter String" <> '' THEN
+              SalesBatchPostHeader.SETRANGE("Document No.","Parameter String");
+
+            IF SalesBatchPostHeader.FIND('-') THEN BEGIN
+              REPEAT
+                ProcessingCounter += 1;
+                LineError := FALSE;
+                ProcessLine := FALSE;
+                SalesBatchPostHeaderModified := FALSE;
+                SalesBatchPostHeader2 := SalesBatchPostHeader;
+                SalesBatchPostHeader2."Number of tries" +=1;
+                //Check if Sales Header still exists
+                IF SalesHeader.GET(SalesBatchPostHeader."Document Type",SalesBatchPostHeader."Document No.") THEN BEGIN
+                  SalesBatchPostLine.SETRANGE("Document Type",SalesBatchPostHeader."Document Type");
+                  SalesBatchPostLine.SETRANGE("Document No.",SalesBatchPostHeader."Document No.");
+                  SalesBatchPostLine.SETRANGE("Process ID",SalesBatchPostHeader."Process ID");
+                  IF SalesBatchPostLine.FINDSET(FALSE,FALSE) THEN BEGIN
+                    REPEAT
+                      SalesBatchPostFunctions.SetTempSalesBatchPostLIne(SalesBatchPostLine);
+
+                      IF SalesLine.GET(SalesBatchPostLine."Document Type",SalesBatchPostLine."Document No.",
+                                       SalesBatchPostLine."Line No.") THEN BEGIN
+                        //T0011 17.06.14  tec-cs  +++++++++++++++++++++++++++++
+                        IF SalesBatchPostHeader."Posting Type" = SalesBatchPostHeader."Posting Type"::"Receive+Invoice" THEN BEGIN
+
+                          SalesBatchPostFunctions.SetParameter(
+                            SalesHeader,
+                            SalesLine,
+                            SalesBatchPostLine,
+                            8, // 8 == check Receive+Invoice
+                            SalesBatchPostHeader2."Posting Date");
+                          COMMIT;
+                          IF NOT SalesBatchPostFunctions.RUN THEN
+                            LineError := TRUE
+                          ELSE
+                            ProcessLine := TRUE;
+
+                        END ELSE BEGIN
+                        //T0011 17.06.14  tec-cs  -----------------------------
+
+                          //Set Quantities for Invoicing
+                          IF SalesBatchPostLine."Qty. to Post" <= SalesLine."Qty. Shipped Not Invoiced" THEN BEGIN
+                            SalesBatchPostFunctions.SetParameter(SalesHeader,SalesLine,SalesBatchPostLine,3,
+                                                                 SalesBatchPostHeader2."Posting Date");
+                          COMMIT;
+                            IF NOT SalesBatchPostFunctions.RUN THEN
+                              LineError := TRUE
+                            ELSE
+                              ProcessLine := TRUE;
+                          END;
+                        //T0011 17.06.14  tec-cs  +++++++++++++++++++++++++++++
+                        END;
+                        //T0011 17.06.14  tec-cs  -----------------------------
+                      END;
+                    UNTIL (SalesBatchPostLine.NEXT = 0) OR LineError;
+            //H1157 12.06.14 ARI +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+                    IF NOT LineError AND ProcessLine THEN BEGIN
+
+            //H2109 10.02.15 ARI +++++++++++++++++++++++++++++++++++++
+                      LineError := SalesBatchPostFunctions.SetQuantitiesToZero(SalesHeader,SalesBatchPostHeader."Process ID",
+                                                                               SalesBatchPostHeader."Market Place");
+            //H2109 10.02.15 ARI -------------------------------------
+                      IF SalesBatchPostSetup."Post Related Lines" AND NOT LineError THEN
+                        LineError := NOT SalesBatchPostFunctions.CheckResourcesandCharges(SalesHeader,SalesBatchPostHeader2);
+                    END;
+                  END;
+
+                  //post sales order
+                  IF NOT LineError AND ProcessLine THEN BEGIN
+
+                    //T0011 17.06.14  tec-cs  +++++++++++++++++++++++++++++
+                    IF SalesBatchPostHeader."Posting Type" = SalesBatchPostHeader."Posting Type"::"Receive+Invoice" THEN BEGIN
+                      SalesBatchPostFunctions.SetParameter(
+                        SalesHeader,
+                        SalesLine,
+                        SalesBatchPostLine,
+                        9, // 9 == Post Receive and Invoice
+                        SalesBatchPostHeader2."Posting Date");
+                    END ELSE BEGIN
+                    //T0011 17.06.14  tec-cs  -----------------------------
+                      SalesBatchPostFunctions.SetParameter(SalesHeader,SalesLine,SalesBatchPostLine,6,
+                                                           SalesBatchPostHeader2."Posting Date");
+                    //T0011 17.06.14  tec-cs  +++++++++++++++++++++++++++++
+                    END;
+                    //T0011 17.06.14  tec-cs  -----------------------------
+
+                    SalesBatchPostHeader2.Status := SalesBatchPostHeader2.Status::Success;
+                    //H1149 ARI 13.05.14 +++++++++++++++++++++++
+                    SalesBatchPostHeader2."Error Text" := '';
+                    //H1149 ARI 13.05.14 -----------------------
+                    SalesBatchPostHeader2."Actual Processing Date/Time" := CREATEDATETIME(WORKDATE,TIME);
+                    SalesBatchPostHeader2.MODIFY;
+                    COMMIT;
+                    IF NOT SalesBatchPostFunctions.RUN THEN BEGIN
+                      SalesBatchPostHeader2.Status := SalesBatchPostHeader2.Status::Open;
+                      SalesBatchPostFunctions.SetHeaderStatus(SalesBatchPostHeader2,SalesBatchPostSetup."Maximum tries",
+                                                              SalesBatchPostSetup."Retry Delay Days Invoicing");
+                      SalesBatchPostHeader2."Error Text" := COPYSTR(GETLASTERRORTEXT,1,MAXSTRLEN(SalesBatchPostHeader2."Error Text"));
+                      SalesBatchPostHeaderModified := TRUE;
+                    END;
+
+                  END ELSE BEGIN
+                    IF NOT LineError THEN BEGIN
+                      IF SalesLine."Outstanding Quantity" = 0 THEN BEGIN
+                        SalesBatchPostHeader2."Actual Processing Date/Time" := CREATEDATETIME(WORKDATE,TIME);
+                        SalesBatchPostHeader2.Status := SalesBatchPostHeader2.Status::Success;
+                      END ELSE BEGIN
+                        SalesBatchPostFunctions.SetHeaderStatus(SalesBatchPostHeader2,SalesBatchPostSetup."Maximum tries",
+                                                                SalesBatchPostSetup."Retry Delay Days Invoicing");
+                      END;
+                      //H4177 02.07.15 BGA +++++++++++++++++
+                      IF NOT (SalesLine."Qty. Shipped Not Invoiced" = 0) THEN
+                        SalesBatchPostHeader2."Error Text" :=  TextHME004
+                      ELSE
+                        SalesBatchPostHeader2."Error Text" :=  TextHME001;
+                      //H4177 02.07.15 BGA -----------------
+                    END ELSE BEGIN
+                      SalesBatchPostFunctions.SetHeaderStatus(SalesBatchPostHeader2,SalesBatchPostSetup."Maximum tries",
+                                                              SalesBatchPostSetup."Retry Delay Days Invoicing");
+                      SalesBatchPostHeader2."Error Text" := COPYSTR(FORMAT(SalesBatchPostLine."Line No.") + ': ' +GETLASTERRORTEXT,
+                                                                    1,MAXSTRLEN(SalesBatchPostHeader2."Error Text"));
+                    END;
+                    SalesBatchPostHeaderModified := TRUE;
+            //H1157 12.06.14 ARI -------------------------------------------------------------------------
+                  END;
+                END ELSE BEGIN
+                  SalesBatchPostHeader2.Status := SalesBatchPostHeader2.Status::Success;
+                  SalesBatchPostHeader2."Actual Processing Date/Time" := CREATEDATETIME(WORKDATE,TIME);
+                  SalesBatchPostHeader2."Error Text" := TextHME003;
+                  SalesBatchPostHeaderModified := TRUE;
+                END;
+
+                IF SalesBatchPostHeaderModified THEN
+                  SalesBatchPostHeader2.MODIFY;
+
+            //T0082 27.11.14 SH +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+                IF (SalesBatchPostHeader2."Error Text" <> '') AND (SalesBatchPostHeader2."Manual Posting") THEN BEGIN
+                  MESSAGE ('%1',SalesBatchPostHeader2."Error Text");
+                  SalesBatchPostHeader2.DELETE(TRUE);
+                END;
+            //T0082 27.11.14 SH -------------------------------------------------------------
+
+                CLEAR(SalesBatchPostFunctions);
+                CLEARLASTERROR;
+              UNTIL (SalesBatchPostHeader.NEXT = 0) OR ((ProcessingCounter >= SalesBatchPostSetup."Max Invoice Postings per run") AND
+                                                        (SalesBatchPostSetup."Max Shipment Postings per run" > 0));
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      SalesBatchPostHeader@1000000010 : Record 50225;
+      SalesBatchPostHeader2@1000000009 : Record 50225;
+      SalesBatchPostLine@1000000008 : Record 50226;
+      SalesHeader@1000000007 : Record 36;
+      SalesLine@1000000006 : Record 37;
+      SalesBatchPostHeaderArchive@1000000005 : Record 50227;
+      SalesBatchPostSetup@1000000004 : Record 50229;
+      SalesBatchPostFunctions@1000000003 : Codeunit 50268;
+      ProcessingCounter@1000000016 : Integer;
+      ActionType@1000000002 : 'Ship,Invoice,ShipandInvoice';
+      ProcessLine@1000000001 : Boolean;
+      LineError@1000000000 : Boolean;
+      TextHME001@1000000013 : TextConst 'ENU=There was nothing to Post!';
+      TextHME002@1000000012 : TextConst 'ENU=Sales Line No: %1 does not exist for Document %2!';
+      TextHME003@1000000011 : TextConst 'ENU=The Sales Order is already archived';
+      TextHME004@1000000014 : TextConst 'ENU=Qty. to Post is bigger than Qty. Shipped Not Invoiced';
+      SalesBatchPostHeaderModified@1000000015 : Boolean;
+      "*TEC**************************"@1000000017 : Integer;
+      DocNoSalesHeader@1000000018 : Code[20];
+
+    PROCEDURE DefDocumentNo@1000000000(DocumentNoR@1000000000 : Code[20]);
+    BEGIN
+      //T0082 12.11.14 SH +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      DocNoSalesHeader := DocumentNoR;
+      //T0082 12.11.14 SH -------------------------------------------------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation Tectura & Home24 NAV Team  |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+
+      T0011       17.06.14  tec-cs    FTTC3 - Phase 2 - Return tracking:
+                                      - new option: "Receive+Invoice"
+      T0082       27.11.14  TEC-SH    Filter on "No." (SalesBatchPostHeader), new function DefDocumentNo
+                                      if Lasterror and ManualPosting then show error
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+      H0996       27.03.14 ARI       Created
+      H1149       13.05.14 ARI       Clear Error Text after succesful Posting
+      H1157       12.06.14 ARI       Improved Error Handling and Performance
+      H2109       10.02.15 ARI       Bug: Mixorder MP & H24 Invoicing dont work with the JOB 50267
+      H4177       02.07.15 BGA       Added condition for filling field "Error Text"
+    }
+    END.
+  }
+}
+

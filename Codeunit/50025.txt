@@ -1,0 +1,239 @@
+OBJECT Codeunit 50025 Avise Datum Mgmt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=27.03.15;
+    Time=18:48:40;
+    Modified=Yes;
+    Version List=HME2120;
+  }
+  PROPERTIES
+  {
+    OnRun=VAR
+            ReleasePurchDocL@1000000000 : Codeunit 415;
+          BEGIN
+            IF CurrAviseDatumBuffer."Document No." <> '' THEN BEGIN
+              CurrAviseDatumBuffer.TESTFIELD("AVISE Date");
+              IF CurrAviseDatumBuffer."Expected Qty. to Receive" <> 0 THEN
+                CurrAviseDatumBuffer.TESTFIELD("Line No.");
+              PurchaseHdr.GET(PurchaseHdr."Document Type"::Order,CurrAviseDatumBuffer."Document No.");
+              PurchaseHdr.TESTFIELD(Container,FALSE);
+              IF CurrAviseDatumBuffer."Buy-from Vendor No." <> '' THEN
+                IF PurchaseHdr."Buy-from Vendor No." <> CurrAviseDatumBuffer."Buy-from Vendor No." THEN
+                  ERROR(TextHME006);
+
+              IF PurchaseHdr.Status <> PurchaseHdr.Status::Open THEN BEGIN
+                CLEAR(ReleasePurchDocL);
+                ReleasePurchDocL.PerformManualReopen(PurchaseHdr);
+              END;
+
+              PurchaseLine.RESET;
+              PurchaseLine.SETRANGE("Document Type",PurchaseHdr."Document Type");
+              PurchaseLine.SETRANGE("Document No.",PurchaseHdr."No.");
+              IF CurrAviseDatumBuffer."Line No." <> 0 THEN
+                PurchaseLine.SETRANGE("Line No.",CurrAviseDatumBuffer."Line No.");
+              IF CurrAviseDatumBuffer."No." <> '' THEN
+                PurchaseLine.SETRANGE("No.",CurrAviseDatumBuffer."No.");
+              PurchaseLine.FINDSET;
+              REPEAT
+                IF PurchaseLine."Order Status Code" = '50' THEN
+                  ERROR(TextHME007);
+                IF PurchaseLine."Order Status Code" = '60' THEN
+                  ERROR(TextHME008);
+                IF PurchaseLine.Quantity < CurrAviseDatumBuffer."Expected Qty. to Receive" THEN
+                  ERROR(TextHME009);
+
+                IF CurrAviseDatumBuffer."Original AVISE Date" <> 0D THEN
+                  PurchaseLine."Original Expected Rcpt. Date" := CurrAviseDatumBuffer."Original AVISE Date"
+                ELSE
+                  IF PurchaseLine."Original Expected Rcpt. Date" = 0D THEN
+                    PurchaseLine."Original Expected Rcpt. Date" := CurrAviseDatumBuffer."AVISE Date";
+                PurchaseLine."Expected Receipt Date" := CurrAviseDatumBuffer."AVISE Date";
+                PurchaseLine."Expd. Rcpt. Date Received On" := CurrAviseDatumBuffer."AVISE Date Received On";
+                PurchaseLine.VALIDATE("Order Status Code",'30');
+                PurchaseLine.MODIFY;
+
+                IF CurrAviseDatumBuffer."Expected Qty. to Receive" <> 0 THEN BEGIN
+                  CurrAviseDatumBuffer.VALIDATE("Expected Qty. to Receive");
+                  IF PurchaseLine.Quantity > CurrAviseDatumBuffer."Expected Qty. to Receive" THEN BEGIN
+                    PurchaseLine.VALIDATE("Split Quantity",CurrAviseDatumBuffer."Expected Qty. to Receive");
+                    PurchaseLine.MODIFY;
+                    PurchaseHdr.CreateNewPurchLines(PurchaseHdr);
+                  END;
+                END;
+              UNTIL PurchaseLine.NEXT = 0;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      TextHME001@1000000000 : TextConst 'ENU=Processing ... Please wait...';
+      TextHME002@1000000001 : TextConst 'ENU=Processing has been completed.';
+      TextHME003@1000000002 : TextConst 'ENU=There is nothing to process.';
+      CurrAviseDatumBuffer@1000000003 : Record 50814;
+      TextHME004@1000000004 : TextConst 'ENU=Checking results of processing ... Please wait...';
+      PurchaseHdr@1000000006 : Record 38;
+      PurchaseLine@1000000005 : Record 39;
+      TextHME005@1000000007 : TextConst 'DEU=Dieses Dokument kann nur freigegeben werden, wenn der Genehmigungsprozess abgeschlossen ist.;ENU=This document can only be released when the approval process is complete.';
+      TextHME006@1000000008 : TextConst 'ENU=The vendor from the file must be the same as the vendor in the corresponding purchase order.';
+      TextHME007@1000000010 : TextConst 'ENU=The corresponding purchase line is completed.';
+      TextHME008@1000000009 : TextConst 'ENU=The corresponding purchase line is canceled.';
+      TextHME009@1000000011 : TextConst 'ENU=The quantity from the file can not exceed the quantity on the corresponding purchase line.';
+
+    PROCEDURE InitiateProcessing@1000000012();
+    VAR
+      AviseDatumBufferL@1000000001 : Record 50814;
+      AviseDatumBufferL2@1000000002 : Record 50814;
+      CSVImportSetupL@1000000004 : Record 50322;
+      AviseDatumMgtL@1000000000 : Codeunit 50025;
+      WindowL@1000000007 : Dialog;
+      TimePointL@1000000006 : Time;
+      FactorL@1000000005 : Decimal;
+      CounterL@1000000008 : Integer;
+    BEGIN
+      AviseDatumBufferL.RESET;
+      AviseDatumBufferL.SETRANGE(Status,AviseDatumBufferL.Status::Imported);
+      IF AviseDatumBufferL.ISEMPTY THEN BEGIN
+        MESSAGE(TextHME003);
+        EXIT;
+      END;
+      FactorL := 9999 / AviseDatumBufferL.COUNT;
+
+      IF AviseDatumBufferL.FINDSET THEN BEGIN
+        IF GUIALLOWED THEN
+          WindowL.OPEN('#1#######################  ' + '@2@@@@@@@@@@');
+        TimePointL := TIME;
+        REPEAT
+          IF GUIALLOWED THEN
+            WindowL.UPDATE(1,TextHME001);
+          CounterL += 1;
+          IF (TIME - TimePointL) > 2000 THEN BEGIN
+            IF GUIALLOWED THEN
+              WindowL.UPDATE(2,(CounterL * FactorL) DIV 1);
+            TimePointL := TIME;
+          END;
+
+          AviseDatumMgtL.SetRecordToProcess(AviseDatumBufferL);
+
+          IF NOT AviseDatumMgtL.RUN THEN BEGIN
+            AviseDatumBufferL2.GET(AviseDatumBufferL."Entry No.");
+            IF AviseDatumBufferL2."Error Message" = '' THEN
+              AviseDatumBufferL2."Error Message" := COPYSTR(GETLASTERRORTEXT,1,250)
+            ELSE
+              IF AviseDatumBufferL2."Error Message 2" = '' THEN
+                AviseDatumBufferL2."Error Message 2" := COPYSTR(GETLASTERRORTEXT,1,250)
+              ELSE
+                IF AviseDatumBufferL2."Error Message 3" = '' THEN
+                  AviseDatumBufferL2."Error Message 3" := COPYSTR(GETLASTERRORTEXT,1,250)
+                ELSE
+                  IF AviseDatumBufferL2."Error Message 4" = '' THEN
+                    AviseDatumBufferL2."Error Message 4" := COPYSTR(GETLASTERRORTEXT,1,250);
+
+            AviseDatumBufferL2.Status := AviseDatumBufferL2.Status::Error;
+            AviseDatumBufferL2.MODIFY;
+            COMMIT;
+            CLEARLASTERROR;
+          END ELSE BEGIN
+            AviseDatumBufferL2.GET(AviseDatumBufferL."Entry No.");
+            AviseDatumBufferL2.Status := AviseDatumBufferL2.Status::Processed;
+            AviseDatumBufferL2.MODIFY;
+            COMMIT;
+          END;
+        UNTIL AviseDatumBufferL.NEXT = 0;
+
+        IF GUIALLOWED THEN
+          WindowL.UPDATE(1,TextHME004);
+
+        AviseDatumBufferL.SETRANGE(Status,AviseDatumBufferL.Status::Processed);
+        REPEAT
+          CheckPurchOrderAndSendWEA(AviseDatumBufferL);
+        UNTIL AviseDatumBufferL.NEXT = 0;
+
+        CSVImportSetupL.GET(AviseDatumBufferL2."CSV Import Setup Code");
+        IF CSVImportSetupL."Delete Records on Processing" THEN BEGIN
+          AviseDatumBufferL.RESET;
+          AviseDatumBufferL.SETRANGE(Status,AviseDatumBufferL.Status::Processed);
+          AviseDatumBufferL.SETRANGE("CSV Import Setup Code",AviseDatumBufferL2."CSV Import Setup Code");
+          AviseDatumBufferL.DELETEALL;
+        END;
+        IF GUIALLOWED THEN
+          WindowL.CLOSE;
+      END;
+
+      IF GUIALLOWED THEN
+        MESSAGE(TextHME002);
+    END;
+
+    PROCEDURE SetRecordToProcess@1000000015(AviseDatumBufferV@1000000000 : Record 50814);
+    BEGIN
+      CurrAviseDatumBuffer := AviseDatumBufferV;
+    END;
+
+    PROCEDURE CheckPurchOrderAndSendWEA@1000000001(AviseDatumBufferV@1000000000 : Record 50814);
+    VAR
+      ApprovalEntryL@1000000004 : Record 454;
+      ApprovalManagementL@1000000001 : Codeunit 439;
+      ReleasePurchDoc@1000000002 : Codeunit 415;
+      ApprovedOnlyL@1000000003 : Boolean;
+    BEGIN
+      PurchaseHdr.GET(PurchaseHdr."Document Type"::Order,AviseDatumBufferV."Document No.");
+      IF PurchaseHdr.Status = PurchaseHdr.Status::Open THEN BEGIN
+        WITH PurchaseHdr DO BEGIN
+          IF ApprovalManagementL.CheckApprPurchaseDocument(PurchaseHdr) THEN BEGIN
+            CASE Status OF
+              Status::"Pending Approval":
+                ERROR(TextHME005);
+              Status::Released,Status::"Pending Prepayment":
+                BEGIN
+                  ReleasePurchDoc.SetHideValidationDialog(TRUE);
+                  ReleasePurchDoc.RUN(PurchaseHdr);
+                END;
+              Status::Open:
+                BEGIN
+                  ApprovedOnlyL := TRUE;
+                  ApprovalEntryL.SETCURRENTKEY("Table ID","Document Type","Document No.","Sequence No.");
+                  ApprovalEntryL.SETRANGE("Table ID",DATABASE::"Purchase Header");
+                  ApprovalEntryL.SETRANGE("Document Type","Document Type");
+                  ApprovalEntryL.SETRANGE("Document No.","No.");
+                  ApprovalEntryL.SETFILTER(Status,'<>%1&<>%2',ApprovalEntryL.Status::Rejected,ApprovalEntryL.Status::Canceled);
+                  IF ApprovalEntryL.FIND('-') THEN BEGIN
+                    REPEAT
+                      IF (ApprovedOnlyL = TRUE) AND (ApprovalEntryL.Status <> ApprovalEntryL.Status::Approved) THEN
+                        ApprovedOnlyL := FALSE;
+                    UNTIL ApprovalEntryL.NEXT = 0;
+                    IF ApprovedOnlyL = TRUE AND ReleasePurchDoc.TestApprovalLimit(PurchaseHdr) THEN BEGIN
+                      ReleasePurchDoc.SetHideValidationDialog(TRUE);
+                      ReleasePurchDoc.RUN(PurchaseHdr)
+                    END ELSE
+                      ERROR(TextHME005);
+                  END ELSE
+                    ERROR(TextHME005);
+                END;
+            END;
+          END ELSE BEGIN
+            ReleasePurchDoc.SetHideValidationDialog(TRUE);
+            ReleasePurchDoc.RUN(PurchaseHdr);
+          END;
+        END;
+      END;
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation Tectura & Home24 NAV Team  |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      H2120    17.03.15  DMO    Create Object
+    }
+    END.
+  }
+}
+

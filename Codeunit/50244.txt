@@ -1,0 +1,1783 @@
+OBJECT Codeunit 50244 Outb. EDI Create IFTMIN Export
+{
+  OBJECT-PROPERTIES
+  {
+    Date=23.11.14;
+    Time=23:25:59;
+    Modified=Yes;
+    Version List=EDICH,GOB,HME1526,P1276;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 110=rm,
+                TableData 111=rm;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      rCompanyInformation@1000000000 : Record 79;
+      rEDIIntegratorSetup@1000000001 : Record 82850;
+      rOutboundEDIDocumentList@1000000002 : Record 82864;
+      rEDIPartnerDocumentType@1000000003 : Record 82852;
+      bListExists@1000000004 : Boolean;
+      sExternalDocNo@1000000005 : Text[250];
+      Text001@1000000006 : TextConst 'DEU=Der Partner %1 hat keine aktive Vereinbarung fr %2.;ENU=The partner %1 does not have any active %2 agreement.';
+      Text002@1000000007 : TextConst 'DEU=Es liegen keine neuen Lieferungen zum Versand vor.;ENU=There are no new shipments to be transferred.';
+      TextHME001@1000000009 : TextConst 'ENU=Sales Shipment Line %1, %2 already exists in this IFTMIN List %3.';
+
+    PROCEDURE SetUseforDistributionList@1000000002(rEDIPartner@1000000001 : Record 82851);
+    VAR
+      rSalesShptHeader@1000000002 : Record 110;
+      rSalesShipmentLine@1000000000 : Record 111;
+    BEGIN
+      rEDIPartnerDocumentType.GET(rEDIPartner.Code,rEDIPartnerDocumentType."Document Direction"::Outbound,'IFTMIN');
+
+      rSalesShipmentLine.RESET;
+      rSalesShipmentLine.SETCURRENTKEY("Outbound EDI IFTMIN No.","Purchasing Code");
+      rSalesShipmentLine.SETRANGE("Outbound EDI IFTMIN No.",'');
+      rSalesShipmentLine.SETFILTER("Purchasing Code",rEDIPartner."Distribution Filter");
+      rSalesShipmentLine.SETRANGE(Type,rSalesShipmentLine.Type::Item);
+      rSalesShipmentLine.SETFILTER(Quantity,'>%1',0);
+      IF rEDIPartnerDocumentType."Startdate IFTMIN" <> 0D THEN
+        rSalesShipmentLine.SETFILTER("Shipment Date",'>=%1',rEDIPartnerDocumentType."Startdate IFTMIN");
+      IF rSalesShipmentLine.ISEMPTY THEN
+        EXIT;
+      IF rSalesShipmentLine.FIND('-') THEN
+        REPEAT
+          IF rSalesShptHeader."No." <> rSalesShipmentLine."Document No." THEN BEGIN
+            rSalesShptHeader.GET(rSalesShipmentLine."Document No.");
+            IF NOT rSalesShptHeader."Use for Distribution List" THEN BEGIN
+              rSalesShptHeader."Use for Distribution List" := TRUE;
+              rSalesShptHeader.MODIFY;
+            END;
+          END;
+        UNTIL rSalesShipmentLine.NEXT = 0;
+    END;
+
+    PROCEDURE CreateIFTMIN@1000000000(rEDIPartner@1000000002 : Record 82851);
+    VAR
+      rVendor@1000000001 : Record 23;
+      rSalesShipmentHeader@1000000000 : Record 110;
+      cOutboundEDIService@1108200001 : Codeunit 82851;
+      Confirm001@1108200002 : TextConst 'ENU=The order %1 has already been transmitted via EDI. Should the order be sent again?';
+      Error001@1108200003 : TextConst 'ENU=The transmission was aborted.';
+      OutboundEDIForm@1000000003 : Form 50307;
+      "--- P1248 Locals ---"@1000000005 : Integer;
+      sSalesShipmentNo@1000000004 : Code[20];
+    BEGIN
+      rEDIIntegratorSetup.GET();
+      rCompanyInformation.GET();
+      IsPartnerDocumentActive(rEDIPartner.Code,'IFTMIN');
+
+      rSalesShipmentHeader.RESET;
+      rSalesShipmentHeader.SETCURRENTKEY("Use for Distribution List");
+      rSalesShipmentHeader.SETRANGE("Use for Distribution List",TRUE);
+      IF rSalesShipmentHeader.FIND('-') THEN BEGIN
+        REPEAT
+          IF CheckLines(rSalesShipmentHeader,rEDIPartner) THEN BEGIN
+            IF NOT bListExists THEN
+              CreateIFTMINList(rEDIPartner);
+            // S/P1248
+            //CreateIFTMINHeader(rSalesShipmentHeader,rEDIPartner);
+            sSalesShipmentNo := CheckOrderAlreadyInList(rSalesShipmentHeader);
+            IF sSalesShipmentNo <> '' THEN
+              CreateIFTMINHeader(rSalesShipmentHeader,rEDIPartner,sSalesShipmentNo)
+            ELSE
+              CreateIFTMINHeader(rSalesShipmentHeader,rEDIPartner,rSalesShipmentHeader."No.");
+            // E/P1248
+          END ELSE BEGIN
+            IF rSalesShipmentHeader."Outbound EDI No." = '' THEN
+              rSalesShipmentHeader."Outbound EDI No." := 'SKIP';
+            rSalesShipmentHeader."Use for Distribution List" := FALSE;
+            rSalesShipmentHeader.MODIFY;
+          END;
+        UNTIL rSalesShipmentHeader.NEXT = 0;
+      END;
+
+      IF bListExists THEN BEGIN
+        COMMIT;
+        rOutboundEDIDocumentList.SETRECFILTER;
+        OutboundEDIForm.SETTABLEVIEW(rOutboundEDIDocumentList);
+        OutboundEDIForm.RUNMODAL;
+      END ELSE
+        MESSAGE(Text002);
+    END;
+
+    PROCEDURE CreateIFTMINList@1115500003(rEDIPartner@1115500001 : Record 82851);
+    VAR
+      NoSeriesMgt@1115500000 : Codeunit 396;
+    BEGIN
+      rOutboundEDIDocumentList.INIT;
+      rOutboundEDIDocumentList."Document Type" := rOutboundEDIDocumentList."Document Type"::IFTMIN;
+
+      NoSeriesMgt.InitSeries(
+        rEDIPartnerDocumentType."IFTMIN No. Series",rOutboundEDIDocumentList."No. Series",
+        rOutboundEDIDocumentList."Document Date",
+        rOutboundEDIDocumentList."No.",rOutboundEDIDocumentList."No. Series");
+
+      rOutboundEDIDocumentList."Partner Code" := rEDIPartner.Code;
+      rOutboundEDIDocumentList.Name := rEDIPartner.Name;
+      rOutboundEDIDocumentList."Name 2" := rEDIPartner."Name 2";
+      rOutboundEDIDocumentList.Address := rEDIPartner.Address;
+      rOutboundEDIDocumentList."Address 2" := rEDIPartner."Address 2";
+      rOutboundEDIDocumentList."Post Code" := rEDIPartner."Post Code";
+      rOutboundEDIDocumentList.City := rEDIPartner.City;
+      rOutboundEDIDocumentList."Country/Region Code" := rEDIPartner."Country/Region Code";
+      rOutboundEDIDocumentList."Document Date" := WORKDATE;
+      rOutboundEDIDocumentList."User ID" := USERID;
+      rOutboundEDIDocumentList."Test Indicator" := rEDIPartnerDocumentType."Test Indicator";
+      rOutboundEDIDocumentList."Supplier GLN" := rEDIPartner.GLN;
+      rOutboundEDIDocumentList."Payer GLN" := rEDIIntegratorSetup."Global Location Number (GLN)";
+      rOutboundEDIDocumentList."Sender GLN" := rEDIIntegratorSetup."Global Location Number (GLN)";
+      rOutboundEDIDocumentList."Recipient GLN" := rEDIPartner.GLN;
+      rOutboundEDIDocumentList."External No." := rEDIPartner."External No.";
+      rOutboundEDIDocumentList.INSERT;
+
+      bListExists := TRUE;
+    END;
+
+    PROCEDURE CreateIFTMINHeader@1115500001(rSalesShipmentHeader@1115500002 : Record 110;rEDIPartner@1000000004 : Record 82851;pSalesShipmentNo@1000000009 : Code[20]);
+    VAR
+      rCurrency@1115500004 : Record 4;
+      rSalespersonPurchaser@1119443000 : Record 13;
+      rVendor@1115500006 : Record 23;
+      rOutboundEDIDocumentHeader@1115500001 : Record 82865;
+      rCustomer@1000000002 : Record 18;
+      iLineCounter@1115500000 : Integer;
+      rSalesShipmentLine@1000000003 : Record 111;
+      rLocation@1000000000 : Record 14;
+      rLanguage@1000000001 : Record 8;
+      RHDSalesExportHeader@1000000005 : Record 50181;
+      DDHeader@1000000006 : Record 50061;
+      rSalesHeader@1000000007 : Record 36;
+      rSalesHeaderArchive@1000000008 : Record 5107;
+      "--- P1248 Locals ---"@1000000010 : Integer;
+      iLineNo@1000000011 : Integer;
+      rOutbEDIDocLine@1000000012 : Record 82866;
+    BEGIN
+      // S/P1248
+      IF rSalesShipmentHeader."No." <> pSalesShipmentNo THEN BEGIN
+        rSalesShipmentLine.RESET();
+        rSalesShipmentLine.SETRANGE("Document No.",rSalesShipmentHeader."No.");
+        rSalesShipmentLine.SETFILTER("Outbound EDI IFTMIN No.",'');
+        rSalesShipmentLine.SETFILTER("Purchasing Code",rEDIPartner."Distribution Filter");
+        rSalesShipmentLine.SETRANGE(Type,rSalesShipmentLine.Type::Item);
+        rSalesShipmentLine.SETFILTER(Quantity,'>%1',0);
+        rSalesShipmentLine.SETFILTER("Outbound EDI IFTMIN No.",'%1','');
+        rSalesShipmentLine.FIND('-');
+
+        rOutboundEDIDocumentHeader.RESET();
+        rOutboundEDIDocumentHeader.SETRANGE("Header Document Type",rOutboundEDIDocumentList."Document Type");
+        rOutboundEDIDocumentHeader.SETRANGE("Header Document No.",rOutboundEDIDocumentList."No.");
+        rOutboundEDIDocumentHeader.SETRANGE("Document Type",rOutboundEDIDocumentHeader."Document Type"::"Sales Shipment");
+        rOutboundEDIDocumentHeader.SETRANGE("Document No.",pSalesShipmentNo);
+        rOutboundEDIDocumentHeader.FINDFIRST;
+
+        rOutbEDIDocLine.RESET();
+        rOutbEDIDocLine.SETRANGE("Header Document Type",rOutboundEDIDocumentHeader."Header Document Type");
+        rOutbEDIDocLine.SETRANGE("Header Document No.",rOutboundEDIDocumentHeader."Header Document No.");
+        rOutbEDIDocLine.SETRANGE("Document Type",rOutboundEDIDocumentHeader."Document Type");
+        rOutbEDIDocLine.SETRANGE("Document No.",pSalesShipmentNo);
+        rOutbEDIDocLine.FINDLAST;
+        iLineCounter := rOutbEDIDocLine."EDI Line No.";
+        iLineNo := rOutbEDIDocLine."Line No." + 10000;
+
+        REPEAT
+          iLineCounter += 1;
+          CreateIFTMINLine(rSalesShipmentLine,iLineCounter,rOutboundEDIDocumentHeader,pSalesShipmentNo,iLineNo);
+          //S/P1265
+          iLineNo += 10000;
+          //E/P1265
+        UNTIL rSalesShipmentLine.NEXT = 0;
+      END ELSE BEGIN
+      // E/P1248
+
+
+      CLEAR(sExternalDocNo);
+
+      rOutboundEDIDocumentHeader.INIT;
+      rOutboundEDIDocumentHeader."Header Document Type" := rOutboundEDIDocumentList."Document Type";
+      rOutboundEDIDocumentHeader."Header Document No." := rOutboundEDIDocumentList."No.";
+      rOutboundEDIDocumentHeader."Document Type" := rOutboundEDIDocumentHeader."Document Type"::"Sales Shipment";
+      rOutboundEDIDocumentHeader."Document No." := rSalesShipmentHeader."No.";
+      rOutboundEDIDocumentHeader."Document Date" := rSalesShipmentHeader."Document Date";
+      rOutboundEDIDocumentHeader."Order Date" := rSalesShipmentHeader."Order Date";
+      rOutboundEDIDocumentHeader.Currency := rSalesShipmentHeader."Currency Code";
+      rOutboundEDIDocumentHeader."VAT Registration No." := rCompanyInformation."VAT Registration No.";
+      rOutboundEDIDocumentHeader."Registration No." := rCompanyInformation."Registration No.";
+      rOutboundEDIDocumentHeader."Your Reference" := rSalesShipmentHeader."Your Reference";
+      rOutboundEDIDocumentHeader."External No." := rOutboundEDIDocumentList."External No.";
+      IF rCustomer.GET(rSalesShipmentHeader."Sell-to Customer No.") THEN BEGIN
+        rOutboundEDIDocumentHeader."Customer E-mail" := rCustomer."E-Mail";
+        rOutboundEDIDocumentHeader."Customer Phone No." := rCustomer."Phone No.";
+      END;
+
+      rOutboundEDIDocumentHeader."Ship-to Code" := COPYSTR(rSalesShipmentHeader."Sell-to Customer No.",1,10);
+      rOutboundEDIDocumentHeader."Ship-to Name" := rSalesShipmentHeader."Ship-to Name";
+      rOutboundEDIDocumentHeader."Ship-to Name 2" := rSalesShipmentHeader."Ship-to Name 2";
+      rOutboundEDIDocumentHeader."Ship-to Address" := rSalesShipmentHeader."Ship-to Address";
+      rOutboundEDIDocumentHeader."Ship-to Address 2" := rSalesShipmentHeader."Ship-to Address 2";
+      rOutboundEDIDocumentHeader."Ship-to City" := rSalesShipmentHeader."Ship-to City";
+      rOutboundEDIDocumentHeader."Ship-to Contact" := rSalesShipmentHeader."Ship-to Contact";
+      rOutboundEDIDocumentHeader."Ship-to Post Code" := rSalesShipmentHeader."Ship-to Post Code";
+      rOutboundEDIDocumentHeader."Ship-to Country/Region Code" := rSalesShipmentHeader."Ship-to Country/Region Code";
+
+      rLanguage.GET(rSalesShipmentHeader."Language Code");
+      rLanguage.TESTFIELD("DD Language ID");
+      rOutboundEDIDocumentHeader."Language Code" := UPPERCASE(rLanguage."DD Language ID");
+
+      //S/P1238
+      //RHDSalesExportHeader.RESET;
+      //RHDSalesExportHeader.SETRANGE("Document Type",RHDSalesExportHeader."Document Type"::Order);
+      //RHDSalesExportHeader.SETRANGE("Document No.",rSalesShipmentHeader."Order No.");
+      //IF RHDSalesExportHeader.FINDLAST THEN
+      //  rOutboundEDIDocumentHeader."Order No." := RHDSalesExportHeader."Rhenus Order No."
+      //ELSE BEGIN
+      //  DDHeader.RESET;
+      //  DDHeader.SETRANGE("Document Type",DDHeader."Document Type"::Order);
+      //  DDHeader.SETRANGE("Order No. Navision",rSalesShipmentHeader."Order No.");
+      //  IF DDHeader.FINDLAST THEN
+      //    rOutboundEDIDocumentHeader."Order No." := DDHeader."No."
+      //  ELSE
+      //    rOutboundEDIDocumentHeader."Order No." := rSalesShipmentHeader."Order No.";
+      //END;
+
+      // S/P1241
+      //IF STRPOS(rEDIPartner."Distribution Filter",'-9') > 0 THEN BEGIN
+      IF rEDIPartner."Use DD Interface" THEN BEGIN
+      // E/P1241
+        DDHeader.RESET;
+        DDHeader.SETRANGE("Document Type",DDHeader."Document Type"::Order);
+        DDHeader.SETRANGE("Order No. Navision",rSalesShipmentHeader."Order No.");
+        IF DDHeader.FINDLAST THEN BEGIN
+          rOutboundEDIDocumentHeader."Order No." := DDHeader."No."
+        END ELSE BEGIN
+          rOutboundEDIDocumentHeader."Order No." := rSalesShipmentHeader."Order No.";
+        END;
+      // S/P1241
+      //END ELSE BEGIN
+      END;
+
+      IF rEDIPartner."Use RHD Interface" THEN BEGIN
+      // E/P1241
+        RHDSalesExportHeader.RESET;
+        RHDSalesExportHeader.SETRANGE("Document Type",RHDSalesExportHeader."Document Type"::Order);
+        RHDSalesExportHeader.SETRANGE("Document No.",rSalesShipmentHeader."Order No.");
+        IF RHDSalesExportHeader.FINDLAST THEN BEGIN
+          rOutboundEDIDocumentHeader."Order No." := RHDSalesExportHeader."Rhenus Order No."
+        END ELSE BEGIN
+          rOutboundEDIDocumentHeader."Order No." := rSalesShipmentHeader."Order No.";
+        END;
+      END;
+      //E/P1238
+
+      rOutboundEDIDocumentHeader."Shipment Date" := TODAY;
+
+      rOutboundEDIDocumentHeader."Supplier GLN" := rEDIIntegratorSetup."Global Location Number (GLN)";
+      rOutboundEDIDocumentHeader."Buyer GLN" := rEDIIntegratorSetup."Global Location Number (GLN)";
+      rOutboundEDIDocumentHeader."Invoicer GLN" := rEDIIntegratorSetup."Global Location Number (GLN)";
+
+      IF rSalesHeader.GET(rSalesHeader."Document Type"::Order,rSalesShipmentHeader."Order No.") THEN BEGIN
+        IF rSalesHeader."Item Change Return No." <> '' THEN
+          rOutboundEDIDocumentHeader."Order Type" := '255'
+        ELSE
+          rOutboundEDIDocumentHeader."Order Type" := '340';
+      END ELSE
+        rOutboundEDIDocumentHeader."Order Type" := '340';
+      rOutboundEDIDocumentHeader."Message Function" := '9';
+
+      // S/P1248
+      rOutboundEDIDocumentHeader."Original Document No." := rSalesShipmentHeader."No.";
+      rOutboundEDIDocumentHeader."Original Order No." := rSalesShipmentHeader."Order No.";
+      // E/P1248
+
+      rOutboundEDIDocumentHeader.INSERT;
+
+      rSalesShipmentLine.RESET();
+      rSalesShipmentLine.SETRANGE("Document No.",rSalesShipmentHeader."No.");
+      rSalesShipmentLine.SETFILTER("Outbound EDI IFTMIN No.",'');
+      rSalesShipmentLine.SETFILTER("Purchasing Code",rEDIPartner."Distribution Filter");
+      rSalesShipmentLine.SETRANGE(Type,rSalesShipmentLine.Type::Item);
+      rSalesShipmentLine.SETFILTER(Quantity,'>%1',0);
+      // S/P1248
+      rSalesShipmentLine.SETFILTER("Outbound EDI IFTMIN No.",'%1','');
+      // E/P1248
+      rSalesShipmentLine.FIND('-');
+
+      rOutboundEDIDocumentHeader."Supplier GLN" := rSalesShipmentLine."Location Code";
+      rLocation.GET(rSalesShipmentLine."Location Code");
+      rOutboundEDIDocumentHeader."Company Name" := rLocation.Name;
+      rOutboundEDIDocumentHeader."Company Name 2" := rLocation."Name 2";
+      rOutboundEDIDocumentHeader."Company Address" := rLocation.Address;
+      rOutboundEDIDocumentHeader."Company Address 2" := rLocation."Address 2";
+      rOutboundEDIDocumentHeader."Company City" := rLocation.City;
+      rOutboundEDIDocumentHeader."Company Contact" := rLocation.Contact;
+      rOutboundEDIDocumentHeader."Company Post Code" := rLocation."Post Code";
+      rOutboundEDIDocumentHeader."Company Country/Region Code" := rLocation."Country/Region Code";
+
+      REPEAT
+        iLineCounter += 1;
+        // S/P1248
+        //CreateIFTMINLine(rSalesShipmentLine,iLineCounter,rOutboundEDIDocumentHeader);
+        CreateIFTMINLine(
+          rSalesShipmentLine,iLineCounter,rOutboundEDIDocumentHeader,rSalesShipmentLine."Document No.",rSalesShipmentLine."Line No.");
+        // E/P1248
+      UNTIL rSalesShipmentLine.NEXT = 0;
+
+      IF rSalesShipmentHeader."Currency Code" = '' THEN
+        rCurrency.InitRoundingPrecision
+      ELSE
+        rCurrency.GET(rSalesShipmentHeader."Currency Code");
+
+      rOutboundEDIDocumentHeader."Position Count" := iLineCounter;
+      rOutboundEDIDocumentHeader.MODIFY;
+
+      // S/P1248
+      END;
+      // E/P1248
+
+      rSalesShipmentHeader."Outbound EDI No." := rOutboundEDIDocumentHeader."Header Document No.";
+      rSalesShipmentHeader."Date Sent" := TODAY;
+      rSalesShipmentHeader."Time Sent" := TIME;
+      rSalesShipmentHeader."Use for Distribution List" := FALSE;
+      rSalesShipmentHeader.MODIFY;
+    END;
+
+    PROCEDURE CreateIFTMINLine@1115500006(rSalesShipmentLine@1115500000 : Record 111;iLineCounter@1115500002 : Integer;rOutboundDocHeader@1000000000 : Record 82865;pSalesShipmentNo@1000000006 : Code[20];pSalesShipmentLine@1000000007 : Integer);
+    VAR
+      rItem@1108200003 : Record 27;
+      rUnitOfMeasure@1108200001 : Record 204;
+      rItemCrossReference@1115500003 : Record 5717;
+      rOutboundEDIDocumentLine@1115500001 : Record 82866;
+      rVendor@1000000001 : Record 23;
+      rSalesHeader@1000000002 : Record 36;
+      rSalesLine@1000000003 : Record 37;
+      rSalesShptLine2@1000000009 : Record 111;
+      reBayNavCWebshopItem@1000000010 : Record 5251566;
+      rSalesHeaderArchive@1000000004 : Record 5107;
+      rSalesLineArchive@1000000005 : Record 5108;
+    BEGIN
+      rOutboundEDIDocumentLine."Header Document Type" := rOutboundEDIDocumentList."Document Type";
+      rOutboundEDIDocumentLine."Header Document No." := rOutboundEDIDocumentList."No.";
+      rOutboundEDIDocumentLine."Document Type" := rOutboundDocHeader."Document Type";
+      // S/P1248
+      //rOutboundEDIDocumentLine."Document No." := rSalesShipmentLine."Document No.";
+      //rOutboundEDIDocumentLine."Line No." := rSalesShipmentLine."Line No.";
+      rOutboundEDIDocumentLine."Document No." := pSalesShipmentNo;
+      rOutboundEDIDocumentLine."Line No." := pSalesShipmentLine;
+      // E/P1248
+      rOutboundEDIDocumentLine."Item No." := rSalesShipmentLine."No.";
+      IF rItem.GET(rSalesShipmentLine."No.") THEN
+        rOutboundEDIDocumentLine."Country Purchased Code" := rItem."Country/Region Purchased Code";
+      IF rOutboundEDIDocumentLine."Country Purchased Code" = '' THEN
+        rOutboundEDIDocumentLine."Country Purchased Code" := 'DE';
+
+      rOutboundEDIDocumentLine."Customer Item No." := rSalesShipmentLine."Cross-Reference No.";
+
+      rOutboundEDIDocumentLine.Description := rSalesShipmentLine.Description;
+      rOutboundEDIDocumentLine."Description 2" := rSalesShipmentLine."Description 2";
+      rOutboundEDIDocumentLine.Quantity := rSalesShipmentLine.Quantity;
+      IF rUnitOfMeasure.GET(rSalesShipmentLine."Unit of Measure Code") THEN BEGIN
+        IF rUnitOfMeasure."UN/ECE Code" <> '' THEN
+          rOutboundEDIDocumentLine."Unit of Measure" := rUnitOfMeasure."UN/ECE Code"
+        ELSE
+          rOutboundEDIDocumentLine."Unit of Measure" := rUnitOfMeasure.Code;
+      END ELSE
+        rOutboundEDIDocumentLine."Unit of Measure" := rSalesShipmentLine."Unit of Measure Code";
+      rOutboundEDIDocumentLine."EDI Line No." := iLineCounter;
+      rOutboundEDIDocumentLine."Customer Order No." := sExternalDocNo;
+
+      rItem.CALCFIELDS("Parcels Number");
+      rOutboundEDIDocumentLine."No. of Packaging" := rItem."Parcels Number" * rSalesShipmentLine.Quantity;
+      rSalesShptLine2.RESET;
+      rSalesShptLine2.SETRANGE("Document No.",rSalesShipmentLine."Document No.");
+      rSalesShptLine2.SETRANGE(Type,rSalesShptLine2.Type::Resource);
+      rSalesShptLine2.SETRANGE("No.",'ZAUFBAU');
+      IF NOT rSalesShptLine2.ISEMPTY THEN
+        rOutboundEDIDocumentLine."Text 2" := 'Aufbauservice';
+
+      IF NOT rSalesHeader.GET(1,rSalesShipmentLine."Order No.") THEN BEGIN
+        IF rSalesHeaderArchive.GET(1,rSalesShipmentLine."Order No.",1,1) THEN BEGIN
+          rSalesLineArchive.GET(1,rSalesShipmentLine."Order No.",1,1,rSalesShipmentLine."Order Line No.");
+          rOutboundEDIDocumentLine.Amount := rSalesLineArchive.Amount;
+          rOutboundEDIDocumentLine."Unit Price" := rSalesLineArchive."Unit Price";
+          rOutboundEDIDocumentLine."Currency Code" := rSalesHeaderArchive."Currency Code";
+          rOutboundEDIDocumentLine."Line Amount" := rSalesLineArchive."Line Amount";
+          rOutboundEDIDocumentLine."Transport Type" := rSalesLineArchive."Transp. Type";
+          IF reBayNavCWebshopItem.GET(FORMAT(rSalesHeaderArchive."Website No."),rSalesShipmentLine."No.") THEN
+            // S/P1242
+            //;
+            // S/P1250
+            //rOutboundEDIDocumentLine."Line Amount" := rItem."Net PP SKU" + reBayNavCWebshopItem."Truck Haul Cost RE";
+            rOutboundEDIDocumentLine."Line Amount" := rItem."Repository Net PP SKU" + reBayNavCWebshopItem."Truck Haul Cost RE";
+            // E/P1250
+            // E/P1242
+        END;
+      END ELSE BEGIN
+        rSalesLine.GET(1,rSalesShipmentLine."Order No.",rSalesShipmentLine."Order Line No.");
+        rOutboundEDIDocumentLine.Amount := rSalesLine.Amount;
+        rOutboundEDIDocumentLine."Unit Price" := rSalesLine."Unit Price";
+        rOutboundEDIDocumentLine."Currency Code" := rSalesHeader."Currency Code";
+        rOutboundEDIDocumentLine."Line Amount" := rSalesLine."Line Amount";
+        rOutboundEDIDocumentLine."Transport Type" := rSalesLine."Transp. Type";
+        IF reBayNavCWebshopItem.GET(FORMAT(rSalesHeader."Website No."),rSalesShipmentLine."No.") THEN
+          // S/P1242
+          //;
+          // S/P1250
+          //rOutboundEDIDocumentLine."Line Amount" := rItem."Net PP SKU" + reBayNavCWebshopItem."Truck Haul Cost RE";
+          rOutboundEDIDocumentLine."Line Amount" := rItem."Repository Net PP SKU" + reBayNavCWebshopItem."Truck Haul Cost RE";
+          // E/P1250
+          // E/P1242
+      END;
+
+      CASE rOutboundEDIDocumentLine."Transport Type" OF
+        0: rOutboundEDIDocumentLine."Transport Type Text" := 'PAKET';
+        1: rOutboundEDIDocumentLine."Transport Type Text" := '2MH';
+        ELSE
+          rOutboundEDIDocumentLine."Transport Type Text" := '';
+      END;
+
+      rOutboundEDIDocumentLine."Country Code of Origin" := rItem."Country/Region of Origin Code";
+      rOutboundEDIDocumentLine."Country/Region Purchased Code" := rItem."Country/Region of Mfg. Code";
+      rOutboundEDIDocumentLine."Tariff No." := rItem."Tariff No.";
+      rOutboundEDIDocumentLine."Gross Weight" := rItem."Gross Weight";
+      //H1526 07.10.14 DMA +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF rOutboundEDIDocumentLine."Gross Weight" = 0 THEN
+        rOutboundEDIDocumentLine."Gross Weight" := 0.1;
+      //H1526 07.10.14 DMA -------------------------------------------------------
+
+      rOutboundEDIDocumentLine."Net Weight" := rItem."Net Weight";
+      //H1526 07.10.14 DMA +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF rOutboundEDIDocumentLine."Net Weight" = 0 THEN
+        rOutboundEDIDocumentLine."Net Weight" := 0.1;
+      //H1526 07.10.14 DMA -------------------------------------------------------
+
+      rOutboundEDIDocumentLine."Unit Volume" := rItem."Unit Volume";
+
+      rOutboundEDIDocumentLine."Item URL" := reBayNavCWebshopItem."Product URL";
+      rOutboundEDIDocumentLine."Tariff No. CH" := COPYSTR(reBayNavCWebshopItem."Tariff No. Destination",1,10);
+      IF reBayNavCWebshopItem."Preferential Product" THEN
+        rOutboundEDIDocumentLine."Preferential Product Exists" := '1'
+      ELSE
+        rOutboundEDIDocumentLine."Preferential Product Exists" := '2';
+      rOutboundEDIDocumentLine."Preferential Product" := reBayNavCWebshopItem."No. Preferential Product";
+      IF reBayNavCWebshopItem."Hazardous Good" THEN
+        rOutboundEDIDocumentLine."Hazardous good" := '1'
+      ELSE
+        rOutboundEDIDocumentLine."Hazardous good" := '2';
+      rOutboundEDIDocumentLine."VOC-charge" := reBayNavCWebshopItem."VOC-Charge";
+      IF reBayNavCWebshopItem.CITES THEN
+        rOutboundEDIDocumentLine.CITES := '1'
+      ELSE
+        rOutboundEDIDocumentLine.CITES := '2';
+      rOutboundEDIDocumentLine."Specific Amount" := COPYSTR(reBayNavCWebshopItem."Specific Amount",1,30);
+      IF rOutboundEDIDocumentLine."Specific Amount" <> '' THEN
+        rOutboundEDIDocumentLine."Has Specific Amount" := '1'
+      ELSE BEGIN
+        rOutboundEDIDocumentLine."Specific Amount" := '0';
+        rOutboundEDIDocumentLine."Has Specific Amount" := '2';
+      END;
+
+      //GTIN aus Referenztabelle
+      rItemCrossReference.RESET;
+      rItemCrossReference.SETRANGE("Item No.",rSalesShipmentLine."No.");
+      IF rSalesShipmentLine."Variant Code" <> '' THEN
+        rItemCrossReference.SETRANGE("Variant Code",rSalesShipmentLine."Variant Code");
+      rItemCrossReference.SETRANGE("Cross-Reference Type",rItemCrossReference."Cross-Reference Type"::"Bar Code");
+      rItemCrossReference.SETRANGE("Discontinue Bar Code",FALSE);
+      IF rItemCrossReference.FINDFIRST THEN
+        rOutboundEDIDocumentLine.GTIN := rItemCrossReference."Cross-Reference No.";
+
+      IF rSalesShipmentLine."Order No." <> '' THEN
+        rOutboundEDIDocumentLine."Sales Order No." := rSalesShipmentLine."Order No.";
+
+      IF CreateShipmentEntries(rOutboundDocHeader,rSalesShipmentLine) THEN
+        rOutboundEDIDocumentLine."Tracking Number Code" := '17'
+      ELSE
+        rOutboundEDIDocumentLine."Tracking Number Code" := '';
+
+      // S/P1248
+      rOutboundEDIDocumentLine."Original Document No." := rSalesShipmentLine."Document No.";
+      rOutboundEDIDocumentLine."Original Document Line No." := rSalesShipmentLine."Line No.";
+      // E/P1248
+
+      rOutboundEDIDocumentLine.INSERT;
+
+      rSalesShipmentLine."Outbound EDI IFTMIN No." := rOutboundDocHeader."Header Document No.";
+      rSalesShipmentLine.MODIFY;
+
+      //P1276 23.11.14 gob-Fuchs +++++++++++++++++
+      IF rSalesLine."Document No." <> '' THEN BEGIN
+      //P1276 23.11.14 gob-Fuchs -----------------
+
+        rSalesLine."Outbound EDI IFTMIN No." := rOutboundDocHeader."Header Document No.";
+        rSalesLine.MODIFY;
+
+      //P1276 23.11.14 gob-Fuchs +++++++++++++++++
+      END;
+      IF rSalesLineArchive."Document No." <> '' THEN BEGIN
+        rSalesLineArchive."Outbound EDI IFTMIN No." := rOutboundDocHeader."Header Document No.";
+        rSalesLineArchive.MODIFY;
+      END;
+      //P1276 23.11.14 gob-Fuchs -----------------
+    END;
+
+    PROCEDURE IsPartnerDocumentActive@10(Partner@1000 : Code[20];DocumentTypeCode@1001 : Text[30]);
+    BEGIN
+      rEDIPartnerDocumentType.SETRANGE("Partner Code",Partner);
+      rEDIPartnerDocumentType.SETRANGE("Document Type",DocumentTypeCode);
+      rEDIPartnerDocumentType.SETRANGE("Document Direction",rEDIPartnerDocumentType."Document Direction"::Outbound);
+      rEDIPartnerDocumentType.SETRANGE(Active,TRUE);
+      IF rEDIPartnerDocumentType.ISEMPTY THEN
+        ERROR(Text001,Partner,DocumentTypeCode);
+
+      rEDIPartnerDocumentType.FINDFIRST;
+      rEDIPartnerDocumentType.TESTFIELD("IFTMIN No. Series");
+    END;
+
+    PROCEDURE CheckLines@1000000010(rSalesShipmentHeader@1000000000 : Record 110;rEDIPartner@1000000001 : Record 82851) : Boolean;
+    VAR
+      rSalesShipmentLine@1000000002 : Record 111;
+    BEGIN
+      rSalesShipmentLine.RESET;
+      rSalesShipmentLine.SETRANGE("Document No.",rSalesShipmentHeader."No.");
+      rSalesShipmentLine.SETRANGE("Outbound EDI IFTMIN No.",'');
+      rSalesShipmentLine.SETFILTER("Purchasing Code",rEDIPartner."Distribution Filter");
+      rSalesShipmentLine.SETRANGE(Type,rSalesShipmentLine.Type::Item);
+      rSalesShipmentLine.SETFILTER(Quantity,'>%1',0);
+      IF rSalesShipmentLine.ISEMPTY THEN
+        EXIT(FALSE)
+      ELSE
+        EXIT(TRUE);
+    END;
+
+    PROCEDURE CreateShipmentEntries@1000000001(rOutboundEDIDocumentHeader@1000000000 : Record 82865;rSalesShipmentLine@1000000007 : Record 111) : Boolean;
+    VAR
+      rSalesLine@1000000001 : Record 37;
+      DHLParcelsStatusHistory@1000000002 : Record 50021;
+      OutboundEDIDHLShipmentCode@1000000003 : Record 50112;
+      Counter@1000000004 : Integer;
+      ParcelStatusHistory@1000000005 : Record 80013;
+      FPCGeneralSetup@1000000006 : Record 50055;
+    BEGIN
+      FPCGeneralSetup.GET;
+
+      rSalesLine.SETRANGE("Document Type",rSalesLine."Document Type"::Order);
+      rSalesLine.SETRANGE("Document No.",rSalesShipmentLine."Order No.");
+      rSalesLine.SETRANGE("Line No.",rSalesShipmentLine."Order Line No.");
+      rSalesLine.SETFILTER("DHL Shipment Number",'<>%1','');
+      IF rSalesLine.ISEMPTY THEN
+        EXIT(FALSE);
+
+      rSalesLine.FINDFIRST;
+      CASE FPCGeneralSetup."Active Parcel Status History" OF
+        FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old":
+          BEGIN
+            DHLParcelsStatusHistory.SETCURRENTKEY("Document No.","Document Line No.","Current Status","Time Stamp",
+                            "DHL Shipment Code","Rhenus Entry");
+            DHLParcelsStatusHistory.SETRANGE("Document No.",rSalesLine."Document No.");
+            DHLParcelsStatusHistory.SETRANGE("Document Line No.",rSalesLine."Line No.");
+            DHLParcelsStatusHistory.SETFILTER("DHL Shipment Code",'<>%1','');
+            IF DHLParcelsStatusHistory.FIND('-') THEN BEGIN
+              OutboundEDIDHLShipmentCode.SETRANGE("Header Document Type",rOutboundEDIDocumentHeader."Header Document Type");
+              OutboundEDIDHLShipmentCode.SETRANGE("Header Document No.",rOutboundEDIDocumentHeader."Header Document No.");
+              OutboundEDIDHLShipmentCode.SETRANGE("Document Type",rOutboundEDIDocumentHeader."Document Type");
+              OutboundEDIDHLShipmentCode.SETRANGE("Document No.",rOutboundEDIDocumentHeader."Document No.");
+              OutboundEDIDHLShipmentCode.SETRANGE("Line No.",rSalesShipmentLine."Order Line No.");
+              IF OutboundEDIDHLShipmentCode.FIND('-') THEN
+                OutboundEDIDHLShipmentCode.DELETEALL;
+              REPEAT
+                OutboundEDIDHLShipmentCode.INIT;
+                OutboundEDIDHLShipmentCode."Header Document Type" := rOutboundEDIDocumentHeader."Header Document Type";
+                OutboundEDIDHLShipmentCode."Header Document No." := rOutboundEDIDocumentHeader."Header Document No.";
+                OutboundEDIDHLShipmentCode."Document Type" := rOutboundEDIDocumentHeader."Document Type";
+                OutboundEDIDHLShipmentCode."Document No." := rOutboundEDIDocumentHeader."Document No.";
+                OutboundEDIDHLShipmentCode."Line No." := rSalesShipmentLine."Order Line No.";
+                OutboundEDIDHLShipmentCode."Entry No." := 0;
+                OutboundEDIDHLShipmentCode."DHL Shipment Code" := DHLParcelsStatusHistory."DHL Shipment Code";
+                OutboundEDIDHLShipmentCode.Direction := OutboundEDIDHLShipmentCode.Direction::Outbound;
+                OutboundEDIDHLShipmentCode.INSERT;
+                Counter += 1;
+              UNTIL DHLParcelsStatusHistory.NEXT = 0;
+            END;
+          END;
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+        FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History":
+          BEGIN
+            ParcelStatusHistory.SETCURRENTKEY("Document No.","Document Line No.","Document Type");
+            ParcelStatusHistory.SETRANGE("Document No.",rSalesLine."Document No.");
+            ParcelStatusHistory.SETRANGE("Document Line No.",rSalesLine."Line No.");
+            ParcelStatusHistory.SETFILTER("Tracking Code",'<>%1','');
+            IF ParcelStatusHistory.FIND('-') THEN BEGIN
+              OutboundEDIDHLShipmentCode.SETRANGE("Header Document Type",rOutboundEDIDocumentHeader."Header Document Type");
+              OutboundEDIDHLShipmentCode.SETRANGE("Header Document No.",rOutboundEDIDocumentHeader."Header Document No.");
+              OutboundEDIDHLShipmentCode.SETRANGE("Document Type",rOutboundEDIDocumentHeader."Document Type");
+              OutboundEDIDHLShipmentCode.SETRANGE("Document No.",rOutboundEDIDocumentHeader."Document No.");
+              OutboundEDIDHLShipmentCode.SETRANGE("Line No.",rSalesShipmentLine."Order Line No.");
+              IF OutboundEDIDHLShipmentCode.FIND('-') THEN
+                OutboundEDIDHLShipmentCode.DELETEALL;
+              REPEAT
+                OutboundEDIDHLShipmentCode.INIT;
+                OutboundEDIDHLShipmentCode."Header Document Type" := rOutboundEDIDocumentHeader."Header Document Type";
+                OutboundEDIDHLShipmentCode."Header Document No." := rOutboundEDIDocumentHeader."Header Document No.";
+                OutboundEDIDHLShipmentCode."Document Type" := rOutboundEDIDocumentHeader."Document Type";
+                OutboundEDIDHLShipmentCode."Document No." := rOutboundEDIDocumentHeader."Document No.";
+                OutboundEDIDHLShipmentCode."Line No." := rSalesShipmentLine."Order Line No.";
+                OutboundEDIDHLShipmentCode."Entry No." := 0;
+                OutboundEDIDHLShipmentCode."DHL Shipment Code" := ParcelStatusHistory."Tracking Code";
+                OutboundEDIDHLShipmentCode.Direction := OutboundEDIDHLShipmentCode.Direction::Outbound;
+                OutboundEDIDHLShipmentCode.INSERT;
+                Counter += 1;
+              UNTIL ParcelStatusHistory.NEXT = 0;
+            END;
+          END;
+      END;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE CreateIFTMINRetoure@1000000011(rSalesLine@1000000002 : Record 37;rEDIPartner@1000000004 : Record 82851);
+    VAR
+      rVendor@1000000001 : Record 23;
+      rSalesHeader@1000000000 : Record 36;
+      cOutboundEDIService@1108200001 : Codeunit 82851;
+      Confirm001@1108200002 : TextConst 'ENU=The order %1 has already been transmitted via EDI. Should the order be sent again?';
+      Error001@1108200003 : TextConst 'ENU=The transmission was aborted.';
+      OutboundEDIForm@1000000003 : Form 50307;
+    BEGIN
+      // S/P1182
+      rEDIIntegratorSetup.GET();
+      rCompanyInformation.GET();
+      IsPartnerDocumentActive(rEDIPartner.Code,'IFTMIN');
+
+      rSalesHeader.GET(rSalesLine."Document Type",rSalesLine."Document No.");
+      CreateIFTMINList(rEDIPartner);
+      CreateIFTMINRetoureHeader(rSalesHeader,rEDIPartner,TRUE,rSalesLine);
+      rOutboundEDIDocumentList.SETRECFILTER;
+      cOutboundEDIService.SendOutboundEDIListToEDI(rOutboundEDIDocumentList,FALSE);
+      // E/P1182
+    END;
+
+    PROCEDURE CheckLinesRetoure@1000000004(rSalesHeader@1000000000 : Record 36;rEDIPartner@1000000001 : Record 82851) : Boolean;
+    VAR
+      rSalesLine@1000000002 : Record 37;
+    BEGIN
+      rSalesLine.RESET;
+      rSalesLine.SETRANGE("Document No.",rSalesHeader."No.");
+      rSalesLine.SETFILTER("Outbound EDI IFTMIN No.",'<>%1','');
+      rSalesLine.SETFILTER("Outbound EDI IFTMIN No. Cancel",'');
+      rSalesLine.SETFILTER("Purchasing Code",rEDIPartner."Distribution Filter");
+      rSalesLine.SETRANGE(Type,rSalesLine.Type::Item);
+      //rSalesLine.SETFILTER(Quantity,'>%1',0);
+      IF rSalesLine.ISEMPTY THEN
+        EXIT(FALSE)
+      ELSE
+        EXIT(TRUE);
+    END;
+
+    PROCEDURE CreateIFTMINCancel@1000000005(rSalesLine@1000000002 : Record 37;rEDIPartner@1000000004 : Record 82851;CompleteCancel@1000000005 : Boolean);
+    VAR
+      rVendor@1000000001 : Record 23;
+      rSalesHeader@1000000000 : Record 36;
+      rSalesLine2@1000000007 : Record 37;
+      cOutboundEDIService@1108200001 : Codeunit 82851;
+      Confirm001@1108200002 : TextConst 'ENU=The order %1 has already been transmitted via EDI. Should the order be sent again?';
+      Error001@1108200003 : TextConst 'ENU=The transmission was aborted.';
+      OutboundEDIForm@1000000003 : Form 50307;
+      FoundEDIPartner@1000000006 : Boolean;
+    BEGIN
+      // S/P1205
+      rEDIIntegratorSetup.GET();
+      rCompanyInformation.GET();
+      IF NOT CompleteCancel THEN
+        IsPartnerDocumentActive(rEDIPartner.Code,'IFTMIN');
+
+      rSalesHeader.GET(rSalesLine."Document Type",rSalesLine."Document No.");
+      rEDIPartner.RESET;
+      rEDIPartner.SETFILTER("Distribution Filter",'<>%1','');
+      IF CompleteCancel THEN BEGIN
+        IF rEDIPartner.FIND('-') THEN BEGIN
+          REPEAT
+            IF CheckLinesRetoure(rSalesHeader,rEDIPartner) THEN BEGIN
+              rEDIPartnerDocumentType.RESET;
+              rEDIPartnerDocumentType.GET(rEDIPartner.Code,rEDIPartnerDocumentType."Document Direction"::Outbound,'IFTMIN');
+              CreateIFTMINList(rEDIPartner);
+              CreateIFTMINCancelHeader(rSalesHeader,rEDIPartner,TRUE,rSalesLine);
+              rOutboundEDIDocumentList.SETRECFILTER;
+              cOutboundEDIService.SendOutboundEDIListToEDI(rOutboundEDIDocumentList,FALSE);
+              rOutboundEDIDocumentList.RESET;
+            END;
+          UNTIL rEDIPartner.NEXT = 0;
+        END;
+      END ELSE BEGIN
+        FoundEDIPartner := FALSE;
+        rSalesLine2.RESET;
+        rSalesLine2.SETRANGE("Document Type",rSalesLine."Document Type");
+        rSalesLine2.SETRANGE("Document No.",rSalesLine."Document No.");
+        rSalesLine2.SETRANGE("Line No.",rSalesLine."Line No.");
+        rSalesLine2.FINDFIRST;
+        REPEAT
+          rSalesLine2.SETFILTER("Purchasing Code",rEDIPartner."Distribution Filter");
+          IF NOT rSalesLine2.ISEMPTY THEN
+            FoundEDIPartner := TRUE;
+        UNTIL (rEDIPartner.NEXT = 0) OR (FoundEDIPartner);
+        CreateIFTMINList(rEDIPartner);
+        CreateIFTMINCancelHeader(rSalesHeader,rEDIPartner,FALSE,rSalesLine);
+        rOutboundEDIDocumentList.SETRECFILTER;
+        cOutboundEDIService.SendOutboundEDIListToEDI(rOutboundEDIDocumentList,FALSE);
+      END;
+      // E/P1205
+    END;
+
+    PROCEDURE CreateIFTMINCancelHeader@1000000006(rSalesHeader@1115500002 : Record 36;rEDIPartner@1000000004 : Record 82851;bCompleteCancel@1000000001 : Boolean;pSalesLine@1000000005 : Record 37);
+    VAR
+      rCurrency@1115500004 : Record 4;
+      rSalespersonPurchaser@1119443000 : Record 13;
+      rVendor@1115500006 : Record 23;
+      rOutboundEDIDocumentHeader@1115500001 : Record 82865;
+      rCustomer@1000000002 : Record 18;
+      iLineCounter@1115500000 : Integer;
+      rSalesLine@1000000003 : Record 37;
+      rLocation@1000000000 : Record 14;
+      RHDSalesExportHeader@1000000006 : Record 50181;
+      rLanguage@1000000007 : Record 8;
+      DDHeader@1000000008 : Record 50061;
+    BEGIN
+      // S/P1205
+      CLEAR(sExternalDocNo);
+
+      rOutboundEDIDocumentHeader.INIT;
+      rOutboundEDIDocumentHeader."Header Document Type" := rOutboundEDIDocumentList."Document Type";
+      rOutboundEDIDocumentHeader."Header Document No." := rOutboundEDIDocumentList."No.";
+      rOutboundEDIDocumentHeader."Document Type" := rOutboundEDIDocumentHeader."Document Type"::"Sales Shipment";
+      rOutboundEDIDocumentHeader."Document No." := rSalesHeader."Last Shipping No.";
+      rOutboundEDIDocumentHeader."Document Date" := rSalesHeader."Document Date";
+      rOutboundEDIDocumentHeader."Order Date" := rSalesHeader."Order Date";
+      rOutboundEDIDocumentHeader.Currency := rSalesHeader."Currency Code";
+      rOutboundEDIDocumentHeader."VAT Registration No." := rCompanyInformation."VAT Registration No.";
+      rOutboundEDIDocumentHeader."Registration No." := rCompanyInformation."Registration No.";
+      rOutboundEDIDocumentHeader."Your Reference" := rSalesHeader."Your Reference";
+      rOutboundEDIDocumentHeader."External No." := rOutboundEDIDocumentList."External No.";
+      IF rCustomer.GET(rSalesHeader."Sell-to Customer No.") THEN BEGIN
+        rOutboundEDIDocumentHeader."Customer E-mail" := rCustomer."E-Mail";
+        rOutboundEDIDocumentHeader."Customer Phone No." := rCustomer."Phone No.";
+      END;
+
+      rOutboundEDIDocumentHeader."Ship-to Code" := rSalesHeader."Sell-to Customer No.";
+      rOutboundEDIDocumentHeader."Ship-to Name" := rSalesHeader."Ship-to Name";
+      rOutboundEDIDocumentHeader."Ship-to Name 2" := rSalesHeader."Ship-to Name 2";
+      rOutboundEDIDocumentHeader."Ship-to Address" := rSalesHeader."Ship-to Address";
+      rOutboundEDIDocumentHeader."Ship-to Address 2" := rSalesHeader."Ship-to Address 2";
+      rOutboundEDIDocumentHeader."Ship-to City" := rSalesHeader."Ship-to City";
+      rOutboundEDIDocumentHeader."Ship-to Contact" := rSalesHeader."Ship-to Contact";
+      rOutboundEDIDocumentHeader."Ship-to Post Code" := rSalesHeader."Ship-to Post Code";
+      rOutboundEDIDocumentHeader."Ship-to Country/Region Code" := rSalesHeader."Ship-to Country/Region Code";
+
+      rLanguage.GET(rSalesHeader."Language Code");
+      rLanguage.TESTFIELD("DD Language ID");
+      rOutboundEDIDocumentHeader."Language Code" := UPPERCASE(rLanguage."DD Language ID");
+
+      RHDSalesExportHeader.RESET;
+      RHDSalesExportHeader.SETRANGE("Document Type",RHDSalesExportHeader."Document Type"::Order);
+      RHDSalesExportHeader.SETRANGE("Document No.",rSalesHeader."No.");
+      IF RHDSalesExportHeader.FINDLAST THEN
+        rOutboundEDIDocumentHeader."Order No." := RHDSalesExportHeader."Rhenus Order No."
+      ELSE BEGIN
+        DDHeader.RESET;
+        DDHeader.SETRANGE("Document Type",DDHeader."Document Type"::Order);
+        DDHeader.SETRANGE("Order No. Navision",rSalesHeader."No.");
+        IF DDHeader.FINDLAST THEN
+          rOutboundEDIDocumentHeader."Order No." := DDHeader."No."
+        ELSE
+          rOutboundEDIDocumentHeader."Order No." := rSalesHeader."No.";
+      END;
+
+      rOutboundEDIDocumentHeader."Shipment Date" := TODAY;
+
+      rOutboundEDIDocumentHeader."Supplier GLN" := rEDIIntegratorSetup."Global Location Number (GLN)";
+      rOutboundEDIDocumentHeader."Buyer GLN" := rEDIIntegratorSetup."Global Location Number (GLN)";
+      rOutboundEDIDocumentHeader."Invoicer GLN" := rEDIIntegratorSetup."Global Location Number (GLN)";
+
+      IF bCompleteCancel THEN BEGIN
+        rOutboundEDIDocumentHeader."Order Type" := '340';
+        rOutboundEDIDocumentHeader."Message Function" := '1';
+      END ELSE BEGIN
+        rOutboundEDIDocumentHeader."Order Type" := '610';
+        rOutboundEDIDocumentHeader."Message Function" := '1';
+      END;
+
+      IF NOT bCompleteCancel THEN BEGIN
+        rSalesLine.RESET();
+        rSalesLine.SETRANGE("Document Type",pSalesLine."Document Type");
+        rSalesLine.SETRANGE("Document No.",pSalesLine."Document No.");
+        rSalesLine.SETFILTER("Line No.",'<>%1',pSalesLine."Line No.");
+        rSalesLine.SETFILTER("Line Status",'<>%1','*CANCEL*');
+        rSalesLine.SETFILTER("Purchasing Code",rEDIPartner."Distribution Filter");
+        IF rSalesLine.ISEMPTY THEN BEGIN
+          rOutboundEDIDocumentHeader."Order Type" := '340';
+          rOutboundEDIDocumentHeader."Message Function" := '1';
+        END;
+      END;
+
+      rOutboundEDIDocumentHeader.INSERT;
+
+      IF bCompleteCancel THEN BEGIN
+        rSalesLine.RESET();
+        rSalesLine.SETRANGE("Document No.",rSalesHeader."No.");
+        rSalesLine.SETFILTER("Outbound EDI IFTMIN No.",'<>%1','');
+        rSalesLine.SETFILTER("Outbound EDI IFTMIN No. Cancel",'');
+        rSalesLine.SETFILTER("Purchasing Code",rEDIPartner."Distribution Filter");
+        rSalesLine.SETRANGE(Type,rSalesLine.Type::Item);
+        //rSalesLine.SETFILTER(Quantity,'>%1',0);
+        rSalesLine.FIND('-');
+      END ELSE BEGIN
+        rSalesLine.RESET();
+        rSalesLine.SETRANGE("Document Type",pSalesLine."Document Type");
+        rSalesLine.SETRANGE("Document No.",pSalesLine."Document No.");
+        rSalesLine.SETRANGE("Line No.",pSalesLine."Line No.");
+        rSalesLine.FINDFIRST;
+      END;
+
+      rOutboundEDIDocumentHeader."Supplier GLN" := rSalesLine."Location Code";
+      rLocation.GET(rSalesLine."Location Code");
+      rOutboundEDIDocumentHeader."Company Name" := rLocation.Name;
+      rOutboundEDIDocumentHeader."Company Name 2" := rLocation."Name 2";
+      rOutboundEDIDocumentHeader."Company Address" := rLocation.Address;
+      rOutboundEDIDocumentHeader."Company Address 2" := rLocation."Address 2";
+      rOutboundEDIDocumentHeader."Company City" := rLocation.City;
+      rOutboundEDIDocumentHeader."Company Contact" := rLocation.Contact;
+      rOutboundEDIDocumentHeader."Company Post Code" := rLocation."Post Code";
+      rOutboundEDIDocumentHeader."Company Country/Region Code" := rLocation."Country/Region Code";
+
+      REPEAT
+        iLineCounter += 1;
+        CreateIFTMINCancelLine(rSalesLine,iLineCounter,rOutboundEDIDocumentHeader);
+      UNTIL rSalesLine.NEXT = 0;
+
+      IF rSalesHeader."Currency Code" = '' THEN
+        rCurrency.InitRoundingPrecision
+      ELSE
+        rCurrency.GET(rSalesHeader."Currency Code");
+
+      rOutboundEDIDocumentHeader."Position Count" := iLineCounter;
+      rOutboundEDIDocumentHeader.MODIFY;
+
+      rSalesHeader."Outbound EDI No." := rOutboundEDIDocumentHeader."Header Document No.";
+      rSalesHeader."Date Sent" := TODAY;
+      rSalesHeader."Time Sent" := TIME;
+      rSalesHeader."Use for Distribution List" := FALSE;
+      rSalesHeader.MODIFY;
+      // E/P1205
+    END;
+
+    PROCEDURE CreateIFTMINCancelLine@1000000008(rSalesLine@1115500000 : Record 37;iLineCounter@1115500002 : Integer;rOutboundDocHeader@1000000000 : Record 82865);
+    VAR
+      rItem@1108200003 : Record 27;
+      rUnitOfMeasure@1108200001 : Record 204;
+      rItemCrossReference@1115500003 : Record 5717;
+      rOutboundEDIDocumentLine@1115500001 : Record 82866;
+      rVendor@1000000001 : Record 23;
+      rSalesHeader@1000000002 : Record 36;
+      rSalesLine2@1000000009 : Record 37;
+      reBayNavCWebshopItem@1000000010 : Record 5251566;
+      rSalesHeaderArchive@1000000004 : Record 5107;
+      rSalesLineArchive@1000000005 : Record 5108;
+    BEGIN
+      // S/P1205
+      rOutboundEDIDocumentLine."Header Document Type" := rOutboundEDIDocumentList."Document Type";
+      rOutboundEDIDocumentLine."Header Document No." := rOutboundEDIDocumentList."No.";
+      rOutboundEDIDocumentLine."Document Type" := rOutboundEDIDocumentLine."Document Type"::"Sales Shipment";
+      rOutboundEDIDocumentLine."Document No." := rOutboundDocHeader."Document No.";
+      rOutboundEDIDocumentLine."Line No." := rSalesLine."Line No.";
+      rOutboundEDIDocumentLine."Item No." := rSalesLine."No.";
+      IF rItem.GET(rSalesLine."No.") THEN
+        rOutboundEDIDocumentLine."Country Purchased Code" := rItem."Country/Region Purchased Code";
+      IF rOutboundEDIDocumentLine."Country Purchased Code" = '' THEN
+        rOutboundEDIDocumentLine."Country Purchased Code" := 'DE';
+
+      rOutboundEDIDocumentLine."Customer Item No." := rSalesLine."Cross-Reference No.";
+
+      rOutboundEDIDocumentLine.Description := rSalesLine.Description;
+      rOutboundEDIDocumentLine."Description 2" := rSalesLine."Description 2";
+      rOutboundEDIDocumentLine.Quantity := rSalesLine.Quantity;
+      IF rUnitOfMeasure.GET(rSalesLine."Unit of Measure Code") THEN BEGIN
+        IF rUnitOfMeasure."UN/ECE Code" <> '' THEN
+          rOutboundEDIDocumentLine."Unit of Measure" := rUnitOfMeasure."UN/ECE Code"
+        ELSE
+          rOutboundEDIDocumentLine."Unit of Measure" := rUnitOfMeasure.Code;
+      END ELSE
+        rOutboundEDIDocumentLine."Unit of Measure" := rSalesLine."Unit of Measure Code";
+      rOutboundEDIDocumentLine."EDI Line No." := iLineCounter;
+      rOutboundEDIDocumentLine."Customer Order No." := sExternalDocNo;
+
+      rItem.CALCFIELDS("Parcels Number");
+      rOutboundEDIDocumentLine."No. of Packaging" := rItem."Parcels Number" * rSalesLine.Quantity;
+      rSalesLine2.RESET;
+      rSalesLine2.SETRANGE("Document No.",rSalesLine."Document No.");
+      rSalesLine2.SETRANGE(Type,rSalesLine2.Type::Resource);
+      rSalesLine2.SETRANGE("No.",'ZAUFBAU');
+      IF NOT rSalesLine2.ISEMPTY THEN
+        rOutboundEDIDocumentLine."Text 2" := 'Aufbauservice';
+
+      IF NOT rSalesHeader.GET(1,rSalesLine."Document No.") THEN BEGIN
+        IF rSalesHeaderArchive.GET(1,rSalesLine."Document No.",1,1) THEN BEGIN
+          rSalesLineArchive.GET(1,rSalesLine."Document No.",1,1,rSalesLine."Line No.");
+          rOutboundEDIDocumentLine.Amount := rSalesLineArchive.Amount;
+          rOutboundEDIDocumentLine."Unit Price" := rSalesLineArchive."Unit Price";
+          rOutboundEDIDocumentLine."Currency Code" := rSalesHeaderArchive."Currency Code";
+          rOutboundEDIDocumentLine."Line Amount" := rSalesLineArchive."Line Amount";
+          rOutboundEDIDocumentLine."Transport Type" := rSalesLineArchive."Transp. Type";
+          reBayNavCWebshopItem.GET(FORMAT(rSalesHeaderArchive."Website No."),rSalesLine."No.");
+          // S/P1242
+          // S/P1250
+          //rOutboundEDIDocumentLine."Line Amount" := rItem."Net PP SKU" + reBayNavCWebshopItem."Truck Haul Cost RE";
+          rOutboundEDIDocumentLine."Line Amount" := rItem."Repository Net PP SKU" + reBayNavCWebshopItem."Truck Haul Cost RE";
+          // E/P1250
+          // E/P1242
+        END;
+      END ELSE BEGIN
+        rSalesLine.GET(1,rSalesLine."Document No.",rSalesLine."Line No.");
+        rOutboundEDIDocumentLine.Amount := rSalesLine.Amount;
+        rOutboundEDIDocumentLine."Unit Price" := rSalesLine."Unit Price";
+        rOutboundEDIDocumentLine."Currency Code" := rSalesHeader."Currency Code";
+        rOutboundEDIDocumentLine."Line Amount" := rSalesLine."Line Amount";
+        rOutboundEDIDocumentLine."Transport Type" := rSalesLine."Transp. Type";
+        reBayNavCWebshopItem.GET(FORMAT(rSalesHeader."Website No."),rSalesLine."No.");
+        // S/P1242
+        // S/P1250
+        //rOutboundEDIDocumentLine."Line Amount" := rItem."Net PP SKU" + reBayNavCWebshopItem."Truck Haul Cost RE";
+        rOutboundEDIDocumentLine."Line Amount" := rItem."Repository Net PP SKU" + reBayNavCWebshopItem."Truck Haul Cost RE";
+        // E/P1250
+        // E/P1242
+      END;
+
+      CASE rOutboundEDIDocumentLine."Transport Type" OF
+        0: rOutboundEDIDocumentLine."Transport Type Text" := 'PAKET';
+        1: rOutboundEDIDocumentLine."Transport Type Text" := '2MH';
+        ELSE
+          rOutboundEDIDocumentLine."Transport Type Text" := '';
+      END;
+
+      rOutboundEDIDocumentLine."Country Code of Origin" := rItem."Country/Region of Origin Code";
+      rOutboundEDIDocumentLine."Country/Region Purchased Code" := rItem."Country/Region of Mfg. Code";
+      rOutboundEDIDocumentLine."Tariff No." := rItem."Tariff No.";
+      rOutboundEDIDocumentLine."Gross Weight" := rItem."Gross Weight";
+      //H1526 07.10.14 DMA +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF rOutboundEDIDocumentLine."Gross Weight" = 0 THEN
+        rOutboundEDIDocumentLine."Gross Weight" := 0.1;
+      //H1526 07.10.14 DMA -------------------------------------------------------
+
+      rOutboundEDIDocumentLine."Net Weight" := rItem."Net Weight";
+      //H1526 07.10.14 DMA +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF rOutboundEDIDocumentLine."Net Weight" = 0 THEN
+        rOutboundEDIDocumentLine."Net Weight" := 0.1;
+      //H1526 07.10.14 DMA -------------------------------------------------------
+
+      rOutboundEDIDocumentLine."Unit Volume" := rItem."Unit Volume";
+
+      rOutboundEDIDocumentLine."Item URL" := reBayNavCWebshopItem."Product URL";
+      rOutboundEDIDocumentLine."Tariff No. CH" := COPYSTR(reBayNavCWebshopItem."Tariff No. Destination",1,10);
+      IF reBayNavCWebshopItem."Preferential Product" THEN
+        rOutboundEDIDocumentLine."Preferential Product Exists" := '1'
+      ELSE
+        rOutboundEDIDocumentLine."Preferential Product Exists" := '2';
+      rOutboundEDIDocumentLine."Preferential Product" := reBayNavCWebshopItem."No. Preferential Product";
+      IF reBayNavCWebshopItem."Hazardous Good" THEN
+        rOutboundEDIDocumentLine."Hazardous good" := '1'
+      ELSE
+        rOutboundEDIDocumentLine."Hazardous good" := '2';
+      rOutboundEDIDocumentLine."VOC-charge" := reBayNavCWebshopItem."VOC-Charge";
+      IF reBayNavCWebshopItem.CITES THEN
+        rOutboundEDIDocumentLine.CITES := '1'
+      ELSE
+        rOutboundEDIDocumentLine.CITES := '2';
+      rOutboundEDIDocumentLine."Specific Amount" := COPYSTR(reBayNavCWebshopItem."Specific Amount",1,30);
+      IF rOutboundEDIDocumentLine."Specific Amount" <> '' THEN
+        rOutboundEDIDocumentLine."Has Specific Amount" := '1'
+      ELSE BEGIN
+        rOutboundEDIDocumentLine."Specific Amount" := '0';
+        rOutboundEDIDocumentLine."Has Specific Amount" := '2';
+      END;
+
+      //GTIN aus Referenztabelle
+      rItemCrossReference.RESET;
+      rItemCrossReference.SETRANGE("Item No.",rSalesLine."No.");
+      IF rSalesLine."Variant Code" <> '' THEN
+        rItemCrossReference.SETRANGE("Variant Code",rSalesLine."Variant Code");
+      rItemCrossReference.SETRANGE("Cross-Reference Type",rItemCrossReference."Cross-Reference Type"::"Bar Code");
+      rItemCrossReference.SETRANGE("Discontinue Bar Code",FALSE);
+      IF rItemCrossReference.FINDFIRST THEN
+        rOutboundEDIDocumentLine.GTIN := rItemCrossReference."Cross-Reference No.";
+
+      IF rSalesLine."Document No." <> '' THEN
+        rOutboundEDIDocumentLine."Sales Order No." := rSalesLine."Document No.";
+
+      rOutboundEDIDocumentLine.INSERT;
+
+      rSalesLine."Outbound EDI IFTMIN No. Cancel" := rOutboundDocHeader."Header Document No.";
+      rSalesLine.MODIFY;
+      // E/P1205
+    END;
+
+    PROCEDURE SentIFTMIN@1000000007(pOutboundEDIDocumentList@1000000000 : Record 82864);
+    VAR
+      OutboundEDIService@1000000001 : Codeunit 82851;
+    BEGIN
+      OutboundEDIService.SendOutboundEDIListToEDI(pOutboundEDIDocumentList, FALSE);
+    END;
+
+    PROCEDURE CreateIFTMINRetoureHeader@1000000009(rSalesHeader@1115500002 : Record 36;rEDIPartner@1000000004 : Record 82851;bCompleteCancel@1000000001 : Boolean;pSalesLine@1000000005 : Record 37);
+    VAR
+      rCurrency@1115500004 : Record 4;
+      rSalespersonPurchaser@1119443000 : Record 13;
+      rVendor@1115500006 : Record 23;
+      rOutboundEDIDocumentHeader@1115500001 : Record 82865;
+      rCustomer@1000000002 : Record 18;
+      iLineCounter@1115500000 : Integer;
+      rSalesLine@1000000003 : Record 37;
+      rLocation@1000000000 : Record 14;
+      RHDSalesExportHeader@1000000006 : Record 50181;
+      DDHeader@1000000007 : Record 50061;
+      rLanguage@1000000008 : Record 8;
+    BEGIN
+      // S/P1182
+      CLEAR(sExternalDocNo);
+
+      rOutboundEDIDocumentHeader.INIT;
+      rOutboundEDIDocumentHeader."Header Document Type" := rOutboundEDIDocumentList."Document Type";
+      rOutboundEDIDocumentHeader."Header Document No." := rOutboundEDIDocumentList."No.";
+      rOutboundEDIDocumentHeader."Document Type" := rOutboundEDIDocumentHeader."Document Type"::"Sales Shipment";
+      rOutboundEDIDocumentHeader."Document No." := rSalesHeader."No.";
+      rOutboundEDIDocumentHeader."Document Date" := rSalesHeader."Document Date";
+      rOutboundEDIDocumentHeader."Order Date" := rSalesHeader."Order Date";
+      rOutboundEDIDocumentHeader.Currency := rSalesHeader."Currency Code";
+      rOutboundEDIDocumentHeader."VAT Registration No." := rCompanyInformation."VAT Registration No.";
+      rOutboundEDIDocumentHeader."Registration No." := rCompanyInformation."Registration No.";
+      rOutboundEDIDocumentHeader."Your Reference" := rSalesHeader."Your Reference";
+      rOutboundEDIDocumentHeader."External No." := rOutboundEDIDocumentList."External No.";
+      IF rCustomer.GET(rSalesHeader."Sell-to Customer No.") THEN BEGIN
+        rOutboundEDIDocumentHeader."Customer E-mail" := rCustomer."E-Mail";
+        rOutboundEDIDocumentHeader."Customer Phone No." := rCustomer."Phone No.";
+      END;
+
+      rOutboundEDIDocumentHeader."Ship-to Code" := rSalesHeader."Sell-to Customer No.";
+      rOutboundEDIDocumentHeader."Ship-to Name" := rSalesHeader."Ship-to Name";
+      rOutboundEDIDocumentHeader."Ship-to Name 2" := rSalesHeader."Ship-to Name 2";
+      rOutboundEDIDocumentHeader."Ship-to Address" := rSalesHeader."Ship-to Address";
+      rOutboundEDIDocumentHeader."Ship-to Address 2" := rSalesHeader."Ship-to Address 2";
+      rOutboundEDIDocumentHeader."Ship-to City" := rSalesHeader."Ship-to City";
+      rOutboundEDIDocumentHeader."Ship-to Contact" := rSalesHeader."Ship-to Contact";
+      rOutboundEDIDocumentHeader."Ship-to Post Code" := rSalesHeader."Ship-to Post Code";
+      rOutboundEDIDocumentHeader."Ship-to Country/Region Code" := rSalesHeader."Ship-to Country/Region Code";
+
+      rLanguage.GET(rSalesHeader."Language Code");
+      rLanguage.TESTFIELD("DD Language ID");
+      rOutboundEDIDocumentHeader."Language Code" := UPPERCASE(rLanguage."DD Language ID");
+
+      rSalesLine.RESET;
+      rSalesLine.SETRANGE("Document Type",rSalesHeader."Document Type");
+      rSalesLine.SETRANGE("Document No.",rSalesHeader."No.");
+      rSalesLine.FINDFIRST;
+
+      RHDSalesExportHeader.SETRANGE("Document Type",RHDSalesExportHeader."Document Type"::Order);
+      RHDSalesExportHeader.SETRANGE("Document No.",rSalesLine."Linked to Sales Order No.");
+      IF RHDSalesExportHeader.FINDLAST THEN
+        rOutboundEDIDocumentHeader."Order No." := RHDSalesExportHeader."Rhenus Order No."
+      ELSE BEGIN
+        DDHeader.RESET;
+        DDHeader.SETRANGE("Document Type",DDHeader."Document Type"::Order);
+        DDHeader.SETRANGE("Order No. Navision",rSalesLine."Linked to Sales Order No.");
+        IF DDHeader.FINDLAST THEN
+          rOutboundEDIDocumentHeader."Order No." := DDHeader."No."
+        ELSE
+          rOutboundEDIDocumentHeader."Order No." := rSalesLine."Linked to Sales Order No.";
+      END;
+
+
+      rOutboundEDIDocumentHeader."Shipment Date" := TODAY;
+
+      rOutboundEDIDocumentHeader."Supplier GLN" := rEDIIntegratorSetup."Global Location Number (GLN)";
+      rOutboundEDIDocumentHeader."Buyer GLN" := rEDIIntegratorSetup."Global Location Number (GLN)";
+      rOutboundEDIDocumentHeader."Invoicer GLN" := rEDIIntegratorSetup."Global Location Number (GLN)";
+
+      rOutboundEDIDocumentHeader."Order Type" := '35E';
+      rOutboundEDIDocumentHeader."Message Function" := '9';
+
+      rOutboundEDIDocumentHeader.INSERT;
+
+      IF bCompleteCancel THEN BEGIN
+        rSalesLine.RESET();
+        rSalesLine.SETRANGE("Document No.",rSalesHeader."No.");
+        rSalesLine.SETFILTER("Outbound EDI IFTMIN No.",'');
+        rSalesLine.SETFILTER("Purchasing Code",rEDIPartner."Distribution Filter");
+        rSalesLine.SETRANGE(Type,rSalesLine.Type::Item);
+        rSalesLine.SETFILTER(Quantity,'>%1',0);
+        rSalesLine.FIND('-');
+      END ELSE BEGIN
+        rSalesLine.RESET();
+        rSalesLine.SETRANGE("Document Type",pSalesLine."Document Type");
+        rSalesLine.SETRANGE("Document No.",pSalesLine."Document No.");
+        rSalesLine.SETRANGE("Line No.",pSalesLine."Line No.");
+        rSalesLine.FINDFIRST;
+      END;
+
+      rOutboundEDIDocumentHeader."Supplier GLN" := rSalesLine."Location Code";
+      rLocation.GET(rSalesLine."Location Code");
+      rOutboundEDIDocumentHeader."Company Name" := rLocation.Name;
+      rOutboundEDIDocumentHeader."Company Name 2" := rLocation."Name 2";
+      rOutboundEDIDocumentHeader."Company Address" := rLocation.Address;
+      rOutboundEDIDocumentHeader."Company Address 2" := rLocation."Address 2";
+      rOutboundEDIDocumentHeader."Company City" := rLocation.City;
+      rOutboundEDIDocumentHeader."Company Contact" := rLocation.Contact;
+      rOutboundEDIDocumentHeader."Company Post Code" := rLocation."Post Code";
+      rOutboundEDIDocumentHeader."Company Country/Region Code" := rLocation."Country/Region Code";
+
+      REPEAT
+        iLineCounter += 1;
+        CreateIFTMINRetoureLine(rSalesLine,iLineCounter,rOutboundEDIDocumentHeader);
+      UNTIL rSalesLine.NEXT = 0;
+
+      IF rSalesHeader."Currency Code" = '' THEN
+        rCurrency.InitRoundingPrecision
+      ELSE
+        rCurrency.GET(rSalesHeader."Currency Code");
+
+      rOutboundEDIDocumentHeader."Position Count" := iLineCounter;
+      rOutboundEDIDocumentHeader.MODIFY;
+
+      rSalesHeader."Outbound EDI No." := rOutboundEDIDocumentHeader."Header Document No.";
+      rSalesHeader."Date Sent" := TODAY;
+      rSalesHeader."Time Sent" := TIME;
+      rSalesHeader."Use for Distribution List" := FALSE;
+      rSalesHeader.MODIFY;
+      // E/P1182
+    END;
+
+    PROCEDURE CreateIFTMINRetoureLine@1000000013(rSalesLine@1115500000 : Record 37;iLineCounter@1115500002 : Integer;rOutboundDocHeader@1000000000 : Record 82865);
+    VAR
+      rItem@1108200003 : Record 27;
+      rUnitOfMeasure@1108200001 : Record 204;
+      rItemCrossReference@1115500003 : Record 5717;
+      rOutboundEDIDocumentLine@1115500001 : Record 82866;
+      rVendor@1000000001 : Record 23;
+      rSalesHeader@1000000002 : Record 36;
+      rSalesLine2@1000000009 : Record 37;
+      reBayNavCWebshopItem@1000000010 : Record 5251566;
+      rSalesHeaderArchive@1000000004 : Record 5107;
+      rSalesLineArchive@1000000005 : Record 5108;
+      rOriginalSalesLine@1000000003 : Record 37;
+    BEGIN
+      // S/P1182
+      rOutboundEDIDocumentLine."Header Document Type" := rOutboundEDIDocumentList."Document Type";
+      rOutboundEDIDocumentLine."Header Document No." := rOutboundEDIDocumentList."No.";
+      rOutboundEDIDocumentLine."Document Type" := rOutboundEDIDocumentLine."Document Type"::"Sales Shipment";
+      rOutboundEDIDocumentLine."Document No." := rSalesLine."Document No.";
+      rOutboundEDIDocumentLine."Line No." := rSalesLine."Line No.";
+      rOutboundEDIDocumentLine."Item No." := rSalesLine."No.";
+      IF rItem.GET(rSalesLine."No.") THEN
+        rOutboundEDIDocumentLine."Country Purchased Code" := rItem."Country/Region Purchased Code";
+      IF rOutboundEDIDocumentLine."Country Purchased Code" = '' THEN
+        rOutboundEDIDocumentLine."Country Purchased Code" := 'DE';
+
+      rOutboundEDIDocumentLine."Customer Item No." := rSalesLine."Cross-Reference No.";
+
+      rOutboundEDIDocumentLine.Description := rSalesLine.Description;
+      rOutboundEDIDocumentLine."Description 2" := rSalesLine."Description 2";
+      rOutboundEDIDocumentLine.Quantity := rSalesLine.Quantity;
+      IF rUnitOfMeasure.GET(rSalesLine."Unit of Measure Code") THEN BEGIN
+        IF rUnitOfMeasure."UN/ECE Code" <> '' THEN
+          rOutboundEDIDocumentLine."Unit of Measure" := rUnitOfMeasure."UN/ECE Code"
+        ELSE
+          rOutboundEDIDocumentLine."Unit of Measure" := rUnitOfMeasure.Code;
+      END ELSE
+        rOutboundEDIDocumentLine."Unit of Measure" := rSalesLine."Unit of Measure Code";
+      rOutboundEDIDocumentLine."EDI Line No." := iLineCounter;
+      rOutboundEDIDocumentLine."Customer Order No." := sExternalDocNo;
+
+      rItem.CALCFIELDS("Parcels Number");
+      rOutboundEDIDocumentLine."No. of Packaging" := rItem."Parcels Number" * rSalesLine.Quantity;
+
+      IF rSalesLine."Return Type" = rSalesLine."Return Type"::Change THEN
+        rOutboundEDIDocumentLine."Text 2" := 'Umtausch';
+
+      IF NOT rSalesHeader.GET(1,rSalesLine."Document No.") THEN BEGIN
+        IF rSalesHeaderArchive.GET(1,rSalesLine."Document No.",1,1) THEN BEGIN
+          rSalesLineArchive.GET(1,rSalesLine."Document No.",1,1,rSalesLine."Line No.");
+          rOutboundEDIDocumentLine.Amount := rSalesLineArchive.Amount;
+          rOutboundEDIDocumentLine."Unit Price" := rSalesLineArchive."Unit Price";
+          rOutboundEDIDocumentLine."Currency Code" := rSalesHeaderArchive."Currency Code";
+          rOutboundEDIDocumentLine."Line Amount" := rSalesLineArchive."Line Amount";
+          rOutboundEDIDocumentLine."Transport Type" := rSalesLineArchive."Transp. Type";
+          reBayNavCWebshopItem.GET(FORMAT(rSalesHeaderArchive."Website No."),rSalesLine."No.");
+          // S/P1242
+          rOutboundEDIDocumentLine."Line Amount" := rItem."Net PP SKU" + reBayNavCWebshopItem."Truck Haul Cost RE";
+          // E/P1242
+        END;
+      END ELSE BEGIN
+        rSalesLine.GET(1,rSalesLine."Document No.",rSalesLine."Line No.");
+        rOutboundEDIDocumentLine.Amount := rSalesLine.Amount;
+        rOutboundEDIDocumentLine."Unit Price" := rSalesLine."Unit Price";
+        rOutboundEDIDocumentLine."Currency Code" := rSalesHeader."Currency Code";
+        rOutboundEDIDocumentLine."Line Amount" := rSalesLine."Line Amount";
+        rOutboundEDIDocumentLine."Transport Type" := rSalesLine."Transp. Type";
+        reBayNavCWebshopItem.GET(FORMAT(rSalesHeader."Website No."),rSalesLine."No.");
+        // S/P1242
+        rOutboundEDIDocumentLine."Line Amount" := rItem."Net PP SKU" + reBayNavCWebshopItem."Truck Haul Cost RE";
+        // E/P1242
+      END;
+
+      rOutboundEDIDocumentLine."Country Code of Origin" := rItem."Country/Region of Origin Code";
+      rOutboundEDIDocumentLine."Country/Region Purchased Code" := rItem."Country/Region of Mfg. Code";
+      rOutboundEDIDocumentLine."Tariff No." := rItem."Tariff No.";
+      rOutboundEDIDocumentLine."Gross Weight" := rItem."Gross Weight";
+      //H1526 07.10.14 DMA +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF rOutboundEDIDocumentLine."Gross Weight" = 0 THEN
+        rOutboundEDIDocumentLine."Gross Weight" := 0.1;
+      //H1526 07.10.14 DMA -------------------------------------------------------
+
+      rOutboundEDIDocumentLine."Net Weight" := rItem."Net Weight";
+      //H1526 07.10.14 DMA +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF rOutboundEDIDocumentLine."Net Weight" = 0 THEN
+        rOutboundEDIDocumentLine."Net Weight" := 0.1;
+      //H1526 07.10.14 DMA -------------------------------------------------------
+
+      rOutboundEDIDocumentLine."Unit Volume" := rItem."Unit Volume";
+
+      rOutboundEDIDocumentLine."Item URL" := reBayNavCWebshopItem."Product URL";
+      rOutboundEDIDocumentLine."Tariff No. CH" := COPYSTR(reBayNavCWebshopItem."Tariff No. Destination",1,10);
+      IF reBayNavCWebshopItem."Preferential Product" THEN
+        rOutboundEDIDocumentLine."Preferential Product Exists" := '1'
+      ELSE
+        rOutboundEDIDocumentLine."Preferential Product Exists" := '2';
+      rOutboundEDIDocumentLine."Preferential Product" := reBayNavCWebshopItem."No. Preferential Product";
+      IF reBayNavCWebshopItem."Hazardous Good" THEN
+        rOutboundEDIDocumentLine."Hazardous good" := '1'
+      ELSE
+        rOutboundEDIDocumentLine."Hazardous good" := '2';
+      rOutboundEDIDocumentLine."VOC-charge" := reBayNavCWebshopItem."VOC-Charge";
+      IF reBayNavCWebshopItem.CITES THEN
+        rOutboundEDIDocumentLine.CITES := '1'
+      ELSE
+        rOutboundEDIDocumentLine.CITES := '2';
+      rOutboundEDIDocumentLine."Specific Amount" := COPYSTR(reBayNavCWebshopItem."Specific Amount",1,30);
+      IF rOutboundEDIDocumentLine."Specific Amount" <> '' THEN
+        rOutboundEDIDocumentLine."Has Specific Amount" := '1'
+      ELSE BEGIN
+        rOutboundEDIDocumentLine."Specific Amount" := '0';
+        rOutboundEDIDocumentLine."Has Specific Amount" := '2';
+      END;
+
+      //GTIN aus Referenztabelle
+      rItemCrossReference.RESET;
+      rItemCrossReference.SETRANGE("Item No.",rSalesLine."No.");
+      IF rSalesLine."Variant Code" <> '' THEN
+        rItemCrossReference.SETRANGE("Variant Code",rSalesLine."Variant Code");
+      rItemCrossReference.SETRANGE("Cross-Reference Type",rItemCrossReference."Cross-Reference Type"::"Bar Code");
+      rItemCrossReference.SETRANGE("Discontinue Bar Code",FALSE);
+      IF rItemCrossReference.FINDFIRST THEN
+        rOutboundEDIDocumentLine.GTIN := rItemCrossReference."Cross-Reference No.";
+
+      IF rSalesLine."Document No." <> '' THEN
+        rOutboundEDIDocumentLine."Sales Order No." := rSalesLine."Document No.";
+
+      rOutboundEDIDocumentLine.INSERT;
+
+      rOriginalSalesLine.GET(rSalesLine."Document Type"::Order,
+                             rSalesLine."Linked to Sales Order No.",rSalesLine."Linked to Sales Order Line No.");
+      rOriginalSalesLine."Outbound EDI IFTMIN No. Cancel" := rOutboundDocHeader."Header Document No.";
+      rOriginalSalesLine.MODIFY;
+      // E/P1182
+    END;
+
+    PROCEDURE CreateIFTMINUpdateList@1000000003(rEDIPartner@1115500001 : Record 82851) : Code[20];
+    VAR
+      NoSeriesMgt@1115500000 : Codeunit 396;
+    BEGIN
+      rEDIPartnerDocumentType.RESET;
+      rEDIPartnerDocumentType.SETRANGE("Partner Code",rEDIPartner.Code);
+      rEDIPartnerDocumentType.SETRANGE("Document Type",'IFTMIN');
+      rEDIPartnerDocumentType.SETRANGE("Document Direction",rEDIPartnerDocumentType."Document Direction"::Outbound);
+      rEDIPartnerDocumentType.SETRANGE(Active,TRUE);
+      IF rEDIPartnerDocumentType.ISEMPTY THEN
+        ERROR(Text001,rEDIPartner.Code,'IFTMIN');
+      rEDIPartnerDocumentType.FINDFIRST;
+
+      rOutboundEDIDocumentList.INIT;
+      rOutboundEDIDocumentList."Document Type" := rOutboundEDIDocumentList."Document Type"::IFTMIN;
+
+      NoSeriesMgt.InitSeries(
+        rEDIPartnerDocumentType."IFTMIN No. Series",rOutboundEDIDocumentList."No. Series",
+        rOutboundEDIDocumentList."Document Date",
+        rOutboundEDIDocumentList."No.",rOutboundEDIDocumentList."No. Series");
+
+      rOutboundEDIDocumentList."Partner Code" := rEDIPartner.Code;
+      rOutboundEDIDocumentList.Name := rEDIPartner.Name;
+      rOutboundEDIDocumentList."Name 2" := rEDIPartner."Name 2";
+      rOutboundEDIDocumentList.Address := rEDIPartner.Address;
+      rOutboundEDIDocumentList."Address 2" := rEDIPartner."Address 2";
+      rOutboundEDIDocumentList."Post Code" := rEDIPartner."Post Code";
+      rOutboundEDIDocumentList.City := rEDIPartner.City;
+      rOutboundEDIDocumentList."Country/Region Code" := rEDIPartner."Country/Region Code";
+      rOutboundEDIDocumentList."Document Date" := WORKDATE;
+      rOutboundEDIDocumentList."User ID" := USERID;
+      rOutboundEDIDocumentList."Test Indicator" := rEDIPartnerDocumentType."Test Indicator";
+      rOutboundEDIDocumentList."Supplier GLN" := rEDIPartner.GLN;
+      rOutboundEDIDocumentList."Payer GLN" := rEDIIntegratorSetup."Global Location Number (GLN)";
+      rOutboundEDIDocumentList."Sender GLN" := rEDIIntegratorSetup."Global Location Number (GLN)";
+      rOutboundEDIDocumentList."Recipient GLN" := rEDIPartner.GLN;
+      rOutboundEDIDocumentList."External No." := rEDIPartner."External No.";
+      rOutboundEDIDocumentList.INSERT;
+
+      EXIT(rOutboundEDIDocumentList."No.");
+    END;
+
+    PROCEDURE CreateIFTMINUpdateHeader@1000000012(rSalesShipmentHeader@1115500002 : Record 110;rEDIPartner@1000000004 : Record 82851;pOutboundEDIDocumentList@1000000009 : Record 82864);
+    VAR
+      rCurrency@1115500004 : Record 4;
+      rSalespersonPurchaser@1119443000 : Record 13;
+      rVendor@1115500006 : Record 23;
+      rOutboundEDIDocumentHeader@1115500001 : Record 82865;
+      rCustomer@1000000002 : Record 18;
+      iLineCounter@1115500000 : Integer;
+      rSalesShipmentLine@1000000003 : Record 111;
+      rLocation@1000000000 : Record 14;
+      rLanguage@1000000001 : Record 8;
+      RHDSalesExportHeader@1000000005 : Record 50181;
+      DDHeader@1000000006 : Record 50061;
+      rSalesHeader@1000000007 : Record 36;
+      rSalesHeaderArchive@1000000008 : Record 5107;
+    BEGIN
+      rEDIIntegratorSetup.GET();
+
+      CLEAR(sExternalDocNo);
+
+      rOutboundEDIDocumentHeader.INIT;
+      rOutboundEDIDocumentHeader."Header Document Type" := pOutboundEDIDocumentList."Document Type";
+      rOutboundEDIDocumentHeader."Header Document No." := pOutboundEDIDocumentList."No.";
+      rOutboundEDIDocumentHeader."Document Type" := rOutboundEDIDocumentHeader."Document Type"::"Sales Shipment";
+      rOutboundEDIDocumentHeader."Document No." := rSalesShipmentHeader."No.";
+      rOutboundEDIDocumentHeader."Document Date" := rSalesShipmentHeader."Document Date";
+      rOutboundEDIDocumentHeader."Order Date" := rSalesShipmentHeader."Order Date";
+      rOutboundEDIDocumentHeader.Currency := rSalesShipmentHeader."Currency Code";
+      rOutboundEDIDocumentHeader."VAT Registration No." := rCompanyInformation."VAT Registration No.";
+      rOutboundEDIDocumentHeader."Registration No." := rCompanyInformation."Registration No.";
+      rOutboundEDIDocumentHeader."Your Reference" := rSalesShipmentHeader."Your Reference";
+      rOutboundEDIDocumentHeader."External No." := pOutboundEDIDocumentList."External No.";
+      IF rCustomer.GET(rSalesShipmentHeader."Sell-to Customer No.") THEN BEGIN
+        rOutboundEDIDocumentHeader."Customer E-mail" := rCustomer."E-Mail";
+        rOutboundEDIDocumentHeader."Customer Phone No." := rCustomer."Phone No.";
+      END;
+
+      rOutboundEDIDocumentHeader."Ship-to Code" := COPYSTR(rSalesShipmentHeader."Sell-to Customer No.",1,10);
+      rOutboundEDIDocumentHeader."Ship-to Name" := rSalesShipmentHeader."Ship-to Name";
+      rOutboundEDIDocumentHeader."Ship-to Name 2" := rSalesShipmentHeader."Ship-to Name 2";
+      rOutboundEDIDocumentHeader."Ship-to Address" := rSalesShipmentHeader."Ship-to Address";
+      rOutboundEDIDocumentHeader."Ship-to Address 2" := rSalesShipmentHeader."Ship-to Address 2";
+      rOutboundEDIDocumentHeader."Ship-to City" := rSalesShipmentHeader."Ship-to City";
+      rOutboundEDIDocumentHeader."Ship-to Contact" := rSalesShipmentHeader."Ship-to Contact";
+      rOutboundEDIDocumentHeader."Ship-to Post Code" := rSalesShipmentHeader."Ship-to Post Code";
+      rOutboundEDIDocumentHeader."Ship-to Country/Region Code" := rSalesShipmentHeader."Ship-to Country/Region Code";
+
+      rLanguage.GET(rSalesShipmentHeader."Language Code");
+      rLanguage.TESTFIELD("DD Language ID");
+      rOutboundEDIDocumentHeader."Language Code" := UPPERCASE(rLanguage."DD Language ID");
+
+      RHDSalesExportHeader.RESET;
+      RHDSalesExportHeader.SETRANGE("Document Type",RHDSalesExportHeader."Document Type"::Order);
+      RHDSalesExportHeader.SETRANGE("Document No.",rSalesShipmentHeader."Order No.");
+      IF RHDSalesExportHeader.FINDLAST THEN
+        rOutboundEDIDocumentHeader."Order No." := RHDSalesExportHeader."Rhenus Order No."
+      ELSE BEGIN
+        DDHeader.RESET;
+        DDHeader.SETRANGE("Document Type",DDHeader."Document Type"::Order);
+        DDHeader.SETRANGE("Order No. Navision",rSalesShipmentHeader."Order No.");
+        IF DDHeader.FINDLAST THEN
+          rOutboundEDIDocumentHeader."Order No." := DDHeader."No."
+        ELSE
+          rOutboundEDIDocumentHeader."Order No." := rSalesShipmentHeader."Order No.";
+      END;
+      rOutboundEDIDocumentHeader."Shipment Date" := TODAY;
+
+      rOutboundEDIDocumentHeader."Supplier GLN" := rEDIIntegratorSetup."Global Location Number (GLN)";
+      rOutboundEDIDocumentHeader."Buyer GLN" := rEDIIntegratorSetup."Global Location Number (GLN)";
+      rOutboundEDIDocumentHeader."Invoicer GLN" := rEDIIntegratorSetup."Global Location Number (GLN)";
+
+      rOutboundEDIDocumentHeader."Order Type" := '340';
+      rOutboundEDIDocumentHeader."Message Function" := '4';
+
+      rOutboundEDIDocumentHeader.INSERT;
+
+      rSalesShipmentLine.RESET();
+      rSalesShipmentLine.SETRANGE("Document No.",rSalesShipmentHeader."No.");
+      rSalesShipmentLine.SETFILTER("Outbound EDI IFTMIN No.",'');
+      rSalesShipmentLine.SETFILTER("Purchasing Code",rEDIPartner."Distribution Filter");
+      rSalesShipmentLine.SETRANGE(Type,rSalesShipmentLine.Type::Item);
+      rSalesShipmentLine.SETFILTER(Quantity,'>%1',0);
+      rSalesShipmentLine.FIND('-');
+
+      rOutboundEDIDocumentHeader."Supplier GLN" := rSalesShipmentLine."Location Code";
+      rLocation.GET(rSalesShipmentLine."Location Code");
+      rOutboundEDIDocumentHeader."Company Name" := rLocation.Name;
+      rOutboundEDIDocumentHeader."Company Name 2" := rLocation."Name 2";
+      rOutboundEDIDocumentHeader."Company Address" := rLocation.Address;
+      rOutboundEDIDocumentHeader."Company Address 2" := rLocation."Address 2";
+      rOutboundEDIDocumentHeader."Company City" := rLocation.City;
+      rOutboundEDIDocumentHeader."Company Contact" := rLocation.Contact;
+      rOutboundEDIDocumentHeader."Company Post Code" := rLocation."Post Code";
+      rOutboundEDIDocumentHeader."Company Country/Region Code" := rLocation."Country/Region Code";
+
+      //REPEAT
+      //  iLineCounter += 1;
+      //  CreateIFTMINLine(rSalesShipmentLine,iLineCounter,rOutboundEDIDocumentHeader);
+      //UNTIL rSalesShipmentLine.NEXT = 0;
+
+      IF rSalesShipmentHeader."Currency Code" = '' THEN
+        rCurrency.InitRoundingPrecision
+      ELSE
+        rCurrency.GET(rSalesShipmentHeader."Currency Code");
+
+      rOutboundEDIDocumentHeader."Position Count" := iLineCounter;
+      rOutboundEDIDocumentHeader.MODIFY;
+
+      rSalesShipmentHeader."Outbound EDI No." := rOutboundEDIDocumentHeader."Header Document No.";
+      rSalesShipmentHeader."Date Sent" := TODAY;
+      rSalesShipmentHeader."Time Sent" := TIME;
+      rSalesShipmentHeader."Use for Distribution List" := FALSE;
+      rSalesShipmentHeader.MODIFY;
+    END;
+
+    PROCEDURE CreateIFTMINUpdateLine@1000000014(rSalesShipmentLine@1115500000 : Record 111;rOutboundDocHeader@1000000000 : Record 82865;pOutboundEDIDocumentList@1000000006 : Record 82864);
+    VAR
+      rItem@1108200003 : Record 27;
+      rUnitOfMeasure@1108200001 : Record 204;
+      rItemCrossReference@1115500003 : Record 5717;
+      rOutboundEDIDocumentLine@1115500001 : Record 82866;
+      rVendor@1000000001 : Record 23;
+      rSalesHeader@1000000002 : Record 36;
+      rSalesLine@1000000003 : Record 37;
+      rSalesShptLine2@1000000009 : Record 111;
+      reBayNavCWebshopItem@1000000010 : Record 5251566;
+      rSalesHeaderArchive@1000000004 : Record 5107;
+      rSalesLineArchive@1000000005 : Record 5108;
+      rOutboundEDIDocumentLine2@1000000007 : Record 82866;
+    BEGIN
+      rOutboundEDIDocumentLine."Header Document Type" := pOutboundEDIDocumentList."Document Type";
+      rOutboundEDIDocumentLine."Header Document No." := pOutboundEDIDocumentList."No.";
+      rOutboundEDIDocumentLine."Document Type" := rOutboundDocHeader."Document Type";
+      rOutboundEDIDocumentLine."Document No." := rSalesShipmentLine."Document No.";
+      rOutboundEDIDocumentLine."Line No." := rSalesShipmentLine."Line No.";
+      rOutboundEDIDocumentLine."Item No." := rSalesShipmentLine."No.";
+      IF rItem.GET(rSalesShipmentLine."No.") THEN
+        rOutboundEDIDocumentLine."Country Purchased Code" := rItem."Country/Region Purchased Code";
+      IF rOutboundEDIDocumentLine."Country Purchased Code" = '' THEN
+        rOutboundEDIDocumentLine."Country Purchased Code" := 'DE';
+
+      rOutboundEDIDocumentLine."Customer Item No." := rSalesShipmentLine."Cross-Reference No.";
+
+      rOutboundEDIDocumentLine.Description := rSalesShipmentLine.Description;
+      rOutboundEDIDocumentLine."Description 2" := rSalesShipmentLine."Description 2";
+      rOutboundEDIDocumentLine.Quantity := rSalesShipmentLine.Quantity;
+      IF rUnitOfMeasure.GET(rSalesShipmentLine."Unit of Measure Code") THEN BEGIN
+        IF rUnitOfMeasure."UN/ECE Code" <> '' THEN
+          rOutboundEDIDocumentLine."Unit of Measure" := rUnitOfMeasure."UN/ECE Code"
+        ELSE
+          rOutboundEDIDocumentLine."Unit of Measure" := rUnitOfMeasure.Code;
+      END ELSE
+        rOutboundEDIDocumentLine."Unit of Measure" := rSalesShipmentLine."Unit of Measure Code";
+
+      rOutboundEDIDocumentLine2.RESET;
+      rOutboundEDIDocumentLine2.SETCURRENTKEY("Header Document Type","Header Document No.","Document Type","Document No.","EDI Line No."
+      );
+      rOutboundEDIDocumentLine2.SETRANGE("Header Document Type",rOutboundEDIDocumentLine."Header Document Type");
+      rOutboundEDIDocumentLine2.SETRANGE("Header Document No.",rOutboundEDIDocumentLine."Header Document No.");
+      rOutboundEDIDocumentLine2.SETRANGE("Document Type",rOutboundEDIDocumentLine."Document Type");
+      rOutboundEDIDocumentLine2.SETRANGE("Document No.",rOutboundEDIDocumentLine."Document No.");
+      IF rOutboundEDIDocumentLine2.FINDLAST THEN
+        rOutboundEDIDocumentLine."EDI Line No." := rOutboundEDIDocumentLine2."EDI Line No." + 1
+      ELSE
+        rOutboundEDIDocumentLine."EDI Line No." := 1;
+      rOutboundEDIDocumentLine."Customer Order No." := sExternalDocNo;
+
+      rItem.CALCFIELDS("Parcels Number");
+      rOutboundEDIDocumentLine."No. of Packaging" := rItem."Parcels Number" * rSalesShipmentLine.Quantity;
+      rSalesShptLine2.RESET;
+      rSalesShptLine2.SETRANGE("Document No.",rSalesShipmentLine."Document No.");
+      rSalesShptLine2.SETRANGE(Type,rSalesShptLine2.Type::Resource);
+      rSalesShptLine2.SETRANGE("No.",'ZAUFBAU');
+      IF NOT rSalesShptLine2.ISEMPTY THEN
+        rOutboundEDIDocumentLine."Text 2" := 'Aufbauservice';
+
+      IF NOT rSalesHeader.GET(1,rSalesShipmentLine."Order No.") THEN BEGIN
+        IF rSalesHeaderArchive.GET(1,rSalesShipmentLine."Order No.",1,1) THEN BEGIN
+          rSalesLineArchive.GET(1,rSalesShipmentLine."Order No.",1,1,rSalesShipmentLine."Order Line No.");
+          rOutboundEDIDocumentLine.Amount := rSalesLineArchive.Amount;
+          rOutboundEDIDocumentLine."Unit Price" := rSalesLineArchive."Unit Price";
+          rOutboundEDIDocumentLine."Currency Code" := rSalesHeaderArchive."Currency Code";
+          rOutboundEDIDocumentLine."Line Amount" := rSalesLineArchive."Line Amount";
+          rOutboundEDIDocumentLine."Transport Type" := rSalesLineArchive."Transp. Type";
+          IF reBayNavCWebshopItem.GET(FORMAT(rSalesHeaderArchive."Website No."),rSalesShipmentLine."No.") THEN
+            // S/P1242
+            //;
+            rOutboundEDIDocumentLine."Line Amount" := rItem."Net PP SKU" + reBayNavCWebshopItem."Truck Haul Cost RE";
+            // E/P1242
+        END;
+      END ELSE BEGIN
+        rSalesLine.GET(1,rSalesShipmentLine."Order No.",rSalesShipmentLine."Order Line No.");
+        rOutboundEDIDocumentLine.Amount := rSalesLine.Amount;
+        rOutboundEDIDocumentLine."Unit Price" := rSalesLine."Unit Price";
+        rOutboundEDIDocumentLine."Currency Code" := rSalesHeader."Currency Code";
+        rOutboundEDIDocumentLine."Line Amount" := rSalesLine."Line Amount";
+        rOutboundEDIDocumentLine."Transport Type" := rSalesLine."Transp. Type";
+        IF reBayNavCWebshopItem.GET(FORMAT(rSalesHeader."Website No."),rSalesShipmentLine."No.") THEN
+          // S/P1242
+          //;
+          rOutboundEDIDocumentLine."Line Amount" := rItem."Net PP SKU" + reBayNavCWebshopItem."Truck Haul Cost RE";
+          // E/P1242
+      END;
+
+      CASE rOutboundEDIDocumentLine."Transport Type" OF
+        0: rOutboundEDIDocumentLine."Transport Type Text" := 'PAKET';
+        1: rOutboundEDIDocumentLine."Transport Type Text" := '2MH';
+        ELSE
+          rOutboundEDIDocumentLine."Transport Type Text" := '';
+      END;
+
+      rOutboundEDIDocumentLine."Country Code of Origin" := rItem."Country/Region of Origin Code";
+      rOutboundEDIDocumentLine."Country/Region Purchased Code" := rItem."Country/Region of Mfg. Code";
+      rOutboundEDIDocumentLine."Tariff No." := rItem."Tariff No.";
+      rOutboundEDIDocumentLine."Gross Weight" := rItem."Gross Weight";
+      //H1526 07.10.14 DMA +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF rOutboundEDIDocumentLine."Gross Weight" = 0 THEN
+        rOutboundEDIDocumentLine."Gross Weight" := 0.1;
+      //H1526 07.10.14 DMA -------------------------------------------------------
+
+      rOutboundEDIDocumentLine."Net Weight" := rItem."Net Weight";
+      //H1526 07.10.14 DMA +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF rOutboundEDIDocumentLine."Net Weight" = 0 THEN
+        rOutboundEDIDocumentLine."Net Weight" := 0.1;
+      //H1526 07.10.14 DMA -------------------------------------------------------
+
+      rOutboundEDIDocumentLine."Unit Volume" := rItem."Unit Volume";
+
+      rOutboundEDIDocumentLine."Item URL" := reBayNavCWebshopItem."Product URL";
+      rOutboundEDIDocumentLine."Tariff No. CH" := COPYSTR(reBayNavCWebshopItem."Tariff No. Destination",1,10);
+      IF reBayNavCWebshopItem."Preferential Product" THEN
+        rOutboundEDIDocumentLine."Preferential Product Exists" := '1'
+      ELSE
+        rOutboundEDIDocumentLine."Preferential Product Exists" := '2';
+      rOutboundEDIDocumentLine."Preferential Product" := reBayNavCWebshopItem."No. Preferential Product";
+      IF reBayNavCWebshopItem."Hazardous Good" THEN
+        rOutboundEDIDocumentLine."Hazardous good" := '1'
+      ELSE
+        rOutboundEDIDocumentLine."Hazardous good" := '2';
+      rOutboundEDIDocumentLine."VOC-charge" := reBayNavCWebshopItem."VOC-Charge";
+      IF reBayNavCWebshopItem.CITES THEN
+        rOutboundEDIDocumentLine.CITES := '1'
+      ELSE
+        rOutboundEDIDocumentLine.CITES := '2';
+      rOutboundEDIDocumentLine."Specific Amount" := COPYSTR(reBayNavCWebshopItem."Specific Amount",1,30);
+      IF rOutboundEDIDocumentLine."Specific Amount" <> '' THEN
+        rOutboundEDIDocumentLine."Has Specific Amount" := '1'
+      ELSE BEGIN
+        rOutboundEDIDocumentLine."Specific Amount" := '0';
+        rOutboundEDIDocumentLine."Has Specific Amount" := '2';
+      END;
+
+      //GTIN aus Referenztabelle
+      rItemCrossReference.RESET;
+      rItemCrossReference.SETRANGE("Item No.",rSalesShipmentLine."No.");
+      IF rSalesShipmentLine."Variant Code" <> '' THEN
+        rItemCrossReference.SETRANGE("Variant Code",rSalesShipmentLine."Variant Code");
+      rItemCrossReference.SETRANGE("Cross-Reference Type",rItemCrossReference."Cross-Reference Type"::"Bar Code");
+      rItemCrossReference.SETRANGE("Discontinue Bar Code",FALSE);
+      IF rItemCrossReference.FINDFIRST THEN
+        rOutboundEDIDocumentLine.GTIN := rItemCrossReference."Cross-Reference No.";
+
+      IF rSalesShipmentLine."Order No." <> '' THEN
+        rOutboundEDIDocumentLine."Sales Order No." := rSalesShipmentLine."Order No.";
+
+      IF CreateShipmentEntries(rOutboundDocHeader,rSalesShipmentLine) THEN
+        rOutboundEDIDocumentLine."Tracking Number Code" := '17'
+      ELSE
+        rOutboundEDIDocumentLine."Tracking Number Code" := '';
+
+      IF rOutboundEDIDocumentLine.INSERT THEN BEGIN
+
+        rSalesShipmentLine."Outbound EDI IFTMIN No." := rOutboundDocHeader."Header Document No.";
+        rSalesShipmentLine.MODIFY;
+
+        rSalesLine."Outbound EDI IFTMIN No." := rOutboundDocHeader."Header Document No.";
+        rSalesLine.MODIFY;
+      END;
+    END;
+
+    PROCEDURE "--- P1248 Functions ---"@1000000016();
+    BEGIN
+    END;
+
+    PROCEDURE CheckOrderAlreadyInList@1000000017(pSalesShipmentHeader@1000000000 : Record 110) : Code[20];
+    VAR
+      rOutboundEDIDocHeader@1000000002 : Record 82865;
+    BEGIN
+      rOutboundEDIDocHeader.SETRANGE("Header Document Type",rOutboundEDIDocumentList."Document Type");
+      rOutboundEDIDocHeader.SETRANGE("Header Document No.",rOutboundEDIDocumentList."No.");
+      rOutboundEDIDocHeader.SETRANGE("Document Type",rOutboundEDIDocHeader."Document Type"::"Sales Shipment");
+      rOutboundEDIDocHeader.SETRANGE("Original Order No.",pSalesShipmentHeader."Order No.");
+      IF rOutboundEDIDocHeader.FINDFIRST THEN
+        EXIT(rOutboundEDIDocHeader."Document No.");
+
+      EXIT('');
+    END;
+
+    PROCEDURE "--- P1276 Functions ---"@1000000015();
+    BEGIN
+    END;
+
+    PROCEDURE AddSalesShipmentLineToList@1000000018(OutboundEDIDocumentListV@1000000000 : Record 82864);
+    VAR
+      SalesShipmentHeaderL@1000000005 : Record 110;
+      SalesShipmentLineL@1000000001 : Record 111;
+      SalesShipmentLineRejectL@1000000006 : Record 111;
+      EDIPartnerL@1000000002 : Record 82851;
+      OutboundEDIDocumentHeaderL@1000000004 : Record 82865;
+      OutboundEDIDocumentLineL@1000000003 : Record 82866;
+      PostedSalesShipmentLinesL@1000000008 : Form 525;
+      LineCounterL@1000000007 : Integer;
+    BEGIN
+      //P1276 23.11.14 gob-Fuchs +++++++++++++++++
+
+      EDIPartnerL.GET(OutboundEDIDocumentListV."Partner Code");
+
+      //Set Filter to EDI Partner Distribution Filter
+      SalesShipmentLineL.SETFILTER("Purchasing Code",EDIPartnerL."Distribution Filter");
+      SalesShipmentLineL.SETFILTER(Quantity,'>%1',0);
+      PostedSalesShipmentLinesL.SETTABLEVIEW(SalesShipmentLineL);
+      PostedSalesShipmentLinesL.LOOKUPMODE := TRUE;
+      IF PostedSalesShipmentLinesL.RUNMODAL <> ACTION::LookupOK THEN
+        EXIT;
+
+      PostedSalesShipmentLinesL.GetSelection(SalesShipmentLineL);
+      SalesShipmentLineL.FIND('-');
+      REPEAT
+
+        //Check if line is already in same List
+        OutboundEDIDocumentLineL.SETRANGE("Header Document Type",OutboundEDIDocumentListV."Document Type");
+        OutboundEDIDocumentLineL.SETRANGE("Header Document No.",OutboundEDIDocumentListV."No.");
+        OutboundEDIDocumentLineL.SETRANGE("Document Type",OutboundEDIDocumentLineL."Document Type"::"Sales Shipment");
+        OutboundEDIDocumentLineL.SETRANGE("Document No.",SalesShipmentLineL."Document No.");
+        OutboundEDIDocumentLineL.SETRANGE("Line No.",SalesShipmentLineL."Line No.");
+        IF NOT OutboundEDIDocumentLineL.ISEMPTY THEN
+          ERROR(STRSUBSTNO(TextHME001,SalesShipmentLineL."Document No.",SalesShipmentLineL."Line No.",OutboundEDIDocumentListV."No."));
+
+        //Set temporary Outbound IFMTIN No. for all other Shipment Lines
+        SalesShipmentLineRejectL.SETRANGE("Document No.",SalesShipmentLineL."Document No.");
+        SalesShipmentLineRejectL.SETFILTER("Line No.",'<>%1',SalesShipmentLineL."Line No.");
+        SalesShipmentLineRejectL.SETFILTER("Outbound EDI IFTMIN No.",'%1','');
+        SalesShipmentLineRejectL.SETFILTER("Purchasing Code",EDIPartnerL."Distribution Filter");
+        SalesShipmentLineRejectL.SETRANGE(Type,SalesShipmentLineRejectL.Type::Item);
+        SalesShipmentLineRejectL.SETFILTER(Quantity,'>%1',0);
+        SalesShipmentLineRejectL.MODIFYALL("Outbound EDI IFTMIN No.",'TEMP');
+
+        //Release Sales Shipment Line if necessary
+        IF SalesShipmentLineL."Outbound EDI IFTMIN No." <> '' THEN BEGIN
+          SalesShipmentLineL."Outbound EDI IFTMIN No." := '';
+          SalesShipmentLineL.MODIFY;
+        END;
+
+        //Set List
+        rOutboundEDIDocumentList := OutboundEDIDocumentListV;
+
+        //Check if header exists in IFTMIN List, if not insert header
+        OutboundEDIDocumentHeaderL.SETRANGE("Header Document Type",OutboundEDIDocumentListV."Document Type");
+        OutboundEDIDocumentHeaderL.SETRANGE("Header Document No.",OutboundEDIDocumentListV."No.");
+        OutboundEDIDocumentHeaderL.SETRANGE("Document Type",OutboundEDIDocumentHeaderL."Document Type"::"Sales Shipment");
+        OutboundEDIDocumentHeaderL.SETRANGE("Document No.",SalesShipmentLineL."Document No.");
+        IF OutboundEDIDocumentHeaderL.ISEMPTY THEN BEGIN
+          SalesShipmentHeaderL.GET(SalesShipmentLineL."Document No.");
+          CreateIFTMINHeader(SalesShipmentHeaderL,EDIPartnerL,SalesShipmentHeaderL."No.");
+
+          //Reset temporary Sales Shipment Lines
+          SalesShipmentLineRejectL.RESET;
+          SalesShipmentLineRejectL.SETRANGE("Document No.",SalesShipmentLineL."Document No.");
+          SalesShipmentLineRejectL.SETFILTER("Outbound EDI IFTMIN No.",'TEMP');
+          SalesShipmentLineRejectL.MODIFYALL("Outbound EDI IFTMIN No.",'');
+        END ELSE BEGIN
+
+          //Add Position to existing Outbound EDI Document Header
+          OutboundEDIDocumentHeaderL.FINDFIRST;
+
+          //Count Lines
+          OutboundEDIDocumentLineL.RESET;
+          OutboundEDIDocumentLineL.SETRANGE("Header Document Type",OutboundEDIDocumentListV."Document Type");
+          OutboundEDIDocumentLineL.SETRANGE("Header Document No.",OutboundEDIDocumentListV."No.");
+          OutboundEDIDocumentLineL.SETRANGE("Document Type",OutboundEDIDocumentLineL."Document Type"::"Sales Shipment");
+          OutboundEDIDocumentLineL.SETRANGE("Document No.",SalesShipmentLineL."Document No.");
+          LineCounterL := OutboundEDIDocumentLineL.COUNT + 1;
+
+          //Create Line
+          CreateIFTMINLine(SalesShipmentLineL,LineCounterL,OutboundEDIDocumentHeaderL,SalesShipmentLineL."Document No.",
+            SalesShipmentLineL."Line No.");
+
+          OutboundEDIDocumentHeaderL."Position Count" := LineCounterL;
+          OutboundEDIDocumentHeaderL.MODIFY;
+        END;
+      UNTIL SalesShipmentLineL.NEXT = 0;
+      //P1276 23.11.14 gob-Fuchs -----------------
+    END;
+
+    PROCEDURE CreateEmptyList@1000000019(EDIPartnerP@1000000000 : Record 82851);
+    VAR
+      OutboundEDIIFTMINFormL@1000000002 : Form 50307;
+    BEGIN
+      rEDIPartnerDocumentType.GET(EDIPartnerP.Code,rEDIPartnerDocumentType."Document Direction"::Outbound,'IFTMIN');
+
+      CreateIFTMINList(EDIPartnerP);
+
+      COMMIT;
+      rOutboundEDIDocumentList.SETRECFILTER;
+      OutboundEDIIFTMINFormL.SETTABLEVIEW(rOutboundEDIDocumentList);
+      OutboundEDIIFTMINFormL.RUNMODAL;
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------------+
+      |                   ¸  Copyright                   |
+      |       GOB Software & Systeme GmbH & Co. KG       |
+      +--------------------------------------------------+
+      |                                                  |
+      +--------------------------------------------------+
+
+      Version  Datum      Berater     Kommentar
+      -----------------------------------------------------------
+      P1181    22.01.14   gob-lku     Neues Objekt
+      P1182    17.02.14   gob-lku     2. IFTMIN an Distributor CH (Retouren)
+      P1205    17.02.14   gob-lku     3. IFTMIN an Distributor CH (Storno)
+      P1241    11.04.14   gob-dst     Umstellung Ermittlung Long Order No.
+      P1242    23.04.14   gob-dst     Anpassung Ermittlung Exportbetrag
+      P1248    13.05.14   gob-dst     Anpassungen wegen Konsolidierung in Standard-IFTMIN
+      P1250    20.05.14   gob-dst     Fix Ermittlung Exportbetrag
+      P1265    24.06.14   gob-dst     Fix Ermittlung Zeilennummer bei Konsolidierung der Lieferscheine
+      P1276    23.11.14   gob-Fuchs   Manually Add Sales Shipment Line to IFTMIN List
+                                      Manually create IFTMIN List
+                                      If SalesLine not found MODIFY Sales Archive Line
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+
+      H1526    07.10.14     DMA       IFTMIN DHL - replace 0kg by 0.1kg
+    }
+    END.
+  }
+}
+

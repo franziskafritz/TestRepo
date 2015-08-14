@@ -1,0 +1,340 @@
+OBJECT Codeunit 50041 Create Purchase Orders
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09.03.15;
+    Time=11:56:30;
+    Modified=Yes;
+    Version List=DN(1),GOB1.03,HME3857;
+  }
+  PROPERTIES
+  {
+    TableNo=36;
+    OnRun=VAR
+            L_ExistToCreate@1000000000 : Boolean;
+            RHDSalesInterfaceMgt@1000000001 : Codeunit 50153;
+            Purchasing@1000000002 : Record 5721;
+          BEGIN
+            //H2105 13.02.15 MSL +++++++++++++++++++++++++++++++++++++++++
+            IF Rec."Website No." = 1 THEN
+              CreatePurchOrder(Rec)
+            ELSE
+              CreateIntPurchOrder(Rec);
+            //H2105 13.02.15 MSL -----------------------------------------
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      PurchHeader@1000000005 : Record 38;
+      SalesHeader@1000000006 : Record 36;
+      SalesLine@1000000003 : Record 37;
+      ReqLine@1000000000 : Record 246;
+      Purchasing@1000000004 : Record 5721;
+      GetSalesOrder@1000000001 : Report 698;
+      PerformAction@1000000002 : Report 493;
+      GlobalLineNoFilter@1000000007 : Text[1024];
+
+    PROCEDURE CreateIntPurchOrder@1000000001(VAR Rec@1000000001 : Record 36);
+    VAR
+      L_ExistToCreate@1000000000 : Boolean;
+      RHDSalesInterfaceMgt@1000000002 : Codeunit 50153;
+      "*****CC***********************"@1000000004 : Integer;
+      PurchSetupL@1000000003 : Record 312;
+    BEGIN
+      WITH Rec DO BEGIN
+      //H2105,P0892 13.02.15 ++++++++++++++++++++++++++++++++++++
+      ReqLine.SETRANGE("Worksheet Template Name", 'BESTVORSCH');
+      ReqLine.SETRANGE("Journal Batch Name",'DIREKT');
+      ReqLine.SETRANGE(ReqLine."Sales Order No.", "No.");
+      ReqLine.DELETEALL;
+
+      ReqLine.INIT;
+      ReqLine."Worksheet Template Name" := 'BESTVORSCH';
+      ReqLine."Journal Batch Name" := 'DIREKT';
+
+      L_ExistToCreate := FALSE;
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type","Document Type");
+      SalesLine.SETRANGE("Document No.","No.");
+      //S/P0966
+      IF GlobalLineNoFilter <> '' THEN
+        SalesLine.SETFILTER("Line No.",GlobalLineNoFilter);
+      //E/P0966
+      SalesLine.SETRANGE("Special Order Purch. Line No.",0);
+
+      SalesLine.SETFILTER("Outstanding Quantity",'<>0');
+      IF SalesLine.FIND('-') THEN REPEAT
+        IF Purchasing.GET(SalesLine."Purchasing Code") AND
+           (Purchasing."Special Order" OR Purchasing."Create Purch. Order") THEN
+          L_ExistToCreate := TRUE;
+      UNTIL L_ExistToCreate OR (SalesLine.NEXT = 0);
+      IF L_ExistToCreate AND SalesLine.FIND('-') THEN BEGIN
+        GetSalesOrder.SetHideDialog(TRUE);
+        GetSalesOrder.SetReqWkshLine(ReqLine,1);
+        GetSalesOrder.SETTABLEVIEW(SalesLine);
+        GetSalesOrder.USEREQUESTFORM(FALSE);
+        GetSalesOrder.RUNMODAL;
+        CLEAR(GetSalesOrder);
+      END;
+
+      SalesLine.SETRANGE("Purch. Order Line No.",0);
+      SalesLine.SETRANGE("Special Order Purch. Line No.");
+
+      SalesLine.SETRANGE("Drop Shipment",TRUE);
+      IF SalesLine.FIND('-') THEN BEGIN
+        GetSalesOrder.SetHideDialog(TRUE);
+        GetSalesOrder.SetReqWkshLine(ReqLine,0);
+        //H3857 09.03.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+        PurchSetupL.GET;
+        GetSalesOrder.SetGetDim(PurchSetupL."Get Sales Order-Dim. from");
+        //H3857 09.03.15 CC-GH ---------------------------------------------------
+        GetSalesOrder.SETTABLEVIEW(SalesLine);
+        GetSalesOrder.USEREQUESTFORM(FALSE);
+        GetSalesOrder.RUNMODAL;
+        CLEAR(GetSalesOrder);
+      END;
+
+      PerformAction.USEREQUESTFORM(FALSE);
+      PerformAction.SetHideDialog(TRUE);
+      PerformAction.SetReqWkshLine(ReqLine);
+      PerformAction.RUNMODAL;
+
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type","Document Type");
+      SalesLine.SETRANGE("Document No.","No.");
+      SalesLine.SETRANGE(Type,SalesLine.Type::Item);
+      SalesLine.SETFILTER("Purchase Order No.",'<>%1','');
+      IF SalesLine.FIND('-') THEN REPEAT
+        IF SalesHeader."No." <> SalesLine."Document No." THEN
+          SalesHeader.GET(SalesLine."Document Type",SalesLine."Document No.");
+        IF SalesHeader.Kommissionierung THEN BEGIN
+          IF PurchHeader."No." <> SalesLine."Purchase Order No." THEN
+            PurchHeader.GET(PurchHeader."Document Type"::Order,SalesLine."Purchase Order No.");
+          IF NOT PurchHeader.Kommissionierung THEN BEGIN
+            PurchHeader.Kommissionierung := TRUE;
+            PurchHeader.MODIFY;
+          END;
+          IF PurchHeader."Order Date" = 0D THEN BEGIN
+            PurchHeader."Order Date" := PurchHeader."Document Date";
+            PurchHeader.MODIFY;
+          END;
+          IF PurchHeader.Status <> PurchHeader.Status::Released THEN
+            CODEUNIT.RUN(415,PurchHeader);
+        END;
+      UNTIL SalesLine.NEXT = 0;
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type","Document Type");
+      SalesLine.SETRANGE("Document No.","No.");
+      SalesLine.SETRANGE(Type,SalesLine.Type::Item);
+      SalesLine.SETFILTER("Special Order Purchase No.",'<>%1','');
+      IF SalesLine.FIND('-') THEN REPEAT
+        IF SalesHeader."No." <> SalesLine."Document No." THEN
+          SalesHeader.GET(SalesLine."Document Type",SalesLine."Document No.");
+        IF SalesHeader.Kommissionierung THEN BEGIN
+          //S/P1070
+          //IF PurchHeader."No." <> SalesLine."Special Order Purchase No." THEN
+            //PurchHeader.GET(PurchHeader."Document Type"::Order,SalesLine."Special Order Purchase No.");
+          IF PurchHeader."No." <> SalesLine."Special Order Purchase No." THEN BEGIN
+            PurchHeader.GET(PurchHeader."Document Type"::Order,SalesLine."Special Order Purchase No.");
+            RHDSalesInterfaceMgt.TriggerRhenusInterface(SalesLine);
+          END;
+          //E/P0170
+          IF NOT PurchHeader.Kommissionierung THEN BEGIN
+            PurchHeader.Kommissionierung := TRUE;
+            PurchHeader.MODIFY;
+          END;
+          IF PurchHeader."Order Date" = 0D THEN BEGIN
+            PurchHeader."Order Date" := PurchHeader."Document Date";
+            PurchHeader.MODIFY;
+          END;
+          //S/P1197
+          IF Purchasing.GET(SalesLine."Purchasing Code") AND Purchasing."RHD Real Crossdocking" THEN BEGIN
+            PurchHeader."RHD Real Crossdocking" := TRUE;
+            PurchHeader.MODIFY;
+          END;
+          //E/P1097
+          IF PurchHeader.Status <> PurchHeader.Status::Released THEN
+            CODEUNIT.RUN(415,PurchHeader);
+        END;
+      UNTIL SalesLine.NEXT = 0;
+      END;
+      //H2105,P0892 13.02.15 MSL ------------------------------------
+    END;
+
+    PROCEDURE SetLineNoFilter@1000000002(p_LineNoFilter@1000000000 : Text[1024]);
+    BEGIN
+      //S/P0966
+      GlobalLineNoFilter := p_LineNoFilter;
+      //E/P0966
+    END;
+
+    PROCEDURE "***HME************************"@1000000003();
+    BEGIN
+    END;
+
+    PROCEDURE CreatePurchOrder@1000000000(VAR Rec@1000000003 : Record 36);
+    VAR
+      L_ExistToCreate@1000000002 : Boolean;
+      RHDSalesInterfaceMgt@1000000001 : Codeunit 50153;
+      Purchasing@1000000000 : Record 5721;
+      "*****CC***********************"@1000000004 : Integer;
+      PurchSetupL@1000000005 : Record 312;
+    BEGIN
+      //H2105,H0107,P1092,P0966,GOB1.00..GOB1.03 13.02.15 MSL ++++++++++++++++++++++++++++++++++++++
+      WITH Rec DO BEGIN
+      ReqLine.SETRANGE("Worksheet Template Name", 'BESTVORSCH');
+      ReqLine.SETRANGE("Journal Batch Name",'DIREKT');
+      ReqLine.SETRANGE(ReqLine."Sales Order No.", "No.");
+      ReqLine.DELETEALL;
+
+      ReqLine.INIT;
+      ReqLine."Worksheet Template Name" := 'BESTVORSCH';
+      ReqLine."Journal Batch Name" := 'DIREKT';
+
+      L_ExistToCreate := FALSE;
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type","Document Type");
+      SalesLine.SETRANGE("Document No.","No.");
+
+
+      SalesLine.SETRANGE("Special Order Purch. Line No.",0);
+      SalesLine.SETFILTER("Outstanding Quantity",'<>0');
+
+      IF GlobalLineNoFilter <> '' THEN
+        SalesLine.SETFILTER("Line No.",GlobalLineNoFilter);
+      IF SalesLine.FIND('-') THEN REPEAT
+        IF Purchasing.GET(SalesLine."Purchasing Code") AND
+           (Purchasing."Special Order" OR Purchasing."Create Purch. Order") THEN
+          L_ExistToCreate := TRUE;
+      UNTIL L_ExistToCreate OR (SalesLine.NEXT = 0);
+      IF L_ExistToCreate AND SalesLine.FIND('-') THEN BEGIN
+        GetSalesOrder.SetHideDialog(TRUE);
+        GetSalesOrder.SetReqWkshLine(ReqLine,1);
+        //H2098 09.02.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+        PurchSetupL.GET;
+        GetSalesOrder.SetGetDim(PurchSetupL."Get Sales Order-Dim. from");
+        //H2098 09.02.15 CC-GH ---------------------------------------------------
+        GetSalesOrder.SETTABLEVIEW(SalesLine);
+        GetSalesOrder.USEREQUESTFORM(FALSE);
+        GetSalesOrder.RUNMODAL;
+        CLEAR(GetSalesOrder);
+      END;
+
+      SalesLine.SETRANGE("Purch. Order Line No.",0);
+      SalesLine.SETRANGE("Special Order Purch. Line No.");
+
+      SalesLine.SETRANGE("Drop Shipment",TRUE);
+      IF SalesLine.FIND('-') THEN BEGIN
+        GetSalesOrder.SetHideDialog(TRUE);
+        GetSalesOrder.SetReqWkshLine(ReqLine,0);
+        //H3857 09.03.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+        PurchSetupL.GET;
+        GetSalesOrder.SetGetDim(PurchSetupL."Get Sales Order-Dim. from");
+        //H3857 09.03.15 CC-GH ---------------------------------------------------
+        GetSalesOrder.SETTABLEVIEW(SalesLine);
+        GetSalesOrder.USEREQUESTFORM(FALSE);
+        GetSalesOrder.RUNMODAL;
+        CLEAR(GetSalesOrder);
+      END;
+
+      PerformAction.USEREQUESTFORM(FALSE);
+      PerformAction.SetHideDialog(TRUE);
+      PerformAction.SetReqWkshLine(ReqLine);
+      PerformAction.RUNMODAL;
+
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type","Document Type");
+      SalesLine.SETRANGE("Document No.","No.");
+      SalesLine.SETRANGE(Type,SalesLine.Type::Item);
+      SalesLine.SETFILTER("Purchase Order No.",'<>%1','');
+      IF SalesLine.FIND('-') THEN REPEAT
+        IF SalesHeader."No." <> SalesLine."Document No." THEN
+          SalesHeader.GET(SalesLine."Document Type",SalesLine."Document No.");
+        IF SalesHeader.Kommissionierung THEN BEGIN
+          IF PurchHeader."No." <> SalesLine."Purchase Order No." THEN
+            PurchHeader.GET(PurchHeader."Document Type"::Order,SalesLine."Purchase Order No.");
+          IF NOT PurchHeader.Kommissionierung THEN BEGIN
+            PurchHeader.Kommissionierung := TRUE;
+            PurchHeader.MODIFY;
+          END;
+          IF PurchHeader."Order Date" = 0D THEN BEGIN
+            PurchHeader."Order Date" := PurchHeader."Document Date";
+            PurchHeader.MODIFY;
+          END;
+          IF PurchHeader.Status <> PurchHeader.Status::Released THEN
+            CODEUNIT.RUN(415,PurchHeader);
+        END;
+      UNTIL SalesLine.NEXT = 0;
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type","Document Type");
+      SalesLine.SETRANGE("Document No.","No.");
+      SalesLine.SETRANGE(Type,SalesLine.Type::Item);
+      SalesLine.SETFILTER("Special Order Purchase No.",'<>%1','');
+      IF SalesLine.FIND('-') THEN REPEAT
+        IF SalesHeader."No." <> SalesLine."Document No." THEN
+          SalesHeader.GET(SalesLine."Document Type",SalesLine."Document No.");
+        IF SalesHeader.Kommissionierung THEN BEGIN
+          IF PurchHeader."No." <> SalesLine."Special Order Purchase No." THEN BEGIN
+            PurchHeader.GET(PurchHeader."Document Type"::Order,SalesLine."Special Order Purchase No.");
+            RHDSalesInterfaceMgt.TriggerRhenusInterface(SalesLine);
+          END;
+          IF NOT PurchHeader.Kommissionierung THEN BEGIN
+            PurchHeader.Kommissionierung := TRUE;
+            PurchHeader.MODIFY;
+          END;
+          IF PurchHeader."Order Date" = 0D THEN BEGIN
+            PurchHeader."Order Date" := PurchHeader."Document Date";
+            PurchHeader.MODIFY;
+          END;
+          IF Purchasing.GET(SalesLine."Purchasing Code") AND Purchasing."RHD Real Crossdocking" THEN BEGIN
+            PurchHeader."RHD Real Crossdocking" := TRUE;
+            PurchHeader.MODIFY;
+          END;
+          IF PurchHeader.Status <> PurchHeader.Status::Released THEN
+            CODEUNIT.RUN(415,PurchHeader);
+        END;
+      UNTIL SalesLine.NEXT = 0;
+      END;
+      //H2105,H0107,P1092,P0966,GOB1.00..GOB1.03 13.02.15 MSL --------------------------------------
+    END;
+
+    BEGIN
+    {
+      GOB1.00  21.06.12 gob-rste New Code for Hide Dialiog
+      GOB1.01  07.09.12 gob-rste New Code for Special Order Set Kommissionierung and Release
+      GOB1.02  17.07.12 gob-rste Fill Order Date with Document Date if Order Date = 0D
+      GOB1.03  26.07.12 gob-rste New Code to Fill Order Date for all PO's (P0096)
+
+      GOB1.05  29.04.13   P0892   gob-mab  seperate Funktion fÅr Int. DS
+      GOB1.06  29.07.13   P0966   gob-rste Set Line No. Filter
+      GOB1.07  10.02.14   P1197   gob-rste Set Real Crossdock Flag for Int. Crossdock Orders
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+      H0107       05.12.12 ABR       Filter Special Order & Drop Shipment
+      H2105       13.02.15 MSL       Proper Error Handling for Dropship/Crossdock Order creation: new func. CreatePurchOrder
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation Tectura & Home24 NAV Team  |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      H2098       09.02.15  CC-GH     Set Get Dim Option on Report 698
+      H3857       09.03.15  CC-GH     Set Get Dim Option on Report 698 on all Calls
+    }
+    END.
+  }
+}
+

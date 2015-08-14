@@ -1,0 +1,1071 @@
+OBJECT Codeunit 50250 MDB Price Check
+{
+  OBJECT-PROPERTIES
+  {
+    Date=27.07.15;
+    Time=09:12:56;
+    Modified=Yes;
+    Version List=HME4448;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      HMEText001@1000000017 : TextConst 'ENU=%1 is exceeded';
+      HMEText005@1000000002 : TextConst 'ENU=There is no %1 with a %2.';
+      HMEText006@1000000001 : TextConst 'ENU=%1 %2 %3 not found.';
+      HMEText007@1000000000 : TextConst 'ENU=No match %1';
+      PurchHeader@1000000016 : Record 38;
+      PurchasePriceSetup@1000000015 : Record 50840;
+      PurchPriceCheckLogHead@1000000014 : Record 50806;
+      PurchPriceCheckLogHeadNew@1000000013 : Record 50806;
+      PurchPriceCheckLine@1000000012 : Record 50807;
+      InvoiceLine@1000000011 : Record 39;
+      PurchRcptLine@1000000010 : Record 121;
+      PurchOrder@1000000009 : Record 38;
+      PurchOrderLine@1000000008 : Record 39;
+      VendorPurchPriceSetup@1000000007 : Record 50805;
+      UseVendorSetup@1000000006 : Boolean;
+      PurchaseServices@1000000005 : Codeunit 50090;
+      ServChargePerVendor@1000000004 : Record 50607;
+      ContinueCheck@1000000003 : Boolean;
+      GLSetup@1000000018 : Record 98;
+      PurchSetup@1000000019 : Record 312;
+      PurchRcptHeader@1000000020 : Record 120;
+      HMEText008@1000000021 : TextConst 'ENU="Assignment missing in Charge (Item) line. "';
+
+    PROCEDURE CheckPurchPrice@1000000018(PurchHeaderV@1000000000 : Record 38) : Boolean;
+    BEGIN
+      //H4161 04.05.15 TST +++++++++++++++++++++++++++++
+      //H4163 13.05.15 TST +++++++++++++++++++++++++++++
+      GLSetup.GET;
+      //H4163 13.05.15 TST -----------------------------
+      //H4164 01.06.15 TST +++++++++++++++++++++++++++++
+      PurchSetup.GET;
+      //H4164 01.06.15 TST -----------------------------
+
+      PurchHeader := PurchHeaderV;
+
+      IF PurchHeader."Document Type" <> PurchHeader."Document Type"::Invoice THEN
+        EXIT(TRUE);
+
+      UseVendorSetup := FALSE;
+
+      IF VendorPurchPriceSetup.GET(PurchHeader."Buy-from Vendor No.") THEN BEGIN
+        IF NOT VendorPurchPriceSetup."Price Check active" THEN
+          EXIT(TRUE);
+        UseVendorSetup := TRUE;
+      END ELSE BEGIN
+        IF NOT PurchasePriceSetup.GET THEN
+          EXIT(TRUE);
+        IF NOT PurchasePriceSetup."Price Check active" THEN
+          EXIT(TRUE);
+      END;
+
+      CreateLogHeader();
+
+      IF NOT CheckInvoiceline() THEN
+        //exit(false); // not yet
+      ;
+
+      //H4448 09.07.15 TST +++++++++++++++++++++++++++++
+      IF NOT CheckItemChargeAssignment(PurchHeaderV) THEN BEGIN
+        PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::Error;
+        PurchPriceCheckLogHeadNew."Message Text 1" := HMEText008;
+        PurchPriceCheckLogHeadNew.MODIFY;
+        EXIT(FALSE);
+      END;
+      //H4448 09.07.15 TST -----------------------------
+
+      CheckUnitCost();
+
+      { not yet
+      SumVendorServiceCharge();
+      }
+
+      { not yet
+      IF NOT SumAmounts() THEN begin
+        UpdateHeaderStatus();
+        exit(false);
+      end;
+      }
+
+
+
+      // ToDos:
+      // Nulldivision vermeiden!!
+      // PrÅfung bei Rabatten? Wie sind die Abweichungen zu behandeln < > ??? anhand Beispielen klÑren
+      // Prozentermittlung klÑren !!! zusÑtzlich mal 100 zum Vergleich?
+
+
+      IF UseVendorSetup THEN
+        CheckVendorPrices()
+      ELSE
+        CheckGeneralPrices();
+
+      //H4439 09.07.15 TST +++++++++++++++++++++++++++++
+      IF UseVendorSetup THEN
+        IF VendorPurchPriceSetup."Start Price Check at" <> 0D THEN
+          CheckStartDate();
+      //H4439 09.07.15 TST -----------------------------
+
+      UpdateHeaderStatus();
+
+      //H4316 03.06.15 TST +++++++++++++++++++++++++++++
+      PurchPriceCheckLine.RESET;
+      PurchPriceCheckLine.SETRANGE("Entry No.",PurchPriceCheckLogHeadNew."Entry No.");
+      PurchPriceCheckLine.SETFILTER(Status,'%1|%2',PurchPriceCheckLine.Status::"Complete Match",
+                                                   PurchPriceCheckLine.Status::"In Tolerance");
+      PurchPriceCheckLine.MODIFYALL("Approval Status",PurchPriceCheckLine."Approval Status"::approved);
+      PurchPriceCheckLine.SETRANGE(Status);
+      PurchPriceCheckLine.SETRANGE("Approval Status",PurchPriceCheckLine."Approval Status"::open);
+      IF PurchPriceCheckLine.ISEMPTY THEN BEGIN
+        PurchPriceCheckLogHeadNew."Approval Status" := PurchPriceCheckLogHeadNew."Approval Status"::approved;
+        PurchPriceCheckLogHeadNew.MODIFY;
+      END;
+
+      EXIT(PurchPriceCheckLogHeadNew."Approval Status" = PurchPriceCheckLogHeadNew."Approval Status"::approved);
+
+      //H4316 03.06.15 TST -----------------------------
+      //H4161 04.05.15 TST -----------------------------
+    END;
+
+    LOCAL PROCEDURE CreateLogHeader@1000000003();
+    BEGIN
+      //H4161 04.05.15 TST +++++++++++++++++++++++++++++
+      PurchPriceCheckLogHead.RESET;
+      PurchPriceCheckLogHeadNew.LOCKTABLE;
+      PurchPriceCheckLogHeadNew.INIT;
+
+      IF PurchPriceCheckLogHead.FINDLAST THEN
+        PurchPriceCheckLogHeadNew."Entry No." := PurchPriceCheckLogHead."Entry No."+1
+      ELSE
+        PurchPriceCheckLogHeadNew."Entry No." := 1;
+
+      PurchPriceCheckLogHeadNew."No." := PurchHeader."No.";
+      PurchPriceCheckLogHeadNew.INSERT(TRUE);
+      //H4161 04.05.15 TST -----------------------------
+    END;
+
+    LOCAL PROCEDURE CreateLogLine@1000000010();
+    VAR
+      LastPurchPriceCheckLogLineL@1000000000 : Record 50807;
+    BEGIN
+      //H4161 04.05.15 TST +++++++++++++++++++++++++++++
+      LastPurchPriceCheckLogLineL.RESET;
+      LastPurchPriceCheckLogLineL.SETRANGE("Entry No.", PurchPriceCheckLogHeadNew."Entry No.");
+      LastPurchPriceCheckLogLineL.SETRANGE("No.", PurchPriceCheckLogHeadNew."No.");
+      IF NOT LastPurchPriceCheckLogLineL.FINDLAST THEN
+        CLEAR(LastPurchPriceCheckLogLineL);
+
+      PurchPriceCheckLine.INIT;
+      PurchPriceCheckLine."Entry No." := PurchPriceCheckLogHeadNew."Entry No.";
+      PurchPriceCheckLine."No." := PurchPriceCheckLogHeadNew."No.";
+      PurchPriceCheckLine."Line No." := LastPurchPriceCheckLogLineL."Line No." + 10000;
+      PurchPriceCheckLine.INSERT(TRUE);
+      //H4161 04.05.15 TST -----------------------------
+    END;
+
+    LOCAL PROCEDURE CheckInvoiceline@1000000004() : Boolean;
+    BEGIN
+      //H4161 04.05.15 TST +++++++++++++++++++++++++++++
+      InvoiceLine.RESET;
+      InvoiceLine.SETRANGE("Document Type",InvoiceLine."Document Type"::Invoice);
+      InvoiceLine.SETRANGE("Document No.",PurchHeader."No.");
+      InvoiceLine.SETFILTER("Receipt No.",'<>%1','');
+      //H4387 25.06.15 TST +++++++++++++++++++++++++++++
+      InvoiceLine.SETRANGE(Type,InvoiceLine.Type::Item);
+      //H4387 25.06.15 TST -----------------------------
+      IF InvoiceLine.ISEMPTY THEN BEGIN
+        PurchPriceCheckLogHeadNew."Message Text 1" := STRSUBSTNO(HMEText005,InvoiceLine.TABLECAPTION,
+                                                      InvoiceLine.FIELDCAPTION("Receipt No."));
+        PurchPriceCheckLogHeadNew.MODIFY;
+        EXIT(FALSE);
+      END;
+
+      InvoiceLine.FINDFIRST;
+      IF PurchRcptLine.GET(InvoiceLine."Receipt No.",InvoiceLine."Receipt Line No.") THEN BEGIN
+        IF NOT PurchOrder.GET(PurchOrder."Document Type"::Order,PurchRcptLine."Order No.") THEN
+        PurchPriceCheckLogHeadNew."Message Text 1" := STRSUBSTNO(HMEText006,PurchOrder.TABLECAPTION,
+                                                      PurchRcptLine."Order No.");
+        PurchPriceCheckLogHeadNew.MODIFY;
+        EXIT(FALSE);
+      END ELSE BEGIN
+        PurchPriceCheckLogHeadNew."Message Text 1" := STRSUBSTNO(HMEText006,PurchRcptLine.TABLECAPTION,
+                                                      InvoiceLine."Receipt No.",FORMAT(InvoiceLine."Receipt Line No."));
+        PurchPriceCheckLogHeadNew.MODIFY;
+        EXIT(FALSE);
+      END;
+
+      UpdateHeaderStatus();
+      //H4161 04.05.15 TST -----------------------------
+    END;
+
+    LOCAL PROCEDURE CheckUnitCost@1000000007();
+    BEGIN
+      //H4161 04.05.15 TST +++++++++++++++++++++++++++++
+      PurchRcptLine.RESET;
+      InvoiceLine.RESET;
+      InvoiceLine.SETRANGE("Document Type",PurchHeader."Document Type");
+      InvoiceLine.SETRANGE("Document No.",PurchHeader."No.");
+      InvoiceLine.SETFILTER(Quantity,'<>%1',0);
+      //H4164 01.06.15 TST +++++++++++++++++++++++++++++
+      InvoiceLine.SETRANGE(Type,InvoiceLine.Type::Item);
+      //H4164 01.06.15 TST -----------------------------
+      IF InvoiceLine.FINDSET THEN REPEAT
+        IF PurchRcptLine.GET(InvoiceLine."Receipt No.",InvoiceLine."Receipt Line No.") THEN BEGIN
+          CreateLogLine();
+          PurchPriceCheckLine."Invoice No" := InvoiceLine."Document No.";
+          PurchPriceCheckLine."Invoice Line No." := InvoiceLine."Line No.";
+          PurchPriceCheckLine."Receipt No." := PurchRcptLine."Document No.";
+          PurchPriceCheckLine."Receipt Line No." := PurchRcptLine."Line No.";
+          //H4343 09.06.15 TST +++++++++++++++++++++++++++++
+          IF PurchHeader."Currency Factor" = 0 THEN
+            PurchHeader."Currency Factor" := 1;
+          PurchRcptHeader.GET(PurchRcptLine."Document No.");
+          IF PurchRcptHeader."Currency Factor" = 0 THEN
+            PurchRcptHeader."Currency Factor" := 1;
+          PurchPriceCheckLine."Rcpt. Direct Unit Cost" :=
+            ROUND(PurchRcptLine."Direct Unit Cost"/PurchRcptHeader."Currency Factor",GLSetup."Unit-Amount Rounding Precision");
+          IF PurchPriceCheckLine."Rcpt. Direct Unit Cost" = 0 THEN
+            PurchPriceCheckLine."Rcpt. Direct Unit Cost" := 0.00001;
+          PurchPriceCheckLine."Invoice Direct Unit Cost" :=
+            ROUND(InvoiceLine."Direct Unit Cost"/PurchHeader."Currency Factor",GLSetup."Unit-Amount Rounding Precision");
+          UpdatePriceLineUnitCost(PurchPriceCheckLine."Invoice Direct Unit Cost" - PurchPriceCheckLine."Rcpt. Direct Unit Cost");
+          //H4343 09.06.15 TST -----------------------------
+
+
+          //H4317 08.06.15 TST +++++++++++++++++++++++++++++
+          IF PurchOrder.GET(PurchOrder."Document Type"::Order,PurchRcptLine."Order No.") THEN
+            PurchPriceCheckLine."Orig. Order Date Purch. Order" := PurchOrder."Orig. Order Date";
+          PurchPriceCheckLine."Item No." := InvoiceLine."No.";
+          //H4317 08.06.15 TST -----------------------------
+
+          //H4343,H4163 09.06.15 TST +++++++++++++++++++++++++++++
+          PurchPriceCheckLine."Rcpt. Line Discount" := ROUND(
+                                                       PurchRcptLine.Quantity * PurchPriceCheckLine."Rcpt. Direct Unit Cost" *
+                                                       PurchRcptLine."Line Discount %"/100,GLSetup."Amount Rounding Precision");
+          PurchPriceCheckLine."Invoice line Discount" := ROUND(
+                                                         InvoiceLine.Quantity * PurchPriceCheckLine."Invoice Direct Unit Cost" *
+                                                         InvoiceLine."Line Discount %"/100,GLSetup."Amount Rounding Precision");
+          UpdatePriceLineLineDisc(PurchPriceCheckLine."Rcpt. Line Discount" - PurchPriceCheckLine."Invoice line Discount");
+          //H4343,H4163 09.06.15 TST -----------------------------
+        //H4164,H4161 01.06.15 TST +++++++++++++++++++++++++++++
+        END ELSE BEGIN
+          CreateLogLine();
+          //H4387 25.06.15 TST +++++++++++++++++++++++++++++
+          PurchPriceCheckLine."Item No." := InvoiceLine."No.";
+          //H4387 25.06.15 TST -----------------------------
+          PurchPriceCheckLine."Invoice No" := InvoiceLine."Document No.";
+          PurchPriceCheckLine."Invoice Line No." := InvoiceLine."Line No.";
+          //H4387 29.06.15 TST +++++++++++++++++++++++++++++
+          PurchPriceCheckLine.VALIDATE(Status, PurchPriceCheckLine.Status::Error);
+          //H4387 29.06.15 TST -----------------------------
+          PurchPriceCheckLine."Message Text 1" := STRSUBSTNO(HMEText006, PurchRcptLine.TABLECAPTION,
+                                                    InvoiceLine."Receipt No.",FORMAT(InvoiceLine."Receipt Line No."));
+        END;
+        //H4317 08.06.15 TST +++++++++++++++++++++++++++++
+        CheckExtraCost(PurchSetup."Item Charge Simple Cost");
+        CheckExtraCost(PurchSetup."Item Charge Suppl. Extra Cost");
+        //H4317 08.06.15 TST -----------------------------
+        PurchPriceCheckLine.MODIFY(TRUE);
+        //H4164,H4161 01.06.15 TST -----------------------------
+      UNTIL InvoiceLine.NEXT = 0;
+
+      //H4161 04.05.15 TST -----------------------------
+    END;
+
+    LOCAL PROCEDURE UpdatePriceLineUnitCost@1000000017(DifferenceV@1000000000 : Decimal);
+    VAR
+      TempPurchasePriceSetupL@1000000001 : TEMPORARY Record 50840;
+    BEGIN
+      //H4161 04.05.15 TST +++++++++++++++++++++++++++++
+      IF DifferenceV = 0 THEN BEGIN
+        PurchPriceCheckLine.Status := PurchPriceCheckLine.Status::"Complete Match";
+        EXIT;
+      END;
+
+      CLEAR(TempPurchasePriceSetupL);
+
+      IF UseVendorSetup THEN
+        TempPurchasePriceSetupL.TRANSFERFIELDS(VendorPurchPriceSetup)
+      ELSE
+        TempPurchasePriceSetupL.TRANSFERFIELDS(PurchasePriceSetup);
+
+      //H4343 09.06.15 TST +++++++++++++++++++++++++++++
+      IF (DifferenceV <= TempPurchasePriceSetupL."Allow. Purch. Price/SKU LCY") AND
+         ((PurchPriceCheckLine."Invoice Direct Unit Cost"/PurchPriceCheckLine."Rcpt. Direct Unit Cost"-1)*100 <=
+         TempPurchasePriceSetupL."Allow. Purch. Price per SKU %") THEN
+      BEGIN
+        //H4317 08.06.15 TST +++++++++++++++++++++++++++++
+        PurchPriceCheckLine."Deviation % Unit Cost" :=
+          (PurchPriceCheckLine."Invoice Direct Unit Cost"/PurchPriceCheckLine."Rcpt. Direct Unit Cost"-1)*100;
+        PurchPriceCheckLine."Max. Tolerance Unit Cost LCY" := TempPurchasePriceSetupL."Allow. Purch. Price/SKU LCY";
+        //H4317 08.06.15 TST -----------------------------
+        PurchPriceCheckLine.Status := PurchPriceCheckLine.Status::"In Tolerance";
+        PurchPriceCheckLine.MODIFY(TRUE);
+        EXIT;
+      END;
+      //H4343 09.06.15 TST -------------------------------
+
+      //H4387 29.06.15 TST +++++++++++++++++++++++++++++
+      PurchPriceCheckLine.VALIDATE(Status, PurchPriceCheckLine.Status::Error);
+      //H4387 29.06.15 TST -----------------------------
+
+      //H4317 08.06.15 TST +++++++++++++++++++++++++++++
+      PurchPriceCheckLine."Deviation % Unit Cost" :=
+        (PurchPriceCheckLine."Invoice Direct Unit Cost"/PurchPriceCheckLine."Rcpt. Direct Unit Cost"-1)*100;
+      PurchPriceCheckLine."Max. Tolerance Unit Cost LCY" := TempPurchasePriceSetupL."Allow. Purch. Price/SKU LCY";
+      //H4317 08.06.15 TST -----------------------------
+
+      IF DifferenceV > TempPurchasePriceSetupL."Allow. Purch. Price/SKU LCY" THEN
+        PurchPriceCheckLine."Message Text 1" :=
+          STRSUBSTNO(HMEText001,TempPurchasePriceSetupL.FIELDCAPTION("Allow. Purch. Price/SKU LCY"));
+
+      //H4343 09.06.15 TST +++++++++++++++++++++++++++++++
+      IF ((PurchPriceCheckLine."Invoice Direct Unit Cost"/PurchPriceCheckLine."Rcpt. Direct Unit Cost"-1)*100 >
+      //H4343 09.06.15 TST -------------------------------
+           TempPurchasePriceSetupL."Allow. Purch. Price per SKU %") THEN
+      BEGIN
+        IF PurchPriceCheckLine."Message Text 1" = '' THEN
+          PurchPriceCheckLine."Message Text 1" :=
+            STRSUBSTNO(HMEText001,TempPurchasePriceSetupL.FIELDCAPTION("Allow. Purch. Price per SKU %"))
+        ELSE
+          PurchPriceCheckLine."Message Text 2" :=
+            STRSUBSTNO(HMEText001,TempPurchasePriceSetupL.FIELDCAPTION("Allow. Purch. Price per SKU %"));
+      END;
+      //H4161 04.05.15 TST -----------------------------
+    END;
+
+    LOCAL PROCEDURE UpdatePriceLineLineDisc@1000000014(DifferenceV@1000000000 : Decimal);
+    VAR
+      TempPurchasePriceSetupL@1000000001 : TEMPORARY Record 50840;
+    BEGIN
+      //H4163 13.05.15 TST +++++++++++++++++++++++++++++
+
+      IF (DifferenceV = 0) THEN BEGIN
+        IF (PurchPriceCheckLine.Status < PurchPriceCheckLine.Status::"Complete Match") THEN
+          PurchPriceCheckLine.Status := PurchPriceCheckLine.Status::"Complete Match";
+        EXIT;
+      END;
+
+      CLEAR(TempPurchasePriceSetupL);
+
+      IF UseVendorSetup THEN
+        TempPurchasePriceSetupL.TRANSFERFIELDS(VendorPurchPriceSetup)
+      ELSE
+        TempPurchasePriceSetupL.TRANSFERFIELDS(PurchasePriceSetup);
+
+      IF (PurchPriceCheckLine."Rcpt. Line Discount" = 0) AND (PurchPriceCheckLine."Invoice line Discount" <> 0) THEN BEGIN
+        IF PurchPriceCheckLine.Status < PurchPriceCheckLine.Status::"In Tolerance" THEN
+          PurchPriceCheckLine.Status := PurchPriceCheckLine.Status::"In Tolerance";
+          EXIT;
+      END ELSE BEGIN
+        IF (PurchPriceCheckLine."Invoice line Discount" = 0) AND (PurchPriceCheckLine."Rcpt. Line Discount" <> 0)
+          AND (TempPurchasePriceSetupL."Allowance Line Discount %" <> 100) THEN
+        BEGIN
+          //H4387 29.06.15 TST +++++++++++++++++++++++++++++
+          PurchPriceCheckLine.VALIDATE(Status, PurchPriceCheckLine.Status::Error);
+          //H4387 29.06.15 TST -----------------------------
+        END ELSE IF (DifferenceV <=  TempPurchasePriceSetupL."Allowance Line Discount LCY") AND
+           (-(PurchPriceCheckLine."Invoice line Discount"/PurchPriceCheckLine."Rcpt. Line Discount"-1)*100 <=
+           TempPurchasePriceSetupL."Allowance Line Discount %") THEN
+        BEGIN
+          IF PurchPriceCheckLine.Status < PurchPriceCheckLine.Status::"In Tolerance" THEN
+            PurchPriceCheckLine.Status := PurchPriceCheckLine.Status::"In Tolerance";
+          //H4317 08.06.15 TST +++++++++++++++++++++++++++++
+          PurchPriceCheckLine."Deviation % Line Discount" :=
+            -(PurchPriceCheckLine."Invoice line Discount"/PurchPriceCheckLine."Rcpt. Line Discount"-1)*100;
+          PurchPriceCheckLine."Max. Tolerance Line Disc. LCY" := TempPurchasePriceSetupL."Allowance Line Discount LCY";
+          //H4317 08.06.15 TST -----------------------------
+          EXIT;
+        END;
+      END;
+      //H4387 29.06.15 TST +++++++++++++++++++++++++++++
+      PurchPriceCheckLine.VALIDATE(Status, PurchPriceCheckLine.Status::Error);
+      //H4387 29.06.15 TST -----------------------------
+
+      //H4317 08.06.15 TST +++++++++++++++++++++++++++++
+      PurchPriceCheckLine."Deviation % Line Discount" :=
+        -(PurchPriceCheckLine."Invoice line Discount"/PurchPriceCheckLine."Rcpt. Line Discount"-1)*100;
+      PurchPriceCheckLine."Max. Tolerance Line Disc. LCY" := TempPurchasePriceSetupL."Allowance Line Discount LCY";
+      //H4317 08.06.15 TST -----------------------------
+
+      IF DifferenceV > TempPurchasePriceSetupL."Allowance Line Discount LCY" THEN BEGIN
+        IF PurchPriceCheckLine."Message Text 1" = '' THEN
+          PurchPriceCheckLine."Message Text 1" :=
+            STRSUBSTNO(HMEText001,TempPurchasePriceSetupL.FIELDCAPTION("Allowance Line Discount LCY"))
+        ELSE
+          PurchPriceCheckLine."Message Text 1" := COPYSTR(PurchPriceCheckLine."Message Text 1" + '~' +
+            STRSUBSTNO(HMEText001,TempPurchasePriceSetupL.FIELDCAPTION("Allowance Line Discount LCY")),
+            1, MAXSTRLEN(PurchPriceCheckLine."Message Text 1"));
+      END;
+
+      IF ((-(PurchPriceCheckLine."Invoice line Discount"/PurchPriceCheckLine."Rcpt. Line Discount"-1)*100 >
+           TempPurchasePriceSetupL."Allowance Line Discount %")) OR
+         ((PurchPriceCheckLine."Invoice line Discount" = 0) AND (PurchPriceCheckLine."Rcpt. Line Discount" <> 0)
+          AND (TempPurchasePriceSetupL."Allowance Line Discount %" <> 100)) THEN
+      BEGIN
+        IF PurchPriceCheckLine."Message Text 1" = '' THEN
+          PurchPriceCheckLine."Message Text 1" :=
+            STRSUBSTNO(HMEText001,TempPurchasePriceSetupL.FIELDCAPTION("Allowance Line Discount %"))
+        ELSE IF PurchPriceCheckLine."Message Text 2" = '' THEN
+          PurchPriceCheckLine."Message Text 2" :=
+            STRSUBSTNO(HMEText001,TempPurchasePriceSetupL.FIELDCAPTION("Allowance Line Discount %"))
+        ELSE BEGIN
+          PurchPriceCheckLine."Message Text 2" := COPYSTR(PurchPriceCheckLine."Message Text 2" + '~' +
+            STRSUBSTNO(HMEText001,TempPurchasePriceSetupL.FIELDCAPTION("Allowance Line Discount %")),
+            1, MAXSTRLEN(PurchPriceCheckLine."Message Text 2"));
+        END;
+      END;
+      //H4163 13.05.15 TST -----------------------------
+    END;
+
+    LOCAL PROCEDURE CheckExtraCost@1000000002(ItemChargeCodeV@1000000006 : Code[20]);
+    VAR
+      OrderLineL@1000000000 : Record 39;
+      OrderItemChargeLineL@1000000001 : Record 39;
+      ItemChargeAssignmtL@1000000002 : Record 5805;
+      InvoiceItemChargeLineL@1000000003 : Record 39;
+      TempPurchasePriceSetupL@1000000004 : TEMPORARY Record 50840;
+      DifferenceL@1000000005 : Decimal;
+    BEGIN
+      //H4164 01.06.15 TST +++++++++++++++++++++++++++++
+      // get extra cost from invoice
+      CLEAR(InvoiceItemChargeLineL);
+      ItemChargeAssignmtL.RESET;
+      ItemChargeAssignmtL.SETRANGE("Document Type",ItemChargeAssignmtL."Document Type"::Invoice);
+      ItemChargeAssignmtL.SETRANGE("Document No.",InvoiceLine."Document No.");
+      ItemChargeAssignmtL.SETRANGE("Applies-to Doc. Type",ItemChargeAssignmtL."Applies-to Doc. Type"::Invoice);
+      ItemChargeAssignmtL.SETRANGE("Applies-to Doc. No.",InvoiceLine."Document No.");
+      ItemChargeAssignmtL.SETRANGE("Applies-to Doc. Line No.",InvoiceLine."Line No.");
+      //H4317 01.06.15 TST +++++++++++++++++++++++++++++
+      ItemChargeAssignmtL.SETRANGE("Item Charge No.",ItemChargeCodeV);
+      //H4317 08.06.15 TST -----------------------------
+      IF NOT ItemChargeAssignmtL.ISEMPTY THEN BEGIN
+        ItemChargeAssignmtL.FINDFIRST;
+        InvoiceItemChargeLineL.GET(ItemChargeAssignmtL."Document Type",ItemChargeAssignmtL."Document No.",
+                                   ItemChargeAssignmtL."Document Line No.");
+      END;
+
+      // get extra cost from order
+      CLEAR(OrderItemChargeLineL);
+      IF OrderLineL.GET(OrderLineL."Document Type"::Order,PurchRcptLine."Order No.",PurchRcptLine."Order Line No.") THEN BEGIN
+        OrderItemChargeLineL.SETRANGE("Document Type",OrderLineL."Document Type");
+        OrderItemChargeLineL.SETRANGE("Document No.",OrderLineL."Document No.");
+        OrderItemChargeLineL.SETRANGE("Autom. Item Charge",TRUE);
+        OrderItemChargeLineL.SETRANGE("Created by Line No.",OrderLineL."Line No.");
+        //H4317 01.06.15 TST +++++++++++++++++++++++++++++
+        OrderItemChargeLineL.SETRANGE("No.",ItemChargeCodeV);
+        //H4317 08.06.15 TST -----------------------------
+        IF OrderItemChargeLineL.FINDFIRST THEN;
+      END;
+
+      IF (PurchPriceCheckLine."Invoice No" <> InvoiceLine."Document No.") OR
+         (PurchPriceCheckLine."Invoice Line No." <> InvoiceLine."Line No.") THEN BEGIN
+        CreateLogLine;
+        //H4387 25.06.15 TST +++++++++++++++++++++++++++++
+        PurchPriceCheckLine."Item No." := InvoiceLine."No.";
+        //H4387 25.06.15 TST -----------------------------
+        PurchPriceCheckLine."Invoice No" := InvoiceLine."Document No.";
+        PurchPriceCheckLine."Invoice Line No." := InvoiceLine."Line No.";
+        //H4317 08.06.15 TST +++++++++++++++++++++++++++++
+        IF PurchOrder.GET(PurchOrder."Document Type"::Order,PurchRcptLine."Order No.") THEN
+          PurchPriceCheckLine."Orig. Order Date Purch. Order" := PurchOrder."Orig. Order Date";
+        PurchPriceCheckLine."Item No." := InvoiceLine."No.";
+        //H4317 08.06.15 TST -----------------------------
+        PurchPriceCheckLine.MODIFY(TRUE);
+      END;
+
+      PurchPriceCheckLine."Order Extra Cost" := OrderItemChargeLineL."Unit Cost (LCY)";
+      PurchPriceCheckLine."Invoice Extra Cost" := InvoiceItemChargeLineL."Unit Cost (LCY)";
+      PurchPriceCheckLine.MODIFY(TRUE);
+
+      // compare order/invoice amount
+      DifferenceL := PurchPriceCheckLine."Invoice Extra Cost" - PurchPriceCheckLine."Order Extra Cost";
+
+      IF (OrderItemChargeLineL."Unit Cost (LCY)" = InvoiceItemChargeLineL."Unit Cost (LCY)") THEN BEGIN
+        IF (PurchPriceCheckLine.Status < PurchPriceCheckLine.Status::"Complete Match") THEN
+          PurchPriceCheckLine.Status := PurchPriceCheckLine.Status::"Complete Match";
+        EXIT;
+      END;
+
+      CLEAR(TempPurchasePriceSetupL);
+
+      IF UseVendorSetup THEN
+        TempPurchasePriceSetupL.TRANSFERFIELDS(VendorPurchPriceSetup)
+      ELSE
+        TempPurchasePriceSetupL.TRANSFERFIELDS(PurchasePriceSetup);
+
+
+      IF (PurchPriceCheckLine."Invoice Extra Cost" = 0) AND (PurchPriceCheckLine."Order Extra Cost" <> 0) THEN BEGIN
+        IF PurchPriceCheckLine.Status < PurchPriceCheckLine.Status::"In Tolerance" THEN
+          PurchPriceCheckLine.Status := PurchPriceCheckLine.Status::"In Tolerance";
+        EXIT;
+      END ELSE BEGIN
+        IF PurchPriceCheckLine."Order Extra Cost" <> 0 THEN
+          IF (DifferenceL <=  TempPurchasePriceSetupL."Allow. Extra Cost Charge LCY") AND
+             ((PurchPriceCheckLine."Invoice Extra Cost"/PurchPriceCheckLine."Order Extra Cost"-1)*100 <=
+             TempPurchasePriceSetupL."Allowance Extra Cost Charge %") THEN
+          BEGIN
+            IF PurchPriceCheckLine.Status < PurchPriceCheckLine.Status::"In Tolerance" THEN
+              PurchPriceCheckLine.Status := PurchPriceCheckLine.Status::"In Tolerance";
+            //H4317 08.06.15 TST +++++++++++++++++++++++++++++
+            PurchPriceCheckLine."Deviation % Extra Cost" :=
+              (PurchPriceCheckLine."Invoice Extra Cost"/PurchPriceCheckLine."Order Extra Cost"-1)*100;
+            PurchPriceCheckLine."Max. Tolerance Extra Cost LCY" := TempPurchasePriceSetupL."Allow. Extra Cost Charge LCY";
+            //H4317 08.06.15 TST -----------------------------
+            EXIT;
+          END;
+      END;
+      //H4387 29.06.15 TST +++++++++++++++++++++++++++++
+      PurchPriceCheckLine.VALIDATE(Status, PurchPriceCheckLine.Status::Error);
+      //H4387 29.06.15 TST -----------------------------
+
+      //H4317 08.06.15 TST +++++++++++++++++++++++++++++
+      PurchPriceCheckLine."Deviation % Extra Cost" :=
+        (PurchPriceCheckLine."Invoice Extra Cost"/PurchPriceCheckLine."Order Extra Cost"-1)*100;
+      PurchPriceCheckLine."Max. Tolerance Extra Cost LCY" := TempPurchasePriceSetupL."Allow. Extra Cost Charge LCY";
+      //H4317 08.06.15 TST -----------------------------
+
+      IF DifferenceL > TempPurchasePriceSetupL."Allow. Extra Cost Charge LCY" THEN BEGIN
+        IF PurchPriceCheckLine."Message Text 1" = '' THEN
+          PurchPriceCheckLine."Message Text 1" :=
+            STRSUBSTNO(HMEText001,TempPurchasePriceSetupL.FIELDCAPTION("Allow. Extra Cost Charge LCY"))
+        ELSE
+          PurchPriceCheckLine."Message Text 1" := COPYSTR(PurchPriceCheckLine."Message Text 1" + '~' +
+            STRSUBSTNO(HMEText001,TempPurchasePriceSetupL.FIELDCAPTION("Allow. Extra Cost Charge LCY")),
+            1, MAXSTRLEN(PurchPriceCheckLine."Message Text 1"));
+      END;
+
+      IF (((PurchPriceCheckLine."Invoice Extra Cost"/PurchPriceCheckLine."Order Extra Cost"-1)*100 >
+           TempPurchasePriceSetupL."Allowance Extra Cost Charge %")) OR
+         ((PurchPriceCheckLine."Invoice Extra Cost" = 0) AND (PurchPriceCheckLine."Order Extra Cost" <> 0)
+          AND (TempPurchasePriceSetupL."Allowance Extra Cost Charge %" <> 100)) THEN
+      BEGIN
+        IF PurchPriceCheckLine."Message Text 1" = '' THEN
+          PurchPriceCheckLine."Message Text 1" :=
+            STRSUBSTNO(HMEText001,TempPurchasePriceSetupL.FIELDCAPTION("Allowance Extra Cost Charge %"))
+        ELSE IF PurchPriceCheckLine."Message Text 2" = '' THEN
+          PurchPriceCheckLine."Message Text 2" :=
+            STRSUBSTNO(HMEText001,TempPurchasePriceSetupL.FIELDCAPTION("Allowance Extra Cost Charge %"))
+        ELSE BEGIN
+          PurchPriceCheckLine."Message Text 2" := COPYSTR(PurchPriceCheckLine."Message Text 2" + '~' +
+            STRSUBSTNO(HMEText001,TempPurchasePriceSetupL.FIELDCAPTION("Allowance Extra Cost Charge %")),
+            1, MAXSTRLEN(PurchPriceCheckLine."Message Text 2"));
+        END;
+      END;
+
+      //H4164 01.06.15 TST -----------------------------
+    END;
+
+    LOCAL PROCEDURE SumVendorServiceCharge@1000000005();
+    BEGIN
+      { not yet
+      //H4161 04.05.15 TST +++++++++++++++++++++++++++++
+      // Continue with Purch Order ...
+      ServChargePerVendor.SETRANGE("Vendor No.",PurchHeader."Buy-from Vendor No.");
+      ServChargePerVendor.SETRANGE("Currency Code",PurchHeader."Currency Code");
+
+      InvoiceLine.RESET;
+      InvoiceLine.SETRANGE("Document Type",PurchHeader."Document Type");
+      InvoiceLine.SETRANGE("Document No.",PurchHeader."No.");
+      InvoiceLine.SETRANGE(Type,InvoiceLine.Type::"Charge (Item)");
+      IF InvoiceLine.FINDSET THEN REPEAT
+        ServChargePerVendor.SETRANGE("App Domain",InvoiceLine."App Domain");
+        ServChargePerVendor.SETRANGE("WH Strategy",InvoiceLine."WH Strategy");
+        ServChargePerVendor.SETRANGE("Service Charge Code",InvoiceLine."No.");
+        IF ServChargePerVendor.FINDLAST THEN
+          PurchPriceCheckLogHeadNew."Invoiced Extra Cost" += InvoiceLine."Unit Cost (LCY)" * InvoiceLine.Quantity;
+      UNTIL InvoiceLine.NEXT = 0;
+
+      PurchOrderLine.RESET;
+      PurchOrderLine.SETRANGE("Document Type",PurchOrder."Document Type");
+      PurchOrderLine.SETRANGE("Document No.",PurchOrder."No.");
+      PurchOrderLine.SETRANGE(Type,PurchOrderLine.Type::"Charge (Item)");
+      IF PurchOrderLine.FINDSET THEN REPEAT
+        ServChargePerVendor.SETRANGE("App Domain",PurchOrderLine."App Domain");
+        ServChargePerVendor.SETRANGE("WH Strategy",PurchOrderLine."WH Strategy");
+        ServChargePerVendor.SETRANGE("Service Charge Code",PurchOrderLine."No.");
+        IF ServChargePerVendor.FINDLAST THEN
+          PurchPriceCheckLogHeadNew."Purch. Order Extra Cost" += PurchOrderLine."Unit Cost (LCY)" * PurchOrderLine.Quantity;
+      UNTIL PurchOrderLine.NEXT = 0;
+
+      //H4161 04.05.15 TST -----------------------------
+      }
+    END;
+
+    LOCAL PROCEDURE SumAmounts@1000000006() : Boolean;
+    BEGIN
+      { not yet
+      //H4161 04.05.15 TST +++++++++++++++++++++++++++++
+      CLEAR(PurchaseServices);
+      PurchPriceCheckLogHeadNew."Total PO Amount" := PurchaseServices.CalcStatisticValues(PurchOrder,1,1,TRUE);
+      PurchPriceCheckLogHeadNew."Total Invoice Amount" := PurchaseServices.CalcStatisticValues(PurchHeader,1,1,TRUE);
+      PurchPriceCheckLogHeadNew."Purch. Order Invoice Discount" := PurchaseServices.CalcStatisticValues(PurchOrder,2,1,TRUE);
+      PurchPriceCheckLogHeadNew."Invoice Discount" := PurchaseServices.CalcStatisticValues(PurchHeader,2,1,TRUE);
+      IF PurchOrder."Payment Discount %" <> 0 THEN
+        PurchPriceCheckLogHeadNew."Purch. Order Paym. Discount" :=
+                ROUND(PurchPriceCheckLogHeadNew."Total PO Amount"/PurchOrder."Payment Discount %" *100);
+      IF PurchHeader."Payment Discount %"*100 <> 0 THEN
+        PurchPriceCheckLogHeadNew."Payment Discount" :=
+                ROUND(PurchPriceCheckLogHeadNew."Total Invoice Amount"/PurchHeader."Payment Discount %"*100);
+      PurchPriceCheckLogHeadNew."Total PO Amount incl. VAT" := PurchaseServices.CalcStatisticValues(PurchOrder,4,1,TRUE);
+      PurchPriceCheckLogHeadNew."Total Invoice Amount incl. VAT" := PurchaseServices.CalcStatisticValues(PurchHeader,4,1,TRUE);
+
+      PurchPriceCheckLogHead.MODIFY(TRUE);
+
+      IF (PurchPriceCheckLogHeadNew."Invoiced Extra Cost" = PurchPriceCheckLogHeadNew."Purch. Order Extra Cost") AND
+         (PurchPriceCheckLogHeadNew."Total PO Amount" = PurchPriceCheckLogHeadNew."Total Invoice Amount") AND
+         (PurchPriceCheckLogHeadNew."Purch. Order Invoice Discount" = PurchPriceCheckLogHeadNew."Invoice Discount") AND
+         (PurchPriceCheckLogHeadNew."Purch. Order Paym. Discount" = PurchPriceCheckLogHeadNew."Payment Discount") AND
+         (PurchPriceCheckLogHeadNew."Total PO Amount incl. VAT" = PurchPriceCheckLogHeadNew."Total Invoice Amount incl. VAT") THEN
+      BEGIN
+        PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::"Complete Match";
+        PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+        EXIT(TRUE);
+      END ELSE
+        EXIT(FALSE);
+      //H4161 04.05.15 TST -----------------------------
+      }
+    END;
+
+    LOCAL PROCEDURE CheckVendorPrices@1000000009();
+    BEGIN
+      { not yet
+      //H4161 04.05.15 TST +++++++++++++++++++++++++++++
+      // Allowance Service Charge
+      IF (PurchPriceCheckLogHeadNew."Invoiced Extra Cost" > PurchPriceCheckLogHeadNew."Purch. Order Extra Cost") THEN BEGIN
+        ContinueCheck := TRUE;
+        IF PurchPriceCheckLogHeadNew."Invoiced Extra Cost" - PurchPriceCheckLogHeadNew."Purch. Order Extra Cost" >
+          VendorPurchPriceSetup."Allowance Service Charge LCY" THEN
+        BEGIN
+          PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::Error;
+          PurchPriceCheckLogHeadNew."Message Text 1" := PurchPriceCheckLogHeadNew."Message Text 1" + STRSUBSTNO(HMEText007,
+            VendorPurchPriceSetup.FIELDCAPTION("Allowance Service Charge LCY"));
+          PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+          ContinueCheck := FALSE;
+        END ELSE BEGIN
+          IF PurchPriceCheckLogHeadNew."Purch. Order Extra Cost" <> 0 THEN
+            IF (PurchPriceCheckLogHeadNew."Invoiced Extra Cost"/ PurchPriceCheckLogHeadNew."Purch. Order Extra Cost" - 1) <=
+              VendorPurchPriceSetup."Allowance Service Charge %" THEN
+            BEGIN
+              IF PurchPriceCheckLogHeadNew.Status <> PurchPriceCheckLogHeadNew.Status::Error  THEN BEGIN
+                PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::"Partial Match";
+                PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+                ContinueCheck := FALSE;
+              END;
+            END;
+        END;
+        IF ContinueCheck THEN BEGIN
+          PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::Error;
+          PurchPriceCheckLogHeadNew."Message Text 1" := PurchPriceCheckLogHeadNew."Message Text 1" + STRSUBSTNO(HMEText007,
+            VendorPurchPriceSetup.FIELDCAPTION("Allowance Service Charge %"));
+          PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+        END;
+      END;
+
+      // Allowance Total Amount
+      IF PurchPriceCheckLogHeadNew."Total PO Amount" < PurchPriceCheckLogHeadNew."Total Invoice Amount" THEN BEGIN
+        ContinueCheck := TRUE;
+        IF PurchPriceCheckLogHeadNew."Total Invoice Amount" - PurchPriceCheckLogHeadNew."Total PO Amount" >
+          VendorPurchPriceSetup."Allowance Invoice Amount LCY" THEN
+        BEGIN
+          PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::Error;
+          PurchPriceCheckLogHeadNew."Message Text 1" := PurchPriceCheckLogHeadNew."Message Text 1" + STRSUBSTNO(HMEText007,
+            VendorPurchPriceSetup.FIELDCAPTION("Allowance Invoice Amount LCY"));
+          PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+          ContinueCheck := FALSE;
+        END ELSE BEGIN
+          IF PurchPriceCheckLogHeadNew."Total PO Amount" <> 0 THEN
+            IF (PurchPriceCheckLogHeadNew."Total Invoice Amount"/ PurchPriceCheckLogHeadNew."Total PO Amount" - 1) <=
+              VendorPurchPriceSetup."Allowance Invoice Amount %" THEN
+            BEGIN
+              IF PurchPriceCheckLogHeadNew.Status <> PurchPriceCheckLogHeadNew.Status::Error  THEN BEGIN
+                PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::"Partial Match";
+                PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+                ContinueCheck := FALSE;
+              END;
+            END;
+        END;
+        IF ContinueCheck THEN BEGIN
+          PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::Error;
+          PurchPriceCheckLogHeadNew."Message Text 1" := PurchPriceCheckLogHeadNew."Message Text 1" + STRSUBSTNO(HMEText007,
+            VendorPurchPriceSetup.FIELDCAPTION("Allowance Invoice Amount %"));
+          PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+        END;
+      END;
+
+      // Allowance Invoice Discount
+      IF PurchPriceCheckLogHeadNew."Invoice Discount" < PurchPriceCheckLogHeadNew."Purch. Order Invoice Discount" THEN BEGIN
+        ContinueCheck := TRUE;
+        IF PurchPriceCheckLogHeadNew."Invoice Discount" - PurchPriceCheckLogHeadNew."Purch. Order Invoice Discount" <
+          VendorPurchPriceSetup."Allowance Invoice Discount LCY" THEN
+        BEGIN
+          PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::Error;
+          PurchPriceCheckLogHeadNew."Message Text 1" := PurchPriceCheckLogHeadNew."Message Text 1" + STRSUBSTNO(HMEText007,
+            VendorPurchPriceSetup.FIELDCAPTION("Allowance Invoice Discount LCY"));
+          PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+          ContinueCheck := FALSE;
+        END ELSE BEGIN
+          IF PurchPriceCheckLogHeadNew."Purch. Order Invoice Discount" <> 0 THEN
+            IF (PurchPriceCheckLogHeadNew."Invoice Discount"/ PurchPriceCheckLogHeadNew."Purch. Order Invoice Discount" - 1) >=
+              VendorPurchPriceSetup."Allowance Invoice Discount %" THEN
+            BEGIN
+              IF PurchPriceCheckLogHeadNew.Status <> PurchPriceCheckLogHeadNew.Status::Error  THEN BEGIN
+                PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::"Partial Match";
+                PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+                ContinueCheck := FALSE;
+              END;
+            END;
+        END;
+        IF ContinueCheck THEN BEGIN
+          PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::Error;
+          PurchPriceCheckLogHeadNew."Message Text 1" := PurchPriceCheckLogHeadNew."Message Text 1" + STRSUBSTNO(HMEText007,
+            VendorPurchPriceSetup.FIELDCAPTION("Allowance Invoice Discount %"));
+          PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+        END;
+      END;
+
+      // Allowance Payment Discount
+      IF PurchPriceCheckLogHeadNew."Payment Discount" < PurchPriceCheckLogHeadNew."Purch. Order Paym. Discount" THEN BEGIN
+        ContinueCheck := TRUE;
+        IF PurchPriceCheckLogHeadNew."Purch. Order Paym. Discount" - PurchPriceCheckLogHeadNew."Payment Discount" >
+          VendorPurchPriceSetup."Allowance Payment Discount LCY" THEN
+        BEGIN
+          PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::Error;
+          PurchPriceCheckLogHeadNew."Message Text 1" := PurchPriceCheckLogHeadNew."Message Text 1" + STRSUBSTNO(HMEText007,
+            VendorPurchPriceSetup.FIELDCAPTION("Allowance Payment Discount LCY"));
+          PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+          ContinueCheck := FALSE;
+        END ELSE BEGIN
+          IF PurchPriceCheckLogHeadNew."Purch. Order Paym. Discount" <> 0 THEN
+            IF (PurchPriceCheckLogHeadNew."Payment Discount"/ PurchPriceCheckLogHeadNew."Purch. Order Paym. Discount" - 1) >=
+              VendorPurchPriceSetup."Allowance Payment Discount %" THEN
+            BEGIN
+              IF PurchPriceCheckLogHeadNew.Status <> PurchPriceCheckLogHeadNew.Status::Error  THEN BEGIN
+                PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::"Partial Match";
+                PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+                ContinueCheck := FALSE;
+              END;
+            END;
+        END;
+        IF ContinueCheck THEN BEGIN
+          PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::Error;
+          PurchPriceCheckLogHeadNew."Message Text 1" := PurchPriceCheckLogHeadNew."Message Text 1" + STRSUBSTNO(HMEText007,
+            VendorPurchPriceSetup.FIELDCAPTION("Allowance Payment Discount %"));
+          PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+        END;
+      END;
+
+      // Allowance Amount incl. VAT
+      IF PurchPriceCheckLogHeadNew."Total PO Amount incl. VAT" < PurchPriceCheckLogHeadNew."Total Invoice Amount incl. VAT" THEN BEGIN
+        ContinueCheck := TRUE;
+        IF PurchPriceCheckLogHeadNew."Total PO Amount" <> 0 THEN
+          IF (PurchPriceCheckLogHeadNew."Total Invoice Amount incl. VAT"/
+              PurchPriceCheckLogHeadNew."Total PO Amount incl. VAT" - 1) <=
+            VendorPurchPriceSetup."Allowance Invoice Amount %" THEN
+          BEGIN
+            IF PurchPriceCheckLogHeadNew.Status <> PurchPriceCheckLogHeadNew.Status::Error  THEN BEGIN
+              PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::"Partial Match";
+              PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+              ContinueCheck := FALSE;
+            END;
+          END;
+        IF ContinueCheck THEN BEGIN
+          PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::Error;
+          PurchPriceCheckLogHeadNew."Message Text 1" := PurchPriceCheckLogHeadNew."Message Text 1" + STRSUBSTNO(HMEText007,
+            VendorPurchPriceSetup.FIELDCAPTION("Allowance Invoice Amount %"));
+          PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+        END;
+      END;
+      //H4161 04.05.15 TST -----------------------------
+      }
+    END;
+
+    LOCAL PROCEDURE CheckGeneralPrices@1000000011();
+    BEGIN
+      { not yet
+      //H4161 04.05.15 TST +++++++++++++++++++++++++++++
+      // Allowance Service Charge
+      IF (PurchPriceCheckLogHeadNew."Invoiced Extra Cost" > PurchPriceCheckLogHeadNew."Purch. Order Extra Cost") THEN BEGIN
+        ContinueCheck := TRUE;
+        IF PurchPriceCheckLogHeadNew."Invoiced Extra Cost" - PurchPriceCheckLogHeadNew."Purch. Order Extra Cost" >
+          PurchasePriceSetup."Allowance Service Charge LCY" THEN
+        BEGIN
+          PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::Error;
+          PurchPriceCheckLogHeadNew."Message Text 1" := PurchPriceCheckLogHeadNew."Message Text 1" + STRSUBSTNO(HMEText007,
+             PurchasePriceSetup.FIELDCAPTION("Allowance Service Charge LCY"));
+          PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+          ContinueCheck := FALSE;
+        END ELSE BEGIN
+          IF PurchPriceCheckLogHeadNew."Purch. Order Extra Cost" <> 0 THEN
+            IF (PurchPriceCheckLogHeadNew."Invoiced Extra Cost"/ PurchPriceCheckLogHeadNew."Purch. Order Extra Cost" - 1) <=
+               PurchasePriceSetup."Allowance Service Charge %" THEN
+            BEGIN
+              IF PurchPriceCheckLogHeadNew.Status <> PurchPriceCheckLogHeadNew.Status::Error  THEN BEGIN
+                PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::"Partial Match";
+                PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+                ContinueCheck := FALSE;
+              END;
+            END;
+        END;
+        IF ContinueCheck THEN BEGIN
+          PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::Error;
+          PurchPriceCheckLogHeadNew."Message Text 1" := PurchPriceCheckLogHeadNew."Message Text 1" + STRSUBSTNO(HMEText007,
+             PurchasePriceSetup.FIELDCAPTION("Allowance Service Charge %"));
+          PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+        END;
+      END;
+
+      // Allowance Total Amount
+      IF PurchPriceCheckLogHeadNew."Total PO Amount" < PurchPriceCheckLogHeadNew."Total Invoice Amount" THEN BEGIN
+        ContinueCheck := TRUE;
+        IF PurchPriceCheckLogHeadNew."Total Invoice Amount" - PurchPriceCheckLogHeadNew."Total PO Amount" >
+          PurchasePriceSetup."Allowance Invoice Amount LCY" THEN
+        BEGIN
+          PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::Error;
+          PurchPriceCheckLogHeadNew."Message Text 1" := PurchPriceCheckLogHeadNew."Message Text 1" + STRSUBSTNO(HMEText007,
+           PurchasePriceSetup.FIELDCAPTION("Allowance Invoice Amount LCY"));
+          PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+          ContinueCheck := FALSE;
+        END ELSE BEGIN
+          IF PurchPriceCheckLogHeadNew."Total PO Amount" <> 0 THEN
+            IF (PurchPriceCheckLogHeadNew."Total Invoice Amount"/ PurchPriceCheckLogHeadNew."Total PO Amount" - 1) <=
+              PurchasePriceSetup."Allowance Invoice Amount %" THEN
+            BEGIN
+              IF PurchPriceCheckLogHeadNew.Status <> PurchPriceCheckLogHeadNew.Status::Error  THEN BEGIN
+                PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::"Partial Match";
+                PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+                ContinueCheck := FALSE;
+              END;
+            END;
+        END;
+        IF ContinueCheck THEN BEGIN
+          PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::Error;
+          PurchPriceCheckLogHeadNew."Message Text 1" := PurchPriceCheckLogHeadNew."Message Text 1" + STRSUBSTNO(HMEText007,
+            PurchasePriceSetup.FIELDCAPTION("Allowance Invoice Amount %"));
+          PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+        END;
+      END;
+
+      // Allowance Invoice Discount
+      IF PurchPriceCheckLogHeadNew."Invoice Discount" < PurchPriceCheckLogHeadNew."Purch. Order Invoice Discount" THEN BEGIN
+        ContinueCheck := TRUE;
+        IF PurchPriceCheckLogHeadNew."Invoice Discount" - PurchPriceCheckLogHeadNew."Purch. Order Invoice Discount" <
+          PurchasePriceSetup."Allowance Invoice Discount LCY" THEN
+        BEGIN
+          PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::Error;
+          PurchPriceCheckLogHeadNew."Message Text 1" := PurchPriceCheckLogHeadNew."Message Text 1" + STRSUBSTNO(HMEText007,
+            PurchasePriceSetup.FIELDCAPTION("Allowance Invoice Discount LCY"));
+          PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+          ContinueCheck := FALSE;
+        END ELSE BEGIN
+          IF PurchPriceCheckLogHeadNew."Purch. Order Invoice Discount" <> 0 THEN
+            IF (PurchPriceCheckLogHeadNew."Invoice Discount"/ PurchPriceCheckLogHeadNew."Purch. Order Invoice Discount" - 1) >=
+              PurchasePriceSetup."Allowance Invoice Discount %" THEN
+            BEGIN
+              IF PurchPriceCheckLogHeadNew.Status <> PurchPriceCheckLogHeadNew.Status::Error  THEN BEGIN
+                PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::"Partial Match";
+                PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+                ContinueCheck := FALSE;
+              END;
+            END;
+        END;
+        IF ContinueCheck THEN BEGIN
+          PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::Error;
+          PurchPriceCheckLogHeadNew."Message Text 1" := PurchPriceCheckLogHeadNew."Message Text 1" + STRSUBSTNO(HMEText007,
+            PurchasePriceSetup.FIELDCAPTION("Allowance Invoice Discount %"));
+          PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+        END;
+      END;
+
+      // Allowance Payment Discount
+      IF PurchPriceCheckLogHeadNew."Payment Discount" < PurchPriceCheckLogHeadNew."Purch. Order Paym. Discount" THEN BEGIN
+        ContinueCheck := TRUE;
+        IF PurchPriceCheckLogHeadNew."Purch. Order Paym. Discount" - PurchPriceCheckLogHeadNew."Payment Discount" >
+          PurchasePriceSetup."Allowance Payment Discount LCY" THEN
+        BEGIN
+          PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::Error;
+          PurchPriceCheckLogHeadNew."Message Text 1" := PurchPriceCheckLogHeadNew."Message Text 1" + STRSUBSTNO(HMEText007,
+            PurchasePriceSetup.FIELDCAPTION("Allowance Payment Discount LCY"));
+          PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+          ContinueCheck := FALSE;
+        END ELSE BEGIN
+          IF PurchPriceCheckLogHeadNew."Purch. Order Paym. Discount" <> 0 THEN
+            IF (PurchPriceCheckLogHeadNew."Payment Discount"/ PurchPriceCheckLogHeadNew."Purch. Order Paym. Discount" - 1) >=
+              PurchasePriceSetup."Allowance Payment Discount %" THEN
+            BEGIN
+              IF PurchPriceCheckLogHeadNew.Status <> PurchPriceCheckLogHeadNew.Status::Error  THEN BEGIN
+                PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::"Partial Match";
+                PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+                ContinueCheck := FALSE;
+              END;
+            END;
+        END;
+        IF ContinueCheck THEN BEGIN
+          PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::Error;
+          PurchPriceCheckLogHeadNew."Message Text 1" := PurchPriceCheckLogHeadNew."Message Text 1" + STRSUBSTNO(HMEText007,
+            PurchasePriceSetup.FIELDCAPTION("Allowance Payment Discount %"));
+          PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+        END;
+      END;
+
+      // Allowance Amount incl. VAT
+      IF PurchPriceCheckLogHeadNew."Total PO Amount incl. VAT" < PurchPriceCheckLogHeadNew."Total Invoice Amount incl. VAT" THEN BEGIN
+        ContinueCheck := TRUE;
+        IF PurchPriceCheckLogHeadNew."Total PO Amount" <> 0 THEN
+          IF (PurchPriceCheckLogHeadNew."Total Invoice Amount incl. VAT"/
+              PurchPriceCheckLogHeadNew."Total PO Amount incl. VAT" - 1) <=
+            PurchasePriceSetup."Allowance Invoice Amount %" THEN
+          BEGIN
+            IF PurchPriceCheckLogHeadNew.Status <> PurchPriceCheckLogHeadNew.Status::Error  THEN BEGIN
+              PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::"Partial Match";
+              PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+              ContinueCheck := FALSE;
+            END;
+          END;
+        IF ContinueCheck THEN BEGIN
+          PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLogHeadNew.Status::Error;
+          PurchPriceCheckLogHeadNew."Message Text 1" := PurchPriceCheckLogHeadNew."Message Text 1" + STRSUBSTNO(HMEText007,
+            PurchasePriceSetup.FIELDCAPTION("Allowance Invoice Amount %"));
+          PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+        END;
+      END;
+      //H4161 04.05.15 TST -----------------------------
+      }
+    END;
+
+    PROCEDURE UpdateHeaderStatus@1000000000();
+    BEGIN
+      //H4161 04.05.15 TST +++++++++++++++++++++++++++++
+      IF PurchPriceCheckLogHeadNew.Status = PurchPriceCheckLogHeadNew.Status::Error THEN
+        EXIT;
+
+      PurchPriceCheckLine.RESET;
+      PurchPriceCheckLine.SETRANGE("Entry No.",PurchPriceCheckLogHeadNew."Entry No.");
+      PurchPriceCheckLine.SETRANGE(Status,PurchPriceCheckLine.Status::Error);
+      IF NOT PurchPriceCheckLine.ISEMPTY THEN BEGIN
+        PurchPriceCheckLine.FINDLAST;
+        PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLine.Status::Error;
+        PurchPriceCheckLogHeadNew."Message Text 1" := PurchPriceCheckLine."Message Text 1";
+        PurchPriceCheckLogHeadNew."Message Text 2" := PurchPriceCheckLine."Message Text 2";
+        PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+        EXIT;
+      END;
+
+      PurchPriceCheckLine.SETRANGE(Status,PurchPriceCheckLine.Status::"In Tolerance");
+      IF NOT PurchPriceCheckLine.ISEMPTY THEN BEGIN
+        PurchPriceCheckLine.FINDLAST;
+        PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLine.Status::"In Tolerance";
+        PurchPriceCheckLogHeadNew."Message Text 1" := PurchPriceCheckLine."Message Text 1";
+        PurchPriceCheckLogHeadNew."Message Text 2" := PurchPriceCheckLine."Message Text 2";
+        PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+        EXIT;
+      END;
+
+      PurchPriceCheckLine.SETRANGE(Status,PurchPriceCheckLine.Status::"Complete Match");
+      IF NOT PurchPriceCheckLine.ISEMPTY THEN BEGIN
+        PurchPriceCheckLine.FINDLAST;
+        PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLine.Status::"Complete Match";
+        PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+        EXIT;
+      END;
+
+      PurchPriceCheckLogHeadNew.Status := PurchPriceCheckLine.Status::Error;
+      PurchPriceCheckLogHeadNew."Message Text 1" := STRSUBSTNO(HMEText006,PurchPriceCheckLine.TABLECAPTION);
+      PurchPriceCheckLogHeadNew.MODIFY(TRUE);
+
+      //H4161 04.05.15 TST -----------------------------
+    END;
+
+    PROCEDURE CheckStartDate@1000000001();
+    VAR
+      PurchPriceCheckLineL@1000000000 : Record 50807;
+    BEGIN
+      //H4439 09.07.15 TST +++++++++++++++++++++++++++++
+      PurchPriceCheckLine.RESET;
+      PurchPriceCheckLine.SETRANGE("Entry No.",PurchPriceCheckLogHeadNew."Entry No.");
+      PurchPriceCheckLine.SETRANGE(Status,PurchPriceCheckLine.Status::Error);
+      IF PurchPriceCheckLine.FINDSET THEN REPEAT
+        IF (PurchPriceCheckLine."Orig. Order Date Purch. Order" <> 0D) AND
+           (PurchPriceCheckLine."Orig. Order Date Purch. Order" < VendorPurchPriceSetup."Start Price Check at") THEN
+        BEGIN
+          PurchPriceCheckLineL := PurchPriceCheckLine;
+          PurchPriceCheckLineL."Approval Status" := PurchPriceCheckLineL."Approval Status"::approved;
+          PurchPriceCheckLineL."Approval Status Changed by" := 'STARTDATE';
+          PurchPriceCheckLineL."Approval Status Changed at" := CURRENTDATETIME;
+          PurchPriceCheckLineL.MODIFY;
+        END;
+      UNTIL PurchPriceCheckLine.NEXT = 0;
+
+      //H4439 09.07.15 TST -----------------------------
+    END;
+
+    PROCEDURE CheckItemChargeAssignment@1000000008(PurchHeaderV@1000000001 : Record 38) : Boolean;
+    VAR
+      ItemLineL@1000000000 : Record 39;
+      ItemChargeAssignmtL@1000000002 : Record 5805;
+    BEGIN
+      //H4448 09.07.15 TST +++++++++++++++++++++++++++++
+      ItemLineL.RESET;
+      ItemLineL.SETRANGE("Document Type",PurchHeaderV."Document Type");
+      ItemLineL.SETRANGE("Document No.",PurchHeaderV."No.");
+      ItemLineL.SETRANGE(Type,ItemLineL.Type::"Charge (Item)");
+      IF ItemLineL.ISEMPTY THEN
+        EXIT(TRUE);
+
+      ItemLineL.FINDSET;
+      REPEAT
+        ItemChargeAssignmtL.RESET;
+        ItemChargeAssignmtL.SETRANGE("Document Type",ItemChargeAssignmtL."Document Type"::Invoice);
+        ItemChargeAssignmtL.SETRANGE("Document No.",InvoiceLine."Document No.");
+        ItemChargeAssignmtL.SETRANGE("Document Line No.",ItemLineL."Line No.");
+        ItemChargeAssignmtL.SETFILTER("Qty. to Assign",'<>%1',0);
+        IF ItemChargeAssignmtL.ISEMPTY THEN BEGIN
+          CreateLogLine();
+          PurchPriceCheckLine."Invoice No" := InvoiceLine."Document No.";
+          PurchPriceCheckLine."Invoice Line No." := ItemLineL."Line No.";
+          PurchPriceCheckLine.VALIDATE(Status, PurchPriceCheckLine.Status::Error);
+          PurchPriceCheckLine."Message Text 1" := HMEText008;
+          PurchPriceCheckLine.MODIFY(TRUE);
+          EXIT(FALSE);
+        END;
+      UNTIL ItemLineL.NEXT = 0;
+
+      EXIT(TRUE);
+      //H4448 09.07.15 TST -----------------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+
+      H4161       04.05.15 TST       New codeunit
+      H4163       13.05.15 TST       Check Line Discounts
+      H4164       01.06.15 TST       Check Extra Cost
+      H4316       03.06.15 TST       Update Aproval Status
+      H4317       08.06.15 TST       Multiple Extra Cost Item Charge Lines, update new fields 50ff
+      H4343       09.06.15 TST       Calculate Direct Unit Cost in LCY
+      H4387       26.06.15 TST       Check item lines only
+      H4387       29.06.15 TST       Update new field "Department Responsible"
+      H4439       09.07.15 TST       Check Start Date in Vendor Purchase Price Setup, New function CheckStartDate
+      H4448       09.07.15 TST       Check Item Charge Assignment
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,1279 @@
+OBJECT Codeunit 50116 DHL Status Mgt. arc
+{
+  OBJECT-PROPERTIES
+  {
+    Date=04.12.13;
+    Time=17:22:27;
+    Modified=Yes;
+    Version List=DHL1.0,HME0686,GOB;
+  }
+  PROPERTIES
+  {
+    OnRun=VAR
+            sline@1170000000 : Record 37;
+          BEGIN
+            //CreateRequestXML('123');
+            ProcessLine2Archiv('274733529114');
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      XMLDOMMgt@1170000004 : Codeunit 6224;
+      DHLSetup@1170000003 : Record 50108;
+      SoapAction@1170000002 : Text[30];
+      ProcessedWithErrors@1170000001 : Boolean;
+      HideSendLabelEmail@1170000000 : Boolean;
+      Text001@1170000020 : TextConst 'ENU=XML answer processing error. Unknown answer is returned.';
+      Text002@1170000019 : TextConst 'ENU=Cannot contact Web Service.';
+      Text003@1170000011 : TextConst 'ENU=DHL request succesfuly completed.';
+      Text004@1170000010 : TextConst 'ENU=DHL request processed with errors. Do you want to see the log?';
+      Text005@1170000005 : TextConst 'ENU=XML request processing error.';
+      Text006@1170000009 : TextConst 'ENU=DHL Shipment History Update %1';
+      Text007@1170000008 : TextConst 'ENU=E-mail to %1 was not send.';
+      Text008@1170000007 : TextConst 'ENU=E-mail to %1 was send.';
+      Text009@1000000000 : TextConst 'ENU=DHL Shipment History was updated for period from %1 till %2.';
+      Text010@1000000001 : TextConst 'ENU=Successfully updated:';
+      Text011@1000000002 : TextConst 'ENU=With errors:';
+      CurrentTime@1000000003 : Text[50];
+      Text012@1000000004 : TextConst 'ENU=The secure web-service returns the error. The public webservice will be run.';
+      RecRef@1000000005 : RecordRef;
+      CUParcelStatusHistoryMgmt@1000000006 : Codeunit 80011;
+      FPCGeneralSetup@1000000007 : Record 50055;
+
+    LOCAL PROCEDURE ContactWebServiceArchiv@1000000000(VAR XMLDOMDoc@1000000001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v3.0'.DOMDocument";VAR XMLDocOut@1000000004 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v3.0'.DOMDocument";ActionMethod@1000000002 : Text[30];Public@1000000005 : Boolean) : Text[250];
+    VAR
+      XMLHTTP@1000000000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{88D96A0A-F192-11D4-A65F-0040963251E5}:'Microsoft XML, v3.0'.XMLHTTP60";
+      StatusText@1000000003 : Text[255];
+      inStream@1170000000 : InStream;
+      outStream@1170000001 : OutStream;
+      File@1170000002 : File;
+      TempBlob@1170000003 : Record 99008535;
+      bt@1170000004 : BigText;
+    BEGIN
+      CLEAR(XMLHTTP);
+      CLEAR(XMLDocOut);
+      CREATE(XMLHTTP,TRUE,TRUE);
+      CREATE(XMLDocOut,TRUE,TRUE);
+
+      IF Public THEN
+        XMLHTTP.open('POST',DHLSetup."DHL History Public WS Link" + XMLDOMDoc.xml, FALSE)
+      ELSE
+        XMLHTTP.open('POST',DHLSetup."DHL History WS Link" + XMLDOMDoc.xml, FALSE);
+      //MESSAGE(DHLSetup."DHL History WS Link" + XMLDOMDoc.xml);
+      //XMLHTTP.setRequestHeader('SoapAction',SoapActionMethod);
+      XMLHTTP.setRequestHeader('Content-type','text/xml');
+      IF DHLSetup."Save XML Files" THEN BEGIN
+        DHLSetup.TESTFIELD("Temp Folder Path");
+        XMLDOMDoc.save(DHLSetup."Temp Folder Path" + '/'+ CurrentTime + ActionMethod +'_Request44.xml');
+      END;
+      XMLHTTP.send();
+
+      IF XMLHTTP.statusText = 'OK' THEN BEGIN
+        XMLDocOut := XMLHTTP.responseXML;
+        inStream := XMLHTTP.responseStream;
+        XMLDocOut.load(inStream);
+
+        IF DHLSetup."Save XML Files" THEN
+          XMLDocOut.save(DHLSetup."Temp Folder Path" + '/'+ CurrentTime + ActionMethod + '_Responce88.xml');
+
+        IF XMLDocOut.parseError.errorCode <> 0 THEN
+        ERROR('XML DOM Error: ' +XMLDocOut.parseError.reason +' - Errorcode : '
+        +FORMAT(XMLDocOut.parseError.errorCode) + '=' +
+        FORMAT(XMLDocOut.parseError.line));
+
+        EXIT('')
+      END ELSE
+        EXIT(XMLHTTP.responseText);
+    END;
+
+    PROCEDURE GetDHLSetupArchiv@1000000007();
+    BEGIN
+      DHLSetup.GET;
+      DHLSetup.TESTFIELD("DHL History Login");
+      DHLSetup.TESTFIELD("DHL History Password");
+      DHLSetup.TESTFIELD(DHLSetup."DHL History WS Link");
+      //DHLSetup.TESTFIELD("DHL Create Ship. Event Code");
+      //DHLSetup.TESTFIELD("DHL Create Ship. RIC Code");
+    END;
+
+    PROCEDURE CreateRequestXMLArchiv@1000000006(VAR XMLDOMDoc@1170000000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v3.0'.DOMDocument";VAR SOShipmentsDHL@1170000002 : Record 50020) : Boolean;
+    VAR
+      XMLSOAPEnv@1000000002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      XMLProcInstruction@1000000003 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF89-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMProcessingInstruction";
+      XMLElement@1000000005 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      XMLHeaderElement@1000000004 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      XMLShipmentOrder@1000000008 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      XMLShipment@1000000009 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      SalesOrderStatusDHL@1000000006 : Record 50020;
+      XMLAuthorizationElement@1000000007 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      XMLDDRequest@1000000010 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      XMLCurrRootElement@1000000012 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      XMLDOMDocAnswer@1000000001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v3.0'.DOMDocument";
+      POHeader@1000000014 : Record 38;
+      Street@1000000016 : Text[40];
+      Building@1000000017 : Text[30];
+      Vendor@1000000018 : Record 23;
+      XMLReceiver@1000000015 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      SalesOrder@1000000019 : Record 5107;
+      Customer@1000000020 : Record 18;
+      XMLShipper@1000000021 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      weigth@1000000022 : Decimal;
+      NoOfParcels@1000000023 : Integer;
+      NoOfShipments@1000000024 : Integer;
+      CalendarMgmt@1000000025 : Codeunit 7600;
+      CalChange@1000000026 : Record 7602;
+      PickupDate@1000000027 : Date;
+      CustomerContact@1000000028 : Text[50];
+      VendorContact@1000000029 : Text[50];
+      Location@1000000030 : Record 14;
+      CustomerName@1000000031 : Text[50];
+      SalesLine@1000000032 : Record 5108;
+      Item@1000000033 : Record 27;
+      DHLParcelStatusHistory@1000000000 : Record 50021;
+      DHLStatusCode@1000000011 : Record 50028;
+      LabelSendFilter@1000000013 : Text[1024];
+      DHLShipmentNumbers@1000000034 : Text[1024];
+      ParcelStatusHistoryArchive@1000040019 : Record 50187;
+      ParcelStatusCodes@1000040032 : Record 50188;
+    BEGIN
+      //S/P1133
+      FPCGeneralSetup.GET;
+      //E/P1133
+
+      GetDHLSetupArchiv;
+      CLEAR(XMLDOMDoc);
+      CLEAR(XMLProcInstruction);
+      IF NOT CREATE(XMLDOMDoc) THEN BEGIN
+        AddLogArchiv(SOShipmentsDHL."SO No.",SOShipmentsDHL."DHL Shipment Number Code",Text005);
+        EXIT(FALSE);
+      END;
+
+      // A/gob-lku/14.02.2013/P0802
+      IF SOShipmentsDHL."Number of Parcels" > 1 THEN BEGIN
+        //S/P1133
+        CASE FPCGeneralSetup."Active Parcel Status History" OF
+          FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+          FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old":
+            BEGIN
+        //E/P1133
+              DHLParcelStatusHistory.RESET;
+              DHLParcelStatusHistory.SETRANGE("Document No.",SOShipmentsDHL."SO No.");
+              DHLStatusCode.RESET;
+              CLEAR(LabelSendFilter);
+              CLEAR(DHLShipmentNumbers);
+              DHLStatusCode.SETRANGE("Label Creation Status",TRUE);
+              IF DHLStatusCode.FINDSET(FALSE,FALSE) THEN
+                REPEAT
+                  IF LabelSendFilter = '' THEN
+                    LabelSendFilter := DHLStatusCode."Status Event Code"
+                  ELSE
+                    LabelSendFilter += '|' + DHLStatusCode."Status Event Code";
+                UNTIL DHLStatusCode.NEXT = 0;
+              DHLParcelStatusHistory.SETFILTER("Status Event",LabelSendFilter);
+              IF DHLParcelStatusHistory.FINDSET(FALSE,FALSE) THEN
+                REPEAT
+                  IF DHLShipmentNumbers = '' THEN
+                    DHLShipmentNumbers := DHLParcelStatusHistory."Piece-Code (Identifier)"
+                  ELSE
+                    DHLShipmentNumbers += ';' + DHLParcelStatusHistory."Piece-Code (Identifier)";
+                UNTIL DHLParcelStatusHistory.NEXT = 0;
+        //S/P1133
+            END;
+          FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+          FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History":
+            BEGIN
+              ParcelStatusHistoryArchive.RESET;
+              ParcelStatusHistoryArchive.SETCURRENTKEY("Document No.","Document Line No.","Document Type");
+              ParcelStatusHistoryArchive.SETRANGE("Document No.",SOShipmentsDHL."SO No.");
+              ParcelStatusCodes.RESET;
+              CLEAR(LabelSendFilter);
+              CLEAR(DHLShipmentNumbers);
+              ParcelStatusCodes.SETRANGE("Create Label",TRUE);
+              IF ParcelStatusCodes.FINDSET(FALSE,FALSE) THEN
+                REPEAT
+                  IF LabelSendFilter = '' THEN
+                    LabelSendFilter := ParcelStatusCodes."Status Code"
+                  ELSE
+                    LabelSendFilter += '|' + ParcelStatusCodes."Status Code";
+                UNTIL ParcelStatusCodes.NEXT = 0;
+              ParcelStatusHistoryArchive.SETFILTER("Status Code",LabelSendFilter);
+              IF ParcelStatusHistoryArchive.FINDSET(FALSE,FALSE) THEN
+                REPEAT
+                  IF DHLShipmentNumbers = '' THEN
+                    DHLShipmentNumbers := ParcelStatusHistoryArchive."Piece Code"
+                  ELSE
+                    DHLShipmentNumbers += ';' + ParcelStatusHistoryArchive."Piece Code";
+                UNTIL ParcelStatusHistoryArchive.NEXT = 0;
+            END;
+        END;
+        //E/P1133
+      END ELSE
+        DHLShipmentNumbers := SOShipmentsDHL."DHL Shipment Number Code";
+      // E/gob-lku/14.02.2013/P0802
+
+      XMLDOMMgt.SetNormalCase;
+      XMLProcInstruction := XMLDOMDoc.createProcessingInstruction('xml','version=''1.0'' encoding=''ISO-8859-1''');
+      XMLDOMDoc.appendChild(XMLProcInstruction);
+
+      XMLHeaderElement := XMLDOMDoc.createElement('data');
+      XMLHeaderElement.setAttribute('appname',DHLSetup."DHL History Login");
+      XMLHeaderElement.setAttribute('password',DHLSetup."DHL History Password");
+      XMLHeaderElement.setAttribute('request','d-get-piece');
+      XMLHeaderElement.setAttribute('language-code','de');
+      // A/gob-lku/14.02.2013/P0802
+      //XMLHeaderElement.setAttribute('piece-code',SOShipmentsDHL."DHL Shipment Number Code");
+      XMLHeaderElement.setAttribute('piece-code',DHLShipmentNumbers);
+
+      // E/gob-lku/14.02.2013/P0802
+      XMLDOMDoc.appendChild(XMLHeaderElement);
+    END;
+
+    PROCEDURE CreateRequestXML1Archiv@1000000001(VAR XMLDOMDoc@1170000000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v3.0'.DOMDocument";VAR SOShipmentsDHL@1170000002 : Record 50020;PieceCode@1000000000 : Text[50]) : Boolean;
+    VAR
+      XMLSOAPEnv@1000000002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      XMLProcInstruction@1000000003 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF89-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMProcessingInstruction";
+      XMLElement@1000000005 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      XMLHeaderElement@1000000004 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      XMLShipmentOrder@1000000008 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      XMLShipment@1000000009 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      SalesOrderStatusDHL@1000000006 : Record 50020;
+      XMLAuthorizationElement@1000000007 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      XMLDDRequest@1000000010 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      XMLCurrRootElement@1000000012 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      XMLDOMDocAnswer@1000000001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v3.0'.DOMDocument";
+      POHeader@1000000014 : Record 38;
+      Street@1000000016 : Text[40];
+      Building@1000000017 : Text[30];
+      Vendor@1000000018 : Record 23;
+      XMLReceiver@1000000015 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      SalesOrder@1000000019 : Record 5107;
+      Customer@1000000020 : Record 18;
+      XMLShipper@1000000021 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      weigth@1000000022 : Decimal;
+      NoOfParcels@1000000023 : Integer;
+      NoOfShipments@1000000024 : Integer;
+      CalendarMgmt@1000000025 : Codeunit 7600;
+      CalChange@1000000026 : Record 7602;
+      PickupDate@1000000027 : Date;
+      CustomerContact@1000000028 : Text[50];
+      VendorContact@1000000029 : Text[50];
+      Location@1000000030 : Record 14;
+      CustomerName@1000000031 : Text[50];
+      SalesLine@1000000032 : Record 5108;
+      Item@1000000033 : Record 27;
+    BEGIN
+      CLEAR(XMLDOMDoc);
+      CLEAR(XMLProcInstruction);
+      IF NOT CREATE(XMLDOMDoc) THEN BEGIN
+        AddLogArchiv(SOShipmentsDHL."SO No.",SOShipmentsDHL."DHL Shipment Number Code",Text005);
+        EXIT(FALSE);
+      END;
+
+      XMLDOMMgt.SetNormalCase;
+      XMLProcInstruction := XMLDOMDoc.createProcessingInstruction('xml','version=''1.0'' encoding=''ISO-8859-1''');
+      XMLDOMDoc.appendChild(XMLProcInstruction);
+
+      XMLHeaderElement := XMLDOMDoc.createElement('data');
+      XMLHeaderElement.setAttribute('appname',DHLSetup."DHL History Login");
+      XMLHeaderElement.setAttribute('password',DHLSetup."DHL History Password");
+      XMLHeaderElement.setAttribute('request','d-get-piece-events');
+      XMLHeaderElement.setAttribute('language-code','de');
+      XMLHeaderElement.setAttribute('piece-id',PieceCode);
+      XMLDOMDoc.appendChild(XMLHeaderElement);
+    END;
+
+    PROCEDURE CreateRequestXML2Archiv@1000000005(VAR XMLDOMDoc@1170000000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v3.0'.DOMDocument";VAR SOShipmentsDHL@1000000000 : Record 50020) : Boolean;
+    VAR
+      XMLSOAPEnv@1000000002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      XMLProcInstruction@1000000003 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF89-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMProcessingInstruction";
+      XMLElement@1000000005 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      XMLHeaderElement@1000000004 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      XMLShipmentOrder@1000000008 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      XMLShipment@1000000009 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      SalesOrderStatusDHL@1000000006 : Record 50020;
+      XMLAuthorizationElement@1000000007 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      XMLDDRequest@1000000010 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      XMLCurrRootElement@1000000012 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      XMLDOMDocAnswer@1000000001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v3.0'.DOMDocument";
+      POHeader@1000000014 : Record 38;
+      Street@1000000016 : Text[40];
+      Building@1000000017 : Text[30];
+      Vendor@1000000018 : Record 23;
+      XMLReceiver@1000000015 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      SalesOrder@1000000019 : Record 5107;
+      Customer@1000000020 : Record 18;
+      XMLShipper@1000000021 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      weigth@1000000022 : Decimal;
+      NoOfParcels@1000000023 : Integer;
+      NoOfShipments@1000000024 : Integer;
+      CalendarMgmt@1000000025 : Codeunit 7600;
+      CalChange@1000000026 : Record 7602;
+      PickupDate@1000000027 : Date;
+      CustomerContact@1000000028 : Text[50];
+      VendorContact@1000000029 : Text[50];
+      Location@1000000030 : Record 14;
+      CustomerName@1000000031 : Text[50];
+      SalesLine@1000000032 : Record 5108;
+      Item@1000000033 : Record 27;
+    BEGIN
+      GetDHLSetupArchiv;
+      CLEAR(XMLDOMDoc);
+      CLEAR(XMLProcInstruction);
+      IF NOT CREATE(XMLDOMDoc) THEN BEGIN
+        AddLogArchiv(SOShipmentsDHL."SO No.",SOShipmentsDHL."DHL Shipment Number Code",Text005);
+        EXIT(FALSE);
+      END;
+
+      XMLDOMMgt.SetNormalCase;
+      XMLProcInstruction := XMLDOMDoc.createProcessingInstruction('xml','version=''1.0'' encoding=''ISO-8859-1''');
+      XMLDOMDoc.appendChild(XMLProcInstruction);
+
+      XMLHeaderElement := XMLDOMDoc.createElement('data');
+      XMLHeaderElement.setAttribute('appname',DHLSetup."DHL History Login");
+      XMLHeaderElement.setAttribute('password',DHLSetup."DHL History Password");
+      XMLHeaderElement.setAttribute('request','get-status-for-public-user');
+      XMLHeaderElement.setAttribute('language-code','de');
+      XMLElement := XMLDOMDoc.createElement('data');
+      XMLElement.setAttribute('piece-code',SOShipmentsDHL."DHL Shipment Number Code");
+      XMLHeaderElement.appendChild(XMLElement);
+      XMLDOMDoc.appendChild(XMLHeaderElement);
+    END;
+
+    PROCEDURE ReadResponceXMLArchiv@1000000017(VAR XMLDOMDocAnswer@1000000001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v3.0'.DOMDocument";SOShipmentsDHL@1170000007 : Record 50020) Result : Boolean;
+    VAR
+      XMLDOMDoc1@1000000013 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v3.0'.DOMDocument";
+      XMLDOMDocAnswer1@1000000011 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v3.0'.DOMDocument";
+      XMLelement@1000000002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      XMLAttr@1170000000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF85-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMAttribute";
+      XMLNode@1000000004 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMNode";
+      MessageText@1000000005 : Text[1024];
+      StatusCode@1000000007 : Code[20];
+      LSalesOrderStatusDHL@1000000003 : Record 50020;
+      SalesLine@1000000006 : Record 5108;
+      PurchaseLine@1000000008 : Record 39;
+      DHLParcelsStatusHistory@1000000009 : Record 50021;
+      ParcelStatusDHL@1000000010 : Record 50021;
+      TmpDHLParcelsStatusHistory@1000000012 : TEMPORARY Record 50021;
+      StatusDate@1170000001 : DateTime;
+      RIC@1170000002 : Code[20];
+      ICE@1170000003 : Code[20];
+      XMLChildNodList@1170000004 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF82-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMNodeList";
+      ChildNodListCount@1170000005 : Integer;
+      PieceCode@1000000000 : Text[50];
+      ReturnMsg@1000000014 : Text[250];
+      PostCode@1000000015 : Text[250];
+      PanPostCode@1000000020 : Text[250];
+      Country@1000000016 : Text[5];
+      SalesHeader@1000000017 : Record 5107;
+      TimeStampTxt@1000000018 : Text[100];
+      TimeStampDate@1000000019 : Date;
+      TimeStampTransform@1000000021 : DateTime;
+      TimeStampTxtA@1000000022 : Text[100];
+      TimeStampDateA@1000000023 : Date;
+      TimeStampTimeA@1000000024 : Time;
+    BEGIN
+
+      IF ISCLEAR(XMLDOMDocAnswer) THEN BEGIN
+        AddLogArchiv(SOShipmentsDHL."SO No.",SOShipmentsDHL."DHL Shipment Number Code",Text001);
+
+        EXIT(FALSE);
+      END;
+
+      XMLelement := XMLDOMDocAnswer.documentElement;
+      XMLAttr := XMLelement.getAttributeNode('error');
+      IF NOT ISCLEAR(XMLAttr) THEN BEGIN
+        AddLogArchiv(SOShipmentsDHL."SO No.",SOShipmentsDHL."DHL Shipment Number Code",Text012);
+        AddLogArchiv(SOShipmentsDHL."SO No.",SOShipmentsDHL."DHL Shipment Number Code",XMLAttr.text);
+        // check public
+        CreateRequestXML2Archiv(XMLDOMDoc1,SOShipmentsDHL);
+        ReturnMsg := ContactWebServiceArchiv(XMLDOMDoc1,XMLDOMDocAnswer1,'GetShipmentPublic',TRUE);
+        IF ReturnMsg = '' THEN
+          Result := ReadResponceXML2Archiv(XMLDOMDocAnswer1,SOShipmentsDHL)
+        ELSE BEGIN
+          AddLogArchiv(SOShipmentsDHL."SO No.",SOShipmentsDHL."DHL Shipment Number Code",Text002);
+          AddLogArchiv(SOShipmentsDHL."SO No.",SOShipmentsDHL."DHL Shipment Number Code",ReturnMsg);
+          EXIT(FALSE);
+        END;
+        EXIT(TRUE);
+      END;
+
+      Result := TRUE;
+      XMLChildNodList := XMLelement.childNodes;
+      ChildNodListCount := 0;
+      WHILE ChildNodListCount < XMLChildNodList.length DO BEGIN
+        XMLelement := XMLChildNodList.nextNode;
+        MessageText := XMLelement.getAttribute('name');
+
+        IF MessageText = 'piece-shipment' THEN BEGIN
+          PieceCode := XMLelement.getAttribute('piece-id');
+
+          // A/gob-lku/12.02.2013/P0802
+          Country := XMLelement.getAttribute('dest-country');
+          PostCode := XMLelement.getAttribute('recipient-city');
+          PanPostCode := XMLelement.getAttribute('pan-recipient-city');
+          TimeStampTxt := XMLelement.getAttribute('status-timestamp');
+          EVALUATE(TimeStampDate,COPYSTR(TimeStampTxt,1,10));
+
+          // A/gob-lku/14.03.2013/P0855
+          IF (PostCode <> '') AND (PanPostCode <> '') THEN
+            // A/gob-lku/18.03.2013/P0860
+            IF (STRPOS(PostCode, ' ') <> 0) AND (STRPOS(PanPostCode, ' ') <> 0) THEN BEGIN
+            // E/gob-lku/18.03.2013/P0860
+          // E/gob-lku/14.03.2013/P0855
+          IF Country = 'NL' THEN BEGIN
+            PostCode := COPYSTR(PostCode,1,STRPOS(PostCode,' ')+2);
+            PanPostCode := COPYSTR(PanPostCode,1,STRPOS(PostCode,' ')+2);
+          END ELSE BEGIN
+            PostCode := COPYSTR(PostCode,1,STRPOS(PostCode,' ')-1);
+            PanPostCode := COPYSTR(PanPostCode,1,STRPOS(PanPostCode,' ')-1);
+          END;
+          // A/gob-lku/14.03.2013/P0855
+          END;
+          // E/gob-lku/14.03.2013/P0855
+
+          SalesHeader.SETRANGE(SalesHeader."Document Type",SalesHeader."Document Type"::Order);
+          SalesHeader.SETRANGE("No.",SOShipmentsDHL."SO No.");
+          IF SalesHeader.FINDFIRST THEN;
+
+          IF ((SalesHeader."Ship-to Post Code" = PostCode) OR (SalesHeader."Ship-to Post Code" = PanPostCode)) AND
+             (SalesHeader."Order Date" <= TimeStampDate) THEN BEGIN
+
+          // E/gob-lku/12.02.2013/P0802
+
+          CreateRequestXML1Archiv(XMLDOMDoc1,SOShipmentsDHL,PieceCode);
+
+          ReturnMsg := ContactWebServiceArchiv(XMLDOMDoc1,XMLDOMDocAnswer1,'GetShipmentHistory',FALSE);
+
+          IF ReturnMsg = '' THEN
+            Result := ReadResponceXML1Archiv(XMLDOMDocAnswer1,SOShipmentsDHL)
+
+          ELSE BEGIN
+            AddLogArchiv(SOShipmentsDHL."SO No.",SOShipmentsDHL."DHL Shipment Number Code",Text002);
+            AddLogArchiv(SOShipmentsDHL."SO No.",SOShipmentsDHL."DHL Shipment Number Code",ReturnMsg);
+            Result := FALSE;
+          END;
+          // A/gob-lku/12.02.2013/P0802
+          END ELSE BEGIN
+          // E/gob-lku/12.02.2013/P0802
+          //TimeStampTxtA := XMLelement.getAttribute('status-timestamp');
+          //EVALUATE(TimeStampDateA,COPYSTR(TimeStampTxt,1,10));
+          //EVALUATE(TimeStampTimeA,COPYSTR(TimeStampTxt,12,5));
+
+
+          //UpdateTableArchiv(SOShipmentsDHL, CREATEDATETIME(TimeStampDateA,TimeStampTimeA),FORMAT(XMLelement.getAttribute('ric')),
+          UpdateTableArchiv(SOShipmentsDHL, CURRENTDATETIME,FORMAT(XMLelement.getAttribute('ric')),
+          FORMAT(XMLelement.getAttribute('ice')),FORMAT(XMLelement.getAttribute('piece-code')));
+
+
+          END;
+        END;
+        ChildNodListCount += 1;
+      END;
+
+
+      //EVALUATE(TimeStampTransform,FORMAT(XMLelement.getAttribute('timestamp')));
+      //MESSAGE(FORMAT(XMLelement.text('timestamp')));
+      //MESSAGE(FORMAT(XMLelement.getAttribute('timestamp')));
+      //UpdateTableArchiv(SOShipmentsDHL, CURRENTDATETIME,FORMAT(XMLelement.getAttribute('ric')),
+      //FORMAT(XMLelement.getAttribute('ice')),FORMAT(XMLelement.getAttribute('piece-code')));
+
+      EXIT(Result);
+    END;
+
+    PROCEDURE ReadResponceXML1Archiv@1000000002(VAR XMLDOMDocAnswer@1000000001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v3.0'.DOMDocument";VAR SOShipmentsDHL@1170000007 : Record 50020) : Boolean;
+    VAR
+      XMLelement@1000000002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      XMLAttr@1170000000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF85-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMAttribute";
+      XMLNode@1000000004 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMNode";
+      MessageText@1000000005 : Text[1024];
+      StatusCode@1000000007 : Code[20];
+      LSalesOrderStatusDHL@1000000003 : Record 50020;
+      SO@1000000013 : Record 5107;
+      SalesLine@1000000006 : Record 5108;
+      PurchaseLine@1000000008 : Record 39;
+      DHLParcelsStatusHistory@1000000009 : Record 50021;
+      ParcelStatusDHL@1000000010 : Record 50021;
+      TmpDHLParcelsStatusHistory@1000000012 : TEMPORARY Record 50021;
+      StatusDate@1170000001 : DateTime;
+      RIC@1170000002 : Code[20];
+      ICE@1170000003 : Code[20];
+      XMLChildNodList@1170000004 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF82-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMNodeList";
+      ChildNodListCount@1170000005 : Integer;
+      DateTimeText@1000000000 : Text[50];
+      PieceCode@1000000011 : Text[50];
+    BEGIN
+
+      IF ISCLEAR(XMLDOMDocAnswer) THEN BEGIN
+        AddLogArchiv(SOShipmentsDHL."SO No.",SOShipmentsDHL."DHL Shipment Number Code",Text001);
+        EXIT(FALSE);
+      END;
+      XMLelement := XMLDOMDocAnswer.documentElement;
+      XMLAttr := XMLelement.getAttributeNode('error');
+      IF NOT ISCLEAR(XMLAttr) THEN BEGIN
+        AddLogArchiv(SOShipmentsDHL."SO No.",SOShipmentsDHL."DHL Shipment Number Code",XMLAttr.text);
+        EXIT(FALSE);
+      END;                                                //id -> code
+      //PieceCode := XMLelement.getAttribute('piece-code');
+
+      // A/gob-lku/12.02.2013/P0802
+      //DHLParcelsStatusHistory.RESET;
+      //DHLParcelsStatusHistory.SETRANGE("DHL Shipment Code",SOShipmentsDHL."DHL Shipment Number Code");
+      //DHLParcelsStatusHistory.SETRANGE("Sale Order Code",SOShipmentsDHL."SO No.");
+      //DHLParcelsStatusHistory.SETRANGE("Status DHL",TRUE);
+      //DHLParcelsStatusHistory.DELETEALL;
+      // E/gob-lku/12.02.2013/P0802
+
+      XMLChildNodList := XMLelement.childNodes;
+      ChildNodListCount := 0;
+      WHILE ChildNodListCount < XMLChildNodList.length DO BEGIN
+        XMLelement := XMLChildNodList.nextNode;
+        MessageText := XMLelement.getAttribute('name');
+
+        IF MessageText = 'piece-event' THEN BEGIN
+          DateTimeText := XMLelement.getAttribute('event-timestamp');
+          //MESSAGE(DateTimeText);
+          //MESSAGE(FORMAT(CURRENTDATETIME));
+          IF NOT EVALUATE(StatusDate,DateTimeText) THEN
+
+            StatusDate := CURRENTDATETIME;
+          RIC := XMLelement.getAttribute('ric');
+          ICE := XMLelement.getAttribute('ice');
+          UpdateTableArchiv(SOShipmentsDHL,StatusDate,RIC,ICE,PieceCode);
+        END;
+        ChildNodListCount += 1;
+      END;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE ReadResponceXML2Archiv@1000000012(VAR XMLDOMDocAnswer@1000000001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v3.0'.DOMDocument";VAR SOShipmentsDHL@1170000007 : Record 50020) : Boolean;
+    VAR
+      XMLelement@1000000002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      XMLAttr@1170000000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF85-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMAttribute";
+      XMLNode@1000000004 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMNode";
+      MessageText@1000000005 : Text[1024];
+      StatusCode@1000000007 : Code[20];
+      LSalesOrderStatusDHL@1000000003 : Record 50020;
+      SO@1000000013 : Record 5107;
+      SalesLine@1000000006 : Record 5108;
+      PurchaseLine@1000000008 : Record 39;
+      DHLParcelsStatusHistory@1000000009 : Record 50021;
+      ParcelStatusDHL@1000000010 : Record 50021;
+      TmpDHLParcelsStatusHistory@1000000012 : TEMPORARY Record 50021;
+      StatusDate@1170000001 : DateTime;
+      RIC@1170000002 : Code[20];
+      ICE@1170000003 : Code[20];
+      XMLChildNodList@1170000004 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF82-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMNodeList";
+      ChildNodListCount@1170000005 : Integer;
+      DateTimeText@1000000000 : Text[50];
+      PieceCode@1000000011 : Text[50];
+    BEGIN
+
+      // public WS
+      IF ISCLEAR(XMLDOMDocAnswer) THEN BEGIN
+        AddLogArchiv(SOShipmentsDHL."SO No.",SOShipmentsDHL."DHL Shipment Number Code",Text001);
+        EXIT(FALSE);
+      END;
+      XMLelement := XMLDOMDocAnswer.documentElement;
+      IF XMLelement.hasChildNodes THEN
+        XMLelement := XMLelement.firstChild;
+
+      XMLAttr := XMLelement.getAttributeNode('error');
+      IF NOT ISCLEAR(XMLAttr) THEN BEGIN
+        AddLogArchiv(SOShipmentsDHL."SO No.",SOShipmentsDHL."DHL Shipment Number Code",XMLAttr.text);
+        EXIT(FALSE);
+      END;
+
+      XMLChildNodList := XMLelement.childNodes;
+      ChildNodListCount := 0;
+      WHILE ChildNodListCount < XMLChildNodList.length DO BEGIN
+        XMLelement := XMLChildNodList.nextNode;
+        MessageText := XMLelement.getAttribute('name');
+
+        IF MessageText = 'piece-status-public' THEN BEGIN
+          DateTimeText := XMLelement.getAttribute('last-event-timestamp');
+          PieceCode := XMLelement.getAttribute('piece-id');
+
+          IF NOT EVALUATE(StatusDate,DateTimeText) THEN
+            StatusDate := CURRENTDATETIME;
+          RIC := XMLelement.getAttribute('ric');
+          ICE := XMLelement.getAttribute('ice');
+          UpdateTableArchiv(SOShipmentsDHL,StatusDate,RIC,ICE,PieceCode);
+        END;
+        ChildNodListCount += 1;
+      END;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE UpdateTableArchiv@1000000008(VAR SOShipmentsDHL@1000000000 : Record 50020;StatusDate@1000000004 : DateTime;RIC@1000000003 : Code[20];ICE@1000000002 : Code[20];PieceCode@1000000001 : Text[50]);
+    VAR
+      DHLParcelsStatusHistory@1000000005 : Record 50021;
+      SO@1000000007 : Record 5107;
+      SalesLine@1000000006 : Record 5108;
+      SalesHeader@1000000009 : Record 5107;
+      TimeStampDate@1000000008 : Date;
+      ToTimeStamp@1000000010 : DateTime;
+      DHLStatusCode@1000000011 : Record 50028;
+      LabelSendFilter@1000000012 : Text[1024];
+      Kanal1und2@1000000013 : TextConst 'ENU=GER-1|GER-2|FRA-1|FRA-2|NL-1|NL-2';
+      Item_l@1000000014 : Record 27;
+      Filter_l@1000000015 : Text[1024];
+      ParcelStatusHistory@1000000016 : Record 80013;
+      ParcelStatusHistoryArchive@1000000018 : Record 50187;
+      ParcelStatusCodes@1000000017 : Record 50188;
+      UseSalesDocNo@1000000019 : Code[20];
+    BEGIN
+      //S/P1133
+      FPCGeneralSetup.GET;
+      //E/P1133
+
+      //S/P1117
+      //S/P1133
+      IF FPCGeneralSetup."Active Parcel Status History" IN
+        [FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New"]
+      THEN BEGIN
+      //E/P1133
+        // A/gob-lku/13.02.2013/P0802
+        TimeStampDate := DT2DATE(StatusDate);
+        //SalesHeader.GET(SalesHeader."Document Type"::Order,SOShipmentsDHL."SO No.");
+           // SalesHeader.SETRANGE(SalesHeader."Document Type",SalesHeader."Document Type"::Order);
+            SalesHeader.SETRANGE("No.",SOShipmentsDHL."SO No.");
+            IF SalesHeader.FINDFIRST THEN
+
+        DHLStatusCode.RESET;
+        CLEAR(LabelSendFilter);
+        DHLStatusCode.SETRANGE("Label Creation Status",TRUE);
+        IF DHLStatusCode.FINDSET(FALSE,FALSE) THEN
+          REPEAT
+            IF LabelSendFilter = '' THEN
+              LabelSendFilter := DHLStatusCode."Status Event Code"
+            ELSE
+              LabelSendFilter += '|' + DHLStatusCode."Status Event Code";
+          UNTIL DHLStatusCode.NEXT = 0;
+        DHLParcelsStatusHistory.RESET;
+        DHLParcelsStatusHistory.SETRANGE("DHL Shipment Code",SOShipmentsDHL."DHL Shipment Number Code");
+        DHLParcelsStatusHistory.SETFILTER("Status Event",LabelSendFilter);
+        // A/gob-lku/20.02.2013/P0802
+        IF DHLParcelsStatusHistory.ISEMPTY THEN
+          DHLParcelsStatusHistory.SETRANGE("Status Event");
+        // E/gob-lku/20.02.2013/P0802
+        DHLParcelsStatusHistory.FINDLAST;
+        IF (SalesHeader."Order Date" <= TimeStampDate) AND
+           (SalesHeader."No." = DHLParcelsStatusHistory."Document No.") THEN BEGIN
+        // E/gob-lku/13.02.2013/P0802
+        DHLParcelsStatusHistory.RESET;
+        // A/gob-lku/13.02.2013/P0802
+        //DHLParcelsStatusHistory.SETRANGE("Time Stamp",StatusDate);
+        ToTimeStamp := CREATEDATETIME(TimeStampDate,DT2TIME(StatusDate) + 60000);
+        //MESSAGE(FORMAT(StatusDate,0,'<Month,2>/<Day,2>/<Year> <Hours24,2>:<Minutes,2>:<Seconds,2>.<Thousands,3>') + '\'
+        // + FORMAT(ToTimeStamp,0,'<Month,2>/<Day,2>/<Year> <Hours24,2>:<Minutes,2>:<Seconds,2>.<Thousands,3>'));
+        DHLParcelsStatusHistory.SETRANGE("Time Stamp",StatusDate,ToTimeStamp);
+        // E/gob-lku/13.02.2013/P0802
+        DHLParcelsStatusHistory.SETRANGE("DHL Shipment Code",SOShipmentsDHL."DHL Shipment Number Code");
+        DHLParcelsStatusHistory.SETRANGE("Status Code",RIC);
+        DHLParcelsStatusHistory.SETRANGE("Status Event",ICE);
+        // A/gob-lku/13.02.2013/P0802
+        //IF NOT DHLParcelsStatusHistory.FINDFIRST THEN BEGIN
+        IF DHLParcelsStatusHistory.ISEMPTY THEN BEGIN
+        // E/gob-lku/13.02.2013/P0802
+          CLEAR(DHLParcelsStatusHistory);
+          // A/gob-lku/13.02.2013/P0802
+          //DHLParcelsStatusHistory."Entry No." := 0;
+          // E/gob-lku/13.02.2013/P0802
+          DHLParcelsStatusHistory."DHL Shipment Code" := SOShipmentsDHL."DHL Shipment Number Code";
+          DHLParcelsStatusHistory."Document Type" := DHLParcelsStatusHistory."Document Type"::Order;
+          DHLParcelsStatusHistory."Document No." := SOShipmentsDHL."SO No.";
+          IF SO.GET(SO."Document Type"::Order,SOShipmentsDHL."SO No.") THEN
+            DHLParcelsStatusHistory."Order Date" := SO."Order Date";
+          SalesLine.SETRANGE("Document Type",SalesLine."Document Type"::Order);
+          SalesLine.SETRANGE("Document No.",SOShipmentsDHL."SO No.");
+          SalesLine.SETRANGE("DHL Shipment Number",SOShipmentsDHL."DHL Shipment Number Code");
+          IF SalesLine.FINDFIRST THEN BEGIN
+
+            // A/gob-lku/13.02.2013/P0802
+            SalesLine.SETRANGE("DHL Shipment Number");
+            IF (SalesLine."Purchasing Code" = 'GER-1') OR (SalesLine."Purchasing Code" = 'GER-2')
+                OR (SalesLine."Purchasing Code" = 'FRA-1') OR (SalesLine."Purchasing Code" = 'FRA-2')
+                OR (SalesLine."Purchasing Code" = 'AT-1') OR (SalesLine."Purchasing Code" = 'AT-2')
+                OR (SalesLine."Purchasing Code" = 'NL-1') OR (SalesLine."Purchasing Code" = 'NL-2') THEN BEGIN
+              SalesLine.SETFILTER("Purchasing Code",Kanal1und2);
+              SalesLine.SETRANGE("Line No.");
+              IF SalesLine.FINDSET THEN
+                REPEAT
+                  IF Item_l.GET(SalesLine."No.") THEN BEGIN
+                    IF (Item_l."Shipping Code" = '1918') OR (SalesLine."Purchasing Code" = 'GER-2')
+                        OR (SalesLine."Purchasing Code" = 'AT-2')
+                        OR (SalesLine."Purchasing Code" = 'FRA-2') OR (SalesLine."Purchasing Code" = 'NL-2') THEN
+                      IF Filter_l = '' THEN
+                        Filter_l := FORMAT(SalesLine."Line No.")
+                      ELSE
+                        Filter_l += '|' + FORMAT(SalesLine."Line No.");
+                  END;
+                UNTIL SalesLine.NEXT = 0;
+              SalesLine.SETFILTER("Line No.",Filter_l);
+            END;
+            IF (SalesLine."Purchasing Code" = 'GER-7')
+                OR (SalesLine."Purchasing Code" = 'GER-12')
+                OR (SalesLine."Purchasing Code" = 'FRA-12')
+                OR (SalesLine."Purchasing Code" = 'NL-12')
+                OR (SalesLine."Purchasing Code" = 'AT-7')
+                OR (SalesLine."Purchasing Code" = 'AT-12')
+                OR (SalesLine."Purchasing Code" = 'FRA-7')
+                OR (SalesLine."Purchasing Code" = 'NL-7') THEN BEGIN
+              SalesLine.SETRANGE("Purchasing Code",SalesLine."Purchasing Code");
+              SalesLine.SETRANGE("Vendor No.",SalesLine."Vendor No.");
+              SalesLine.SETRANGE("Line No.");
+            END;
+            IF (SalesLine."Purchasing Code" = 'GER-9')
+                OR (SalesLine."Purchasing Code" = 'FRA-9')
+                OR (SalesLine."Purchasing Code" = 'AT-9')
+                OR (SalesLine."Purchasing Code" = 'NL-9') THEN BEGIN
+              SalesLine.SETRANGE("Purchasing Code",SalesLine."Purchasing Code");
+              SalesLine.SETRANGE("Line No.");
+            END;
+
+            //DHLParcelsStatusHistory."Line No." := SalesLine."Line No.";
+            SalesLine.MODIFYALL("DHL Shipment Number",SOShipmentsDHL."DHL Shipment Number Code",FALSE);
+            // E/gob-lku/13.02.2013/P0802
+
+            // A/gob-lku/14.02.2013/P0802
+            DHLStatusCode.RESET;
+            IF DHLStatusCode.GET(SalesLine."Status Event Code",SalesLine."Status Code") THEN;
+            IF NOT DHLStatusCode."Final Status" THEN BEGIN
+            // E/gob-lku/14.02.2013/P0802
+            SalesLine.MODIFYALL("Status Code",RIC,FALSE);
+            SalesLine.MODIFYALL("Status Event Code",ICE,FALSE);
+            // A/gob-lku/14.02.2013/P0802
+            END ELSE BEGIN
+              SalesLine.MODIFYALL("Status Code",SalesLine."Status Code",FALSE);
+              SalesLine.MODIFYALL("Status Event Code",SalesLine."Status Event Code",FALSE);
+            END;
+            // E/gob-lku/14.02.2013/P0802
+            //SalesLine.MODIFY;
+          END ELSE
+
+            DHLParcelsStatusHistory."Document Line No." := 10000;
+
+          DHLParcelsStatusHistory."Time Stamp" := StatusDate;
+          DHLParcelsStatusHistory."Status Event" := ICE;
+          DHLParcelsStatusHistory."Status Code" := RIC;
+          DHLParcelsStatusHistory."Piece-Code (Identifier)" := PieceCode;
+          DHLParcelsStatusHistory."Status DHL" := TRUE;
+          DHLParcelsStatusHistory."Current Status" := TRUE;
+          DHLParcelsStatusHistory."Import Time Stamp" := CURRENTDATETIME;
+          DHLParcelsStatusHistory."Time Difference" :=
+            DHLParcelsStatusHistory."Time Stamp" - DHLParcelsStatusHistory."Import Time Stamp";
+          DHLParcelsStatusHistory."Imported over DHL API" := TRUE;
+
+          // A/gob-lku/26.02.2013/P0802
+          IF (SalesLine."Purchasing Code" = 'GER-9') OR
+             (SalesLine."Purchasing Code" = 'NL-9') OR
+             (SalesLine."Purchasing Code" = 'AT-9') OR
+             (SalesLine."Purchasing Code" = 'FRA-9') THEN
+            IF DHLStatusCode.GET(ICE,RIC) THEN
+              DHLParcelsStatusHistory."Docdata Status Description" := DHLStatusCode."Status Event Name";
+          // E/gob-lku/26.02.2013/P0802
+
+          // A/gob-lku/13.02.2013/P0802
+          IF SalesLine.FINDSET(FALSE,FALSE) THEN
+            REPEAT
+              DHLParcelsStatusHistory."Entry No." := 0;
+              DHLParcelsStatusHistory."Document Line No." := SalesLine."Line No.";
+
+            // E/gob-lku/13.02.2013/P0802
+              //H0686  04.12.13  MBY  ++++++++++++++++++++++++++++
+              {
+              //H0686  04.12.13  MBY  ----------------------------
+              DHLParcelsStatusHistory.INSERT;
+              //H0686  04.12.13  MBY  ++++++++++++++++++++++++++++
+              }
+              DHLParcelsStatusHistory.INSERT(TRUE);
+              //H0686  04.12.13  MBY  ----------------------------
+            // A/gob-lku/13.02.2013/P0802
+            UNTIL SalesLine.NEXT = 0;
+            // E/gob-lku/13.02.2013/P0802
+
+        END;
+        // A/gob-lku/13.02.2013/P0802
+        END;
+        // E/gob-lku/13.02.2013/P0802
+      //S/P1133
+      END;
+
+      IF FPCGeneralSetup."Active Parcel Status History" IN
+        [FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+        FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History"]
+      THEN BEGIN
+      //E/P1133
+        TimeStampDate := DT2DATE(StatusDate);
+
+        SalesHeader.SETRANGE("No.",SOShipmentsDHL."SO No.");
+        IF SalesHeader.FINDFIRST THEN;
+
+        ParcelStatusCodes.RESET;
+        CLEAR(LabelSendFilter);
+        ParcelStatusCodes.SETRANGE("Create Label",TRUE);
+        IF ParcelStatusCodes.FINDSET(FALSE,FALSE) THEN
+          REPEAT
+            IF LabelSendFilter = '' THEN
+              LabelSendFilter := ParcelStatusCodes."Status Code"
+            ELSE
+              LabelSendFilter += '|' + ParcelStatusCodes."Status Code"
+          UNTIL ParcelStatusCodes.NEXT = 0;
+
+        ParcelStatusHistory.RESET;
+        ParcelStatusHistory.SETRANGE("Tracking Code",SOShipmentsDHL."DHL Shipment Number Code");
+        ParcelStatusHistory.SETFILTER("Status Code",LabelSendFilter);
+        IF ParcelStatusHistory.ISEMPTY THEN
+          ParcelStatusHistory.SETRANGE("Status Code");
+        ParcelStatusHistory.FINDLAST;
+
+        //S/P1129
+        ParcelStatusHistoryArchive.RESET;
+        ParcelStatusHistoryArchive.SETRANGE("Tracking Code",SOShipmentsDHL."DHL Shipment Number Code");
+        ParcelStatusHistoryArchive.SETFILTER("Status Code",LabelSendFilter);
+        IF ParcelStatusHistoryArchive.ISEMPTY THEN
+          ParcelStatusHistoryArchive.SETRANGE("Status Code");
+        ParcelStatusHistoryArchive.FINDLAST;
+
+        UseSalesDocNo := ParcelStatusHistory."Document No.";
+        IF UseSalesDocNo = '' THEN
+          UseSalesDocNo := ParcelStatusHistoryArchive."Document No.";
+        //E/P1129
+
+        IF (SalesHeader."Order Date" <= TimeStampDate) AND
+           //S/P1129
+           //(SalesHeader."No." = ParcelStatusHistory."Sales Doc. No.")
+           (SalesHeader."No." = UseSalesDocNo)
+           //E/P1129
+        THEN BEGIN
+          ParcelStatusHistory.RESET;
+          ToTimeStamp := CREATEDATETIME(TimeStampDate,DT2TIME(StatusDate) + 60000);
+          ParcelStatusHistory.SETCURRENTKEY("Tracking Code","Piece Code");
+          ParcelStatusHistory.SETRANGE("Tracking Code",SOShipmentsDHL."DHL Shipment Number Code");
+          ParcelStatusHistory.SETRANGE("Status Code",ICE);
+          ParcelStatusHistory.SETRANGE("Status Sub Code",RIC);
+          ParcelStatusHistory.SETRANGE("Timestamp Insert",StatusDate,ToTimeStamp);
+          //S/P1129
+          //IF ParcelStatusHistory.ISEMPTY THEN BEGIN
+          // CLEAR(ParcelStatusHistory);
+          ParcelStatusHistoryArchive.RESET;
+          ParcelStatusHistoryArchive.SETCURRENTKEY("Tracking Code","Piece Code");
+          ParcelStatusHistoryArchive.SETRANGE("Tracking Code",SOShipmentsDHL."DHL Shipment Number Code");
+          ParcelStatusHistoryArchive.SETRANGE("Status Code",ICE);
+          ParcelStatusHistoryArchive.SETRANGE("Status Sub Code",RIC);
+          ParcelStatusHistoryArchive.SETRANGE("Timestamp Insert",StatusDate,ToTimeStamp);
+          IF (ParcelStatusHistory.ISEMPTY) AND
+             (ParcelStatusHistoryArchive.ISEMPTY)
+          THEN BEGIN
+            CLEAR(ParcelStatusHistory);
+            CLEAR(ParcelStatusHistoryArchive);
+          //E/P1129
+            SalesLine.SETRANGE("Document Type",SalesLine."Document Type"::Order);
+            SalesLine.SETRANGE("Document No.",SOShipmentsDHL."SO No.");
+            SalesLine.SETRANGE("DHL Shipment Number",SOShipmentsDHL."DHL Shipment Number Code");
+            IF SalesLine.FINDFIRST THEN BEGIN
+              SalesLine.SETRANGE("DHL Shipment Number");
+              IF SalesLine."Purchasing Code" IN
+                ['GER-1','GER-2','FRA-1','FRA-2','AT-1','AT-2','NL-1','NL-2']
+              THEN BEGIN
+                SalesLine.SETFILTER("Purchasing Code",Kanal1und2);
+                SalesLine.SETRANGE("Line No.");
+                IF SalesLine.FINDSET THEN
+                  REPEAT
+                    IF Item_l.GET(SalesLine."No.") THEN BEGIN
+                      IF (Item_l."Shipping Code" = '1918') OR
+                         (SalesLine."Purchasing Code" = 'GER-2') OR
+                         (SalesLine."Purchasing Code" = 'AT-2') OR
+                         (SalesLine."Purchasing Code" = 'FRA-2') OR
+                         (SalesLine."Purchasing Code" = 'NL-2')
+                      THEN
+                        IF Filter_l = '' THEN
+                          Filter_l := FORMAT(SalesLine."Line No.")
+                        ELSE
+                          Filter_l += '|' + FORMAT(SalesLine."Line No.");
+                    END;
+                  UNTIL SalesLine.NEXT = 0;
+                SalesLine.SETFILTER("Line No.",Filter_l);
+              END;
+
+              IF SalesLine."Purchasing Code" IN
+                ['GER-7','GER-12','FRA-7','FRA-12','AT-7','AT-12','NL-7','NL-12']
+              THEN BEGIN
+                SalesLine.SETRANGE("Purchasing Code",SalesLine."Purchasing Code");
+                SalesLine.SETRANGE("Vendor No.",SalesLine."Vendor No.");
+                SalesLine.SETRANGE("Line No.");
+              END;
+
+              IF SalesLine."Purchasing Code" IN
+                ['GER-9','FRA-9','AT-9','NL-9']
+              THEN BEGIN
+                SalesLine.SETRANGE("Purchasing Code",SalesLine."Purchasing Code");
+                SalesLine.SETRANGE("Line No.");
+              END;
+
+              SalesLine.MODIFYALL("DHL Shipment Number",SOShipmentsDHL."DHL Shipment Number Code",FALSE);
+
+              ParcelStatusCodes.RESET;
+              ParcelStatusCodes.SETCURRENTKEY("Status Code","Status Sub Code","Create Label","Is Final Status");
+              ParcelStatusCodes.SETRANGE("Status Code",SalesLine."Status Event Code");
+              ParcelStatusCodes.SETRANGE("Status Sub Code",SalesLine."Status Code");
+              IF ParcelStatusCodes.FINDFIRST THEN
+                IF NOT ParcelStatusCodes."Is Final Status" THEN BEGIN
+                SalesLine.MODIFYALL("Status Code",RIC,FALSE);
+                SalesLine.MODIFYALL("Status Event Code",ICE,FALSE);
+                END ELSE BEGIN
+                  SalesLine.MODIFYALL("Status Code",SalesLine."Status Code",FALSE);
+                  SalesLine.MODIFYALL("Status Event Code",SalesLine."Status Event Code",FALSE);
+                END;
+            END;
+
+            IF SalesLine.FINDSET(FALSE,FALSE) THEN
+              REPEAT
+                CLEAR(CUParcelStatusHistoryMgmt);
+                RecRef.GETTABLE(SalesLine);
+                CUParcelStatusHistoryMgmt.SetDateTimeGlobal(StatusDate);
+                CUParcelStatusHistoryMgmt.FillHistoryByDocLine(
+                RecRef,                                     // Rec
+                1,                                          // p_Command
+                1,                                          // p_InfoDirection::  Incoming,Outgoing
+                2,                                          // p_UsedInterface::  ,EDI,DHL,DocData,Drop Shipment,Rhenus,UPS
+                'DHL',                                      // p_ShippingAgentCode
+                SOShipmentsDHL."DHL Shipment Number Code",  // p_TrackingCode
+                PieceCode,                                  // p_PieceCode
+                ICE,                                        // p_StatusCode
+                RIC,                                        // p_StatusRICCode
+                '',                                         // p_Comment
+                0);                                         // p_HowToHandleStatusDescription
+                //S/P1129
+                CUParcelStatusHistoryMgmt.MoveParcelInfosToArchive(
+                  1,                            // p_Command::All,SalesDoc,PurchDoc,Date,EntryNo
+                  SalesLine."Document No.",     // p_DocNo
+                  0,                            // p_LineNo
+                  SalesLine."Document Type",    // p_DocType
+                  '',                           // p_DateFilterString
+                  0);                           // p_EntryNo
+                //E/P1129
+              UNTIL SalesLine.NEXT = 0;
+          END;
+        END;
+      //S/P1133
+      END;
+      //E/P1133
+      //E/P1117
+    END;
+
+    PROCEDURE ProcessLinesArchiv@1170000006();
+    VAR
+      SO@1170000003 : Record 5107;
+      SLine@1170000000 : Record 5108;
+      SOShipmentsDHL@1170000001 : Record 50020;
+      DHLParcelsStatusHistory@1170000002 : Record 50021;
+      TempBadSOShipDHL@1000000000 : TEMPORARY Record 50020;
+      TempGoodSOShipDHL@1000000001 : TEMPORARY Record 50020;
+      Process@1170000004 : Boolean;
+      FromDate@1000000002 : Date;
+      TillDate@1000000003 : Date;
+      ParcelStatusHistoryArchive@1000000004 : Record 50187;
+    BEGIN
+      //S/P1133
+      FPCGeneralSetup.GET;
+      //E/P1133
+      DHLSetup.GET;
+      IF NOT DHLSetup."Activate Automatic" THEN EXIT;
+
+      TempBadSOShipDHL.DELETEALL;
+      TempGoodSOShipDHL.DELETEALL;
+
+      SO.SETRANGE("Document Type",SO."Document Type"::Order);
+
+      IF FORMAT(DHLSetup."From Dateformula") = '' THEN
+        FromDate := 0D
+      ELSE
+        FromDate := CALCDATE(DHLSetup."From Dateformula",WORKDATE);
+
+      IF FORMAT(DHLSetup."Till Dateformula") = '' THEN
+        TillDate := WORKDATE
+      ELSE
+        TillDate := CALCDATE(DHLSetup."Till Dateformula",WORKDATE);
+
+      SO.SETRANGE("Order Date",FromDate,TillDate);
+
+      IF DHLSetup."Komisionirung Only" THEN
+        SO.SETRANGE(Kommissionierung,TRUE);
+
+      IF SO.FINDSET THEN REPEAT
+
+        SOShipmentsDHL.SETRANGE("SO No.",SO."No.");
+
+        IF DHLSetup."Purchasing Code Filter" <> '' THEN
+          SOShipmentsDHL.SETFILTER(SOShipmentsDHL."Purchasing Code",DHLSetup."Purchasing Code Filter");
+
+        SOShipmentsDHL.SETFILTER("DHL Shipment Number Code",'<>%1','');
+        IF SOShipmentsDHL.FINDSET THEN REPEAT
+          //S/P1133
+          CASE FPCGeneralSetup."Active Parcel Status History" OF
+            FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+            FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old":
+              BEGIN
+          //E/P1133
+                DHLParcelsStatusHistory.SETRANGE("DHL Shipment Code",SOShipmentsDHL."DHL Shipment Number Code");
+                DHLParcelsStatusHistory.SETRANGE("Final Status",TRUE);
+
+                // A/gob-lku/12.02.2013/P0802
+                DHLParcelsStatusHistory.SETRANGE("Document No.",SO."No.");
+                // E/gob-lku/12.02.2013/P0802
+
+                IF NOT DHLParcelsStatusHistory.FINDFIRST THEN
+                  IF ProcessLineArchiv(SOShipmentsDHL) THEN BEGIN
+                    TempGoodSOShipDHL.TRANSFERFIELDS(SOShipmentsDHL);
+                    TempGoodSOShipDHL.INSERT;
+                  END ELSE BEGIN
+                    TempBadSOShipDHL.TRANSFERFIELDS(SOShipmentsDHL);
+                    TempBadSOShipDHL.INSERT;
+                  END;
+           //E/P1133
+              END;
+            FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+            FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History":
+              BEGIN
+                ParcelStatusHistoryArchive.SETCURRENTKEY("Tracking Code","Piece Code");
+                ParcelStatusHistoryArchive.SETRANGE("Tracking Code",SOShipmentsDHL."DHL Shipment Number Code");
+                ParcelStatusHistoryArchive.SETRANGE("Document No.",SO."No.");
+                IF NOT ParcelStatusHistoryArchive.FINDLAST THEN
+                  IF ProcessLineArchiv(SOShipmentsDHL) THEN BEGIN
+                    TempGoodSOShipDHL.TRANSFERFIELDS(SOShipmentsDHL);
+                    TempGoodSOShipDHL.INSERT;
+                  END ELSE BEGIN
+                    TempBadSOShipDHL.TRANSFERFIELDS(SOShipmentsDHL);
+                    TempBadSOShipDHL.INSERT;
+                  END;
+              END;
+          END;
+          //E/P1133
+        UNTIL SOShipmentsDHL.NEXT = 0;
+      UNTIL SO.NEXT = 0;
+
+      SendMailArchiv(TempBadSOShipDHL,TempGoodSOShipDHL);
+    END;
+
+    PROCEDURE ProcessLineArchiv@1170000000(VAR SOShipmentsDHL@1170000004 : Record 50020) : Boolean;
+    VAR
+      XMLDOMDocAnswer@1170000001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v3.0'.DOMDocument";
+      XMLDOMDoc@1170000002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v3.0'.DOMDocument";
+      ReturnMsg@1170000003 : Text[250];
+    BEGIN
+      CurrentTime := FORMAT(CURRENTDATETIME,0,
+      '<Day,2><Month,2><Year4><Hours24><Minutes,2><Seconds,2>');
+
+      CreateRequestXMLArchiv(XMLDOMDoc,SOShipmentsDHL);
+
+      ReturnMsg := ContactWebServiceArchiv(XMLDOMDoc,XMLDOMDocAnswer,'GetShipment',FALSE);
+      IF ReturnMsg <> '' THEN BEGIN
+        AddLogArchiv(SOShipmentsDHL."SO No.",SOShipmentsDHL."DHL Shipment Number Code",Text002);
+        AddLogArchiv(SOShipmentsDHL."SO No.",SOShipmentsDHL."DHL Shipment Number Code",ReturnMsg);
+        EXIT(FALSE);
+      END;
+
+      EXIT(ReadResponceXMLArchiv(XMLDOMDocAnswer,SOShipmentsDHL));
+    END;
+
+    PROCEDURE ProcessOrderArchiv@1170000005(SONo@1170000001 : Code[20]);
+    VAR
+      SLine@1170000000 : Record 5108;
+      DHLErrorLog@1170000004 : Record 50024;
+      DHLParcelsStatusHistory@1170000005 : Record 50021;
+      SOShipmentsDHL@1170000007 : Record 50020;
+      TempSOShipmentsDHL@1000000000 : TEMPORARY Record 50020;
+      DHLProcessingErrors@1170000003 : Form 50033;
+      FormDHLStatus@1170000006 : Form 50124;
+      ProcessedWithErrors@1170000002 : Boolean;
+      ParcelStatusHistoryArchive@1000000001 : Record 50187;
+    BEGIN
+      //S/P1133
+      FPCGeneralSetup.GET;
+      //E/P1133
+
+      ProcessedWithErrors := FALSE;
+      TempSOShipmentsDHL.DELETEALL;
+
+      SOShipmentsDHL.SETRANGE("SO No.",SONo);
+
+      SLine.SETRANGE("Document Type",SLine."Document Type"::Order);
+      SLine.SETRANGE("Document No.",SONo);
+      SLine.SETFILTER(SLine."DHL Shipment Number",'<>%1','');
+      IF SLine.FINDSET THEN REPEAT
+        SOShipmentsDHL.SETRANGE(SOShipmentsDHL."DHL Shipment Number Code",SLine."DHL Shipment Number");
+        IF SOShipmentsDHL.ISEMPTY THEN BEGIN
+          TempSOShipmentsDHL."DHL Shipment Number Code" := SLine."DHL Shipment Number";
+          //TempSOShipmentsDHL."Shipping Agent Code" := DHLSetup."DHL Shipping Agent";
+          TempSOShipmentsDHL."SO No." := SONo;
+          IF NOT TempSOShipmentsDHL.INSERT THEN;
+        END;
+      UNTIL SLine.NEXT = 0;
+
+      SOShipmentsDHL.RESET;
+      SOShipmentsDHL.SETRANGE("SO No.",SONo);
+      IF SOShipmentsDHL.FINDSET THEN REPEAT
+        TempSOShipmentsDHL.TRANSFERFIELDS(SOShipmentsDHL);
+        TempSOShipmentsDHL.INSERT;
+      UNTIL SOShipmentsDHL.NEXT = 0;
+
+      IF TempSOShipmentsDHL.FINDSET THEN REPEAT
+        //S/P1133
+        CASE FPCGeneralSetup."Active Parcel Status History" OF
+          FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+          FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old":
+            BEGIN
+        //E/P1133
+              DHLParcelsStatusHistory.SETRANGE("DHL Shipment Code",TempSOShipmentsDHL."DHL Shipment Number Code");
+              DHLParcelsStatusHistory.SETRANGE("Final Status",TRUE);
+
+              // A/gob-lku/12.02.2013/P0802
+              DHLParcelsStatusHistory.SETRANGE("Document No.",SONo);
+              // E/gob-lku/12.02.2013/P0802
+
+              IF NOT DHLParcelsStatusHistory.FINDFIRST THEN
+                ProcessedWithErrors := ProcessedWithErrors OR (NOT ProcessLineArchiv(TempSOShipmentsDHL));
+        //S/P1133
+            END;
+          FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+          FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History":
+            BEGIN
+              ParcelStatusHistoryArchive.SETCURRENTKEY("Tracking Code","Piece Code");
+              ParcelStatusHistoryArchive.SETRANGE("Tracking Code",TempSOShipmentsDHL."DHL Shipment Number Code");
+              ParcelStatusHistoryArchive.SETRANGE("Document No.",SONo);
+              IF NOT ParcelStatusHistoryArchive.FINDLAST THEN
+                ProcessedWithErrors := ProcessedWithErrors OR (NOT ProcessLineArchiv(TempSOShipmentsDHL));
+            END;
+        END;
+        //E/P1133
+      UNTIL TempSOShipmentsDHL.NEXT = 0;
+      COMMIT;
+
+      IF ProcessedWithErrors THEN
+        IF CONFIRM(Text004) THEN BEGIN
+          DHLErrorLog.SETCURRENTKEY("Sales Order");
+          DHLErrorLog.SETRANGE("Sales Order",SONo);
+          DHLErrorLog.SETRANGE("Transaction Type",DHLErrorLog."Transaction Type"::"6");
+          DHLProcessingErrors.SETTABLEVIEW(DHLErrorLog);
+          DHLProcessingErrors.RUNMODAL;
+        END;
+
+      //FormDHLStatus.SETTABLEVIEW(SOShipmentsDHL);
+      //FormDHLStatus.RUN;
+
+      FORM.RUN(FORM::"DHL History",TempSOShipmentsDHL);
+    END;
+
+    PROCEDURE ProcessLine2Archiv@1000000009(SOShipmentsDHLCode@1170000004 : Text[50]) : Boolean;
+    VAR
+      XMLDOMDocAnswer@1170000001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v3.0'.DOMDocument";
+      XMLDOMDoc@1170000002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v3.0'.DOMDocument";
+      SOShipmentsDHL@1000000000 : Record 50020;
+      ReturnMsg@1170000003 : Text[250];
+    BEGIN
+      CurrentTime := FORMAT(CURRENTDATETIME,0,
+      '<Day,2><Month,2><Year4><Hours24><Minutes,2><Seconds,2>');
+
+      //CreateRequestXML2(XMLDOMDoc,SOShipmentsDHLCode);
+
+      ReturnMsg := ContactWebServiceArchiv(XMLDOMDoc,XMLDOMDocAnswer,'GetShipment_new',TRUE);
+      IF ReturnMsg <> '' THEN BEGIN
+        AddLogArchiv(SOShipmentsDHL."SO No.",SOShipmentsDHLCode,Text002);
+        AddLogArchiv(SOShipmentsDHL."SO No.",SOShipmentsDHLCode,ReturnMsg);
+        EXIT(FALSE);
+      END;
+
+      //EXIT(ReadResponceXML(XMLDOMDocAnswer,SOShipmentsDHL));
+    END;
+
+    PROCEDURE AddLogArchiv@1170000001(SONo@1170000001 : Code[20];DHLShip@1170000003 : Text[30];ErrorText@1170000004 : Text[250]);
+    VAR
+      DHLLog@1170000000 : Record 50024;
+    BEGIN
+      DHLLog."Entry No." := 0;
+      DHLLog."Sales Order" :=  SONo;
+      DHLLog."XML Seqence" := 0;
+      DHLLog."DHL Shipment Order" := DHLShip;
+      DHLLog."Error Text" := ErrorText;
+      DHLLog."Date Time Created" := CURRENTDATETIME;
+      DHLLog."Transaction Type" := DHLLog."Transaction Type"::"6";
+      DHLLog.INSERT;
+    END;
+
+    PROCEDURE SendMailArchiv@1000000003(VAR TempBadSOShipDHL@1000000002 : TEMPORARY Record 50020;VAR TempGoodSOShipDHL@1000000001 : TEMPORARY Record 50020);
+    VAR
+      SMTP@1000000000 : Codeunit 400;
+      Subject@1000000004 : Text[100];
+      Body@1000000003 : Text[1024];
+    BEGIN
+      EXIT;
+      CLEAR(SMTP);
+      Subject := STRSUBSTNO(Text006,FORMAT(WORKDATE));
+      Body := FormatMailLineArchiv(STRSUBSTNO(Text009,FORMAT(CALCDATE(DHLSetup."From Dateformula",WORKDATE)),FORMAT(WORKDATE)));
+      SMTP.CreateMessage(DHLSetup."Sender Name",DHLSetup."Sender E-mail",DHLSetup."Report E-mail",Subject,Body,TRUE);
+      SMTP.AppendBody(FormatMailLineArchiv(Text010));
+      IF TempGoodSOShipDHL.FINDSET THEN REPEAT
+        SMTP.AppendBody(FormatMailLineArchiv(TempGoodSOShipDHL."DHL Shipment Number Code"));
+      UNTIL TempGoodSOShipDHL.NEXT = 0;
+
+      SMTP.AppendBody(FormatMailLineArchiv(Text011));
+      IF TempBadSOShipDHL.FINDSET THEN REPEAT
+        SMTP.AppendBody(FormatMailLineArchiv(TempBadSOShipDHL."DHL Shipment Number Code"));
+      UNTIL TempBadSOShipDHL.NEXT = 0;
+
+
+      SMTP.Send;
+    END;
+
+    PROCEDURE FormatMailLineArchiv@1000000004(Line@1000000000 : Text[1024]) : Text[1024];
+    BEGIN
+      EXIT(STRSUBSTNO('<p>%1</p>',Line));
+    END;
+
+    BEGIN
+    {
+      05.12.12  nas more fields filled
+      12.02.13  gob-lku  P0802    DHL Parcel Status History nicht lîschen
+                                  Final Status nur fÅr aktuellen Order prÅfen
+                                  PrÅfung auf Post Code und Order Date (auch pro Statuszeile wegen doppelter Sendungsnr.)
+      14.03.13  gob-lku  P0855    PLZ-PrÅfung Abfangen, wenn DHL keine PLZ Åbermittelt
+      18.03.13  gob-lku  P0860    Anpassungen Post Code Logik
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation GOB & Home24 NAV Team      |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      P1117       08.10.13  gob-mlan  - Redesign of "DHL Parcel Status History"
+                                      - Code within with //S/P1117/++S+++++++ and //E/P1117/--E-------
+                                        will be replaced by the new code and/or it will be deactivated
+      P1129       21.10.13  gob-mlan  - Redesign of "DHL Parcel Status History" Phase 2
+                                      - Unused SH/SL-Locals delete
+      P1133       06.11.13  gob-mlan  - Redesign of "DHL Parcel Status History"
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+      H0324       29.04.13 PAU       DHL trackong for Archive Sales Order
+      H0686       04.12.13 MBY       Execute OnInsert trigger in "DHL Parcels Status History" table
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,853 @@
+OBJECT Codeunit 50118 Outbound EDI Create IFTMIN
+{
+  OBJECT-PROPERTIES
+  {
+    Date=21.10.14;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=EDIINT6.00,HME1526,GOB,T0002;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=VAR
+            rIDSIdentcodes@1000000004 : Record 50158;
+            DHLParcelsStatusHistory_l@1000000001 : Record 50021;
+            ParcelStatusHistory@1000000002 : Record 80013;
+            ParcelStatusHistoryArchive@1000000003 : Record 50187;
+          BEGIN
+            //S/P1133
+            FPCGeneralSetup.GET;
+            //E/P1133
+
+            DHLSetup.GET();
+
+            // S/P1272
+            rIDSIdentcodes.SETFILTER("Shipping Agent",'%1|%2',FPCGeneralSetup."Ship. Agent Code DHL",'');
+            IF rIDSIdentcodes.ISEMPTY THEN
+              EXIT;
+            // E/P1272
+
+            SetEDItoSend();
+
+            //S/P1133
+            CASE FPCGeneralSetup."Active Parcel Status History" OF
+              FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+              FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old":
+                BEGIN
+            //E/P1133
+                  DHLParcelsStatusHistory.SETCURRENTKEY("EDI to Send","EDI Sent","EDI Error");
+                  DHLParcelsStatusHistory.SETRANGE("EDI to Send",TRUE);
+                  DHLParcelsStatusHistory.SETRANGE("EDI Sent",FALSE);
+                  DHLParcelsStatusHistory.SETRANGE("EDI Error",FALSE);
+                  // S/P1245
+                  DHLParcelsStatusHistory.SETFILTER("Shipping Agent",'%1|%2','',FPCGeneralSetup."Ship. Agent Code DHL");
+                  // E/P1245
+                  IF DHLParcelsStatusHistory.FIND('-') THEN BEGIN
+                    REPEAT
+                      IF PurchaseHeader.GET(PurchaseHeader."Document Type"::Order,DHLParcelsStatusHistory."Purchase Order Code") THEN BEGIN
+                        //S/P1133
+                        //IF CreateOutboundIFTMIN(DHLParcelsStatusHistory) THEN BEGIN
+                        IF CreateOutboundIFTMIN() THEN BEGIN
+                        //E/P1133
+                          DHLParcelsStatusHistory_l.GET(DHLParcelsStatusHistory."Entry No.");
+                          DHLParcelsStatusHistory_l."EDI Sent" := TRUE;
+                          DHLParcelsStatusHistory_l."EDI Sent DateTime" := CURRENTDATETIME;
+                          DHLParcelsStatusHistory_l.MODIFY;
+                        END ELSE BEGIN
+                          DHLParcelsStatusHistory_l.GET(DHLParcelsStatusHistory."Entry No.");
+                          DHLParcelsStatusHistory_l."EDI Error" := TRUE;
+                          DHLParcelsStatusHistory_l.MODIFY;
+                        END;
+                      END ELSE BEGIN
+                        DHLParcelsStatusHistory_l.GET(DHLParcelsStatusHistory."Entry No.");
+                        DHLParcelsStatusHistory_l."EDI Error" := TRUE;
+                        DHLParcelsStatusHistory_l.MODIFY;
+                      END;
+                      COMMIT;
+                    UNTIL DHLParcelsStatusHistory.NEXT = 0;
+                  END;
+            //S/P1133
+                END;
+              FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+              FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History":
+                BEGIN
+                  //T0002 28.05.14 tec-cs +++++++++++++++++++++++++++++
+                  //ParcelStatusHistory_glob.SETCURRENTKEY("EDI to Send","EDI Sent","EDI Sent DateTime",Error);
+                  //T0002 28.05.14 tec-cs -----------------------------
+                  ParcelStatusHistory_glob.SETRANGE("EDI to Send",TRUE);
+                  ParcelStatusHistory_glob.SETRANGE("EDI Sent",FALSE);
+                  ParcelStatusHistory_glob.SETRANGE(Error,FALSE);
+                  // S/P1245
+                  ParcelStatusHistory_glob.SETFILTER("Shipping Agent Code",'%1|%2','',FPCGeneralSetup."Ship. Agent Code DHL");
+                  // E/P1245
+                  IF ParcelStatusHistory_glob.FIND('-') THEN BEGIN
+                    REPEAT
+                      IF PurchaseHeader.GET(PurchaseHeader."Document Type"::Order,ParcelStatusHistory_glob."Purchase Doc. No.") THEN BEGIN
+                        IF CreateOutboundIFTMIN() THEN BEGIN
+                          ParcelStatusHistory.GET(ParcelStatusHistory_glob."Entry No.");
+                          ParcelStatusHistory."EDI Sent" := TRUE;
+                          ParcelStatusHistory."EDI Sent DateTime" := CURRENTDATETIME;
+                          // S/P1228
+                          //ParcelStatusHistory.MODIFY;
+                          ParcelStatusHistory.MODIFY(TRUE);
+                          // E/P1228
+                        END ELSE BEGIN
+                          ParcelStatusHistory.GET(ParcelStatusHistory_glob."Entry No.");
+                          ParcelStatusHistory.Error := TRUE;
+                          // S/P1228
+                          //ParcelStatusHistory.MODIFY;
+                          ParcelStatusHistory.MODIFY(TRUE);
+                          // E/P1228
+                        END;
+                      END ELSE BEGIN
+                        ParcelStatusHistory.GET(ParcelStatusHistory_glob."Entry No.");
+                        ParcelStatusHistory.Error := TRUE;
+                        // S/P1228
+                        //ParcelStatusHistory.MODIFY;
+                        ParcelStatusHistory.MODIFY(TRUE);
+                        // E/P1228
+                      END;
+                      COMMIT;
+                    UNTIL ParcelStatusHistory_glob.NEXT = 0;
+                  END;
+                  // S/P1249
+                  //ParcelStatusHistory_glob.RESET;
+                  //CLEAR(ParcelStatusHistory_glob);
+                  //ParcelStatusHistory_glob.SETCURRENTKEY("EDI to Send","EDI Sent","EDI Sent DateTime",Error);
+                  //ParcelStatusHistory_glob.SETRANGE("EDI to Send",TRUE);
+                  //ParcelStatusHistory_glob.SETRANGE("EDI Sent",FALSE);
+                  //ParcelStatusHistory_glob.SETRANGE(Error,FALSE);
+                  //IF ParcelStatusHistory_glob.FIND('-') THEN BEGIN
+                  ParcelStatusHistoryArch_glob.RESET;
+                  CLEAR(ParcelStatusHistoryArch_glob);
+                  //H1288 26.06.14 DMA +++++++++++++++++++++++++++++++++++++
+                  {
+                  //H1288 26.06.14 DMA -------------------------------------
+                  ParcelStatusHistoryArch_glob.SETCURRENTKEY("EDI to Send","EDI Sent","EDI Sent DateTime",Error);
+                  //H1288 26.06.14 DMA +++++++++++++++++++++++++++++++++++++
+                  }
+                  //H1288 26.06.14 DMA -------------------------------------
+                  ParcelStatusHistoryArch_glob.SETRANGE("EDI to Send",TRUE);
+                  ParcelStatusHistoryArch_glob.SETRANGE("EDI Sent",FALSE);
+                  ParcelStatusHistoryArch_glob.SETRANGE(Error,FALSE);
+                  IF ParcelStatusHistoryArch_glob.FIND('-') THEN BEGIN
+                  // E/P1249
+                    REPEAT
+                      // S/P1249
+                      //IF PurchaseHeader.GET(PurchaseHeader."Document Type"::Order,ParcelStatusHistory_glob."Purchase Doc. No.") THEN BEGIN
+                      IF PurchaseHeader.GET(PurchaseHeader."Document Type"::Order,ParcelStatusHistoryArch_glob."Purchase Doc. No.") THEN BEGIN
+                      // E/P1249
+                        IF CreateOutboundIFTMIN() THEN BEGIN
+                          // S/P1249
+                          //ParcelStatusHistoryArchive.GET(ParcelStatusHistory_glob."Entry No.");
+                          ParcelStatusHistoryArchive.GET(ParcelStatusHistoryArch_glob."Entry No.");
+                          // E/P1249
+                          ParcelStatusHistoryArchive."EDI Sent" := TRUE;
+                          ParcelStatusHistoryArchive."EDI Sent DateTime" := CURRENTDATETIME;
+                          ParcelStatusHistoryArchive.MODIFY;
+                        END ELSE BEGIN
+                          // S/P1249
+                          //ParcelStatusHistoryArchive.GET(ParcelStatusHistory_glob."Entry No.");
+                          ParcelStatusHistoryArchive.GET(ParcelStatusHistoryArch_glob."Entry No.");
+                          // E/P1249
+                          ParcelStatusHistoryArchive.Error := TRUE;
+                          ParcelStatusHistoryArchive.MODIFY;
+                        END;
+                      END ELSE BEGIN
+                        // S/P1249
+                        //ParcelStatusHistoryArchive.GET(ParcelStatusHistory_glob."Entry No.");
+                        ParcelStatusHistoryArchive.GET(ParcelStatusHistoryArch_glob."Entry No.");
+                        // E/P1249
+                        ParcelStatusHistoryArchive.Error := TRUE;
+                        ParcelStatusHistoryArchive.MODIFY;
+                      END;
+                      COMMIT;
+                    // S/P1249
+                    //UNTIL ParcelStatusHistory_glob.NEXT = 0;
+                    UNTIL ParcelStatusHistoryArch_glob.NEXT = 0;
+                    // E/P1249
+                  END;
+                END;
+            END;
+            //E/P1133
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      DHLSetup@1000000006 : Record 50022;
+      DHLParcelsStatusHistory@1000000000 : Record 50021;
+      EDIIntegratorSetup@1000000004 : Record 82850;
+      EDIPartner@1000000003 : Record 82851;
+      EDIPartnerDocumentType@1000000002 : Record 82852;
+      OutboundEDIDocumentList@1000000001 : Record 82864;
+      PurchaseHeader@1000000005 : Record 38;
+      Text001@1000000007 : TextConst 'DEU=Gewicht fr DHL Welt Paket, Artikel %1, darf nicht gr”áer als 30 kg sein.;ENU=Weight DHL World Packet, Item %1 can''t be greater then 30 kg.';
+      FPCGeneralSetup@1000000008 : Record 50055;
+      ParcelStatusHistory_glob@1000000009 : Record 80013;
+      ParcelStatusHistoryArch_glob@1000000010 : Record 50187;
+      "** HME *****"@1000000012 : TextConst;
+      HMEText001@1000000011 : TextConst 'ENU=Weight DHL Packet, Item %1 %2 can''t be 0 kg.';
+      HMEText002@1000000013 : TextConst 'ENU=Error creating EDI Outbound document.';
+
+    PROCEDURE CreateOutboundIFTMIN@1000000000() : Boolean;
+    VAR
+      OutboundEDIService_l@1000000002 : Codeunit 82851;
+    BEGIN
+      //S/P1133
+      // Old "DHL Parcel Status History" as Param, but no use of it. Therefore removed.
+      //E/P1133
+
+      EDIIntegratorSetup.GET();
+      EDIPartner.GET(DHLSetup."EDI Partner Code");
+      EDIPartnerDocumentType.GET(DHLSetup."EDI Partner Code",EDIPartnerDocumentType."Document Direction"::Outbound,'IFTMIN');
+
+      IF CreateOutboundList() THEN
+        IF CreateOutboundHeader() THEN BEGIN
+          COMMIT;
+          IF OutboundEDIService_l.RUN(OutboundEDIDocumentList) THEN
+            EXIT(TRUE);
+        END;
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE CreateOutboundList@1000000009() : Boolean;
+    VAR
+      OutboundEDIDocumentList_l@1000000004 : Record 82864;
+      NoSeriesMgt@1000000000 : Codeunit 396;
+      rOutbEDIDocList@1000000001 : Record 82864;
+      sDHLSheetCode@1000000002 : Code[4];
+      iDHLSheetCode@1000000003 : Integer;
+    BEGIN
+      //S/P1091
+      rOutbEDIDocList.SETRANGE("Document Type",rOutbEDIDocList."Document Type"::IFTMIN);
+      //S/P1181
+      rOutbEDIDocList.SETRANGE("Partner Code",EDIPartner.Code);
+      //E/P1181
+      rOutbEDIDocList.FINDLAST();
+      sDHLSheetCode := rOutbEDIDocList."DHL Sheet Code";
+      //E/P1091
+
+      // H0880 FX 07.04.14 +++++++++++++++++++++++++++++
+      IF EDIPartner."Start Date" > WORKDATE THEN
+        EXIT(FALSE);
+      // H0880 FX 07.04.14 ------------------------------
+
+      OutboundEDIDocumentList.INIT;
+      OutboundEDIDocumentList."Document Type" := OutboundEDIDocumentList."Document Type"::IFTMIN;
+      OutboundEDIDocumentList."No." := '';
+
+      NoSeriesMgt.InitSeries(
+        EDIPartnerDocumentType."ORDERS No. Series",OutboundEDIDocumentList."No. Series",
+        OutboundEDIDocumentList."Document Date",OutboundEDIDocumentList."No.",OutboundEDIDocumentList."No. Series"
+        );
+
+      OutboundEDIDocumentList."Partner Code" := EDIPartner.Code;
+      OutboundEDIDocumentList.Name := EDIPartner.Name;
+      OutboundEDIDocumentList."Name 2" := EDIPartner."Name 2";
+      OutboundEDIDocumentList.Address := EDIPartner.Address;
+      OutboundEDIDocumentList."Address 2" := EDIPartner."Address 2";
+      OutboundEDIDocumentList."Post Code" := EDIPartner."Post Code";
+      OutboundEDIDocumentList.City := EDIPartner.City;
+      OutboundEDIDocumentList."Country/Region Code" := EDIPartner."Country/Region Code";
+      OutboundEDIDocumentList."Document Date" := WORKDATE;
+      OutboundEDIDocumentList."User ID" := USERID;
+      OutboundEDIDocumentList."Test Indicator" := EDIPartnerDocumentType."Test Indicator";
+      //OutboundEDIDocumentList."Supplier GLN" := EDIPartner.GLN;
+      OutboundEDIDocumentList."Payer GLN" := EDIIntegratorSetup."Global Location Number (GLN)";
+      IF EDIPartnerDocumentType."Alternate Sender GLN" <> '' THEN
+        OutboundEDIDocumentList."Sender GLN" := EDIPartnerDocumentType."Alternate Sender GLN"
+      ELSE
+        OutboundEDIDocumentList."Sender GLN" := EDIIntegratorSetup."Global Location Number (GLN)";
+      OutboundEDIDocumentList."Recipient GLN" := EDIPartner.GLN;
+      //S/P1133
+      CASE FPCGeneralSetup."Active Parcel Status History" OF
+        FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old":
+          BEGIN
+            //E/P1133
+            //OutboundEDIDocumentList."External No." := EDIPartner."External No.";
+            OutboundEDIDocumentList."External No." := FORMAT(DHLParcelsStatusHistory."Entry No.");
+            //S/P1133
+          END;
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+        FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History":
+          BEGIN
+            IF ParcelStatusHistory_glob."Entry No." <> 0 THEN
+              OutboundEDIDocumentList."External No." := FORMAT(ParcelStatusHistory_glob."Entry No.")
+            ELSE
+              OutboundEDIDocumentList."External No." := FORMAT(ParcelStatusHistoryArch_glob."Entry No.");
+          END;
+      END;
+      //E/P1133
+
+      //S/P1091
+      sDHLSheetCode := INCSTR(sDHLSheetCode);
+      EVALUATE(iDHLSheetCode,sDHLSheetCode);
+      IF iDHLSheetCode > 999 THEN
+        sDHLSheetCode := '001';
+
+      OutboundEDIDocumentList."DHL Sheet Code" := sDHLSheetCode;
+      //E/P1091
+
+      OutboundEDIDocumentList.INSERT;
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE CreateOutboundHeader@1000000010() : Boolean;
+    VAR
+      OutboundEDIDocumentHeader_l@1000000000 : Record 82865;
+      PurchaseLine_l@1000000001 : Record 39;
+      Vendor_l@1000000002 : Record 23;
+      Customer_l@1000000007 : Record 18;
+      CompanyInformation_l@1000000004 : Record 79;
+      SalespersonPurchaser_l@1000000005 : Record 13;
+      Location_l@1000000006 : Record 14;
+      iLineCounter@1000000003 : Integer;
+      DHLLabelMgt@1000000008 : Codeunit 50111;
+      rDHLVendorIDCodes@1000000009 : Record 50161;
+      rPurchHeader@1000000010 : Record 38;
+      iStrLen@1000000011 : Integer;
+    BEGIN
+      CompanyInformation_l.GET();
+
+      OutboundEDIDocumentHeader_l.INIT;
+      OutboundEDIDocumentHeader_l."Header Document Type" := OutboundEDIDocumentList."Document Type";
+      OutboundEDIDocumentHeader_l."Header Document No." := OutboundEDIDocumentList."No.";
+      OutboundEDIDocumentHeader_l."Document Type" := OutboundEDIDocumentHeader_l."Document Type"::"Purchase Order";
+      OutboundEDIDocumentHeader_l."Document No." := PurchaseHeader."No.";
+      OutboundEDIDocumentHeader_l."Document Date" := PurchaseHeader."Document Date";
+      OutboundEDIDocumentHeader_l."Order Date" := PurchaseHeader."Order Date";
+      OutboundEDIDocumentHeader_l.Currency := PurchaseHeader."Currency Code";
+      OutboundEDIDocumentHeader_l."Sell-to Customer No." := PurchaseHeader."Buy-from Vendor No.";
+      OutboundEDIDocumentHeader_l."Bill-to Customer No." := PurchaseHeader."Pay-to Vendor No.";
+      OutboundEDIDocumentHeader_l."Sell-to Customer Name" := PurchaseHeader."Buy-from Vendor Name";
+      OutboundEDIDocumentHeader_l."Sell-to Name" := PurchaseHeader."Buy-from Vendor Name";
+      OutboundEDIDocumentHeader_l."Sell-to Name 2" := PurchaseHeader."Buy-from Vendor Name 2";
+      OutboundEDIDocumentHeader_l."Sell-to Address" := PurchaseHeader."Buy-from Address";
+      OutboundEDIDocumentHeader_l."Sell-to Address 2" := PurchaseHeader."Buy-from Address 2";
+      OutboundEDIDocumentHeader_l."Sell-to City" := PurchaseHeader."Buy-from City";
+      OutboundEDIDocumentHeader_l."Sell-to Post Code" := PurchaseHeader."Buy-from Post Code";
+      OutboundEDIDocumentHeader_l."Sell-to Contact" := PurchaseHeader."Buy-from Contact";
+      OutboundEDIDocumentHeader_l."Bill-to Name" := PurchaseHeader."Pay-to Name";
+      OutboundEDIDocumentHeader_l."Bill-to Name 2" := PurchaseHeader."Pay-to Name 2";
+      OutboundEDIDocumentHeader_l."Bill-to Address" := PurchaseHeader."Pay-to Address";
+      OutboundEDIDocumentHeader_l."Bill-to Address 2" := PurchaseHeader."Pay-to Address 2";
+      OutboundEDIDocumentHeader_l."Bill-to City" := PurchaseHeader."Pay-to City";
+      OutboundEDIDocumentHeader_l."Bill-to Post Code" := PurchaseHeader."Pay-to Post Code";
+
+      OutboundEDIDocumentHeader_l."Company Name" := CompanyInformation_l.Name;
+      OutboundEDIDocumentHeader_l."Company Name 2" := CompanyInformation_l."Name 2";
+      OutboundEDIDocumentHeader_l."Company Address" := CompanyInformation_l.Address;
+      OutboundEDIDocumentHeader_l."Company Address 2" := CompanyInformation_l."Address 2";
+      OutboundEDIDocumentHeader_l."Company City" := CompanyInformation_l.City;
+      OutboundEDIDocumentHeader_l."Company Post Code" := CompanyInformation_l."Post Code";
+      OutboundEDIDocumentHeader_l."Company Country/Region Code" := CompanyInformation_l."Country/Region Code";
+
+      OutboundEDIDocumentHeader_l."VAT Registration No." := CompanyInformation_l."VAT Registration No.";
+      OutboundEDIDocumentHeader_l."Registration No." := CompanyInformation_l."Registration No.";
+      OutboundEDIDocumentHeader_l."Your Reference" := PurchaseHeader."Your Reference";
+      OutboundEDIDocumentHeader_l."External No." := OutboundEDIDocumentList."External No.";
+
+      IF SalespersonPurchaser_l.GET(PurchaseHeader."Purchaser Code") THEN BEGIN
+        OutboundEDIDocumentHeader_l."Salesperson Name" := SalespersonPurchaser_l.Name;
+        OutboundEDIDocumentHeader_l."Salesperson Phone No." := SalespersonPurchaser_l."Phone No.";
+      END;
+
+      OutboundEDIDocumentHeader_l."Receiver GLN" := EDIPartner.GLN;
+
+      OutboundEDIDocumentHeader_l."Ship-to Code" := PurchaseHeader."Ship-to Code";
+      OutboundEDIDocumentHeader_l."Ship-to Name" := PurchaseHeader."Ship-to Name";
+      OutboundEDIDocumentHeader_l."Ship-to Name 2" := PurchaseHeader."Ship-to Name 2";
+      OutboundEDIDocumentHeader_l."Ship-to Address" := PurchaseHeader."Ship-to Address";
+      OutboundEDIDocumentHeader_l."Ship-to Address 2" := PurchaseHeader."Ship-to Address 2";
+      OutboundEDIDocumentHeader_l."Ship-to City" := PurchaseHeader."Ship-to City";
+      OutboundEDIDocumentHeader_l."Ship-to Contact" := PurchaseHeader."Ship-to Contact";
+      OutboundEDIDocumentHeader_l."Ship-to Post Code" := PurchaseHeader."Ship-to Post Code";
+      OutboundEDIDocumentHeader_l."Ship-to Country/Region Code" := PurchaseHeader."Ship-to Country/Region Code";
+      IF PurchaseHeader."Requested Receipt Date" <> 0D THEN
+        OutboundEDIDocumentHeader_l."Requested Delivery Date" := PurchaseHeader."Requested Receipt Date"
+      ELSE BEGIN
+        IF PurchaseHeader."Expected Receipt Date" <> 0D THEN
+          OutboundEDIDocumentHeader_l."Requested Delivery Date" := PurchaseHeader."Expected Receipt Date"
+        ELSE BEGIN
+          OutboundEDIDocumentHeader_l."Requested Delivery Date" := PurchaseHeader."Posting Date";
+          OutboundEDIDocumentHeader_l."Shipment Date" := PurchaseHeader."Posting Date";
+        END;
+      END;
+
+      IF (PurchaseHeader."Requested Receipt Week" <> 0) AND (OutboundEDIDocumentHeader_l."Requested Delivery Date" <> 0D) THEN BEGIN
+        OutboundEDIDocumentHeader_l."Requested Delivery Week" :=
+          DWY2DATE(3,PurchaseHeader."Requested Receipt Week",DATE2DMY(OutboundEDIDocumentHeader_l."Requested Delivery Date",3));
+        OutboundEDIDocumentHeader_l."Requested Delivery Date" := 0D;
+      END;
+
+      Vendor_l.GET(PurchaseHeader."Buy-from Vendor No.");
+      //Vendor_l.TESTFIELD("GLN/ILN");
+      OutboundEDIDocumentHeader_l."Supplier GLN" := Vendor_l."GLN/ILN";
+      OutboundEDIDocumentHeader_l."Buyer GLN" := EDIIntegratorSetup."Global Location Number (GLN)";
+      OutboundEDIDocumentHeader_l."Invoicer GLN" := EDIIntegratorSetup."Global Location Number (GLN)";
+      //S/P1133
+      CASE FPCGeneralSetup."Active Parcel Status History" OF
+        FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old":
+          BEGIN
+      //E/P1133
+            OutboundEDIDocumentHeader_l."Referral DateTime" := DHLParcelsStatusHistory."Time Stamp";
+      //S/P1133
+          END;
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+        FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History":
+          BEGIN
+            IF ParcelStatusHistory_glob."Entry No." <> 0 THEN
+              OutboundEDIDocumentHeader_l."Referral DateTime" := ParcelStatusHistory_glob."Timestamp Insert"
+            ELSE
+              OutboundEDIDocumentHeader_l."Referral DateTime" := ParcelStatusHistoryArch_glob."Timestamp Insert";
+          END;
+      END;
+      //E/P1133
+      OutboundEDIDocumentHeader_l."Export DateTime" := CURRENTDATETIME;
+      OutboundEDIDocumentHeader_l.INSERT;
+
+      PurchaseLine_l.RESET();
+      PurchaseLine_l.SETRANGE("Document Type",PurchaseHeader."Document Type");
+      PurchaseLine_l.SETRANGE("Document No.",PurchaseHeader."No.");
+      PurchaseLine_l.SETRANGE(Type,PurchaseLine_l.Type::Item);
+      PurchaseLine_l.SETFILTER(Quantity,'<>%1',0);
+      //S/P1133
+      CASE FPCGeneralSetup."Active Parcel Status History" OF
+        FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old":
+          BEGIN
+      //E/P1133
+            // S/gob-lku/13.08.2013/P1051
+            //PurchaseLine_l.SETRANGE("DHL Shipment Number",DHLParcelsStatusHistory."Piece-Code (Identifier)");
+            PurchaseLine_l.SETRANGE("Line No.", DHLParcelsStatusHistory."PO Line No.");
+      //S/P1133
+          END;
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+        FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History":
+          BEGIN
+            IF ParcelStatusHistory_glob."Entry No." <> 0 THEN
+              PurchaseLine_l.SETRANGE("Line No.",ParcelStatusHistory_glob."Purchase Doc. Line No.")
+            ELSE
+              PurchaseLine_l.SETRANGE("Line No.",ParcelStatusHistoryArch_glob."Purchase Doc. Line No.");
+          END;
+      END;
+      //E/P1133
+
+      // H0524 FX 02.09.13 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      // PurchaseLine_l.SETRANGE("Order No.", DHLParcelsStatusHistory."Sale Order Code");
+      // E/gob-lku/13.08.2013/P1051
+      // PurchaseLine_l.FIND('-');
+      PurchaseLine_l.FINDFIRST;
+      // H0524 FX 02.09.13 ---------------------------------------------------------------
+
+      REPEAT
+        iLineCounter += 1;
+        IF NOT CreateOutboundLine(PurchaseLine_l, iLineCounter) THEN
+          EXIT(FALSE);
+      UNTIL PurchaseLine_l.NEXT = 0;
+
+      //Teilnahme-Nr.
+      rPurchHeader.GET(PurchaseLine_l."Document Type",PurchaseLine_l."Document No.");
+      IF rDHLVendorIDCodes.GET(rPurchHeader."Buy-from Vendor No.",rPurchHeader."Ship-to Country/Region Code") THEN BEGIN
+        iStrLen := STRLEN(rDHLVendorIDCodes."DHL Client ID");
+        IF iStrLen >= 2 THEN
+          OutboundEDIDocumentHeader_l."Unloading Point" := COPYSTR(rDHLVendorIDCodes."DHL Client ID",iStrLen - 1,2);
+      END;
+
+      OutboundEDIDocumentHeader_l."Position Count" := iLineCounter;
+      OutboundEDIDocumentHeader_l.MODIFY;
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE CreateOutboundLine@1000000011(PurchaseLine_r@1000000001 : Record 39;iLineCounter@1000000004 : Integer) : Boolean;
+    VAR
+      OutboundEDIDocumentLine_l@1000000000 : Record 82866;
+      Item_l@1000000002 : Record 27;
+      UnitOfMeasure_l@1000000003 : Record 204;
+      ItemCrossReference_l@1000000005 : Record 5717;
+      IsBulkyGood@1000000007 : Boolean;
+      DHLLabelMgt@1000000006 : Codeunit 50111;
+      DummyCodeVarPar@1000000008 : Code[50];
+      DummyPZ@1000000009 : Code[2];
+      dTotalQty@1000000010 : Decimal;
+      dParcelWeight@1000000011 : Decimal;
+      dPrintWeight@1000000012 : Decimal;
+      TempFilled@1000000013 : Boolean;
+      "*** HME ******"@1000000014 : Integer;
+      OutboundEDICreatePDFL@1000000015 : Codeunit 50099;
+      PurchasingL@1000000016 : Record 5721;
+    BEGIN
+      OutboundEDIDocumentLine_l."Header Document Type" := OutboundEDIDocumentList."Document Type";
+      OutboundEDIDocumentLine_l."Header Document No." := OutboundEDIDocumentList."No.";
+      OutboundEDIDocumentLine_l."Document Type" := OutboundEDIDocumentLine_l."Document Type"::"Purchase Order";
+      OutboundEDIDocumentLine_l."Document No." := PurchaseLine_r."Document No.";
+      OutboundEDIDocumentLine_l."Line No." := PurchaseLine_r."Line No.";
+      OutboundEDIDocumentLine_l."Item No." := PurchaseLine_r."No.";
+      IF Item_l.GET(PurchaseLine_r."No.") THEN
+        OutboundEDIDocumentLine_l."Country Purchased Code" := Item_l."Country/Region Purchased Code";
+      IF OutboundEDIDocumentLine_l."Country Purchased Code" = '' THEN
+        OutboundEDIDocumentLine_l."Country Purchased Code" := 'DE';
+
+      OutboundEDIDocumentLine_l."Customer Item No." := PurchaseLine_r."Cross-Reference No.";
+
+      OutboundEDIDocumentLine_l.Description := PurchaseLine_r.Description;
+      OutboundEDIDocumentLine_l."Description 2" := PurchaseLine_r."Description 2";
+      OutboundEDIDocumentLine_l.Quantity := PurchaseLine_r.Quantity;
+      IF UnitOfMeasure_l.GET(PurchaseLine_r."Unit of Measure Code") THEN BEGIN
+        IF UnitOfMeasure_l."UN/ECE Code" <> '' THEN
+          OutboundEDIDocumentLine_l."Unit of Measure" := UnitOfMeasure_l."UN/ECE Code"
+        ELSE
+          OutboundEDIDocumentLine_l."Unit of Measure" := UnitOfMeasure_l.Code;
+      END ELSE
+        OutboundEDIDocumentLine_l."Unit of Measure" := PurchaseLine_r."Unit of Measure Code";
+      OutboundEDIDocumentLine_l."EDI Line No." := iLineCounter;
+
+      //Gewicht ermittlen wie im Label-Report
+      Item_l.CALCFIELDS("Parcels Number");
+      dTotalQty := 0;
+      IF Item_l."Parcels Number" = 0 THEN
+        dTotalQty := PurchaseLine_r.Quantity
+      ELSE
+        dTotalQty := PurchaseLine_r.Quantity * Item_l."Parcels Number";
+      dPrintWeight := 0;
+
+      //H0811, H1119, H1125, H1130, H1136, H1137, H1225 13.06.2014 EHN ++++++++++++++++++++++++++++++++++++++++++
+      IF dTotalQty = 0 THEN
+        dParcelWeight := Item_l."Gross Weight"
+      ELSE
+        dParcelWeight := Item_l."Gross Weight" / dTotalQty;
+
+      dPrintWeight := dParcelWeight;
+
+      IF dParcelWeight > 31.5 THEN BEGIN
+        OutboundEDICreatePDFL.SendErrorMail(PurchaseHeader."No.",HMEText002,STRSUBSTNO(HMEText001,Item_l."No.",
+          Item_l.FIELDCAPTION("Net Weight")));
+
+        PurchaseHeader."Outbound EDI No." := 'ERROR(99)';
+        PurchaseHeader.MODIFY(FALSE);
+        EXIT(FALSE);
+      END;
+
+      IF PurchasingL.GET( PurchaseLine_r."Purchasing Code") THEN BEGIN
+        IF PurchasingL."Use Weight check" THEN BEGIN
+          IF dParcelWeight = 0 THEN BEGIN
+            OutboundEDICreatePDFL.SendErrorMail(PurchaseHeader."No.",HMEText002,STRSUBSTNO(HMEText001,Item_l."No.",
+              Item_l.FIELDCAPTION("Net Weight")));
+
+            PurchaseHeader."Outbound EDI No." := 'ERROR(99)';
+            PurchaseHeader.MODIFY(FALSE);
+            EXIT(FALSE);
+          END;
+        END;
+      END;
+      //H0811, H1119, H1125, H1130, H1136, H1137, H1225 13.06.2014 EHN ------------------------------------------
+
+      //H0811 09.04.14 DMA ++++++++++++++++++++++++++++++++
+      {
+      dParcelWeight := Item_l."Net Weight" / dTotalQty;
+      IF (dParcelWeight / 100) <= 30 THEN BEGIN
+        IF dParcelWeight <> 0 THEN BEGIN
+          IF (dParcelWeight / 100) < 0.1 THEN
+            dPrintWeight := 0.1
+          ELSE
+            dPrintWeight := dParcelWeight / 100;
+        END ELSE BEGIN
+          dPrintWeight := 2.9;
+        END;
+      END ELSE
+        ERROR(Text001,Item_l."No.");
+      }
+      //H0811 09.04.14 DMA --------------------------------
+
+      OutboundEDIDocumentLine_l."Gross Weight" := ROUND(dPrintWeight,0.00001,'=');
+      //H1526 07.10.14 DMA +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF OutboundEDIDocumentLine_l."Gross Weight" = 0 THEN
+        OutboundEDIDocumentLine_l."Gross Weight" := 0.1;
+      //H1526 07.10.14 DMA -------------------------------------------------------
+      //H0811 09.04.14 DMA ++++++++++++++++++++++++++++++++
+      {
+      //H0811 09.04.14 DMA --------------------------------
+      OutboundEDIDocumentLine_l."Net Weight" := ROUND(PurchaseLine_r."Net Weight" / 100,0.0001,'=');
+      //H0811 09.04.14 DMA ++++++++++++++++++++++++++++++++
+      }
+      //H0811 09.04.14 DMA --------------------------------
+
+      //H0811 09.04.14 DMA ++++++++++++++++++++++++++++++++
+      OutboundEDIDocumentLine_l."Net Weight" := PurchaseLine_r."Net Weight";
+      //H0811 09.04.14 DMA --------------------------------
+      //H1526 07.10.14 DMA +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF OutboundEDIDocumentLine_l."Net Weight" = 0 THEN
+        OutboundEDIDocumentLine_l."Net Weight" := 0.1;
+      //H1526 07.10.14 DMA -------------------------------------------------------
+
+      OutboundEDIDocumentLine_l."Direct Unit Cost" := PurchaseLine_r."Direct Unit Cost";
+
+      //GTIN aus Referenztabelle
+      ItemCrossReference_l.RESET;
+      ItemCrossReference_l.SETRANGE("Item No.",PurchaseLine_r."No.");
+      IF PurchaseLine_r."Variant Code" <> '' THEN
+        ItemCrossReference_l.SETRANGE("Variant Code",PurchaseLine_r."Variant Code");
+      ItemCrossReference_l.SETRANGE("Cross-Reference Type",ItemCrossReference_l."Cross-Reference Type"::"Bar Code");
+      IF ItemCrossReference_l.FINDFIRST THEN
+        OutboundEDIDocumentLine_l.GTIN := ItemCrossReference_l."Cross-Reference No.";
+
+      IF PurchaseLine_r."Vendor Item No." <> '' THEN
+        OutboundEDIDocumentLine_l."Customer Item No." := PurchaseLine_r."Vendor Item No."
+      ELSE
+        OutboundEDIDocumentLine_l."Customer Item No." := COPYSTR(Item_l."Vendor Item No." + ' ' + Item_l."Vendor Item No. Add.",1,35);
+
+      IF PurchaseLine_r."Order No." <> '' THEN
+        OutboundEDIDocumentLine_l."Sales Order No." := PurchaseLine_r."Order No.";
+      IF PurchaseLine_r."Special Order Sales No." <> '' THEN
+        OutboundEDIDocumentLine_l."Sales Order No." := PurchaseLine_r."Special Order Sales No.";
+
+      //S/P1133
+      CASE FPCGeneralSetup."Active Parcel Status History" OF
+        FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old":
+          BEGIN
+      //E/P1133
+            OutboundEDIDocumentLine_l."Description 2" := DHLParcelsStatusHistory."Piece-Code (Identifier)";
+            IF PurchaseLine_r."Sales Order No." = '' THEN BEGIN
+              PurchaseLine_r."Sales Order No." := DHLParcelsStatusHistory."Document No.";
+              TempFilled := TRUE;
+            END;
+      //S/P1133
+          END;
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+        FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History":
+          BEGIN
+            IF ParcelStatusHistory_glob."Piece Code" <> '' THEN
+              OutboundEDIDocumentLine_l."Description 2" := ParcelStatusHistory_glob."Piece Code"
+            ELSE
+              OutboundEDIDocumentLine_l."Description 2" := ParcelStatusHistoryArch_glob."Piece Code";
+            IF PurchaseLine_r."Sales Order No." = '' THEN BEGIN
+              IF ParcelStatusHistory_glob."Document No." <> '' THEN
+                PurchaseLine_r."Sales Order No." := ParcelStatusHistory_glob."Document No."
+              ELSE
+                PurchaseLine_r."Sales Order No." := ParcelStatusHistoryArch_glob."Document No.";
+              TempFilled := TRUE;
+            END;
+          END;
+      END;
+      //E/P1133
+      OutboundEDIDocumentLine_l."Billing No. DHL Label" := DHLLabelMgt.GetBillingNo(PurchaseLine_r,FALSE);
+      IsBulkyGood := FALSE;
+      // S/P1099
+      // Fill "Sales Order No." ony temporarly for function "GetLeitcodeInt"
+      TempFilled := FALSE;
+      //S/P1133
+      {**********
+      IF PurchaseLine_r."Sales Order No." = '' THEN BEGIN
+        PurchaseLine_r."Sales Order No." := DHLParcelsStatusHistory."Sale Order Code";
+        TempFilled := TRUE;
+      END;
+      **********}
+      //E/P1133
+      // E/P1099
+      OutboundEDIDocumentLine_l."Leitcode DHL Label" := DHLLabelMgt.GetLeitcodeInt(PurchaseLine_r,DummyCodeVarPar,IsBulkyGood,DummyPZ);
+
+      // S/P1099
+      IF TempFilled THEN
+        PurchaseLine_r."Sales Order No." := '';
+      // E/P1099
+
+      OutboundEDIDocumentLine_l.INSERT;
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE SetEDItoSend@1000000001();
+    VAR
+      DHLParcelsStatusHistory_l@1000000000 : Record 50021;
+      IDSIdentcodes_l@1000000001 : Record 50158;
+      ParcelStatusHistory@1000000002 : Record 80013;
+      ParcelStatusHistoryArchive@1000000003 : Record 50187;
+      ModifyToDelete@1000000004 : Boolean;
+    BEGIN
+      //S/P1133
+      FPCGeneralSetup.GET;
+      //E/P1133
+
+      // hier die Datens„tze aus der neuen Tabelle nehmen und mit der Sendungsnummer die DHL History durchsuchen
+      // S/P1245
+      // S/P1272
+      //IDSIdentcodes_l.SETRANGE("Shipping Agent",FPCGeneralSetup."Ship. Agent Code DHL");
+      IDSIdentcodes_l.SETFILTER("Shipping Agent",'%1|%2',FPCGeneralSetup."Ship. Agent Code DHL",'');
+      // E/P1272
+      // E/P1245
+      IDSIdentcodes_l.FIND('-');
+      REPEAT
+        //S/P1133
+        CASE FPCGeneralSetup."Active Parcel Status History" OF
+          FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+          FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old":
+            BEGIN
+        //E/P1133
+              // S/P1098
+              DHLParcelsStatusHistory_l.RESET;
+              // E/P1098
+              DHLParcelsStatusHistory_l.SETCURRENTKEY("DHL Shipment Code","Status Event");
+              //A,gob-dst,01.07.2013,P1000
+              //DHLParcelsStatusHistory_l.SETRANGE("Piece-Code (Identifier)",IDSIdentcodes_l.Identcode);
+              DHLParcelsStatusHistory_l.SETRANGE("DHL Shipment Code",IDSIdentcodes_l.Identcode);
+              //E,gob-dst,01.07.2013,P1000
+              DHLParcelsStatusHistory_l.SETRANGE("Purchase Order Code",IDSIdentcodes_l."Purchase Order No.");
+              DHLParcelsStatusHistory_l.SETFILTER("Status Event",'<>%1',DHLSetup."Status Code Label Send");
+              IF NOT DHLParcelsStatusHistory_l.ISEMPTY THEN BEGIN
+                // S/gob-lku/14.08.2013/P1051
+                DHLParcelsStatusHistory_l.SETRANGE("DHL Shipment Code");
+                DHLParcelsStatusHistory_l.SETRANGE("Piece-Code (Identifier)",IDSIdentcodes_l.Identcode);
+                // E/gob-lku/14.08.2013/P1051
+                DHLParcelsStatusHistory_l.SETRANGE("Status Event",DHLSetup."Status Code Label Send");
+                DHLParcelsStatusHistory_l.SETRANGE("EDI to Send",TRUE);
+                IF DHLParcelsStatusHistory_l.ISEMPTY THEN BEGIN
+                  DHLParcelsStatusHistory_l.SETRANGE("EDI to Send");
+                  DHLParcelsStatusHistory_l.FINDFIRST;
+                  DHLParcelsStatusHistory_l."EDI to Send" := TRUE;
+                  DHLParcelsStatusHistory_l.MODIFY;
+                END;
+                IDSIdentcodes_l."To Delete" := TRUE;
+                IDSIdentcodes_l.MODIFY;
+              END;
+        //S/P1133
+            END;
+          FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+          FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History":
+            BEGIN
+              CLEAR(ModifyToDelete);
+              ParcelStatusHistory.RESET;
+              ParcelStatusHistory.SETCURRENTKEY("Purchase Doc. No.","Purchase Doc. Line No.","Purchase Doc. Type");
+              ParcelStatusHistory.SETRANGE("Purchase Doc. No.",IDSIdentcodes_l."Purchase Order No.");
+              ParcelStatusHistory.SETRANGE("Tracking Code",IDSIdentcodes_l.Identcode);
+              ParcelStatusHistory.SETFILTER("Status Code",'<>%1',DHLSetup."Status Code Label Send");
+              IF NOT ParcelStatusHistory.ISEMPTY THEN BEGIN
+                ModifyToDelete := TRUE;
+                ParcelStatusHistory.SETRANGE("Tracking Code");
+                ParcelStatusHistory.SETRANGE("Piece Code",IDSIdentcodes_l.Identcode);
+                ParcelStatusHistory.SETRANGE("Status Code",DHLSetup."Status Code Label Send");
+                ParcelStatusHistory.SETRANGE("EDI to Send",TRUE);
+                IF ParcelStatusHistory.ISEMPTY THEN BEGIN
+                  ParcelStatusHistory.SETRANGE("EDI to Send");
+                  ParcelStatusHistory.FINDFIRST;
+                  ParcelStatusHistory."EDI to Send" := TRUE;
+                  // S/P1228
+                  //ParcelStatusHistory.MODIFY;
+                  ParcelStatusHistory.MODIFY(TRUE);
+                  // E/P1228
+                END;
+              END;
+              ParcelStatusHistoryArchive.RESET;
+              ParcelStatusHistoryArchive.SETCURRENTKEY("Purchase Doc. No.","Purchase Doc. Line No.","Purchase Doc. Type");
+              ParcelStatusHistoryArchive.SETRANGE("Purchase Doc. No.",IDSIdentcodes_l."Purchase Order No.");
+              ParcelStatusHistoryArchive.SETRANGE("Tracking Code",IDSIdentcodes_l.Identcode);
+              ParcelStatusHistoryArchive.SETFILTER("Status Code",'<>%1',DHLSetup."Status Code Label Send");
+              IF NOT ParcelStatusHistoryArchive.ISEMPTY THEN BEGIN
+                ModifyToDelete := TRUE;
+                ParcelStatusHistoryArchive.SETRANGE("Tracking Code");
+                ParcelStatusHistoryArchive.SETRANGE("Piece Code",IDSIdentcodes_l.Identcode);
+                ParcelStatusHistoryArchive.SETRANGE("Status Code",DHLSetup."Status Code Label Send");
+                ParcelStatusHistoryArchive.SETRANGE("EDI to Send",TRUE);
+                IF ParcelStatusHistoryArchive.ISEMPTY THEN BEGIN
+                  ParcelStatusHistoryArchive.SETRANGE("EDI to Send");
+                  ParcelStatusHistoryArchive.FINDFIRST;
+                  ParcelStatusHistoryArchive."EDI to Send" := TRUE;
+                  ParcelStatusHistoryArchive.MODIFY;
+                END;
+              END;
+              IF ModifyToDelete THEN BEGIN
+                IDSIdentcodes_l."To Delete" := TRUE;
+                IDSIdentcodes_l.MODIFY;
+              END;
+            END;
+        END;
+        //E/P1133
+
+      // Dummy Tabelle fr neue Tabelle
+      UNTIL IDSIdentcodes_l.NEXT = 0;
+
+      COMMIT;
+
+      // S/P1245
+      // S/P1272
+      //IDSIdentcodes_l.SETRANGE("Shipping Agent",FPCGeneralSetup."Ship. Agent Code DHL");
+      IDSIdentcodes_l.SETFILTER("Shipping Agent",'%1|%2',FPCGeneralSetup."Ship. Agent Code DHL",'');
+      // E/P1272
+      // E/P1245
+      IDSIdentcodes_l.SETRANGE("To Delete",TRUE);
+      IDSIdentcodes_l.DELETEALL;
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation GOB & Home24 NAV Team      |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      P0924   gob-lku   22.05.2013   Neues Objekt
+      P1000   gob-dst   01.07.2013   Bugfix: DHL Shipment Code statt Piece Code als Filter verwenden
+      P1051   gob-lku   13.08.2013   Logikanpassung -> ber PO Line filtern
+      P1091   gob-dst   29.08.2013   Bugfix: DHL Blattnummer nicht ber Nummernserie, sondern getrennt hochz„hlen
+                                     bei 999 ist n„chste Blattnummer 001
+      P1098   gob-lku   03.09.2013   Aufl”sung des Filters
+      P1099   gob-lku   04.09.2013   tempor„res Fllen von PurchaseLine_r."Sales Order No."
+      P1133   gob-mlan  06.11.2013   Redesign of "DHL Parcel Status History"
+      P1181   gob-dst   19.03.2014   Erweiterung Filter (EDI Partner) bei Ermittlung der Sheet No.
+      P1228   gob-mlan  20.03.2014   Adopt "Tracking Actions"-Logic (MBY) from T50021
+      P1245   gob-dst   28.04.2014   Erweiterung DPD IFTMIN
+      P1249   gob-dst   19.05.2014   Fix DHL IFTMIN in Verbindung mit neuer DHL Parcel Status History
+      P1272   gob-dst   08.09.2014   Fix Error Meldung, wenn kein Datensatz innerhab des Filters vorhanden ist
+
+
+      Verfahren 53!!!
+
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation Tectura & Home24 NAV Team  |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+
+      T0002       28.05.14  tec-cs    remove obsolete setcurrentkey-calls (keys in table 80013 have been deleted)
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      H0524       02.09.13  FX        Correct "Sales Order No." not found in IFTMIN creation
+      H0880       07.04.14  FX        Added Start Date to EDI Partner Card
+      H0811       09.04.14  DMA       Fix for correct net weights
+      H1119       30.04.14  DMA       Bugfix: DHL-IFTMIN  -> No/wrong weight included, CODE CHANGE (OnRun)
+      H1125       06.05.14  DMA       Bugfix: Bugfix for DHL IFTMIN,add proper error handling to job,CODECHANGE(OnRun),NEW LOCALS,TEXTCONS
+      H1130       06.05.14  DMA       Rollback of H1119 because of data issues on item
+      H1137       09.05.14  DMA       DHL Label - use correct weight field for DHL Label and IFTMIN File
+      H1136       09.05.14  DMA       Bugfix for Weight 0Kg in DHL Label and IFTMIN File(CLEANUP H1130, put back H1119)
+      H1225       13.06.14  EHN       The Label creation should only fail, if the Item Gross Weight is bigger than 31.5kg
+      H1288       26.06.14  DNA       HotFix: Outbound EDI Create IFTMIN Error with missing Key, CODECHANGE
+      H1526       07.10.14  DMA       IFTMIN DHL - replace 0kg by 0.1kg,CODECHANGE
+    }
+    END.
+  }
+}
+

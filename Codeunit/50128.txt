@@ -1,0 +1,239 @@
+OBJECT Codeunit 50128 SII Incoming WS Connection
+{
+  OBJECT-PROPERTIES
+  {
+    Date=20.10.14;
+    Time=14:44:17;
+    Modified=Yes;
+    Version List=SII,HME1515,T0002;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text001@1000000000 : TextConst 'ENU=Mail was send with warning!';
+      Text002@1000000001 : TextConst 'ENU=The Customer %1 does not exist!';
+      Text003@1000000002 : TextConst 'ENU=The Customer %2 has no E-Mail Adress!';
+      Text004@1000000003 : TextConst 'ENU=Mail was not send!';
+
+    PROCEDURE ResponseOrderUpdate@1000000001(p_QueueId@1000000000 : Integer;p_OrderNumber@1000000001 : Code[20];p_Status@1000000003 : Code[50];p_ResultDetails@1000000005 : Text[1000]) return_value : Text[10];
+    VAR
+      SIILogArchive@1000000006 : Record 50147;
+      LocText001@1000000007 : TextConst 'ENU=No Queue ID.';
+      LocText002@1000000008 : TextConst 'ENU=No Order Number.';
+      LocText003@1000000009 : TextConst 'ENU=Difference between Order Numbers. Order Number Shop: %1. Order Number NAV: %2.';
+      SIILog@1000000010 : Record 50146;
+      LocText004@1000000011 : TextConst 'ENU=Unknown Status.';
+      SIIProcessLog@1000000012 : Record 50139;
+      LocText005@1000000013 : TextConst 'ENU=Unknown Queue ID: %1.';
+      "***HME************************"@1000000002 : Integer;
+      SIISetupL@1000000014 : Record 50140;
+      CCCapturingL@1000000004 : Record 50317;
+      UpdateCCCapturingL@1000000015 : Boolean;
+    BEGIN
+      IF p_QueueId = 0 THEN
+        ERROR(LocText001);
+
+      IF p_OrderNumber = '' THEN
+        ERROR(LocText002);
+
+      // Check if Entry in SII Log Archive Exists
+      SIILogArchive.RESET;
+      SIILogArchive.SETCURRENTKEY("Shop Queue ID");
+      SIILogArchive.SETRANGE("Shop Queue ID",p_QueueId);
+      IF SIILogArchive.FIND('+') THEN BEGIN
+        IF SIILogArchive."Attached to Document No." <> p_OrderNumber THEN
+          ERROR(LocText003,p_OrderNumber,SIILogArchive."Attached to Document No.");
+        //H1515  20.10.14  MBY  +++++++++++++++++++++++++++++++++++
+        CLEAR(UpdateCCCapturingL);
+        IF SIILogArchive."Payment Reference ID" <> 0 THEN BEGIN
+          IF SIISetupL.GET AND (SIISetupL."Credit Card Capture NAV" = SIILogArchive."Message Code NAV") THEN
+            IF CCCapturingL.GET(SIILogArchive."Payment Reference ID") THEN
+              UpdateCCCapturingL := TRUE;
+        END;
+        //H1515  20.10.14  MBY  -----------------------------------
+
+        CASE p_Status OF
+          ///S/P1024
+          //'SUCCES': BEGIN
+          'SUCCESS': BEGIN
+          //E/P1024
+            SIILogArchive."Commited At" := CURRENTDATETIME;
+            SIILogArchive.Status := SIILogArchive.Status::Commited;
+            SIILogArchive."Last Successful Step" := SIILogArchive."Last Successful Step"::Done;
+            SIILogArchive."Error Text 1" := '';
+            SIILogArchive."Error Text 2" := '';
+            SIILogArchive."Error Text 3" := '';
+            SIILogArchive."Error Text 4" := '';
+            SIILogArchive."Error Source Code" := '';
+            SIILogArchive.MODIFY;
+            //H1515  20.10.14  MBY  +++++++++++++++++++++++++++++++++++
+            IF UpdateCCCapturingL THEN BEGIN
+              CCCapturingL.Status := CCCapturingL.Status::Commited;
+              CCCapturingL.MODIFY;
+            END;
+            //H1515  20.10.14  MBY  -----------------------------------
+            return_value := 'ok';
+            EXIT;
+          END;
+          'WARNING': BEGIN
+            SIILogArchive."Commited At" := CURRENTDATETIME;
+            SIILogArchive.Status := SIILogArchive.Status::Warning;
+            SIILogArchive."Last Successful Step" := SIILogArchive."Last Successful Step"::Done;
+            SIILogArchive."Error Text 1" := COPYSTR(p_ResultDetails,1,250);
+            SIILogArchive."Error Text 2" := COPYSTR(p_ResultDetails,251,500);
+            SIILogArchive."Error Text 3" := COPYSTR(p_ResultDetails,501,750);
+            SIILogArchive."Error Text 4" := COPYSTR(p_ResultDetails,751,1000);
+            SIILogArchive."Error Source Code" := 'SHOP_INCOMING_WS' + p_Status;
+            SIILogArchive.MODIFY;
+            return_value := 'ok';
+            EXIT;
+          END;
+          'ERROR','ACKNOWLEDGE': BEGIN
+            SIILogArchive."Commited At" := CURRENTDATETIME;
+            SIILogArchive.Status := SIILogArchive.Status::Error;
+            SIILogArchive."Last Successful Step" := SIILogArchive."Last Successful Step"::ResponseWS;
+            SIILogArchive."Error Text 1" := COPYSTR(p_ResultDetails,1,250);
+            SIILogArchive."Error Text 2" := COPYSTR(p_ResultDetails,251,500);
+            SIILogArchive."Error Text 3" := COPYSTR(p_ResultDetails,501,750);
+            SIILogArchive."Error Text 4" := COPYSTR(p_ResultDetails,751,1000);
+            SIILogArchive."Error Source Code" := 'SHOP_INCOMING_WS' + p_Status;
+            SIILogArchive.MODIFY;
+            return_value := 'ok';
+            //H1515  20.10.14  MBY  +++++++++++++++++++++++++++++++++++
+            IF UpdateCCCapturingL THEN BEGIN
+              CCCapturingL.Status := CCCapturingL.Status::Error;
+              CCCapturingL.MODIFY;
+            END;
+            //H1515  20.10.14  MBY  -----------------------------------
+            EXIT;
+          END;
+        ELSE
+          ERROR(LocText004);
+        END;
+      END ELSE BEGIN
+        SIILog.RESET;
+        //T0002 28.05.14 tec-cs +++++++++++++++++++++++++++++
+        //SIILog.SETCURRENTKEY("Shop Queue ID");
+        //T0002 28.05.14 tec-cs -----------------------------
+        SIILog.SETRANGE("Shop Queue ID",p_QueueId);
+        IF SIILog.FIND('+') THEN BEGIN
+          IF SIILog."Attached to Document No." <> p_OrderNumber THEN
+            ERROR(LocText003,p_OrderNumber,SIILog."Attached to Document No.");
+          CASE p_Status OF
+            //S/P1024
+            //'SUCCES': BEGIN
+            'SUCCESS': BEGIN
+            //E/P1024
+              SIILog."Commited At" := CURRENTDATETIME;
+              SIILog.Status := SIILog.Status::Commited;
+              SIILog."Last Successful Step" := SIILog."Last Successful Step"::Done;
+              SIILog."Error Text 1" := '';
+              SIILog."Error Text 2" := '';
+              SIILog."Error Text 3" := '';
+              SIILog."Error Text 4" := '';
+              SIILog."Error Source Code" := '';
+              SIILog.MODIFY;
+              return_value := 'ok';
+              EXIT;
+            END;
+            'WARNING': BEGIN
+              SIILog."Commited At" := CURRENTDATETIME;
+              SIILog.Status := SIILog.Status::Warning;
+              SIILog."Last Successful Step" := SIILog."Last Successful Step"::Done;
+              SIILog."Error Text 1" := COPYSTR(p_ResultDetails,1,250);
+              SIILog."Error Text 2" := COPYSTR(p_ResultDetails,251,500);
+              SIILog."Error Text 3" := COPYSTR(p_ResultDetails,501,750);
+              SIILog."Error Text 4" := COPYSTR(p_ResultDetails,751,1000);
+              SIILog."Error Source Code" := 'SHOP_INCOMING_WS_' + p_Status;
+              SIILog.MODIFY;
+              return_value := 'ok';
+              EXIT;
+            END;
+            'ERROR','ACKNOWLEDGE': BEGIN
+              SIILog."Commited At" := CURRENTDATETIME;
+              SIILog.Status := SIILog.Status::Error;
+              SIILog."Last Successful Step" := SIILog."Last Successful Step"::ResponseWS;
+              SIILog."Error Text 1" := COPYSTR(p_ResultDetails,1,250);
+              SIILog."Error Text 2" := COPYSTR(p_ResultDetails,251,500);
+              SIILog."Error Text 3" := COPYSTR(p_ResultDetails,501,750);
+              SIILog."Error Text 4" := COPYSTR(p_ResultDetails,751,1000);
+              SIILog."Error Source Code" := 'SHOP_INCOMING_WS_' + p_Status;
+              SIILog.MODIFY;
+              return_value := 'ok';
+              EXIT;
+            END;
+          ELSE
+            ERROR(LocText004);
+          END;
+        END ELSE BEGIN
+          SIIProcessLog.RESET;
+          SIIProcessLog.LOCKTABLE;
+          SIIProcessLog."Entry No." := SIIProcessLog.GetNextEntryNo(TRUE);
+          //H0360  27.05.13  ABR  ++++++++++++++++++++++++++++
+          {
+          //H0360  27.05.13  ABR  ----------------------------
+          SIIProcessLog.INSERT;
+          //H0360  27.05.13  ABR  ++++++++++++++++++++++++++++
+          }
+          //H0360  27.05.13  ABR  ----------------------------
+          SIIProcessLog."Entry Type" := SIIProcessLog."Entry Type"::Error;
+          SIIProcessLog."Log Type" := SIIProcessLog."Log Type"::UnknownQueueID;
+          SIIProcessLog.Timestamp := CURRENTDATETIME;
+          SIIProcessLog."Queue ID" := p_QueueId;
+          SIIProcessLog."Error Text 1" := STRSUBSTNO(LocText005,p_QueueId);
+          SIIProcessLog.INSERT;
+          return_value := 'ok';
+          EXIT;
+        END;
+      END;
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation Tectura & Home24 NAV Team  |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+
+      T0002       28.05.14  tec-cs    remove obsolete setcurrentkey-calls (keys in table 50146 have been deleted)
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation GOB & Home24 NAV Team      |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      P0923       22.05.13  gob-rste  Object Created
+      P1024       10.07.13  gob-rste  Fix SUCCESS Message
+
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+      H0360       27.05.13  ABR       Correction Fill Process Log
+      H1515       20.10.14  MBY       Credit Card Capturing SII part
+    }
+    END.
+  }
+}
+

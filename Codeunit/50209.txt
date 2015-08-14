@@ -1,0 +1,370 @@
+OBJECT Codeunit 50209 Library - Service
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02.09.13;
+    Time=14:59:54;
+    Version List=HME0513;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      ServicePeriodOneMonth@1000 : TextConst 'ENU=<1M>';
+      LibraryUtility@1002 : Codeunit 50206;
+      NoRecordsInFilterError@1004 : TextConst 'ENU=There are no %1 within the filters specified.';
+
+    [Normal]
+    PROCEDURE Initialize@13();
+    VAR
+      InventorySetup@1001 : Record 313;
+      BackupMgt@1000 : Codeunit 50201;
+      LibraryFinance@1102601000 : Codeunit 50207;
+    BEGIN
+      BackupMgt.DefaultFixture;
+
+      InventorySetup.GET;
+      InventorySetup.VALIDATE("Item Nos.",LibraryUtility.GetNoSeriesCode);
+      InventorySetup.MODIFY(TRUE);
+
+      LibraryFinance.InitializeGeneralPostingSetup;
+      LibraryFinance.InitializeVATPostingSetup;
+
+      COMMIT;
+    END;
+
+    PROCEDURE CreateExtendedTextHeaderItem@51(VAR ExtendedTextHeader@1000 : Record 279;ItemNo@1001 : Code[20]);
+    BEGIN
+      ExtendedTextHeader.INIT;
+      ExtendedTextHeader.VALIDATE("Table Name",ExtendedTextHeader."Table Name"::Item);
+      ExtendedTextHeader.VALIDATE("No.",ItemNo);
+      ExtendedTextHeader.INSERT(TRUE);
+    END;
+
+    PROCEDURE CreateExtendedTextLineItem@54(VAR ExtendedTextLine@1002 : Record 280;ExtendedTextHeader@1000 : Record 279);
+    VAR
+      RecRef@1001 : RecordRef;
+    BEGIN
+      ExtendedTextLine.INIT;
+      ExtendedTextLine.VALIDATE("Table Name",ExtendedTextHeader."Table Name");
+      ExtendedTextLine.VALIDATE("No.",ExtendedTextHeader."No.");
+      ExtendedTextLine.VALIDATE("Language Code",ExtendedTextHeader."Language Code");
+      ExtendedTextLine.VALIDATE("Text No.",ExtendedTextHeader."Text No.");
+      RecRef.GETTABLE(ExtendedTextLine);
+      ExtendedTextLine.VALIDATE("Line No.",LibraryUtility.GetNewLineNo(RecRef,ExtendedTextLine.FIELDNO("Line No.")));
+      ExtendedTextLine.INSERT(TRUE);
+    END;
+
+    PROCEDURE CreateLoaner@18(VAR Loaner@1000 : Record 5913);
+    BEGIN
+      Loaner.INIT;
+      Loaner.INSERT(TRUE);
+    END;
+
+    [Normal]
+    PROCEDURE CreateRepairStatus@46(VAR RepairStatus@1001 : Record 5927);
+    BEGIN
+      RepairStatus.INIT;
+      // Use the function GenerateRandomCode to get random and unique value for the Code field.
+      RepairStatus.VALIDATE(Code,LibraryUtility.GenerateRandomCode(RepairStatus.FIELDNO(Code),DATABASE::"Repair Status"));
+      RepairStatus.VALIDATE(Description,RepairStatus.Code);  // Validating Code as Description because value is not important.
+      RepairStatus.INSERT(TRUE);
+    END;
+
+    PROCEDURE CreateServiceCommentLine@22(VAR ServiceCommentLine@1000 : Record 5906;TableName@1001 : Option;TableSubtype@1002 : Option;No@1003 : Code[20];Type@1004 : Option;TableLineNo@1005 : Integer);
+    VAR
+      RecRef@1006 : RecordRef;
+    BEGIN
+      ServiceCommentLine.INIT;
+      ServiceCommentLine.VALIDATE("Table Name",TableName);
+      ServiceCommentLine.VALIDATE("Table Subtype",TableSubtype);
+      ServiceCommentLine.VALIDATE("No.",No);
+      ServiceCommentLine.VALIDATE(Type,Type);
+      ServiceCommentLine.VALIDATE("Table Line No.",TableLineNo);
+      RecRef.GETTABLE(ServiceCommentLine);
+      ServiceCommentLine.VALIDATE("Line No.",LibraryUtility.GetNewLineNo(RecRef,ServiceCommentLine.FIELDNO("Line No.")));
+      ServiceCommentLine.INSERT(TRUE);
+      // Validate Comment as primary key to enable user to distinguish between comments because value is not important.
+      ServiceCommentLine.VALIDATE(
+        Comment,FORMAT(ServiceCommentLine."Table Name") + FORMAT(ServiceCommentLine."Table Subtype") + ServiceCommentLine."No." +
+        FORMAT(ServiceCommentLine.Type) + FORMAT(ServiceCommentLine."Table Line No.") + FORMAT(ServiceCommentLine."Line No."));
+      ServiceCommentLine.MODIFY(TRUE);
+    END;
+
+    PROCEDURE CreateCommentLineForServHeader@28(VAR ServiceCommentLine@1000 : Record 5906;ServiceItemLine@1001 : Record 5901;Type@1002 : Option);
+    BEGIN
+      CreateServiceCommentLine(
+        ServiceCommentLine,ServiceCommentLine."Table Name"::"Service Header",ServiceItemLine."Document Type",
+        ServiceItemLine."Document No.",Type,ServiceItemLine."Line No.");
+    END;
+
+    PROCEDURE CreateCommentLineForServCntrct@32(VAR ServiceCommentLine@1002 : Record 5906;ServiceContractLine@1001 : Record 5964;Type@1000 : Option);
+    BEGIN
+      CreateServiceCommentLine(
+        ServiceCommentLine,ServiceCommentLine."Table Name"::"Service Contract",ServiceContractLine."Contract Type",
+        ServiceContractLine."Contract No.",Type,ServiceContractLine."Line No.");
+    END;
+
+    PROCEDURE CreateOrderFromQuote@44(ServiceHeader@1000 : Record 5900);
+    BEGIN
+      CODEUNIT.RUN(CODEUNIT::"Service-Quote to Order",ServiceHeader);
+    END;
+
+    PROCEDURE CreateServiceContractAcctGrp@7(VAR ServiceContractAccountGroup@1000 : Record 5973);
+    VAR
+      GLAccount@1001 : Record 15;
+    BEGIN
+      // Create Service Contract Account Group.
+      ServiceContractAccountGroup.INIT;
+      // Use the function GenerateRandomCode to get random and unique value for the Code field.
+      ServiceContractAccountGroup.VALIDATE(
+        Code,LibraryUtility.GenerateRandomCode(ServiceContractAccountGroup.FIELDNO(Code),DATABASE::"Service Contract Account Group"));
+      ServiceContractAccountGroup.INSERT(TRUE);
+
+      // Input Accounts as they are mandatory.
+      FindGLAccount(GLAccount);
+      ServiceContractAccountGroup.VALIDATE("Non-Prepaid Contract Acc.",GLAccount."No.");
+      GLAccount.NEXT;
+      ServiceContractAccountGroup.VALIDATE("Prepaid Contract Acc.",GLAccount."No.");
+      ServiceContractAccountGroup.MODIFY(TRUE);
+    END;
+
+    PROCEDURE CreateServiceContractHeader@1(VAR ServiceContractHeader@1000 : Record 5965;ContractType@1001 : Option;CustomerNo@1002 : Code[20]);
+    VAR
+      ServiceContractAccountGroup@1004 : Record 5973;
+    BEGIN
+      ServiceContractHeader.INIT;
+      ServiceContractHeader.VALIDATE("Contract Type",ContractType);
+      ServiceContractHeader.INSERT(TRUE);
+      ServiceContractHeader.VALIDATE("Customer No.",CustomerNo);
+      // Validate one month as the default value of the Service Period.
+      EVALUATE(ServiceContractHeader."Service Period",ServicePeriodOneMonth);
+      // Validate default value of Service Contract Acc. Gr. Code. This field is a mandatory field for signing Contract.
+      ServiceContractAccountGroup.FINDFIRST;
+      ServiceContractHeader.VALIDATE("Serv. Contract Acc. Gr. Code",ServiceContractAccountGroup.Code);
+      ServiceContractHeader.MODIFY(TRUE);
+    END;
+
+    PROCEDURE CreateServiceContractLine@6(VAR ServiceContractLine@1000 : Record 5964;ServiceContractHeader@1001 : Record 5965;ServiceItemNo@1003 : Code[20]);
+    VAR
+      RecRef@1002 : RecordRef;
+    BEGIN
+      ServiceContractLine.INIT;
+      ServiceContractLine.VALIDATE("Contract Type",ServiceContractHeader."Contract Type");
+      ServiceContractLine.VALIDATE("Contract No.",ServiceContractHeader."Contract No.");
+      RecRef.GETTABLE(ServiceContractLine);
+      // Use the function GetLastLineNo to get the value of the Line No. field.
+      ServiceContractLine.VALIDATE("Line No.",LibraryUtility.GetNewLineNo(RecRef,ServiceContractLine.FIELDNO("Line No.")));
+      ServiceContractLine.VALIDATE("Customer No.",ServiceContractHeader."Customer No.");
+      ServiceContractLine.VALIDATE("Service Item No.",ServiceItemNo);
+      ServiceContractLine.INSERT(TRUE);
+    END;
+
+    PROCEDURE CreateServiceContractTemplate@14(VAR ServiceContractTemplate@1000 : Record 5968;DefaultServicePeriod@1001 : DateFormula);
+    VAR
+      ServiceContractAccountGroup@1002 : Record 5973;
+    BEGIN
+      FindContractAccountGroup(ServiceContractAccountGroup);
+
+      ServiceContractTemplate.INIT;
+      ServiceContractTemplate.VALIDATE("Default Service Period",DefaultServicePeriod);
+      // Service Contract Account Group is required for signing Contracts.
+      ServiceContractTemplate.VALIDATE("Serv. Contract Acc. Gr. Code",ServiceContractAccountGroup.Code);
+      ServiceContractTemplate.INSERT(TRUE);
+    END;
+
+    PROCEDURE CreateServiceHeader@4(VAR ServiceHeader@1000 : Record 5900;DocumentType@1001 : Option;CustomerNo@1002 : Code[20]);
+    BEGIN
+      ServiceHeader.INIT;
+      ServiceHeader.VALIDATE("Document Type",DocumentType);
+      ServiceHeader.INSERT(TRUE);
+      ServiceHeader.VALIDATE("Customer No.",CustomerNo);
+
+      // Required for NA
+      ClearTaxAreaCode(ServiceHeader);
+      // End
+
+      ServiceHeader.MODIFY(TRUE);
+    END;
+
+    PROCEDURE CreateServiceItem@2(VAR ServiceItem@1000 : Record 5940;CustomerNo@1001 : Code[20]);
+    BEGIN
+      ServiceItem.INIT;
+      ServiceItem.INSERT(TRUE);
+      ServiceItem.VALIDATE("Customer No.",CustomerNo);
+      ServiceItem.VALIDATE(Description,ServiceItem."No.");  // Validating No. as Description because value is not important.
+      ServiceItem.MODIFY(TRUE);
+    END;
+
+    PROCEDURE CreateServiceItemGroup@9(VAR ServiceItemGroup@1000 : Record 5904);
+    BEGIN
+      ServiceItemGroup.INIT;
+      // Use the function GenerateRandomCode to get random and unique value for the Code field.
+      ServiceItemGroup.VALIDATE(Code,LibraryUtility.GenerateRandomCode(ServiceItemGroup.FIELDNO(Code),DATABASE::"Service Item Group"));
+      ServiceItemGroup.VALIDATE(Description,ServiceItemGroup.Code);  // Validating Code as Description because value is not important.
+      ServiceItemGroup.INSERT(TRUE);
+    END;
+
+    PROCEDURE CreateServiceItemLine@5(VAR ServiceItemLine@1000 : Record 5901;ServiceHeader@1002 : Record 5900;ServiceItemNo@1003 : Code[20]);
+    VAR
+      RecRef@1001 : RecordRef;
+    BEGIN
+      ServiceItemLine.INIT;
+      ServiceItemLine.VALIDATE("Document Type",ServiceHeader."Document Type");
+      ServiceItemLine.VALIDATE("Document No.",ServiceHeader."No.");
+      RecRef.GETTABLE(ServiceItemLine);
+      // Use the function GetLastLineNo to get the value of the Line No. field.
+      ServiceItemLine.VALIDATE("Line No.",LibraryUtility.GetNewLineNo(RecRef,ServiceItemLine.FIELDNO("Line No.")));
+      ServiceItemLine.INSERT(TRUE);
+      ServiceItemLine.VALIDATE("Service Item No.",ServiceItemNo);
+      ServiceItemLine.VALIDATE(
+        Description,FORMAT(ServiceItemLine."Document Type") + ServiceItemLine."Document No." + FORMAT(ServiceItemLine."Line No."));
+      ServiceItemLine.MODIFY(TRUE);
+    END;
+
+    PROCEDURE CreateServiceLine@3(VAR ServiceLine@1000 : Record 5902;ServiceHeader@1001 : Record 5900;Type@1003 : Option;No@1004 : Code[20]);
+    VAR
+      RecRef@1002 : RecordRef;
+    BEGIN
+      // Create Service Line.
+      ServiceLine.INIT;
+      ServiceLine.VALIDATE("Document Type",ServiceHeader."Document Type");
+      ServiceLine.VALIDATE("Document No.",ServiceHeader."No.");
+      RecRef.GETTABLE(ServiceLine);
+      // Use the function GetLastLineNo to get the value of the Line No. field.
+      ServiceLine.VALIDATE("Line No.",LibraryUtility.GetNewLineNo(RecRef,ServiceLine.FIELDNO("Line No.")));
+      ServiceLine.INSERT(TRUE);
+      ServiceLine.VALIDATE(Type,Type);
+      ServiceLine.VALIDATE("No.",No);
+      ServiceLine.MODIFY(TRUE);
+    END;
+
+    PROCEDURE FindCustomer@61(VAR Customer@1000 : Record 18);
+    BEGIN
+      // Filter Customer so that errors are not generated due to mandatory fields.
+      Customer.SETFILTER("Customer Posting Group",'<>''''');
+      Customer.SETFILTER("Gen. Bus. Posting Group",'<>''''');
+      Customer.SETRANGE(Blocked,Customer.Blocked::" ");
+
+      IF Customer.COUNT = 0 THEN
+        ERROR(STRSUBSTNO(NoRecordsInFilterError,Customer.TABLECAPTION));
+
+      Customer.NEXT(RANDOM(Customer.COUNT))
+    END;
+
+    PROCEDURE FindGLAccount@59(VAR GLAccount@1000 : Record 15);
+    BEGIN
+      // Filter G/L Account so that errors are not generated due to mandatory fields.
+      GLAccount.SETRANGE("Direct Posting",TRUE);
+      GLAccount.SETRANGE(Blocked,FALSE);
+      GLAccount.SETFILTER("Gen. Bus. Posting Group",'<>''''');
+      GLAccount.SETFILTER("Gen. Prod. Posting Group",'<>''''');
+
+      IF GLAccount.COUNT = 0 THEN
+        ERROR(STRSUBSTNO(NoRecordsInFilterError,GLAccount.TABLECAPTION));
+
+      GLAccount.NEXT(RANDOM(GLAccount.COUNT))
+    END;
+
+    PROCEDURE FindItem@60(VAR Item@1000 : Record 27);
+    BEGIN
+      // Filter Item so that errors are not generated due to mandatory fields or Item Tracking.
+      Item.SETFILTER("Inventory Posting Group",'<>''''');
+      Item.SETFILTER("Gen. Prod. Posting Group",'<>''''');
+      Item.SETRANGE("Item Tracking Code",'');
+      Item.SETRANGE(Blocked,FALSE);
+      Item.SETFILTER("Unit Price",'<>0');
+      Item.SETFILTER(Reserve,'<>%1',Item.Reserve::Always);
+
+      IF Item.COUNT = 0 THEN
+        ERROR(STRSUBSTNO(NoRecordsInFilterError,Item.TABLECAPTION));
+
+      Item.NEXT(RANDOM(Item.COUNT))
+    END;
+
+    PROCEDURE FindContractAccountGroup@24(VAR ServiceContractAccountGroup@1000 : Record 5973);
+    BEGIN
+      // Filter Service Contract Account Group so that errors are not generated due to mandatory fields.
+      ServiceContractAccountGroup.SETFILTER("Non-Prepaid Contract Acc.",'<>''''');
+      ServiceContractAccountGroup.SETFILTER("Prepaid Contract Acc.",'<>''''');
+
+      IF ServiceContractAccountGroup.COUNT = 0 THEN
+        ERROR(STRSUBSTNO(NoRecordsInFilterError,ServiceContractAccountGroup.TABLECAPTION));
+
+      ServiceContractAccountGroup.NEXT(RANDOM(ServiceContractAccountGroup.COUNT))
+    END;
+
+    PROCEDURE PostServiceOrder@8(VAR ServiceHeader@1000 : Record 5900;Ship@1002 : Boolean;Consume@1003 : Boolean;Invoice@1004 : Boolean);
+    VAR
+      TempServiceLine@1001 : TEMPORARY Record 5902;
+      ServicePost@1005 : Codeunit 5980;
+    BEGIN
+      ServicePost.PostWithLines(ServiceHeader,TempServiceLine,Ship,Consume,Invoice);
+    END;
+
+    PROCEDURE SetupServiceMgtNoSeries@12();
+    VAR
+      ServiceMgtSetup@1000 : Record 5911;
+      LibrarySCM@1002 : Codeunit 50210;
+    BEGIN
+      // Setup Service Management.
+      ServiceMgtSetup.GET;
+
+      // Use GetNoSeriesCode to get No. Series code.
+      IF ServiceMgtSetup."Service Item Nos." = '' THEN
+        ServiceMgtSetup.VALIDATE("Service Item Nos.",LibraryUtility.GetNoSeriesCode);
+      IF ServiceMgtSetup."Service Order Nos." = '' THEN
+        ServiceMgtSetup.VALIDATE("Service Order Nos.",LibraryUtility.GetNoSeriesCode);
+      IF ServiceMgtSetup."Posted Service Shipment Nos." = '' THEN
+        ServiceMgtSetup.VALIDATE("Posted Service Shipment Nos.",LibraryUtility.GetNoSeriesCode);
+      IF ServiceMgtSetup."Posted Service Invoice Nos." = '' THEN
+        ServiceMgtSetup.VALIDATE("Posted Service Invoice Nos.",LibraryUtility.GetNoSeriesCode);
+      IF ServiceMgtSetup."Troubleshooting Nos." = '' THEN
+        ServiceMgtSetup.VALIDATE("Troubleshooting Nos.",LibraryUtility.GetNoSeriesCode);
+      IF ServiceMgtSetup."Service Contract Nos." = '' THEN
+        ServiceMgtSetup.VALIDATE("Service Contract Nos.",LibraryUtility.GetNoSeriesCode);
+      IF ServiceMgtSetup."Service Quote Nos." = '' THEN
+        ServiceMgtSetup.VALIDATE("Service Quote Nos.",LibraryUtility.GetNoSeriesCode);
+      IF ServiceMgtSetup."Contract Invoice Nos." = '' THEN
+        ServiceMgtSetup.VALIDATE("Contract Invoice Nos.",LibraryUtility.GetNoSeriesCode);
+      IF ServiceMgtSetup."Contract Credit Memo Nos." = '' THEN
+        ServiceMgtSetup.VALIDATE("Contract Credit Memo Nos.",LibraryUtility.GetNoSeriesCode);
+      IF ServiceMgtSetup."Prepaid Posting Document Nos." = '' THEN
+        ServiceMgtSetup.VALIDATE("Prepaid Posting Document Nos.",LibraryUtility.GetNoSeriesCode);
+      IF ServiceMgtSetup."Contract Credit Memo Nos." = '' THEN
+        ServiceMgtSetup.VALIDATE("Contract Credit Memo Nos.",LibraryUtility.GetNoSeriesCode);
+      IF ServiceMgtSetup."Posted Service Shipment Nos." = '' THEN
+        ServiceMgtSetup.VALIDATE("Posted Service Shipment Nos.",LibraryUtility.GetNoSeriesCode);
+      IF ServiceMgtSetup."Contract Template Nos." = '' THEN
+        ServiceMgtSetup.VALIDATE("Contract Template Nos.",LibraryUtility.GetNoSeriesCode);
+      IF ServiceMgtSetup."Loaner Nos." = '' THEN
+        ServiceMgtSetup.VALIDATE("Loaner Nos.",LibraryUtility.GetNoSeriesCode);
+      ServiceMgtSetup.VALIDATE("Contract Serv. Ord.  Max. Days",365);  // Using Default 365 Days.
+
+      ServiceMgtSetup.MODIFY(TRUE);
+
+      LibrarySCM.SetCreditWarningsToNoWarnings;
+    END;
+
+    PROCEDURE ClearTaxAreaCode@1102601006(VAR ServiceHeader@1102601000 : Record 5900);
+    VAR
+      RecordRef@1102601001 : RecordRef;
+    BEGIN
+      RecordRef.GETTABLE(ServiceHeader);
+      LibraryUtility.ValidateField(RecordRef,'Tax Area Code','');
+      RecordRef.SETTABLE(ServiceHeader)
+    END;
+
+    BEGIN
+    {
+      Contains all utility functions related to Service.
+    }
+    END.
+  }
+}
+

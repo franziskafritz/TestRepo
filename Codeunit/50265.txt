@@ -1,0 +1,282 @@
+OBJECT Codeunit 50265 Sales Batch Post Scanning
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.11.14;
+    Time=16:28:58;
+    Modified=Yes;
+    Version List=HME1391,T0082;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=BEGIN
+            FPCGeneralSetup.GET;
+            BatchSalesPostSetup.GET;
+
+            ScanSalesOrders;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      SalesHeader@1000000007 : Record 36;
+      BatchSalesPostSetup@1000000000 : Record 50229;
+      TextHME001@1000000001 : TextConst 'ENU=EDDM + %1';
+      TextHME002@1000000002 : TextConst 'ENU=ADD';
+      TextHME003@1000000004 : TextConst 'ENU=MODM + %1';
+      TextHME004@1000000005 : TextConst 'ENU=OD + %1';
+      FPCGeneralSetup@1000000003 : Record 50055;
+      PurchasingTemp@1000000008 : TEMPORARY Record 5721;
+      PurchasingTempFilled@1000000009 : Boolean;
+
+    PROCEDURE ScanSalesOrders@1000000000();
+    VAR
+      SalesLineL@1000000001 : Record 37;
+      PurchasingL@1000000007 : Record 5721;
+      SalesBatchPostHeaderL@1000000004 : Record 50225;
+      PostingDateL@1000000003 : Date;
+      ConditionL@1000000002 : Code[10];
+      Condition2L@1000000000 : Code[10];
+      TypeL@1000000006 : 'Ship,Invoice';
+      TriggeredByL@1000000005 : ' ,Scanning Job,Parcel Status,ADD Filled';
+      CapturingServicesL@1000000008 : Codeunit 50089;
+    BEGIN
+      IF FPCGeneralSetup."Drop Shipment without Label" <> '' THEN BEGIN
+        IF NOT PurchasingTempFilled THEN BEGIN
+          PurchasingL.SETRANGE("Sales Tracking Code",FPCGeneralSetup."Drop Shipment without Label");
+          IF PurchasingL.FINDSET(FALSE,FALSE) THEN BEGIN
+            REPEAT
+              PurchasingTemp.COPY(PurchasingL);
+              PurchasingTemp.INSERT;
+            UNTIL PurchasingL.NEXT = 0;
+          END;
+          PurchasingTempFilled := TRUE;
+        END;
+      END;
+
+      SalesHeader.SETCURRENTKEY("Document Type","No.");
+      SalesHeader.SETRANGE("Document Type", SalesHeader."Document Type"::Order);
+      SalesHeader.SETRANGE("Payment received", TRUE);
+      IF SalesHeader.FIND('-') THEN BEGIN
+        REPEAT
+          SalesLineL.SETCURRENTKEY("Document Type","Document No.",Type,"Outstanding Quantity");
+          SalesLineL.SETRANGE("Document Type", SalesLineL."Document Type"::Order);
+          SalesLineL.SETRANGE("Document No.", SalesHeader."No.");
+          SalesLineL.SETRANGE(Type, SalesLineL.Type::Item);
+          IF SalesLineL.FINDSET(FALSE,FALSE) THEN
+            REPEAT
+              CLEAR(PostingDateL);
+              CLEAR(ConditionL);
+              CLEAR(Condition2L);
+              //check for shipment
+              IF (SalesLineL."Outstanding Quantity" > 0) AND (SalesLineL.Quantity <> 0)THEN
+                IF IsDeliveryPossible(SalesLineL, PostingDateL, ConditionL) THEN
+                  SalesBatchPostHeaderL.InsertNewRecord(SalesLineL,
+                                                        PostingDateL,
+                                                        TypeL::Ship,
+                                                        TriggeredByL::"Scanning Job",
+                                                        ConditionL,
+                  //T0082 25.11.14 tec-sh    +++++++++++++++++++++++++++++++++++
+                  //                                      Condition2L);
+                                                        Condition2L,FALSE);
+                  //T0082 25.11.14 tec-sh    -----------------------------------
+              CLEAR(PostingDateL);
+              CLEAR(ConditionL);
+              CLEAR(Condition2L);
+              //check for invoice
+              IF SalesLineL."Quantity Invoiced" < SalesLineL."Quantity Shipped" THEN
+                IF IsInvoicePossible(SalesLineL, PostingDateL, ConditionL) THEN
+                  SalesBatchPostHeaderL.InsertNewRecord(SalesLineL,
+                                                        PostingDateL,
+                                                        TypeL::Invoice,
+                                                        TriggeredByL::"Scanning Job",
+                                                        ConditionL,
+                  //T0082 25.11.14 tec-sh    +++++++++++++++++++++++++++++++++++
+                  //                                      Condition2L);
+                                                        Condition2L,FALSE);
+                  //T0082 25.11.14 tec-sh    -----------------------------------
+            UNTIL SalesLineL.NEXT = 0;
+            //H0677  nst  18.09.14  +++++++++++++++++++++++++
+            IF NOT SalesHeader."Completely Captured" THEN
+              IF CCCapturingPossible(SalesHeader."Payment Method Code",SalesHeader."Payment received at",SalesHeader."No.") THEN
+                CapturingServicesL.CreateCapturingEntries(SalesHeader."No.");
+            //H0677  nst  18.09.14  -------------------------
+        UNTIL SalesHeader.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE IsDeliveryPossible@1000000004(SalesLineV@1000000000 : Record 37;VAR PostingDateR@1000000005 : Date;VAR ConditionR@1000000004 : Code[10]) : Boolean;
+    BEGIN
+      IF FPCGeneralSetup."Drop Shipment without Label" <> '' THEN BEGIN
+        PurchasingTemp.SETRANGE(Code,SalesLineV."Purchasing Code");
+        IF NOT PurchasingTemp.ISEMPTY THEN
+          IF CheckDropShipmentWithoutLabel(SalesLineV, PostingDateR, ConditionR, BatchSalesPostSetup."Selfsender Delivery Buffer") THEN
+            EXIT(TRUE);
+      END;
+
+      IF CheckDates(SalesLineV, PostingDateR, ConditionR) THEN
+        EXIT(TRUE);
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE IsInvoicePossible@1000000010(SalesLineV@1000000002 : Record 37;VAR PostingDateR@1000000001 : Date;VAR ConditionR@1000000000 : Code[10]) : Boolean;
+    VAR
+      CalcDatesL@1000000004 : Codeunit 50115;
+      BufferedEDDML@1000000003 : Date;
+    BEGIN
+      IF SalesLineV."Actual Delivery Date" <> 0DT THEN BEGIN
+        PostingDateR := DT2DATE(SalesLineV."Actual Delivery Date");
+        ConditionR := TextHME002;
+        EXIT(TRUE);
+      END;
+
+      IF FPCGeneralSetup."Drop Shipment without Label" <> '' THEN BEGIN
+        PurchasingTemp.SETRANGE(Code,SalesLineV."Purchasing Code");
+        IF NOT PurchasingTemp.ISEMPTY THEN
+          IF CheckDropShipmentWithoutLabel(SalesLineV, PostingDateR, ConditionR, BatchSalesPostSetup."Selfsender Invoicing Buffer") THEN
+            EXIT(TRUE);
+      END;
+
+      IF SalesLineV."Expected Delivery Date" <> 0D THEN BEGIN
+        BufferedEDDML := CalcDatesL.GetNetDeliveryDate(SalesLineV."Expected Delivery Date",
+                                                       CALCDATE(BatchSalesPostSetup."EDDM Invoicing Buffer",010101D) - 010101D,
+                                                       'BC');
+        IF BufferedEDDML <= WORKDATE THEN BEGIN
+          PostingDateR := SalesLineV."Expected Delivery Date";
+          ConditionR := COPYSTR(STRSUBSTNO(TextHME001,BatchSalesPostSetup."EDDM Invoicing Buffer"),1,MAXSTRLEN(ConditionR));
+          EXIT(TRUE);
+        END;
+      END;
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE CheckDropShipmentWithoutLabel@1000000001(SalesLineV@1000000000 : Record 37;VAR PostingDateR@1000000001 : Date;VAR ConditionR@1000000002 : Code[10];Buffer@1000000004 : DateFormula) : Boolean;
+    VAR
+      CalcDatesL@1000000005 : Codeunit 50115;
+      BufferedEDDML@1000000003 : Date;
+    BEGIN
+      IF SalesLineV."Expected Delivery Date" <> 0D THEN BEGIN
+        IF NOT VendorIsDESADV(SalesLineV."Vendor No.") THEN BEGIN
+          BufferedEDDML := CalcDatesL.GetNetDeliveryDate(SalesLineV."Expected Delivery Date",
+                                                         CALCDATE(Buffer,010101D) - 010101D,
+                                                         'BC');
+          IF BufferedEDDML <= WORKDATE THEN BEGIN
+            PostingDateR := SalesLineV."Expected Delivery Date";
+            ConditionR := COPYSTR(STRSUBSTNO(TextHME001,Buffer),1,MAXSTRLEN(ConditionR));
+            EXIT(TRUE);
+          END;
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE CheckDates@1000000005(SalesLineV@1000000000 : Record 37;VAR PostingDateR@1000000002 : Date;VAR ConditionR@1000000001 : Code[10]) : Boolean;
+    BEGIN
+      IF SalesLineV."Actual Delivery Date" <> 0DT THEN BEGIN
+        IF DT2DATE(SalesLineV."Actual Delivery Date") <= WORKDATE THEN BEGIN
+          PostingDateR := DT2DATE(SalesLineV."Actual Delivery Date");
+          ConditionR := TextHME002;
+          EXIT(TRUE);
+        END ELSE
+          EXIT(FALSE);
+      END;
+
+      IF SalesLineV."Expected Delivery Date" <> 0D THEN BEGIN
+        IF CALCDATE(BatchSalesPostSetup."EDDM Delivery Buffer", SalesLineV."Expected Delivery Date") <= WORKDATE THEN BEGIN
+          PostingDateR := SalesLineV."Expected Delivery Date";
+          ConditionR := COPYSTR(STRSUBSTNO(TextHME001, BatchSalesPostSetup."EDDM Delivery Buffer"),1,MAXSTRLEN(ConditionR));
+          EXIT(TRUE);
+        END ELSE
+          EXIT(FALSE);
+      END;
+
+      IF SalesLineV."Max. Order Date - Master" <> 0D THEN BEGIN
+        IF CALCDATE(BatchSalesPostSetup."MODM Delivery Buffer", SalesLineV."Max. Order Date - Master") <= WORKDATE THEN BEGIN
+          PostingDateR := SalesLineV."Max. Order Date - Master";
+          ConditionR := COPYSTR(STRSUBSTNO(TextHME003, BatchSalesPostSetup."MODM Delivery Buffer"),1,MAXSTRLEN(ConditionR));
+          EXIT(TRUE);
+        END ELSE
+          EXIT(FALSE);
+      END;
+
+      IF SalesHeader."Order Date" <> 0D THEN BEGIN
+        IF CALCDATE(BatchSalesPostSetup."Order Date Delivery Buffer", SalesHeader."Order Date") <= WORKDATE THEN BEGIN
+          PostingDateR := SalesHeader."Order Date" + BatchSalesPostSetup."Days Order Date Post Delivery";
+          ConditionR := COPYSTR(STRSUBSTNO(TextHME004, BatchSalesPostSetup."Order Date Delivery Buffer"),1,MAXSTRLEN(ConditionR));
+          EXIT(TRUE);
+        END ELSE
+          EXIT(FALSE);
+      END;
+    END;
+
+    PROCEDURE VendorIsDESADV@1000000003(VendorCodeV@1000000000 : Code[20]) : Boolean;
+    VAR
+      VendorL@1000000001 : Record 23;
+      EDIPartnerDocumentTypeL@1000000003 : Record 82852;
+    BEGIN
+      IF VendorL.GET(VendorCodeV) THEN BEGIN
+        IF VendorL."EDI ORDERS Partner" <> '' THEN BEGIN
+          EDIPartnerDocumentTypeL.SETCURRENTKEY("Partner Code","Document Direction","Document Type");
+          EDIPartnerDocumentTypeL.SETRANGE("Partner Code",VendorL."EDI ORDERS Partner");
+          EDIPartnerDocumentTypeL.SETRANGE("Document Type",'DESADV');
+          EDIPartnerDocumentTypeL.SETRANGE(Active,TRUE);
+          IF NOT EDIPartnerDocumentTypeL.ISEMPTY THEN
+            EXIT(TRUE);
+        END;
+      END;
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE CCCapturingPossible@1000000002(PaymentMethodCodeV@1000000000 : Code[20];OrderDateV@1000000001 : Date;SalesOrderNoV@1000000002 : Code[20]) : Boolean;
+    VAR
+      "***HME************************"@1000000003 : Integer;
+      PmtMethodL@1000000004 : Record 289;
+    BEGIN
+      //H0677  nst  18.09.14  +++++++++++++++++++++++++
+      IF PmtMethodL.GET(PaymentMethodCodeV) THEN
+        IF PmtMethodL."To capture" THEN
+          IF OrderDateV <= CALCDATE('-' + FORMAT(PmtMethodL."Days before capturing"),WORKDATE) THEN
+            EXIT(TRUE)
+          ELSE
+            EXIT(FALSE);
+      //H0677  nst  18.09.14  -------------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+
+      H0976       16.04.14 MBY       Consolidated Shipment and Invoice Posting - Scanning Job
+      H1391       21.07.14 MBY       Invoicing: Include buffer on EDDM-invoicing to wait for ADD
+      H0677       18.09.14 nst       CC Capturing: If possible capture SO Amount
+                                                   New function: CCCapturingPossible
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation Tectura & Home24 NAV Team  |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+
+      T0082       25.11.14 tec-sh     added parameter in function T50225.InsertNewRecord
+                                      "ManualPostingV"  (Boolean to mark manual postings)
+    }
+    END.
+  }
+}
+

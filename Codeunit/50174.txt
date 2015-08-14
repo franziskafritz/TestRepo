@@ -1,0 +1,149 @@
+OBJECT Codeunit 50174 CleanUp and Post Return Order
+{
+  OBJECT-PROPERTIES
+  {
+    Date=23.10.14;
+    Time=11:13:27;
+    Modified=Yes;
+    Version List=T0049,HME1835;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+            IF TypeG = 0 THEN
+              EXIT;
+
+            CASE TypeG OF
+              1 : CallVariousSalesHeader(SalesHeaderG);
+              2 : CallFinishedSalesHeader(SalesHeaderG);
+                ELSE
+                  ERROR('Invalid Option');
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      TypeG@1000000000 : Integer;
+      SalesHeaderG@1000000001 : Record 36;
+      SIISetup@1000000004 : Record 50140;
+      dlg@1000000003 : Dialog;
+      recordsChanged@1000000002 : Integer;
+
+    PROCEDURE SetParam@1000000000(TypeV@1000000000 : Integer;VAR SalesHeaderV@1000000001 : Record 36);
+    BEGIN
+      TypeG := TypeV;
+      SalesHeaderG := SalesHeaderV;
+    END;
+
+    PROCEDURE CallVariousSalesHeader@1000000002(VAR SalesHeaderV@1000000003 : Record 36);
+    VAR
+      SalesLineL@1000000002 : Record 37;
+      FillSalesDatesFunctions@1000000001 : Codeunit 50241;
+      TimeoutDate@1000000000 : Date;
+      ItemChargeAssgntSales@1000000004 : Record 5809;
+    BEGIN
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type", SalesHeaderV."Document Type");
+      SalesLineL.SETRANGE("Document No.", SalesHeaderV."No.");
+      SalesLineL.SETFILTER(
+        "Status Return Order",
+        '<>%1&<>%2',
+        SalesLineL."Status Return Order"::finished,
+        SalesLineL."Status Return Order"::"Label sent");
+
+      IF SalesLineL.ISEMPTY THEN BEGIN
+        // cancel "label sent"-lines, because it is assumed, that the customer will not send the parcel after tis timeout
+
+        // check date of last modification
+        IF SalesHeaderV."Last Date Modified" = 0D THEN BEGIN
+          SalesHeaderV."Last Date Modified" := TODAY;
+          SalesHeaderV.MODIFY;
+        END;
+
+        //H1835 18.11.14 DMA ++++++++++++++++++++++++++++++++
+        SIISetup.GET;
+        //H1835 18.11.14 DMA --------------------------------
+
+        TimeoutDate := CALCDATE(SIISetup."Waiting Duration for Ret.Ord.", SalesHeaderV."Last Date Modified");
+
+        //T0043 17.06.14 tec-cs   +++++++++++++++++++++++++
+        //IF TODAY > TimeoutDate THEN BEGIN
+        IF TODAY >= TimeoutDate THEN BEGIN
+        //T0043 17.06.14 tec-cs   -------------------------
+
+          SalesLineL.SETRANGE("Status Return Order", SalesLineL."Status Return Order"::"Label sent");
+          IF SalesLineL.FINDSET(TRUE) THEN BEGIN
+            REPEAT
+              //T0043 17.06.14 tec-cs   +++++++++++++++++++++++++
+              SalesLineL.SuspendStatusCheck(TRUE);
+              //T0043 17.06.14 tec-cs   -------------------------
+              // >> H1688
+              ItemChargeAssgntSales.RESET;
+              ItemChargeAssgntSales.SETRANGE("Document Type", SalesLineL."Document Type");
+              ItemChargeAssgntSales.SETRANGE("Document No.", SalesLineL."Document No.");
+              ItemChargeAssgntSales.SETRANGE("Document Line No.", SalesLineL."Line No.");
+              ItemChargeAssgntSales.DELETEALL;
+              // << H1688
+              SalesLineL.VALIDATE(Quantity, 0);
+              SalesLineL.MODIFY;
+            UNTIL SalesLineL.NEXT = 0;
+          END;
+
+          // the following line/validate will initiate the batch-posting
+          SalesHeaderV.SetStatusReturnOrder(SalesHeaderV."Status Return Order"::finished, FALSE); // no user confirmation
+          // VALIDATE("Status Return Order", "Status Return Order"::finished); // with user confirmation
+
+          //T0046 26.08.14 tec-cs   +++++++++++++++++++++++++
+          recordsChanged += 1;
+          //T0046 26.08.14 tec-cs   -------------------------
+
+          SalesHeaderV.MODIFY;
+        END;
+      END;
+    END;
+
+    PROCEDURE CallFinishedSalesHeader@1000000003(VAR SalesHeaderV@1000000000 : Record 36);
+    VAR
+      BatchSalesPostHeaderL@1000000003 : Record 50225;
+      BatchSalesPostLineL@1000000002 : Record 50226;
+      SalesLineL@1000000001 : Record 37;
+    BEGIN
+      // initiate batch posting
+      SalesHeaderV.InitiateBatchPosting(
+        TODAY, // PostingDate
+        BatchSalesPostHeaderL."Posting Type"::"Receive+Invoice", // PostingType
+        BatchSalesPostLineL."Triggered By"::"Finish Return Order", // Triggered By
+        '', // Condition
+        ''); // Condition2
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation Tectura & Home24 NAV Team  |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      T0049       04.09.14  tec-sf    Created
+      H1688       23.10.14  tec-cs    delete ItemChargeAssgntSales-recs, if salesline is reset to 0 an finished
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+      H1835       18.11.14  DMA       BUG: Fix Report 50174 CleanUp and Post Return Orders
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,971 @@
+OBJECT Codeunit 50149 Availability Check
+{
+  OBJECT-PROPERTIES
+  {
+    Date=01.07.15;
+    Time=12:34:02;
+    Modified=Yes;
+    Version List=T0032,HME1636;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+            CASE RunTypeG OF
+              RunTypeG::SendRequest :
+                BEGIN
+                  SendRequest(TempBlobRequestG, TempBlobResponseG);
+                END;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text001@1000000002 : TextConst 'ENU=Authorization User can''t be blank.';
+      Text002@1000000001 : TextConst 'ENU=Authorization User Password can''t be blank.';
+      Text003@1000000000 : TextConst 'ENU=Process cancelled';
+      Text010@1106900000 : TextConst 'ENU=XML is malformed and can not be processed.';
+      Text011@1000000003 : TextConst 'ENU=Mandatory element ''%1'' was not found';
+      Text012@1000000004 : TextConst 'ENU=Invalid value ''%1'' in element ''%2''';
+      Text013@1000000014 : TextConst 'ENU=Couldn''t connect to the Webshop. Please inform your system administrator.';
+      Text100@1000000005 : TextConst 'ENU=None of the checked lines are deliverable.';
+      Text101@1000000006 : TextConst 'ENU=Only some of the lines are deliverable.';
+      Text102@1000000007 : TextConst 'ENU=All lines deliverable. Do you want to update the lines?';
+      HideDialog@1100409000 : Boolean;
+      Text103@1100409001 : TextConst 'ENU=If you proceed the current sales lines will be updated with the retrieved data. Continue?';
+      Text104@1100409002 : TextConst 'ENU=Not all lines could be updated succesfully.';
+      Text105@1100409003 : TextConst 'ENU=All lines could be updated succesfully.';
+      Text998@1000000009 : TextConst 'ENU=C:\\temp\\debug-ws';
+      Text999@1000000008 : TextConst 'ENU=C:\\temp\\';
+      DebugG@1000000010 : Boolean;
+      RunTypeG@1000000011 : 'SendRequest';
+      TempBlobRequestG@1000000013 : TEMPORARY Record 99008535;
+      TempBlobResponseG@1000000012 : TEMPORARY Record 99008535;
+      "**** HME *********************"@1000000017 : Integer;
+      UseStockLocationSetup@1000000016 : Boolean;
+      SkipChannelChange@1000000015 : Boolean;
+
+    PROCEDURE GetAvailabilityForOrderWInterf@1000000000(VAR SalesHeader@1000000000 : Record 36);
+    VAR
+      FrmFPCInterfacesSetup@1000000002 : Form 50018;
+      FPCInterfaceSetup@1000000001 : Record 50014;
+      TempStockLocation@1000000003 : TEMPORARY Record 80017;
+    BEGIN
+      // Asks the User which Interface will be used
+      FrmFPCInterfacesSetup.LOOKUPMODE(TRUE);
+      IF FrmFPCInterfacesSetup.RUNMODAL <> ACTION::LookupOK THEN
+        ERROR(Text003);
+
+      FrmFPCInterfacesSetup.GETRECORD(FPCInterfaceSetup);
+
+      GetStockLocations(FPCInterfaceSetup.Code, TempStockLocation);
+
+      GetAvailabilityForOrder(SalesHeader, TempStockLocation);
+    END;
+
+    PROCEDURE GetAvailabilityForOrderWOInter@1000000004(VAR SalesHeader@1000000001 : Record 36);
+    VAR
+      TempStockLocation@1000000000 : TEMPORARY Record 80017;
+    BEGIN
+      GetAvailabilityForOrder(SalesHeader, TempStockLocation);
+    END;
+
+    PROCEDURE GetAvailabilityForOrder@1000000001(VAR SalesHeader@1000000000 : Record 36;VAR TempStockLocation@1000000002 : TEMPORARY Record 80017);
+    VAR
+      TempSalesLine@1000000001 : TEMPORARY Record 37;
+      TempSalesLineResponse@1000000004 : TEMPORARY Record 37;
+      TempBlobRequest@1000000003 : TEMPORARY Record 99008535;
+      TempBlobResponse@1106900001 : TEMPORARY Record 99008535;
+      AllDeliverable@1100409000 : Boolean;
+      FPCGeneralSetup@1000000005 : Record 50055;
+      SalesLineL@1000000006 : Record 37;
+    BEGIN
+      // First group the sales lines (for correct quantities)
+      GroupSalesLines(SalesHeader, TempSalesLine);
+
+      // Set everything to "open" first and commit. If the webrequest throws an error, the Status should be "open"
+      // in all other cases the status should be "requested"
+      SalesHeader."Status Return Order" := SalesHeader."Status Return Order"::open;
+      SalesHeader.MODIFY;
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type", SalesHeader."Document Type");
+      SalesLineL.SETRANGE("Document No.", SalesHeader."No.");
+      SalesLineL.SETRANGE(Type, SalesLineL.Type::Item);
+      IF SalesLineL.FINDSET THEN BEGIN
+        REPEAT
+          SalesLineL."Status Return Order" := SalesLineL."Status Return Order"::open;
+          SalesLineL.MODIFY;
+        UNTIL SalesLineL.NEXT = 0;
+      END;
+      COMMIT;
+
+      GetAvailability(SalesHeader, TempSalesLine, TempStockLocation, FALSE);
+    END;
+
+    PROCEDURE GetAvailabilityForLine@1000000008(VAR SalesLine@1000000001 : Record 37);
+    VAR
+      SalesHeaderL@1000000000 : Record 36;
+      TempSalesLine@1000000002 : TEMPORARY Record 37;
+      TempStockLocation@1000000003 : TEMPORARY Record 80017;
+    BEGIN
+      // Only get availability for 1 line
+      TempSalesLine.RESET;
+      TempSalesLine.DELETEALL;
+
+      TempSalesLine := SalesLine;
+      TempSalesLine.INSERT;
+
+      SalesHeaderL.GET(SalesLine."Document Type", SalesLine."Document No.");
+
+      GetAvailability(SalesHeaderL, TempSalesLine, TempStockLocation, TRUE);
+    END;
+
+    LOCAL PROCEDURE GetAvailability@1000000010(VAR SalesHeader@1000000000 : Record 36;VAR TempSalesLine@1000000006 : TEMPORARY Record 37;VAR TempStockLocation@1000000002 : TEMPORARY Record 80017;LineOnly@1000000001 : Boolean);
+    VAR
+      TempSalesLineResponse@1000000004 : TEMPORARY Record 37;
+      TempBlobRequest@1000000003 : TEMPORARY Record 99008535;
+      TempBlobResponse@1106900001 : TEMPORARY Record 99008535;
+      AllDeliverable@1100409000 : Boolean;
+      FPCGeneralSetup@1000000005 : Record 50055;
+      CheckDays@1000000007 : Integer;
+      FPCInterfaceSetup@1000000008 : Record 50014;
+      SalesLineL@1000000009 : Record 37;
+      AvailabilityCheck@1000000010 : Codeunit 50149;
+    BEGIN
+      IF NOT HideDialog THEN
+        HideDialog := NOT GUIALLOWED;
+
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Webservice Interface");
+
+      FPCInterfaceSetup.GET(FPCGeneralSetup."Webservice Interface");
+      FPCInterfaceSetup.TESTFIELD("WS Web Service Active");
+      DebugG := FPCInterfaceSetup."WS Debug";
+
+      // Prepare the XML-Request
+      CreateRequest(TempSalesLine, TempStockLocation, TempBlobRequest);
+
+      // Send the XML-Request and get the Response
+      AvailabilityCheck.SetParam(RunTypeG::SendRequest, TempBlobRequest, TempBlobResponse);
+      IF NOT AvailabilityCheck.RUN THEN BEGIN
+        IF NOT HideDialog THEN
+          MESSAGE(Text013);
+        EXIT;
+      END;
+      AvailabilityCheck.GetResponse(TempBlobResponse);
+      //SendRequest(TempBlobRequest, TempBlobResponse);
+
+      // Process the Response (TempSalesLineResponse contains the data from the response-XML)
+      // The following fields of TempSalesLineResponse are filled:
+      //
+      // TempSalesLine."No." = 'sku'
+      // TempSalesLine.Quantity = 'quantity'
+      // TempSalesLine.ID = 'appDomainId'
+      // TempSalesLine."Shipping Source" = 'stockLocationNumber'
+      // TempSalesLine."Transp. Type" = 'transportationType'
+      // TempSalesLine."Shipping Agent Code" = 'carrierCode'
+      // TempSalesLine."Delivery Days" = 'deliveryTime'
+      //
+      ProcessResponse(TempBlobResponse, TempSalesLineResponse);
+
+      // Remove lines that exceed "Max Delivery Time Change" >>
+      TempStockLocation.RESET;
+      IF TempStockLocation.COUNT <> 0 THEN
+        CheckDays := FPCGeneralSetup."Max Delivery Time Direct Chang"
+      ELSE
+        CheckDays := FPCGeneralSetup."Max Delivery Time Change";
+
+      IF CheckDays <> 0 THEN BEGIN
+        TempSalesLineResponse.RESET;
+        TempSalesLineResponse.SETFILTER("Delivery Days", '>%1', CheckDays);
+        IF NOT TempSalesLineResponse.ISEMPTY THEN
+          TempSalesLineResponse.DELETEALL;
+        TempSalesLineResponse.RESET;
+      END;
+      // << (excedding delivery check)
+
+      // If TempSalesLineResponse is empty, then none of the items are deliverable
+      //
+      TempSalesLineResponse.RESET;
+      IF TempSalesLineResponse.ISEMPTY THEN BEGIN
+        SalesLineL.RESET;
+        SalesLineL.SETRANGE("Document Type", SalesHeader."Document Type");
+        SalesLineL.SETRANGE("Document No.", SalesHeader."No.");
+        SalesLineL.SETRANGE(Type, SalesLineL.Type::Item);
+        SalesLineL.SETFILTER(Quantity, '>0');
+        IF SalesLineL.FINDSET THEN BEGIN
+          REPEAT
+            SalesLineL."Status Return Order" := SalesLineL."Status Return Order"::various;
+            SalesLineL.MODIFY;
+          UNTIL SalesLineL.NEXT = 0;
+        END;
+
+        SalesHeader."Status Return Order" := SalesHeader."Status Return Order"::various;
+        SalesHeader.MODIFY;
+        IF NOT HideDialog THEN
+          MESSAGE(Text100);
+        EXIT;
+      END;
+
+      IF NOT HideDialog THEN
+        IF NOT CONFIRM(Text103, TRUE) THEN
+          EXIT;
+
+      IF NOT IsEverythingDeliverable(TempSalesLine, TempSalesLineResponse) THEN
+        AllDeliverable := FALSE
+      ELSE
+        AllDeliverable := TRUE;
+
+      // Updates the Sales Lines and calls GetPurchCode in "Create Order Mgt."
+      UpdateLines(SalesHeader, TempSalesLineResponse);
+
+      // Update the Header only if all lines were processed
+      IF NOT LineOnly THEN BEGIN
+        IF AllDeliverable THEN
+          SalesHeader."Status Return Order" := SalesHeader."Status Return Order"::requested
+        ELSE
+          SalesHeader."Status Return Order" := SalesHeader."Status Return Order"::various;
+        SalesHeader.MODIFY;
+      END;
+
+      IF NOT HideDialog THEN BEGIN
+        IF AllDeliverable THEN
+          MESSAGE(Text105)
+        ELSE
+          MESSAGE(Text104);
+      END;
+    END;
+
+    LOCAL PROCEDURE CreateRequest@1000000002(VAR TempSalesLine@1000000010 : TEMPORARY Record 37;VAR TempStockLocation@1000000011 : TEMPORARY Record 80017;VAR TempBlobRequest@1000000012 : TEMPORARY Record 99008535);
+    VAR
+      DOMDocument@1000000004 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v6.0'.DOMDocument";
+      xmlProcessingInst@1000000003 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";
+      DOMNode@1000000002 : ARRAY [100] OF Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";
+      XMLDOMManagement@1000000001 : Codeunit 6224;
+      OutStream@1000000000 : OutStream;
+      SIIXMLServices@1000000005 : Codeunit 50122;
+      XmlFile@1000000006 : File;
+      lTestFilename@1000000007 : Text[1024];
+      SalesLine@1000000009 : Record 37;
+    BEGIN
+      // The generated XML looks like this
+      // <?xml version="1.0" encoding="UTF-8"?>
+      // <cartRequest>
+      //   <filters>
+      //     <filterItem>
+      //       <sku>M-1034-02-230-10045</sku>
+      //       <quantity>1</quantity>
+      //       <appDomainId>1</appDomainId>
+      //       <stockLocationNumbers>
+      //         <stockLocationNumber>150</stockLocationNumber>
+      //         <stockLocationNumber>200</stockLocationNumber>
+      //       </stockLocationNumbers>
+      //     </filterItem>
+      //   </filters>
+      // </cartRequest>
+
+      CREATE(DOMDocument);
+      SIIXMLServices.SetNormalCase;
+      xmlProcessingInst := DOMDocument.createProcessingInstruction('xml','version="1.0" encoding="UTF-8"');
+      DOMNode[1] := DOMDocument.appendChild(xmlProcessingInst);
+      DOMNode[1] := DOMDocument.createElement('cartRequest');
+      DOMNode[1] := DOMDocument.appendChild(DOMNode[1]);
+
+      SIIXMLServices.AddElement(DOMNode[1], 'filters','','',DOMNode[2]);
+
+      IF TempSalesLine.FINDSET THEN BEGIN
+        REPEAT
+          TempSalesLine.CALCFIELDS("Website No.");
+          SIIXMLServices.AddElement(DOMNode[2], 'filterItem','','',DOMNode[3]);
+          SIIXMLServices.AddElement(DOMNode[3], 'sku',TempSalesLine."No.",'',DOMNode[4]);
+          SIIXMLServices.AddElement(DOMNode[3], 'quantity',FORMAT(TempSalesLine.Quantity),'',DOMNode[5]);
+          SIIXMLServices.AddElement(DOMNode[3], 'appDomainId',FORMAT(TempSalesLine."Website No."),'',DOMNode[6]);
+          IF TempStockLocation.FINDSET THEN BEGIN
+            SIIXMLServices.AddElement(DOMNode[3], 'stockLocationNumbers','','',DOMNode[4]);
+            REPEAT
+              SIIXMLServices.AddElement(DOMNode[4], 'stockLocationNumber',TempStockLocation."Stock Location",'',DOMNode[5]);
+            UNTIL TempStockLocation.NEXT = 0;
+          END;
+        UNTIL TempSalesLine.NEXT = 0;
+      END;
+
+      TempBlobRequest.INSERT;
+      TempBlobRequest.Blob.CREATEOUTSTREAM(OutStream);
+      DOMDocument.save(OutStream);
+      TempBlobRequest.MODIFY;
+
+      SaveBlobAsFile('Request.xml', TempBlobRequest); // for debugging purpose (saves blob to C:\temp\)
+    END;
+
+    LOCAL PROCEDURE SendRequest@1000000006(VAR TempBlobRequest@1000000001 : TEMPORARY Record 99008535;VAR TempBlobResponse@1106900000 : TEMPORARY Record 99008535) : Boolean;
+    VAR
+      SoapWinHttpConnector@1000000005 : Automation "{46BF17C2-9257-11D5-87EA-00B0D0BE6479} 3.0:{0AF40C55-9257-11D5-87EA-00B0D0BE6479}:'Microsoft Soap WinHttp Connector Type Library (v3.0)'.WinHttpConnector30";
+      SoapSerializer@1000000002 : Automation "{91147A58-DFE4-47C0-8E76-987FC1A6001B} 3.0:{B76585B0-9257-11D5-87EA-00B0D0BE6479}:'Microsoft Soap Type Library v3.0'.SoapSerializer30";
+      XMLResponseDoc@1000000020 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v3.0'.DOMDocument";
+      TempInstream@1000000003 : InStream;
+      TempOutStream@1000000021 : OutStream;
+      ResponseBigText@1000000007 : BigText;
+      TempText@1000000008 : Text[1000];
+      Position@1000000010 : Integer;
+      ActLen@1000000009 : Integer;
+      UseWebServiceAddress@1000000019 : Text[250];
+      UseWebServiceAction@1000000026 : Text[30];
+      UseUserAuthorizationActive@1000000027 : Boolean;
+      UseAuthorizationUser@1000000028 : Text[30];
+      UseAuthorizationPassword@1000000029 : Text[30];
+      UseTimeoutSec@1000000030 : Integer;
+      FPCInterfaceSetup@1000000004 : Record 50014;
+      FPCGeneralSetup@1000000000 : Record 50055;
+    BEGIN
+      // Copied from Codeunit 50121 and modified to fit in process
+      // Clear Automations
+      IF NOT ISCLEAR(SoapWinHttpConnector) THEN
+        CLEAR(SoapWinHttpConnector);
+      IF NOT ISCLEAR(SoapSerializer) THEN
+        CLEAR(SoapSerializer);
+      IF NOT ISCLEAR(XMLResponseDoc) THEN
+        CLEAR(XMLResponseDoc);
+
+      // Create Automations
+      CREATE(SoapWinHttpConnector);
+      CREATE(SoapSerializer);
+      CREATE(XMLResponseDoc);
+
+      // Temp Blob to Get XML File
+      // Save XML as Text
+      TempBlobRequest.Blob.CREATEINSTREAM(TempInstream);
+      ResponseBigText.READ(TempInstream);
+
+      FPCGeneralSetup.GET;
+      FPCInterfaceSetup.GET(FPCGeneralSetup."Webservice Interface");
+      FPCInterfaceSetup.TESTFIELD("WS Web Service Address");
+      UseWebServiceAddress := FPCInterfaceSetup."WS Web Service Address";
+      UseUserAuthorizationActive := FPCInterfaceSetup."WS User Authorization Active";
+      UseAuthorizationUser := FPCInterfaceSetup."WS Authorization User";
+      UseAuthorizationPassword := FPCInterfaceSetup."WS Authorization Password";
+      UseTimeoutSec := FPCInterfaceSetup."WS Timeout (Sec.)";
+      UseWebServiceAction := 'check';
+
+      //Initialize Connector
+      SoapWinHttpConnector.Property('EndPointURL',UseWebServiceAddress);
+      SoapWinHttpConnector.Connect;
+
+      IF UseUserAuthorizationActive THEN BEGIN
+        IF UseAuthorizationUser = '' THEN
+          ERROR(Text001);
+        IF UseAuthorizationPassword = '' THEN
+          ERROR(Text002);
+        SoapWinHttpConnector.Property('AuthUser',UseAuthorizationUser);
+        SoapWinHttpConnector.Property('AuthPassword',UseAuthorizationPassword);
+      END;
+
+      SoapWinHttpConnector.Property('Timeout',UseTimeoutSec * 1000);
+      SoapWinHttpConnector.Property('SoapAction',UseWebServiceAction);
+      SoapWinHttpConnector.BeginMessage;
+
+      //Initialize Serializer
+      SoapSerializer.Init(SoapWinHttpConnector.InputStream);
+      SoapSerializer.StartEnvelope('SOAP','STANDARD');
+      SoapSerializer.SoapAttribute(STRSUBSTNO('xmlns="%1" >',UseWebServiceAddress));
+      SoapSerializer.StartBody;
+      SoapSerializer.StartElement(UseWebServiceAction);
+      SoapSerializer.StartElement('request');
+      Position := 1;
+      ActLen := 1;
+      WHILE ActLen <> 0 DO BEGIN
+        ActLen := ResponseBigText.GETSUBTEXT(TempText,Position, 1000);
+        SoapSerializer.WriteString(TempText);
+        Position += 1000;
+        TempText := '';
+      END;
+      SoapSerializer.EndElement;
+      SoapSerializer.EndElement;
+      SoapSerializer.EndBody;
+      SoapSerializer.EndEnvelope;
+      SoapWinHttpConnector.EndMessage;
+
+      XMLResponseDoc.load(SoapWinHttpConnector.OutputStream);
+
+      // Save Response
+      TempBlobResponse.INSERT;
+      TempBlobResponse.Blob.CREATEOUTSTREAM(TempOutStream);
+      XMLResponseDoc.save(TempOutStream);
+      TempBlobResponse.MODIFY;
+
+      SaveBlobAsFile('Response.xml', TempBlobResponse); // for debugging purpose (saves blob to C:\temp\)
+    END;
+
+    LOCAL PROCEDURE ProcessResponse@1106900005(VAR TempBlobResponseR@1106900000 : TEMPORARY Record 99008535;VAR TempSalesLineR@1000000002 : TEMPORARY Record 37);
+    VAR
+      DOMDocumentL@1000000000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v6.0'.DOMDocument";
+      DOMNodeListResponseL@1000000003 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF82-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNodeList";
+      DOMNodeResponseL@1000000004 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";
+      DOMNodeL@1000000007 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";
+      DOMCharacterDataL@1000000005 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF84-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMCharacterData";
+      DOMNodeListCartItemsL@1000000012 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF82-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNodeList";
+      DOMNodeCartItemsL@1000000011 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";
+      DOMNodeListCartItemL@1000000013 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF82-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNodeList";
+      DOMNodeCartItemL@1000000014 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";
+      TempInStreamL@1000000001 : InStream;
+      TempOutStreamL@1000000010 : OutStream;
+      TempBlobRealResponseL@1000000009 : Record 99008535;
+      ResponseBigTextL@1000000008 : BigText;
+      evalDecL@1000000016 : Decimal;
+      evalIntL@1000000017 : Integer;
+      NextLineNoL@1000000015 : Integer;
+    BEGIN
+      //H1690, T0009 14.10.14 MIK ++++++++++++++++++++++++++
+
+      // TempSalesLine contains all responded items
+      // It could be empty -> needs to be checked after this function
+      //
+      // The following fields of TempSalesLine are filled:
+      //
+      // TempSalesLineR."No." = 'sku'
+      // TempSalesLineR.Quantity = 'quantity'
+      // TempSalesLineR.ID = 'appDomainId'
+      // TempSalesLineR."Shipping Source" = 'stockLocationNumber'
+      // TempSalesLineR."Transp. Type" = 'transportationType'
+      // TempSalesLineR."Shipping Agent Code" = 'carrierCode'
+      // TempSalesLineR."Delivery Days" = 'deliveryTime'
+      //
+      // The response XML looks like this
+      //<?xml version="1.0" encoding="UTF-8"?>
+      //<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns1="http://shop-api.home24.de/stock">
+      //  <SOAP-ENV:Body>
+      //    <ns1:checkResult>
+      //      <response>
+      //        &lt;?xml version="1.0" encoding="UTF-8"?&gt;
+      //        &lt;cartItems&gt;
+      //          &lt;cartItem&gt;
+      //            &lt;sku&gt;L-BR-1309-0422&lt;/sku&gt;
+      //            &lt;quantity&gt;1&lt;/quantity&gt;
+      //            &lt;appDomainId&gt;4&lt;/appDomainId&gt;
+      //            &lt;stockLocationNumber&gt;10404&lt;/stockLocationNumber&gt;
+      //            &lt;transportationType&gt;parcelservice&lt;/transportationType&gt;
+      //            &lt;carrierCode&gt;DHL&lt;/carrierCode&gt;
+      //            &lt;deliveryTime&gt;5&lt;/deliveryTime&gt;
+      //          &lt;/cartItem&gt;
+      //        &lt;/cartItems&gt;
+      //      </response>
+      //    </ns1:checkResult>
+      //  </SOAP-ENV:Body>
+      //</SOAP-ENV:Envelope>
+      //
+      //The real responce XML is enveloped and stored in <response> element.
+      //Extracted real responce XML looks like this:
+      //
+      //<?xml version="1.0" encoding="UTF-8"?>
+      //<response>
+      //  <cartItems>
+      //    <cartItem>
+      //      <sku>L-BR-1309-0422</sku>
+      //      <quantity>1</quantity>
+      //      <appDomainId>4</appDomainId>
+      //      <stockLocationNumber>10404</stockLocationNumber>
+      //      <transportationType>parcelservice</transportationType>
+      //      <carrierCode>DHL</carrierCode>
+      //      <deliveryTime>5</deliveryTime>
+      //    </cartItem>
+      //  </cartItems>
+      //</response>
+      //
+      //
+      //
+
+
+      // Load XML-Data from Stream >>
+      IF ISCLEAR(DOMDocumentL) THEN
+        CREATE(DOMDocumentL);
+
+      TempBlobResponseR.CALCFIELDS(Blob);
+      TempBlobResponseR.Blob.CREATEINSTREAM(TempInStreamL);
+
+      DOMDocumentL.async(FALSE);
+      IF NOT DOMDocumentL.load(TempInStreamL) THEN
+        ERROR(Text010);
+      // <<
+
+      // Currently the XML-Response is SOAP envelope with actual message inside.
+      // The real response is within a tag of another XML, so first: extract the real XML
+
+      //Get the list of "response" nodes. There must be only one.
+      DOMNodeListResponseL := DOMDocumentL.getElementsByTagName('response');
+      IF ISCLEAR(DOMNodeListResponseL) THEN
+        ERROR(Text010);
+      IF DOMNodeListResponseL.length <> 1 THEN
+        ERROR(Text010);
+
+      //Get the response node. As we have only one node in the list, we can use "nextNode" function
+      DOMNodeResponseL := DOMNodeListResponseL.nextNode;
+
+      //In order to create XMLDocument from node value, we need to create stream with this node value.
+      //Because Navision can't operate with strings larger then 1024 bytes, we use looping to populate BigStr variable
+      DOMNodeL := DOMNodeResponseL.firstChild;
+      IF ISCLEAR(DOMNodeL) THEN
+        ERROR(Text010);
+
+      IF DOMNodeL.nodeTypeString <> 'text' THEN
+        ERROR(Text010);
+
+      DOMCharacterDataL := DOMNodeL;
+
+      WHILE (DOMCharacterDataL.length > 0) DO BEGIN
+        ResponseBigTextL.ADDTEXT(DOMCharacterDataL.substringData(0,1024));
+        DOMCharacterDataL.deleteData(0,1024);
+      END;
+
+      IF ResponseBigTextL.LENGTH = 0 THEN
+        ERROR(Text010);
+
+      TempBlobRealResponseL.Blob.CREATEOUTSTREAM(TempOutStreamL);
+      ResponseBigTextL.WRITE(TempOutStreamL);
+      TempBlobRealResponseL.CALCFIELDS(Blob);
+      TempBlobRealResponseL.Blob.CREATEINSTREAM(TempInStreamL);
+
+      //Finaly, load the XMLDocument
+      IF NOT DOMDocumentL.load(TempInStreamL) THEN
+        ERROR(Text010);
+
+      //Save real response for debugging
+      SaveDOMAsFile('RealResponse.xml', DOMDocumentL);
+
+      //Get the list of "cartItems" nodes. There must be only one.
+      DOMNodeListCartItemsL := DOMDocumentL.getElementsByTagName('cartItems');
+      IF ISCLEAR(DOMNodeListCartItemsL) THEN
+        ERROR(Text010);
+      IF DOMNodeListCartItemsL.length <> 1 THEN
+        ERROR(Text010);
+
+      //Get the "cartItems" node. As we have only one node in the list, we can use "nextNode" function
+      DOMNodeCartItemsL := DOMNodeListCartItemsL.nextNode;
+
+      // Get the entries from the loaded Data
+      // If a item is not deliverable it's not contained in the response
+      // therefore if no item is in the response, no item is deliverable
+      IF NOT DOMNodeCartItemsL.hasChildNodes THEN
+        EXIT;
+
+      //Get the list on "CartItem" nodes. As we checked before, there is at least one node.
+      DOMNodeListCartItemL := DOMNodeCartItemsL.childNodes;
+
+      // Iterate trough all items and fill TempSalesLineR
+      DOMNodeCartItemL := DOMNodeListCartItemL.nextNode;
+      WHILE NOT ISCLEAR(DOMNodeCartItemL) DO BEGIN
+        // prepare TempSalesLineR
+        NextLineNoL += 10000;
+        TempSalesLineR.INIT;
+        TempSalesLineR."Line No." := NextLineNoL;
+        TempSalesLineR.Type := TempSalesLineR.Type::Item;
+
+        //Item No.
+        DOMNodeL := DOMNodeCartItemL.selectSingleNode('sku');
+        IF ISCLEAR(DOMNodeL) THEN
+          ERROR(Text011,'sku');
+        TempSalesLineR."No." := DOMNodeL.text;
+
+        //Quantity
+        DOMNodeL := DOMNodeCartItemL.selectSingleNode('quantity');
+        IF ISCLEAR(DOMNodeL) THEN
+          ERROR(Text011,'quantity');
+        IF NOT EVALUATE(evalDecL, DOMNodeL.text) THEN
+          ERROR(STRSUBSTNO(Text012, DOMNodeL.text, DOMNodeL.nodeName));
+        TempSalesLineR.Quantity := evalDecL;
+
+        //Webshop ID
+        DOMNodeL := DOMNodeCartItemL.selectSingleNode('appDomainId');
+        IF ISCLEAR(DOMNodeL) THEN
+          ERROR(Text011,'appDomainId');
+        IF NOT EVALUATE(evalIntL, DOMNodeL.text) THEN
+          ERROR(STRSUBSTNO(Text012,DOMNodeL.text, DOMNodeL.nodeName));
+        TempSalesLineR.ID := evalIntL; // Temporary used, because "Webshop ID" is a FlowField in Sales Line
+
+        //Shipping Source
+        DOMNodeL := DOMNodeCartItemL.selectSingleNode('stockLocationNumber');
+        IF ISCLEAR(DOMNodeL) THEN
+          ERROR(Text011,'stockLocationNumber');
+        TempSalesLineR."Shipping Source" := DOMNodeL.text;
+
+        //transportationType
+        DOMNodeL := DOMNodeCartItemL.selectSingleNode('transportationType');
+        IF ISCLEAR(DOMNodeL) THEN
+          ERROR(Text011,'transportationType');
+        CASE DOMNodeL.text OF
+          'parcelservice'     :
+              TempSalesLineR."Transp. Type" := TempSalesLineR."Transp. Type"::"Parcel Service";
+          'furnitureshipping' :
+              TempSalesLineR."Transp. Type" := TempSalesLineR."Transp. Type"::"Furniture Shipping";
+          'shippingcompany'   :
+              TempSalesLineR."Transp. Type" := TempSalesLineR."Transp. Type"::"Shipping Company";
+          ELSE
+            ERROR(STRSUBSTNO(Text012,DOMNodeL.text, DOMNodeL.nodeName));
+        END;
+
+        //Shipping Agent Code
+        DOMNodeL := DOMNodeCartItemL.selectSingleNode('carrierCode');
+        IF ISCLEAR(DOMNodeL) THEN
+          ERROR(Text011,'carrierCode');
+        TempSalesLineR."Shipping Agent Code" := DOMNodeL.text;
+
+        //Delivery Days
+        DOMNodeL := DOMNodeCartItemL.selectSingleNode('deliveryTime');
+        IF ISCLEAR(DOMNodeL) THEN
+          ERROR(Text011,'deliveryTime');
+        IF NOT EVALUATE(evalIntL, DOMNodeL.text) THEN
+          ERROR(STRSUBSTNO(Text012,DOMNodeL.text, DOMNodeL.nodeName));
+        TempSalesLineR."Delivery Days" := evalIntL;
+
+        TempSalesLineR.INSERT;
+
+        DOMNodeCartItemL := DOMNodeListCartItemL.nextNode;
+      END;
+
+      //H1690, T0009 14.10.14 MIK --------------------------
+    END;
+
+    LOCAL PROCEDURE UpdateLines@1000000017(SalesHeader@1000000001 : Record 36;VAR TempSalesLineResponse@1000000000 : TEMPORARY Record 37);
+    VAR
+      SalesLine@1000000003 : Record 37;
+      AlreadyProcessedLineNoFilter@1000000004 : Text[1024];
+      FinishedL@1000000002 : Boolean;
+      CreateOrderMgt@1000000005 : Codeunit 50005;
+    BEGIN
+      // This function transfers the data from the response to the "real" Sales Lines
+      // Since the data in the response is grouped (for multiple lines of the same item) it will be checked
+      // if the quantity is "0" (reduced during every iteration)
+
+      TempSalesLineResponse.RESET;
+      TempSalesLineResponse.FINDFIRST;
+
+      FinishedL := FALSE;
+      WHILE NOT FinishedL DO BEGIN
+        SalesLine.RESET;
+        SalesLine.SETRANGE("Document Type", SalesHeader."Document Type");
+        SalesLine.SETRANGE("Document No.", SalesHeader."No.");
+        IF AlreadyProcessedLineNoFilter <> '' THEN
+          SalesLine.SETFILTER("Line No.", AlreadyProcessedLineNoFilter);
+        SalesLine.SETRANGE(Type, SalesLine.Type::Item);
+        SalesLine.SETRANGE("No.", TempSalesLineResponse."No.");
+        SalesLine.FINDFIRST;
+
+        // Remember the already process Sales lines
+        IF AlreadyProcessedLineNoFilter = '' THEN BEGIN
+          AlreadyProcessedLineNoFilter := '<>' + FORMAT(SalesLine."Line No.");
+        END ELSE BEGIN
+          AlreadyProcessedLineNoFilter += '&<>';
+          AlreadyProcessedLineNoFilter += FORMAT(SalesLine."Line No.");
+        END;
+
+        SalesLine."Delivery Days" := TempSalesLineResponse."Delivery Days";               // deliveryTime
+        SalesLine."Shipping Source" := TempSalesLineResponse."Shipping Source";           // stockLocationNumber
+        SalesLine."Transp. Type" := TempSalesLineResponse."Transp. Type";                 // transportationType
+        SalesLine."Shipping Agent Code" := TempSalesLineResponse."Shipping Agent Code";   // carrierCode
+        SalesLine."Status Return Order" := SalesLine."Status Return Order"::requested;
+        //H1636 22.12.14 MSL ++++++++++++++++++++++++++++++++++++++++++++++++++++
+        CreateOrderMgt.GetPurchCodeV2(FORMAT(TempSalesLineResponse.ID), SalesLine);
+        //H1636 22.12.14 MSL ----------------------------------------------------
+        SalesLine.MODIFY;
+
+        TempSalesLineResponse.Quantity := TempSalesLineResponse.Quantity - 1;
+        TempSalesLineResponse.MODIFY;
+        IF TempSalesLineResponse.Quantity = 0 THEN
+          TempSalesLineResponse.DELETE;
+        IF TempSalesLineResponse.ISEMPTY THEN
+          FinishedL := TRUE;
+        IF NOT TempSalesLineResponse.FINDFIRST THEN
+          FinishedL := TRUE;
+      END;
+
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type", SalesHeader."Document Type");
+      SalesLine.SETRANGE("Document No.", SalesHeader."No.");
+      IF AlreadyProcessedLineNoFilter <> '' THEN
+        SalesLine.SETFILTER("Line No.", AlreadyProcessedLineNoFilter);
+      SalesLine.SETRANGE(Type, SalesLine.Type::Item);
+      SalesLine.SETFILTER(Quantity, '>0');
+      IF SalesLine.FINDSET THEN BEGIN
+        REPEAT
+          SalesLine."Status Return Order" := SalesLine."Status Return Order"::various;
+          SalesLine.MODIFY;
+        UNTIL SalesLine.NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE "--- Help-Functions"@1000000009();
+    BEGIN
+    END;
+
+    LOCAL PROCEDURE GroupSalesLines@1000000003(SalesHeader@1000000000 : Record 36;VAR TempSalesLine@1000000001 : TEMPORARY Record 37);
+    VAR
+      SalesLine@1000000002 : Record 37;
+    BEGIN
+      TempSalesLine.RESET;
+      TempSalesLine.DELETEALL;
+
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type", SalesHeader."Document Type");
+      SalesLine.SETRANGE("Document No.", SalesHeader."No.");
+      SalesLine.SETRANGE(Type, SalesLine.Type::Item);
+      IF SalesLine.FINDSET THEN BEGIN
+        REPEAT
+          TempSalesLine.RESET;
+          TempSalesLine.SETRANGE("No.", SalesLine."No.");
+          IF NOT TempSalesLine.FINDFIRST THEN BEGIN
+            TempSalesLine := SalesLine;
+            TempSalesLine.INSERT;
+          END ELSE BEGIN
+            TempSalesLine.Quantity += SalesLine.Quantity;
+            TempSalesLine.MODIFY;
+          END;
+        UNTIL SalesLine.NEXT = 0;
+      END;
+
+      TempSalesLine.RESET;
+    END;
+
+    LOCAL PROCEDURE GetStockLocations@1000000007(InterfaceCodeP@1000000002 : Code[20];VAR TempStockLocations@1000000000 : TEMPORARY Record 80017);
+    VAR
+      PurchasingL@1000000003 : Record 5721;
+      StockLocationsL@1000000001 : Record 80017;
+    BEGIN
+      TempStockLocations.RESET;
+      TempStockLocations.DELETEALL;
+
+      PurchasingL.RESET;
+      PurchasingL.SETRANGE("Interface Code", InterfaceCodeP);
+      IF NOT PurchasingL.FINDSET THEN
+        EXIT;
+
+      REPEAT
+        StockLocationsL.RESET;
+        StockLocationsL.SETRANGE(Source, StockLocationsL.Source::"Purchase Code");
+        StockLocationsL.SETRANGE(Code, PurchasingL.Code);
+        IF StockLocationsL.FINDSET THEN BEGIN
+          REPEAT
+            TempStockLocations.Source := StockLocationsL.Source;
+            TempStockLocations."Stock Location" := StockLocationsL."Stock Location";
+            IF TempStockLocations.INSERT THEN
+              ;
+          UNTIL StockLocationsL.NEXT = 0;
+        END;
+      UNTIL PurchasingL.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE IsEverythingDeliverable@1000000005(VAR TempSalesLine@1000000002 : TEMPORARY Record 37;VAR TempSalesLineResponse@1000000003 : TEMPORARY Record 37) : Boolean;
+    VAR
+      SumQtyL@1000000001 : Decimal;
+      EverythingDeliverable@1000000000 : Boolean;
+    BEGIN
+      EverythingDeliverable := TRUE;
+      TempSalesLine.RESET;
+      TempSalesLine.FINDSET;
+      REPEAT
+        SumQtyL := 0;
+        TempSalesLineResponse.RESET;
+        TempSalesLineResponse.SETRANGE("No.", TempSalesLine."No.");
+        IF TempSalesLineResponse.FINDSET THEN BEGIN
+          REPEAT
+            SumQtyL += TempSalesLineResponse.Quantity;
+          UNTIL TempSalesLineResponse.NEXT = 0;
+        END;
+        IF SumQtyL <> TempSalesLine.Quantity THEN
+          EverythingDeliverable := FALSE;
+      UNTIL TempSalesLine.NEXT = 0;
+      EXIT(EverythingDeliverable);
+    END;
+
+    LOCAL PROCEDURE CreateTemporaryFilename@1106900000() : Text[1024];
+    VAR
+      Path@1106900000 : Text[1024];
+    BEGIN
+      Path := TEMPORARYPATH;
+      Path += FORMAT(RANDOM(10000000));
+      Path += '.xml';
+      EXIT(Path);
+    END;
+
+    PROCEDURE SetHideDialog@1100409000(NewHideDialog@1100409000 : Boolean);
+    BEGIN
+      HideDialog := NewHideDialog;
+    END;
+
+    PROCEDURE SetParam@1000000018(RunType@1000000002 : Option;VAR TempBlobRequestV@1000000001 : TEMPORARY Record 99008535;VAR TempBlobResponseV@1000000000 : TEMPORARY Record 99008535);
+    BEGIN
+      RunTypeG := RunType;
+      TempBlobRequestG := TempBlobRequestV;
+      TempBlobResponseG := TempBlobResponseV;
+    END;
+
+    PROCEDURE GetResponse@1000000020(VAR TempBlobResponseV@1000000000 : TEMPORARY Record 99008535);
+    BEGIN
+      TempBlobResponseV := TempBlobResponseG;
+    END;
+
+    LOCAL PROCEDURE "--- Test-Functions"@1000000011();
+    BEGIN
+    END;
+
+    LOCAL PROCEDURE CreateTestBlob@1106900002(VAR TempBlob@1106900000 : TEMPORARY Record 99008535);
+    VAR
+      writeStream@1106900001 : OutStream;
+    BEGIN
+      TempBlob.INSERT;
+      TempBlob.Blob.CREATEOUTSTREAM(writeStream);
+      writeStream.WRITETEXT('<?xml version="1.0" encoding="UTF-8"?>');
+      writeStream.WRITETEXT('<cartResponse>');
+      writeStream.WRITETEXT('  <cartItems>');
+      writeStream.WRITETEXT('    <cartItem>');
+      writeStream.WRITETEXT('      <sku>M-1034-02-230-10045</sku>');
+      writeStream.WRITETEXT('      <quantity>1</quantity>');
+      writeStream.WRITETEXT('      <appDomainId>1</appDomainId>');
+      writeStream.WRITETEXT('      <stockLocationNumber>100</stockLocationNumber>');
+      writeStream.WRITETEXT('      <transportationType>parcelservice</transportationType>');
+      writeStream.WRITETEXT('      <carrierCode>DHL</carrierCode>');
+      writeStream.WRITETEXT('      <deliveryTime>2</deliveryTime>');
+      writeStream.WRITETEXT('    </cartItem>');
+      { !!!!!!!!!!!!!!!!
+      writeStream.WRITETEXT('    <cartItem>');
+      writeStream.WRITETEXT('      <sku>M-M3-WST-DCC-ANT</sku>');
+      writeStream.WRITETEXT('      <quantity>1</quantity>');
+      writeStream.WRITETEXT('      <appDomainId>1</appDomainId>');
+      writeStream.WRITETEXT('      <stockLocationNumber>100</stockLocationNumber>');
+      writeStream.WRITETEXT('      <transportationType>parcelservice</transportationType>');
+      writeStream.WRITETEXT('      <carrierCode>DHL</carrierCode>');
+      writeStream.WRITETEXT('      <deliveryTime>10</deliveryTime>');
+      writeStream.WRITETEXT('    </cartItem>');
+       !!!!!!!!!!!!!!!! }
+      writeStream.WRITETEXT('    <cartItem>');
+      writeStream.WRITETEXT('      <sku>M-M3-WST-DCC-ANT</sku>');
+      writeStream.WRITETEXT('      <quantity>1</quantity>');
+      writeStream.WRITETEXT('      <appDomainId>1</appDomainId>');
+      writeStream.WRITETEXT('      <stockLocationNumber>200</stockLocationNumber>');
+      writeStream.WRITETEXT('      <transportationType>parcelservice</transportationType>');
+      writeStream.WRITETEXT('      <carrierCode>DHL</carrierCode>');
+      writeStream.WRITETEXT('      <deliveryTime>15</deliveryTime>');
+      writeStream.WRITETEXT('    </cartItem>');
+      writeStream.WRITETEXT('    <cartItem>');
+      writeStream.WRITETEXT('      <sku>P-MK-GLO-028-P-GH</sku>');
+      writeStream.WRITETEXT('      <quantity>2</quantity>');
+      writeStream.WRITETEXT('      <appDomainId>1</appDomainId>');
+      writeStream.WRITETEXT('      <stockLocationNumber>100</stockLocationNumber>');
+      writeStream.WRITETEXT('      <transportationType>parcelservice</transportationType>');
+      writeStream.WRITETEXT('      <carrierCode>DHL</carrierCode>');
+      writeStream.WRITETEXT('      <deliveryTime>8</deliveryTime>');
+      writeStream.WRITETEXT('    </cartItem>');
+      writeStream.WRITETEXT('    <cartItem>');
+      writeStream.WRITETEXT('      <sku>P-PH-197-8022050-001</sku>');
+      writeStream.WRITETEXT('      <quantity>1</quantity>');
+      writeStream.WRITETEXT('      <appDomainId>1</appDomainId>');
+      writeStream.WRITETEXT('      <stockLocationNumber>200</stockLocationNumber>');
+      writeStream.WRITETEXT('      <transportationType>parcelservice</transportationType>');
+      writeStream.WRITETEXT('      <carrierCode>DHL</carrierCode>');
+      writeStream.WRITETEXT('      <deliveryTime>5</deliveryTime>');
+      writeStream.WRITETEXT('    </cartItem>');
+      writeStream.WRITETEXT('  </cartItems>');
+      writeStream.WRITETEXT('</cartResponse>');
+      TempBlob.MODIFY;
+    END;
+
+    PROCEDURE SaveBlobAsFile@1000000012(Filename@1000000000 : Text[1024];VAR TempBlob@1000000001 : Record 99008535);
+    VAR
+      NewFilename@1000000002 : Text[1024];
+    BEGIN
+      IF NOT DebugG THEN
+        EXIT;
+
+      NewFilename := GetUserDesktopDir() + Filename;
+      IF FILE.EXISTS(NewFilename) THEN
+        FILE.ERASE(NewFilename);
+
+      TempBlob.Blob.EXPORT(NewFilename);
+    END;
+
+    PROCEDURE SaveDOMAsFile@1000000013(Filename@1000000000 : Text[1024];VAR DOMDocument@1000000002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v6.0'.DOMDocument");
+    VAR
+      NewFilename@1000000001 : Text[1024];
+    BEGIN
+      IF NOT DebugG THEN
+        EXIT;
+
+      NewFilename := GetUserDesktopDir() + Filename;
+      IF FILE.EXISTS(NewFilename) THEN
+        FILE.ERASE(NewFilename);
+
+      DOMDocument.save(NewFilename);
+    END;
+
+    PROCEDURE GetUserDesktopDir@1000000014() : Text[1024];
+    VAR
+      tempDir@1000000000 : Text[1024];
+    BEGIN
+      // Creates something like 'C:\Users\USER.NAME\Desktop\'
+      tempDir := TEMPORARYPATH;
+      tempDir := COPYSTR(tempDir, 1, STRPOS(tempDir, '\AppData'));
+      tempDir += 'Desktop\';
+      EXIT(tempDir);
+    END;
+
+    PROCEDURE "*** HME **********************"@1000000015();
+    BEGIN
+    END;
+
+    PROCEDURE SetUseStockLocationSetup@1000000021(UseStockLocationSetupV@1000000000 : Boolean);
+    BEGIN
+      //H2015, T0048 20.04.15 EHN ++++++++++++++++++++++++++++++++
+      UseStockLocationSetup := UseStockLocationSetupV;
+      //H2015, T0048 20.04.15 EHN --------------------------------
+    END;
+
+    PROCEDURE GetAvailabilityForLineWInterf@1000000019(SalesLineV@1000000000 : Record 37);
+    VAR
+      PurchasingL@1000000001 : Record 5721;
+      FPCInterfaceSetupL@1000000002 : Record 50014;
+      TempStockLocation@1000000003 : TEMPORARY Record 80017;
+    BEGIN
+      //H2015 23.02.15 EHN ++++++++++++++++++++++++++++++++
+      PurchasingL.GET(SalesLineV."Purchasing Code");
+      FPCInterfaceSetupL.GET(PurchasingL."Interface Code");
+
+      GetStockLocations(FPCInterfaceSetupL.Code, TempStockLocation);
+      GetAvailabilityForLine(SalesLineV, TempStockLocation);
+      //H2015 23.02.15 EHN --------------------------------
+    END;
+
+    PROCEDURE SetSkipChannelChange@1000000022(SkipV@1000000000 : Boolean);
+    BEGIN
+      //H2015 23.02.15 EHN ++++++++++++++++++++++++++++++++
+      SkipChannelChange := SkipV;
+      //H2015 23.02.15 EHN --------------------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation Tectura & Home24 NAV Team  |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      T0032       29.07.14  tec-sf    Created
+
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+      H1690       28.10.14 MIK       Bug: Stock Request fails for Orders with many lines. Big XML's now supported.
+      H1636       22.12.14 MSL       Channel Finding - Sourcecode Cleanup / country unspecific
+    }
+    END.
+  }
+}
+

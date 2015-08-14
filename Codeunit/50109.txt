@@ -1,0 +1,168 @@
+OBJECT Codeunit 50109 Session Killer
+{
+  OBJECT-PROPERTIES
+  {
+    Date=03.12.14;
+    Time=16:09:19;
+    Modified=Yes;
+    Version List=HME1674;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=VAR
+            PrenosSeje@1000000000 : Record 2000000009;
+            PrenosVrednosti@1000000001 : Record 91;
+            FPCSETUP@1000000002 : Record 50055;
+          BEGIN
+            DeleteIdleUsers;
+          END;
+
+  }
+  CODE
+  {
+
+    PROCEDURE ReadSessionInLicense@1000000001() AvSession : Integer;
+    VAR
+      LicenseInformationL@1000000000 : Record 2000000040;
+    BEGIN
+      LicenseInformationL.SETRANGE("Line No.",98);
+      IF LicenseInformationL.FINDFIRST THEN BEGIN
+        EVALUATE(AvSession,COPYSTR(LicenseInformationL.Text,STRLEN(LicenseInformationL.Text)-3,10));
+        EXIT(AvSession);
+      END ELSE BEGIN
+        EXIT(0);
+      END;
+    END;
+
+    PROCEDURE CountCurrentSession@1000000002() CurrSession : Integer;
+    VAR
+      SessionListL@1000000000 : Record 2000000009;
+      FPCGeneralSetupL@1000000001 : Record 50055;
+    BEGIN
+      CurrSession := 0;
+      FPCGeneralSetupL.GET;
+      SessionListL.SETRANGE("Application Name",FPCGeneralSetupL."Sess. Serv. Appl. Name");
+      //H1674 MBY 03.12.14 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      //SessionListL.SETRANGE("Host Name",FPCGeneralSetupL."Sess. Serv. Host Name");
+      //H1674 MBY 03.12.14 ------------------------------------------------------------
+      SessionListL.SETRANGE("Database Name",FPCGeneralSetupL."Database name");
+      IF SessionListL.FINDFIRST THEN BEGIN
+        EXIT(SessionListL.COUNT);
+      END ELSE BEGIN
+        EXIT(0);
+      END;
+    END;
+
+    PROCEDURE CheckUser@1000000000(UserInLoginV@1000000000 : Text[50]) AvKill : Boolean;
+    VAR
+      UserSetupL@1000000001 : Record 91;
+    BEGIN
+      IF UserSetupL.GET(COPYSTR(UserInLoginV,STRPOS(UserInLoginV,'\')+1,50)) THEN BEGIN
+        EXIT(UserSetupL."Save Session");
+      END ELSE BEGIN
+        EXIT(FALSE);
+      END;
+    END;
+
+    PROCEDURE DeleteIdleUsers@1000000003();
+    VAR
+      FPCGeneralSetupL@1000000000 : Record 50055;
+      SessionLoginL@1000000001 : Record 2000000009;
+      UserSetupL@1000000002 : Record 91;
+    BEGIN
+      FPCGeneralSetupL.GET;
+      IF FPCGeneralSetupL."Leave open session" = 0 THEN BEGIN
+        DeleteOverLimitUser;
+      END ELSE BEGIN
+       IF ReadSessionInLicense < CountCurrentSession THEN BEGIN
+         SessionLoginL.SETRANGE("Database Name",FPCGeneralSetupL."Database name");
+         SessionLoginL.SETRANGE("Application Name",FPCGeneralSetupL."Sess. Serv. Appl. Name");
+         //H1674 MBY 03.12.14 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+         //SessionLoginL.SETRANGE("Host Name",FPCGeneralSetupL."Sess. Serv. Host Name");
+         //H1674 MBY 03.12.14 -------------------------------------------------------------
+         IF SessionLoginL.FIND('-') THEN BEGIN
+           REPEAT
+             IF NOT CheckUser(COPYSTR(SessionLoginL."User ID",STRPOS(SessionLoginL."User ID",'\')+1,50)) THEN BEGIN
+               IF CountCurrentSession <= ReadSessionInLicense THEN BEGIN
+                 IF (SessionLoginL."Idle Time"-(60*FPCGeneralSetupL."Sess. Serv. Max. Idle Time min")) > 0 THEN BEGIN
+                   IF UserSetupL.GET(COPYSTR(SessionLoginL."User ID",STRPOS(SessionLoginL."User ID",'\')+1,50)) THEN BEGIN
+                     UserSetupL."Session Kill Counter" := UserSetupL."Session Kill Counter" + 1;
+                     UserSetupL.MODIFY;
+                     DeleteSession(SessionLoginL."Database Name",SessionLoginL."Application Name",SessionLoginL."Host Name",
+                                   SessionLoginL."User ID");
+                   END;
+                 END;
+               END ELSE BEGIN
+                 EXIT;
+               END;
+             END;
+           UNTIL SessionLoginL.NEXT = 0;
+         END;
+       END;
+      END;
+    END;
+
+    PROCEDURE DeleteOverLimitUser@1000000004();
+    VAR
+      FPCGeneralSetupL@1000000002 : Record 50055;
+      SessionLoginL@1000000001 : Record 2000000009;
+      UserSetupL@1000000000 : Record 91;
+    BEGIN
+      FPCGeneralSetupL.GET;
+      SessionLoginL.SETRANGE("Database Name",FPCGeneralSetupL."Database name");
+      SessionLoginL.SETRANGE("Application Name",FPCGeneralSetupL."Sess. Serv. Appl. Name");
+      //H1674 MBY 03.12.14 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      //SessionLoginL.SETRANGE("Host Name",FPCGeneralSetupL."Sess. Serv. Host Name");
+      //H1674 MBY 03.12.14 ------------------------------------------------------------
+      IF SessionLoginL.FIND('-') THEN BEGIN
+        REPEAT
+          IF NOT CheckUser(COPYSTR(SessionLoginL."User ID",STRPOS(SessionLoginL."User ID",'\')+1,50)) THEN BEGIN
+            IF (SessionLoginL."Idle Time"-(60000*FPCGeneralSetupL."Sess. Serv. Max. Idle Time min")) > 0 THEN BEGIN
+              IF UserSetupL.GET(COPYSTR(SessionLoginL."User ID",STRPOS(SessionLoginL."User ID",'\')+1,50)) THEN BEGIN
+                UserSetupL."Session Kill Counter" := UserSetupL."Session Kill Counter" + 1;
+                UserSetupL.MODIFY;
+                DeleteSession(
+                  SessionLoginL."Database Name",
+                  SessionLoginL."Application Name",
+                  SessionLoginL."Host Name",
+                  SessionLoginL."User ID");
+              END;
+            END;
+          END;
+        UNTIL SessionLoginL.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE DeleteSession@1000000005(DatabaseNameV@1000000003 : Text[50];ApplicationNameV@1000000002 : Text[50];SessServHostNameV@1000000001 : Text[50];UserIDToDeleteV@1000000000 : Text[60]);
+    VAR
+      SessionToDeleteL@1000000004 : Record 2000000009;
+    BEGIN
+      SessionToDeleteL.RESET;
+      SessionToDeleteL.SETRANGE("Database Name",DatabaseNameV);
+      SessionToDeleteL.SETRANGE("Application Name",ApplicationNameV);
+      SessionToDeleteL.SETRANGE("Host Name",SessServHostNameV);
+      SessionToDeleteL.SETRANGE("User ID",UserIDToDeleteV);
+      IF SessionToDeleteL.FINDFIRST THEN BEGIN
+        SessionToDeleteL.DELETE(TRUE);
+        COMMIT;
+      END;
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      H1674       03.12.14  MBY       Expand Session Killer to all TS-s
+    }
+    END.
+  }
+}
+

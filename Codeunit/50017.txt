@@ -1,0 +1,151 @@
+OBJECT Codeunit 50017 Session Service
+{
+  OBJECT-PROPERTIES
+  {
+    Date=15.12.14;
+    Time=13:03:10;
+    Modified=Yes;
+    Version List=FPC001,HME1674;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=BEGIN
+            CheckIdleSession;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      FPCGeneralSetup@1000000000 : Record 50055;
+      AdminMailQueueSetup@1000000002 : Record 50092;
+      AdminMailQueueFunctions@1000000001 : Codeunit 50019;
+
+    PROCEDURE CheckIdleSession@1000000000();
+    VAR
+      SessionL@1000000000 : Record 2000000009;
+      SendMailL@1000000001 : Boolean;
+      AdminMailQueueCodesL@1000000002 : Record 50118;
+    BEGIN
+      SendMailL := FALSE;
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Sess. Serv. Appl. Name");
+      //H1674 MBY 03.12.14 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      //FPCGeneralSetup.TESTFIELD("Sess. Serv. Host Name");
+      //H1674 MBY 03.12.14 ------------------------------------------------------------
+      FPCGeneralSetup.TESTFIELD("Sess. Serv. Max. Idle Time min");
+
+      SessionL.SETRANGE("My Session",TRUE);
+      SessionL.FINDFIRST;
+      SessionL.SETRANGE("My Session");
+      SessionL.SETRANGE("Database Name",SessionL."Database Name");
+      SessionL.SETRANGE("Application Name",FPCGeneralSetup."Sess. Serv. Appl. Name");
+      //H1674 MBY 03.12.14 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      //SessionL.SETRANGE("Host Name",FPCGeneralSetup."Sess. Serv. Host Name");
+      //H1674 MBY 03.12.14 ------------------------------------------------------------
+      SessionL.SETFILTER("Idle Time",'>%1',60000*FPCGeneralSetup."Sess. Serv. Max. Idle Time min");
+      IF SessionL.FINDSET THEN BEGIN
+        AdminMailQueueSetup.GET;
+        //H0473  06.08.13  FF  +++++++++++++++++++++++++++++++++++++++++++++++
+        IF CheckMailDowntime(AdminMailQueueSetup."Session Mail Code") = TRUE THEN
+          EXIT;
+        //H0473  06.08.13  FF  -----------------------------------------------
+
+        AdminMailQueueFunctions.InitMail(AdminMailQueueSetup."Session Mail Code",'arthur.berganski@home24.de');
+        AdminMailQueueFunctions.AddRecipient('thomas.wallraff@home24.de');
+        AdminMailQueueFunctions.AddRecipientCC('micha.treptow@home24.de');
+        AdminMailQueueFunctions.AddRecipientCC('andre.beckmann@home24.de');
+        AdminMailQueueFunctions.AddRecipientCC('reimar.hoffmann@home24.de');
+        AdminMailQueueFunctions.AddSubject('Session Killer hat zugeschlagen!!');
+        AdminMailQueueFunctions.AddText(STRSUBSTNO('Folgende User wurden rausgeschmissen:'));
+
+        REPEAT
+          IF KillSession(SessionL) THEN
+            SendMailL := TRUE;
+        UNTIL SessionL.NEXT = 0;
+        IF SendMailL THEN
+          AdminMailQueueFunctions.FinishMail;
+      END;
+    END;
+
+    PROCEDURE KillSession@1000000001(SessionV@1000000002 : Record 2000000009) : Boolean;
+    VAR
+      LoginL@1000000000 : Record 387;
+      UserSetupL@1000000001 : Record 91;
+    BEGIN
+      LoginL.SETRANGE("Windows Login ID",SessionV."User ID");
+      IF NOT LoginL.FINDFIRST THEN
+        EXIT(FALSE);
+
+      UserSetupL.SETRANGE("User ID",LoginL."User ID");
+      IF NOT UserSetupL.FINDFIRST THEN
+        EXIT(FALSE);
+
+      IF UserSetupL."Save Session" THEN
+        EXIT(FALSE);
+
+      UserSetupL."Session Kill Counter" +=1;
+      UserSetupL.MODIFY;
+
+      AdminMailQueueFunctions.AddText(STRSUBSTNO('%1 zum %2. Mal!',SessionV."User ID",UserSetupL."Session Kill Counter"));
+
+      EXIT(SessionV.DELETE(TRUE));
+    END;
+
+    PROCEDURE CheckMailDowntime@1000000003(MailCodeV@1000000002 : Code[20]) DowntimeActive : Boolean;
+    VAR
+      AdminMailQueueSetupL@1000000000 : Record 50092;
+      AdminMailQueueCodesL@1000000001 : Record 50118;
+      DownOnDateL@1000000003 : ARRAY [7] OF Boolean;
+      CurrentWeekDayL@1000000004 : Integer;
+    BEGIN
+      //H0473 06.08.13  FF +++++++++++++++++++++++
+
+      DowntimeActive := FALSE;
+      IF AdminMailQueueCodesL.GET(MailCodeV) THEN;
+
+      //Check Singular Downtime
+      IF (CURRENTDATETIME >= AdminMailQueueCodesL."Singular Downtime Start") AND
+         (CURRENTDATETIME <= AdminMailQueueCodesL."Singular Downtime End") THEN
+        DowntimeActive := TRUE;
+
+      //Check Regular Downtime
+      CurrentWeekDayL := DATE2DWY(TODAY,1);
+
+      DownOnDateL[7] := AdminMailQueueCodesL."Downtime on Sundays";
+      DownOnDateL[1] := AdminMailQueueCodesL."Downtime on Mondays";
+      DownOnDateL[2] := AdminMailQueueCodesL."Downtime on Tuesdays";
+      DownOnDateL[3] := AdminMailQueueCodesL."Downtime on Wednesdays";
+      DownOnDateL[4] := AdminMailQueueCodesL."Downtime on Thursdays";
+      DownOnDateL[5] := AdminMailQueueCodesL."Downtime on Fridays";
+      DownOnDateL[6] := AdminMailQueueCodesL."Downtime on Saturdays";
+
+      IF (DT2TIME(CURRENTDATETIME) >= AdminMailQueueCodesL."Regular Downtime Start") AND
+         (DT2TIME(CURRENTDATETIME) <= AdminMailQueueCodesL."Regular Downtime End") AND
+         (DownOnDateL[CurrentWeekDayL] = TRUE) THEN
+        DowntimeActive := TRUE;
+
+      //H0473 06.08.13  FF -----------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      FPC001      06.09.12  ABR       Created
+      H0473       02.08.13  FF        Added Downtime to Session Mail
+      H0473       06.08.13  FF        New function CheckMailDowntime
+      H1674       03.12.14  MBY       Expand Session Killer to all TS-s
+    }
+    END.
+  }
+}
+

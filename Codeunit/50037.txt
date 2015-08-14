@@ -1,0 +1,328 @@
+OBJECT Codeunit 50037 eBayNavCCreatePayment
+{
+  OBJECT-PROPERTIES
+  {
+    Date=10.03.14;
+    Time=08:20:10;
+    Modified=Yes;
+    Version List=DYN0017,HME0558;
+  }
+  PROPERTIES
+  {
+    OnRun=VAR
+            shopCode@1170000002 : Code[10];
+            requestRpcNode@1170000001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+            responseRpcNode@1170000000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+          BEGIN
+            // Wird von eBayNavCRpc aufgerufen, um einen Request-Call zu verarbeiten.
+            // Hier darf mit ERROR gearbeitet werden, da die eBayNavCRpc den RUN Trigger aufruft
+
+            ebayNavCRpc.GetRequestRpcNode(requestRpcNode);
+            ebayNavCRpc.GetResponseRpcNode(responseRpcNode);
+
+            dispatchRequest(ebayNavCRpc.GetShopCode(), requestRpcNode, responseRpcNode);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      eBayNavCLogBuffer@1170000000 : Codeunit 5251568;
+      PAYMENT_BUFFERED@1170000002 : TextConst 'ENU=NAVconnect payment %1  for order "%2" has been buffered.';
+      DOCUMENT_NOT_EXISTS@1170000001 : TextConst 'DEU=NAVconnect VK-Beleg "%1" wurde bereits gepuffert.;ENU=NAVconnect document "%1" doesnot exists.';
+      MISSING_NODE@1170000003 : TextConst 'DEU=Der %1-Knoten konnte nicht gefunden werden.;ENU=Could not find the %1 node.';
+      ebayNavCRpc@1170000004 : Codeunit 5251540;
+
+    PROCEDURE dispatchRequest@1119423001(webshopCode@1119423002 : Code[10];VAR requestRpcNode@1119423001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";VAR responseRpcNode@1119423000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement");
+    VAR
+      orderNo@1119455000 : Code[20];
+      eBayNavCPayUtil@1119455001 : Codeunit 50048;
+      eBayNavCSalesHeaderSearch@1170000000 : Record 5251571;
+      eBayNavCSalesPayment@1119455002 : Record 50056;
+      xmlUtil@1119455003 : Codeunit 5095995;
+      documentNode@1119455004 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+      customerNode@1119455005 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+      accountNode@1119455006 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+      eBayNavCWebshop@1119455007 : Record 5251553;
+      accountUtil@1119455008 : Codeunit 5251542;
+      UpdateDateText@1000000000 : Text[250];
+      YYYY@1000000001 : Text[30];
+      MM@1000000002 : Text[30];
+      DD@1000000003 : Text[30];
+      HH@1000000004 : Text[30];
+      MinMin@1000000005 : Text[30];
+      SS@1000000006 : Text[30];
+      DateTemp@1000000007 : Date;
+      TimeTemp@1000000008 : Time;
+      DDInt@1000000009 : Integer;
+      MMInt@1000000010 : Integer;
+      YYYYInt@1000000011 : Integer;
+    BEGIN
+      // Verarbeitet eine Anfrage aus requestXml und fllt die Antwort in responseXml
+
+      eBayNavCWebshop.GET(webshopCode);
+      eBayNavCLogBuffer.SetShopCode(webshopCode);
+
+      // Anfrage rudiment„r berprfen
+      validateRequest(requestRpcNode);
+
+      // Puffer erstellen
+      xmlUtil.GetNode(requestRpcNode, 'Payment', documentNode);
+
+      WITH eBayNavCSalesPayment DO BEGIN
+        "Webshop Code" := webshopCode;
+        "Order No." := xmlUtil.GetElementText(documentNode, 'OrderNo');
+        // chrmu 20120503   >>>>>>>>>>>
+        ebayNavCRpc.setSource(3,"Order No.");
+        // chrmu 20120503  <<<<<<<<<<<
+        IF NOT eBayNavCSalesHeaderSearch.GET(webshopCode, "Order No.") THEN BEGIN
+          eBayNavCLogBuffer.Log(FALSE, STRSUBSTNO(DOCUMENT_NOT_EXISTS, eBayNavCSalesHeaderSearch."No."));
+          // 26.09.12 nas return error when order is not found >>
+          eBayNavCLogBuffer.CommitBuffer;
+          COMMIT;
+          ERROR('');
+          // 26.09.12 nas return error when order is not found <<
+          EXIT;
+        END;
+        "Transaction No." := xmlUtil.GetElementText(documentNode, 'TransactionNo');
+        "Payment Status" := xmlUtil.GetElementText(documentNode, 'PaymentStatus');
+        //H0558 16.09.13 ARI ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        {
+        //H0558 16.09.13 ARI ----------------------------------------------------------------
+        "Payment Date" := xmlUtil.GetElementDate2(documentNode, 'UpdateDate');
+        //H0558 16.09.13 ARI ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        }
+        //H0558 16.09.13 ARI ----------------------------------------------------------------
+        "Creation Date" := CURRENTDATETIME;
+        //A/gob-rste/25.09.12/P0329
+        UpdateDateText := '';
+        DateTemp := 0D;
+        TimeTemp := 0T;
+        UpdateDateText := xmlUtil.GetElementText(documentNode, 'UpdateDate');
+        IF UpdateDateText <> '' THEN BEGIN
+        //2012-09-18 03:34:30
+          IF STRLEN(UpdateDateText) >= 19 THEN BEGIN
+            YYYY := COPYSTR(UpdateDateText,1,4);
+            MM := COPYSTR(UpdateDateText,6,2);
+            DD := COPYSTR(UpdateDateText,9,2);
+            HH := COPYSTR(UpdateDateText,12,2);
+            MinMin := COPYSTR(UpdateDateText,15,2);
+            SS := COPYSTR(UpdateDateText,18,2);
+            IF EVALUATE(DDInt,DD) THEN;
+            IF EVALUATE(MMInt,MM) THEN;
+            IF EVALUATE(YYYYInt,YYYY) THEN;
+            IF (DDInt <> 0) AND (DDInt <= 31) AND
+               (MMInt <> 0) AND (MMInt <= 12) AND
+               (YYYYInt <> 0) AND (YYYYInt >= 1753)
+            THEN
+              DateTemp := DMY2DATE(DDInt,MMInt,YYYYInt);
+            IF EVALUATE(TimeTemp,HH + MinMin + SS) THEN;
+            IF (DateTemp <> 0D) AND (TimeTemp <> 0T) THEN
+            //H0558 16.09.13 ARI ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            {
+            //H0558 16.09.13 ARI ----------------------------------------------------------------
+              IF "PaymentUpdate NavC" = 0DT THEN
+            //H0558 16.09.13 ARI ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            }
+              IF "PaymentUpdate NavC" = 0DT THEN BEGIN
+            //H0558 16.09.13 ARI ----------------------------------------------------------------
+                "PaymentUpdate NavC" := CREATEDATETIME(DateTemp,TimeTemp);
+            //H0558 16.09.13 ARI ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+                "Payment Date" := DT2DATE("PaymentUpdate NavC");
+              END;
+            //H0558 16.09.13 ARI ----------------------------------------------------------------
+          END;
+        END;
+        //E/gob-rste/25.09.12/P0329
+        IF INSERT(FALSE) THEN;
+      END;
+
+      eBayNavCLogBuffer.Log(FALSE, STRSUBSTNO(PAYMENT_BUFFERED, eBayNavCSalesHeaderSearch."No."));
+
+      // Puffer wegspeichern
+      COMMIT();
+      // 26.09.12 nas return error when order cannot be changed >>
+      //IF eBayNavCPayUtil.RUN(eBayNavCSalesPayment) THEN;
+      IF NOT eBayNavCPayUtil.RUN(eBayNavCSalesPayment) THEN BEGIN
+        eBayNavCLogBuffer.Log(TRUE, COPYSTR(GETLASTERRORTEXT,1,250));
+        eBayNavCLogBuffer.CommitBuffer;
+        COMMIT;
+        ERROR('');
+      END;
+      // 26.09.12 nas return error when order cannot be changed <<
+
+
+      xmlUtil.AddNode(responseRpcNode, 'Document', documentNode);
+      xmlUtil.AddAttributeText('no', eBayNavCSalesHeaderSearch."No.");
+      xmlUtil.AddNode(documentNode, 'Payment', accountNode);
+      xmlUtil.AddAttributeText('no', eBayNavCSalesPayment."Transaction No.");
+    END;
+
+    PROCEDURE dispatchRequest2@1170000002(webshopCode@1170000008 : Code[10];VAR requestRpcNode@1170000007 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";VAR responseRpcNode@1170000000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement");
+    VAR
+      SO@1170000001 : Record 36;
+      SOComment@1170000002 : Record 44;
+      ReleaseSalesDoc@1170000004 : Codeunit 414;
+      LineNo@1170000003 : Integer;
+      SONo@1170000005 : Code[20];
+      WebShop@1170000006 : Code[10];
+      PaymentStatus@1170000009 : Text[30];
+      eBayNavCDocumentUtil@1170000018 : Codeunit 5251544;
+      eBayNavCSalesHeaderSearch@1170000017 : Record 5251571;
+      eBayNavCSalesPayment@1170000016 : Record 50056;
+      xmlUtil@1170000015 : Codeunit 5095995;
+      documentNode@1170000014 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+      customerNode@1170000013 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+      accountNode@1170000012 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+      eBayNavCWebshop@1170000011 : Record 5251553;
+      accountUtil@1170000010 : Codeunit 5251542;
+      FPCSetupL@1000000000 : Record 50055;
+      InterfaceProcessMgt@1000000001 : Codeunit 50087;
+      InterfaceProcessLog@1000000002 : Record 50087;
+    BEGIN
+      // Verarbeitet eine Anfrage aus requestXml und fllt die Antwort in responseXml
+
+      eBayNavCWebshop.GET(webshopCode);
+      eBayNavCLogBuffer.SetShopCode(webshopCode);
+
+      // Anfrage rudiment„r berprfen
+      validateRequest(requestRpcNode);
+
+      // Puffer erstellen
+      xmlUtil.GetNode(requestRpcNode, 'Payment', documentNode);
+
+      SONo := xmlUtil.GetElementText(documentNode, 'OrderNo');
+      // chrmu 20120503   >>>>>>>>>>>
+      ebayNavCRpc.setSource(3,SONo);
+      // chrmu 20120503  <<<<<<<<<<<
+
+      IF SO.GET(SO."Document Type"::Order,SONo) THEN BEGIN
+        PaymentStatus := xmlUtil.GetElementText(documentNode, 'PaymentStatus');
+
+        CASE PaymentStatus OF
+          'pre-authorized' : BEGIN
+            SO."Payment Status" := SO."Payment Status"::"Pre-authorized";
+            IF SO.MODIFY THEN;
+            //COMMIT;
+            //A/P0564
+            //S/P1122
+            //FPCSetupL.GET;
+            //FPCSetupL.TESTFIELD("Status Pick");
+            //FPCSetupL.TESTFIELD("Trigger NavC");
+            //IF InterfaceProcessMgt.TriggerActive(FPCSetupL."Trigger NavC") THEN
+              //InterfaceProcessMgt.InsertInterfaceRecords(0,
+                                                         //SO."Document Type",
+                                                         //SO."No.",
+                                                         //0,
+                                                         //'',
+                                                         //FPCSetupL."Status Pick",
+                                                         //FPCSetupL."Trigger NavC");
+            //E/P0564
+            //E/P1122
+            ReleaseSalesDoc.PerformManualRelease(SO);
+            //S/P1122
+            SO.GET(SO."Document Type",SO."No.");
+            IF SO.Status = SO.Status::Released THEN BEGIN
+              FPCSetupL.GET;
+              FPCSetupL.TESTFIELD("Status Pick");
+              FPCSetupL.TESTFIELD("Trigger NavC");
+              //S/P1219
+              InterfaceProcessLog.RESET;
+              InterfaceProcessLog.SETCURRENTKEY("Document No.","Document Line No.",Status,Interface);
+              InterfaceProcessLog.SETRANGE("Document No.",SO."No.");
+              InterfaceProcessLog.SETRANGE(Status,FPCSetupL."Status Pick");
+              IF InterfaceProcessLog.ISEMPTY THEN
+              //E/P1219
+                IF InterfaceProcessMgt.TriggerActive(FPCSetupL."Trigger NavC") THEN
+                  InterfaceProcessMgt.InsertInterfaceRecords(0,
+                                                             SO."Document Type",
+                                                             SO."No.",
+                                                             0,
+                                                             '',
+                                                             FPCSetupL."Status Pick",
+                                                             FPCSetupL."Trigger NavC");
+            END;
+            //E/P1122
+          END;
+          'pending' : BEGIN
+            SO."Payment Status" := SO."Payment Status"::Pending;
+            IF SO.MODIFY THEN;
+          END;
+          'cancelled' : BEGIN
+            SO."Payment Status" := SO."Payment Status"::Cancelled;
+            IF SO.MODIFY THEN;
+          END;
+          'under-paid' : BEGIN
+            SO."Payment Status" := SO."Payment Status"::"Under-paid";
+            IF SO.MODIFY THEN;
+          END;
+        END;
+        eBayNavCLogBuffer.Log(FALSE, STRSUBSTNO(PAYMENT_BUFFERED, PaymentStatus, SONo));
+      END;
+
+      // Puffer wegspeichern
+      COMMIT();
+
+      xmlUtil.AddNode(responseRpcNode, 'Document', documentNode);
+      xmlUtil.AddAttributeText('no', SONo);
+      xmlUtil.AddNode(documentNode, 'Payment', accountNode);
+      xmlUtil.AddAttributeText('no', xmlUtil.GetElementText(documentNode, 'TransactionNo'));
+    END;
+
+    LOCAL PROCEDURE validateRequest@1119423000(VAR requestRpcNode@1119423000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement");
+    VAR
+      xmlUtil@1119423001 : Codeunit 5095995;
+      isOK@1170000000 : Boolean;
+    BEGIN
+      // Prft die Anfrage auf Gltigkeit - rudiment„r
+      isOK := TRUE;
+      isOK := isOK AND validateNode(requestRpcNode, 'Payment');
+      isOK := isOK AND validateNode(requestRpcNode, 'Payment/OrderNo');
+      isOK := isOK AND validateNode(requestRpcNode, 'Payment/PaymentStatus');
+      isOK := isOK AND validateNode(requestRpcNode, 'Payment/TransactionNo');
+
+      IF NOT isOK THEN BEGIN
+        eBayNavCLogBuffer.CommitBuffer;
+        COMMIT;
+        ERROR('');
+      END;
+      //chrmu 20120507 -
+    END;
+
+    LOCAL PROCEDURE validateNode@1170000000(VAR requestRpcNode@1119423000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";NodeName@1170000000 : Text[250]) : Boolean;
+    VAR
+      xmlUtil@1119423001 : Codeunit 5095995;
+    BEGIN
+      IF NOT xmlUtil.CheckNodeExists(requestRpcNode, NodeName) THEN BEGIN
+        eBayNavCLogBuffer.Log2(TRUE,'016',STRSUBSTNO(MISSING_NODE,NodeName));
+        EXIT(FALSE);
+      END;
+      EXIT(TRUE);
+    END;
+
+    BEGIN
+    {
+      DYNY002 14.08.12 chrmu    new nav connector via webservice
+      P0329   25.09.12 gob-rste Fill Payment Update DateTime from NavConnect XML
+              26.09.12 nas      return error when order is not found
+      P0564   15.04.13 gob-rste Fill IPL Status Pick
+      P1122   09.10.13 gob-rste Only will IPL after successfull Release
+      P1219   07.03.14 gob-rste IPL Dont Set PICK if was already PICK
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+
+      *** Module: NAV Connector - Error Correction ***
+      H0558       16.09.13 ARI       Extract Payment Date from generated DateTime to avoid
+                                     Date Differences due to UTC Time correction via Webservices
+    }
+    END.
+  }
+}
+

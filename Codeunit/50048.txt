@@ -1,0 +1,121 @@
+OBJECT Codeunit 50048 eBayNavCPaymentUtil
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02.12.14;
+    Time=16:25:01;
+    Modified=Yes;
+    Version List=DYN002,HME1784;
+  }
+  PROPERTIES
+  {
+    TableNo=50056;
+    OnRun=BEGIN
+            createPayment(Rec);
+          END;
+
+  }
+  CODE
+  {
+
+    PROCEDURE createPayment@1170000000(VAR eBayNavCPayment@1170000000 : Record 50056);
+    VAR
+      SalesHeaderL@1170000001 : Record 36;
+      SOComment@1170000002 : Record 44;
+      FPCSetupL@1000000000 : Record 50055;
+      InterfaceProcessMgt@1000000001 : Codeunit 50087;
+      ReleaseSalesDoc@1000000002 : Codeunit 414;
+      SIIFillLogCreate@1000000004 : Codeunit 50169;
+      LineNo@1000000003 : Integer;
+    BEGIN
+      //H0063  29.10.12  ABR  +++++++++++++++++++++++++++++++++++++++
+      SalesHeaderL.GET(SalesHeaderL."Document Type"::Order,eBayNavCPayment."Order No.");
+      //H0063  29.10.12  ABR  ---------------------------------------
+
+      CASE eBayNavCPayment."Payment Status" OF
+        'pre-authorized' :
+          BEGIN
+            SalesHeaderL."Payment Status" := SalesHeaderL."Payment Status"::"Pre-authorized";
+            //A/gob-rste/25.09.12/P0329
+            IF SalesHeaderL."Payment Update Date" = 0DT THEN
+              SalesHeaderL."Payment Update Date" := eBayNavCPayment."PaymentUpdate NavC";
+            //E/gob-rste/25.09.12/P0329
+            //A/P0737
+            IF NOT SalesHeaderL."Payment received" THEN BEGIN
+              SalesHeaderL."Payment received" := TRUE;
+              SalesHeaderL."Payment received from" := SalesHeaderL."Payment received from"::PaymentUpdate;
+              //H0562,H0558 23.09.13 ARI +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+              SalesHeaderL.VALIDATE("Payment received at",WORKDATE);
+              //H0562,H0558 23.09.13 ARI -----------------------------------------------------------
+              //H1784  24.11.14 MIK ++++++++++++++++++++++++++++++++++++
+              //Trying to create two messages. One of them will not be created because of SII Message filters.
+              SIIFillLogCreate.CreateOrderPicking(SalesHeaderL);
+              SIIFillLogCreate.CreateOrderPickingPrepayment(SalesHeaderL);
+              //H1784  24.11.14 MIK ------------------------------------
+            END;
+            //E/P0737
+
+            IF SalesHeaderL.MODIFY THEN;
+
+            //A/P0564
+            FPCSetupL.GET;
+            FPCSetupL.TESTFIELD("Status Pick");
+            FPCSetupL.TESTFIELD("Trigger NavC");
+            IF InterfaceProcessMgt.TriggerActive(FPCSetupL."Trigger NavC") THEN
+              InterfaceProcessMgt.InsertInterfaceRecords(0,
+                                                         SalesHeaderL."Document Type",
+                                                         SalesHeaderL."No.",
+                                                         0,
+                                                         '',
+                                                         FPCSetupL."Status Pick",
+                                                         FPCSetupL."Trigger NavC");
+            //E/P0564
+            ReleaseSalesDoc.PerformManualRelease(SalesHeaderL);
+          END;
+        'pending' :
+          BEGIN
+            SalesHeaderL."Payment Status" := SalesHeaderL."Payment Status"::Pending;
+            IF SalesHeaderL.MODIFY THEN;
+          END;
+        'cancelled' :
+          BEGIN
+            SalesHeaderL."Payment Status" := SalesHeaderL."Payment Status"::Cancelled;
+            IF SalesHeaderL.MODIFY THEN;
+          END;
+        'under-paid' :
+          BEGIN
+            SalesHeaderL."Payment Status" := SalesHeaderL."Payment Status"::"Under-paid";
+            IF SalesHeaderL.MODIFY THEN;
+          END;
+        END;
+        eBayNavCPayment.Status := eBayNavCPayment.Status::PaymentCreated;
+        eBayNavCPayment.MODIFY;
+
+      //H0063  29.10.12  ABR  +++++++++++++++++++++++++++++++++++++++
+      //H0063  29.10.12  ABR  ---------------------------------------
+    END;
+
+    BEGIN
+    {
+      DYNY002 14.08.12 chrmu   new nav connector via webservice
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut    Description
+      _____________________________________________
+      H0063       29.10.12  ABR         Create Error if Sales Header do not exist
+      P0737       10.01.13  gob-mno     New Code to fill payment received
+      P0564       15.04.13  gob-rste    Fill IPL Status Pick
+      H0558       13.09.13  ARI         Fill "Payment received at" with WODKATE instead of TODAY
+      H0562       23.09.13  ARI         Date Caluclation when "Payment received at" is set
+      H1784       24.11.14  MIK         SII Redesign for the message ORDERPICKING & ORDERPICKINGPREPMT
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,559 @@
+OBJECT Codeunit 50044 Release Sales Document_TEMP
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.06.12;
+    Time=12:37:28;
+    Version List=gob-rste;
+  }
+  PROPERTIES
+  {
+    TableNo=36;
+    OnRun=VAR
+            SalesLine@1000 : Record 37;
+            TempVATAmountLine0@1001 : TEMPORARY Record 290;
+            TempVATAmountLine1@1002 : TEMPORARY Record 290;
+            NotOnlyDropShipment@1003 : Boolean;
+            "---eBay"@5095800 : Boolean;
+            eBaySetup@5095801 : Record 5095800;
+            DHLMgt@1000000002 : Codeunit 50020;
+            LT_BatchPostDoc@1000000000 : Record 50043;
+            LC_BatchAutomProcess@1000000001 : Codeunit 50031;
+            NAVCMgt@1170000000 : Codeunit 5251544;
+            SalesLineLoc@1108200000 : Record 37;
+            SalesCommentLine@1108200001 : Record 44;
+            FPCManagement@1108200002 : Codeunit 50003;
+            CancelOrder@1108200003 : Boolean;
+          BEGIN
+            //A/temp-gob-rste
+            Kommissionierung := FALSE;
+            //E/temp-gob-rste
+            //eBay#003
+            eBaySetup.GET();
+            //eBay#003
+
+            IF Status = Status::Released THEN
+              EXIT;
+
+            IF "Document Type" = "Document Type"::Quote THEN
+              IF CheckCustomerCreated(TRUE) THEN
+                GET("Document Type"::Quote,"No.")
+              ELSE
+                EXIT;
+
+            TESTFIELD("Sell-to Customer No.");
+
+            //eBay#001
+            //TESTFIELD("Waiting for payment receipt", FALSE);
+            //eBay#001
+
+            //A/gob-rste/31.05.12/P0015
+            //A/gob-rste/12.06.12/P0030
+            //A/gob-rste/20.06.12/P0042
+            //IF STRPOS(UPPERCASE("Sell-to Customer Name"),'TEST TEST') <> 0 THEN BEGIN
+            //IF (STRPOS(UPPERCASE("Sell-to Customer Name"),'TEST TEST') <> 0) OR
+               //(STRPOS(UPPERCASE("Sell-to Customer Name"),'TESTVORNAME TESTNACHNAME') <> 0) THEN BEGIN
+            //E/gob-rste/12.06.12/P0030
+            CancelOrder := FALSE;
+
+            IF (FPCManagement.QtyStringUsedInString("Sell-to Customer Name",'TEST',TRUE) >= 2) OR
+               (FPCManagement.QtyStringUsedInString("Sell-to Customer Name 2",'TEST',TRUE) >=2) OR
+               (FPCManagement.QtyStringUsedInString("Bill-to Name",'TEST',TRUE) >= 2) OR
+               (FPCManagement.QtyStringUsedInString("Bill-to Name 2",'TEST',TRUE) >= 2) OR
+               (FPCManagement.QtyStringUsedInString("Ship-to Name",'TEST',TRUE) >= 2) OR
+               (FPCManagement.QtyStringUsedInString("Ship-to Name 2",'TEST',TRUE) >= 2) THEN
+              CancelOrder := TRUE;
+
+            SalesCommentLine.RESET;
+            SalesCommentLine.SETRANGE("Document Type",SalesCommentLine."Document Type"::Order);
+            SalesCommentLine.SETRANGE("No.","No.");
+            SalesCommentLine.SETRANGE("Document Line No.",0);
+            IF (SalesCommentLine.FINDFIRST) AND (FPCManagement.QtyStringUsedInString(SalesCommentLine.Comment,'TEST',TRUE) >= 1) THEN
+              CancelOrder := TRUE;
+
+            IF CancelOrder THEN BEGIN
+            //E/gob-rste/20.06.12/P0042
+              SalesLineLoc.SETRANGE("Document No.","No.");
+              SalesLineLoc.SETRANGE("Document Type","Document Type");
+              IF SalesLineLoc.FIND('-') THEN
+                REPEAT
+                  SalesLineLoc."Cancellation Reason Code" := 'TEST';
+                  SalesLineLoc.MODIFY;
+                UNTIL SalesLineLoc.NEXT = 0;
+              Rec.MagentoCancel;
+              EXIT;
+            END;
+            //E/gob-rste/31.05.12/P0015
+
+
+            // > DHL 26.09.11 On Release new call of CreateDHLProcessingRequest function
+            IF ("Document Type" = "Document Type"::Order) AND Kommissionierung THEN
+              DHLMgt.CreateDHLProcessingRequest(Rec);
+            // < DHL 26.09.11 On Release new call of CreateDHLProcessingRequest function
+
+            SalesLine.SETRANGE("Document Type","Document Type");
+            SalesLine.SETRANGE("Document No.","No.");
+            SalesLine.SETFILTER(Type,'>0');
+            SalesLine.SETFILTER(Quantity,'<>0');
+            IF NOT SalesLine.FIND('-') THEN
+              ERROR(Text001,"Document Type","No.");
+
+            // 2.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+            {
+            ELSE BEGIN
+              SalesLine.SETRANGE(Type,SalesLine.Type::Item);
+              IF SalesLine.FIND('-') THEN REPEAT
+                NAVCMgt.getPurchCode('1',SalesLine);
+                //SalesLine.GetPurchasingCode;
+                SalesLine.MODIFY;
+              UNTIL SalesLine.NEXT = 0;
+              SalesLine.SETRANGE(Type);
+            END;
+            }
+            BPSetup.GET;
+            BPSetup.TESTFIELD("Invoice Payment Filter");
+            BPSetup.TESTFIELD("Hire-purchase Payment Filter");
+            IF BPSetup."Hire-purchase Payment Filter" = "Payment Method Code" THEN BEGIN
+              BPTransactStatus.SETCURRENTKEY("Sales Header No.","Sales Header Type",Created);
+              BPTransactStatus.SETRANGE("Sales Header No.","No.");
+              BPTransactStatus.SETRANGE("Sales Header Type","Document Type");
+              IF BPTransactStatus.ISEMPTY THEN BEGIN
+                SalesLine.SETFILTER("Payment Transaction No.",'<>%1','');
+                IF SalesLine.FINDFIRST THEN BEGIN
+                  BPTransactStatus.INIT;
+                  BPTransactStatus."Transaction No." := SalesLine."Payment Transaction No.";
+                  BPTransactStatus.Created := CURRENTDATETIME;
+                  BPTransactStatus."Transaction No. Txt" := SalesLine."Payment Transaction No.";
+                  BPTransactStatus.Status := BPTransactStatus.Status::Captured;
+                  BPTransactStatus."Sales Header Type" := "Document Type";
+                  BPTransactStatus."Sales Header No." := "No.";
+                  BPTransactStatus.INSERT;
+                  SalesLine.SETRANGE("Payment Transaction No.");
+                  "BillPay Last Status" := "BillPay Last Status"::Captured;
+                  MODIFY;
+                END;
+              END;
+            END ELSE
+              IF BPSetup."Invoice Payment Filter" = "Payment Method Code" THEN BEGIN
+                BPTransactStatus.SETCURRENTKEY("Sales Header No.","Sales Header Type",Created);
+                BPTransactStatus.SETRANGE("Sales Header No.","No.");
+                BPTransactStatus.SETRANGE("Sales Header Type","Document Type");
+                IF BPTransactStatus.FINDLAST THEN BEGIN
+                  BPPlan.SETRANGE("Transaction No.",BPTransactStatus."Transaction No.");
+                  IF BPPlan.FINDSET(TRUE,FALSE) THEN REPEAT
+                    IF (BPPlan."Sales Document No." = '') THEN BEGIN
+                      BPPlan."Sales Document Type" := BPTransactStatus."Sales Document Type";
+                      BPPlan."Sales Document No." := BPTransactStatus."Sales Document No.";
+                      BPPlan.MODIFY;
+                    END;
+                  UNTIL BPPlan.NEXT = 0;
+                END;
+              END;
+            // 2.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+            InvtSetup.GET;
+            IF InvtSetup."Location Mandatory" THEN BEGIN
+              SalesLine.SETRANGE(Type,SalesLine.Type::Item);
+              IF SalesLine.FINDSET THEN
+                REPEAT
+                  SalesLine.TESTFIELD("Location Code");
+                UNTIL SalesLine.NEXT = 0;
+              SalesLine.SETFILTER(Type,'>0');
+            END;
+            SalesLine.SETRANGE("Drop Shipment",FALSE);
+            NotOnlyDropShipment := SalesLine.FINDFIRST;
+            SalesLine.RESET;
+
+            SalesSetup.GET;
+            IF SalesSetup."Calc. Inv. Discount" THEN BEGIN
+              CODEUNIT.RUN(CODEUNIT::"Sales-Calc. Discount",SalesLine);
+              GET("Document Type","No.");
+            END;
+
+            // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+            IF TestPrepayment(Rec) AND ("Document Type" = "Document Type"::Order) THEN BEGIN
+              COMMIT;
+              //A/temp-gob-rste
+              //LC_BatchAutomProcess.PostSalesPrepmtInv(Rec,FALSE);
+              PostSalesPrepmtInv(Rec,FALSE);
+              //E/temp-gob-rste
+              GET("Document Type","No.");
+            END;
+            // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+            IF TestPrepayment(Rec) AND ("Document Type" = "Document Type"::Order) THEN BEGIN
+
+              // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+              IF "Order Release Date" = 0DT THEN
+                "Order Release Date" := CURRENTDATETIME;
+              // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+              //S/P0022
+              //IF CreateReturnOrderMail(Rec) THEN
+                //Kommissionierung := TRUE
+              //ELSE
+                //Kommissionierung := FALSE;
+              //E/P0022
+
+
+              Status := Status::"Pending Prepayment";
+              MODIFY(TRUE);
+
+              // 4.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+              PostExpCom("Document Type","No.");
+              // 4.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+              // B chrmu >>>>>>>>>>>>>>>>>>>>>>>>>>>
+              IF Kommissionierung THEN
+                InsertExpLog(Rec);
+              // E chrmu <<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+              // 2.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+              IF Kommissionierung THEN //#####################
+                LT_BatchPostDoc.CreatePurchOrder(Rec);
+              // 2.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+              EXIT;
+            END
+            ELSE
+              Status := Status::Released;
+
+            SalesLine.SetSalesHeader(Rec);
+            SalesLine.CalcVATAmountLines(0,Rec,SalesLine,TempVATAmountLine0);
+            SalesLine.CalcVATAmountLines(1,Rec,SalesLine,TempVATAmountLine1);
+            SalesLine.UpdateVATOnLines(0,Rec,SalesLine,TempVATAmountLine0);
+            SalesLine.UpdateVATOnLines(1,Rec,SalesLine,TempVATAmountLine1);
+
+            // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+            IF "Order Release Date" = 0DT THEN
+              "Order Release Date" := CURRENTDATETIME;
+            // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+            //S/P0022
+            //CheckPickingAllowed(TRUE,Rec.Kommissionierung,Rec);
+            //E/P0022
+
+
+            MODIFY(TRUE);
+
+            // 4.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+            PostExpCom("Document Type","No.");
+            // 4.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+            IF NotOnlyDropShipment THEN
+              IF "Document Type" IN ["Document Type"::Order,"Document Type"::"Return Order"] THEN
+                WhseSalesRelease.Release(Rec);
+
+            //S/P0022
+            // Auskommentiert -> Neue Logik
+            {
+            //CHR120531 +
+            calcKommi(Rec);
+            //CHR120531 -
+            }
+
+            // B chrmu >>>>>>>>>>>>>>>>>>>>>>>>>>>
+            IF Kommissionierung THEN
+              InsertExpLog(Rec);
+            // E chrmu <<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+            // 2.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+            IF Kommissionierung THEN //#####################
+              LT_BatchPostDoc.CreatePurchOrder(Rec);
+            // 2.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text001@1001 : TextConst 'DEU=Fr %1 %2 gibt es nichts freizugeben.;ENU=There is nothing to release for %1 %2.';
+      SalesSetup@1002 : Record 311;
+      InvtSetup@1000 : Record 313;
+      BPSetup@1000000000 : Record 50000;
+      BPTransactStatus@1000000001 : Record 50025;
+      BPPlan@1000000002 : Record 50026;
+      WhseSalesRelease@1004 : Codeunit 5771;
+      Text002@1005 : TextConst 'DEU=Dieses Dokument kann nur freigegeben werden, wenn der Genehmigungsprozess abgeschlossen ist.;ENU=This document can only be released when the approval process is complete.';
+      Text003@1003 : TextConst 'DEU=Zum erneuten ™ffnen dieses Dokuments muss der Genehmigungsprozess abgebrochen oder abgeschlossen werden.;ENU=The approval process must be cancelled or completed to reopen this document.';
+      "------------------------------"@1000000003 : Integer;
+      PurchSetup@1000000004 : Record 312;
+
+    PROCEDURE Reopen@1(VAR SalesHeader@1000 : Record 36);
+    VAR
+      SalesLine@1001 : Record 37;
+      LC_BatchAutomProcess@1000000000 : Codeunit 50031;
+    BEGIN
+      WITH SalesHeader DO BEGIN
+        IF Status = Status::Open THEN
+          EXIT;
+        Status := Status::Open;
+        SalesLine.SetSalesHeader(SalesHeader);
+        SalesLine.SETRANGE("Document Type","Document Type");
+        SalesLine.SETRANGE("Document No.","No.");
+        SalesLine.SETFILTER(Type,'>0');
+        SalesLine.SETFILTER(Quantity,'<>0');
+        IF RECORDLEVELLOCKING THEN
+          SalesLine.LOCKTABLE;
+        IF SalesLine.FINDSET THEN
+          REPEAT
+            SalesLine.Amount := 0;
+            SalesLine."Amount Including VAT" := 0;
+            SalesLine."VAT Base Amount" := 0;
+            SalesLine.InitOutstandingAmount;
+            SalesLine.MODIFY;
+          UNTIL SalesLine.NEXT = 0;
+        SalesLine.RESET;
+
+        // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        COMMIT;
+        LC_BatchAutomProcess.PostSalesPrepmtCrMemo(SalesHeader,FALSE);
+        GET(SalesHeader."Document Type",SalesHeader."No.");
+        Status := Status::Open;
+        // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+        MODIFY(TRUE);
+
+        IF "Document Type" IN ["Document Type"::Order,"Document Type"::"Return Order"] THEN
+          WhseSalesRelease.Reopen(SalesHeader);
+      END;
+    END;
+
+    PROCEDURE PerformManualRelease@2(VAR SalesHeader@1002 : Record 36);
+    VAR
+      ApprovalEntry@1004 : Record 454;
+      ApprovalManagement@1001 : Codeunit 439;
+      ApprovedOnly@1005 : Boolean;
+    BEGIN
+      WITH SalesHeader DO BEGIN
+        IF ApprovalManagement.CheckApprSalesDocument(SalesHeader) THEN BEGIN
+          CASE Status OF
+            Status::"Pending Approval":
+              ERROR(Text002);
+            Status::Released,Status::"Pending Prepayment":
+              CODEUNIT.RUN(414,SalesHeader);
+            Status::Open:
+              BEGIN
+                ApprovedOnly := TRUE;
+                ApprovalEntry.SETCURRENTKEY("Table ID","Document Type","Document No.","Sequence No.");
+                ApprovalEntry.SETRANGE("Table ID",DATABASE::"Sales Header");
+                ApprovalEntry.SETRANGE("Document Type","Document Type");
+                ApprovalEntry.SETRANGE("Document No.","No.");
+                ApprovalEntry.SETFILTER(Status,'<>%1&<>%2',ApprovalEntry.Status::Rejected,ApprovalEntry.Status::Canceled);
+                IF ApprovalEntry.FIND('-') THEN BEGIN
+                  REPEAT
+                    IF (ApprovedOnly = TRUE) AND (ApprovalEntry.Status <> ApprovalEntry.Status::Approved) THEN
+                      ApprovedOnly := FALSE;
+                  UNTIL ApprovalEntry.NEXT = 0;
+
+                  IF ApprovedOnly = TRUE AND TestApprovalLimit(SalesHeader) THEN
+                    CODEUNIT.RUN(414,SalesHeader)
+                  ELSE
+                    ERROR(Text002);
+                END ELSE
+                  ERROR(Text002);
+              END;
+          END;
+        END ELSE
+          CODEUNIT.RUN(414,SalesHeader);
+      END;
+    END;
+
+    PROCEDURE PerformManualReopen@3(VAR SalesHeader@1002 : Record 36);
+    VAR
+      ApprovalManagement@1001 : Codeunit 439;
+    BEGIN
+      WITH SalesHeader DO BEGIN
+        IF ApprovalManagement.CheckApprSalesDocument(SalesHeader) THEN BEGIN
+          CASE Status OF
+            Status::"Pending Approval":
+              ERROR(Text003);
+            Status::Open,Status::Released,Status::"Pending Prepayment":
+              Reopen(SalesHeader);
+          END;
+        END ELSE
+          Reopen(SalesHeader);
+      END;
+    END;
+
+    PROCEDURE TestPrepayment@31(SalesHeader@1000 : Record 36) : Boolean;
+    VAR
+      SalesLines@1001 : Record 37;
+    BEGIN
+      SalesLines.SETRANGE("Document Type",SalesHeader."Document Type");
+      SalesLines.SETRANGE("Document No.",SalesHeader."No.");
+      SalesLines.SETFILTER("Prepmt. Line Amount",'<>%1',0);
+      IF SalesLines.FIND('-') THEN BEGIN
+        REPEAT
+          IF SalesLines."Prepmt. Amt. Inv." <> SalesLines."Prepmt. Line Amount" THEN
+            EXIT(TRUE);
+        UNTIL SalesLines.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE TestApprovalLimit@4(SalesHeader@1000 : Record 36) : Boolean;
+    VAR
+      UserSetup@1004 : Record 91;
+      AppManagement@1001 : Codeunit 439;
+      AppAmount@1002 : Decimal;
+      AppAmountLCY@1003 : Decimal;
+    BEGIN
+      AppManagement.CalcSalesDocAmount(SalesHeader,AppAmount,AppAmountLCY);
+      UserSetup.GET(USERID);
+      IF UserSetup."Unlimited Sales Approval" THEN
+        EXIT(TRUE)
+      ELSE BEGIN
+        IF AppAmountLCY > UserSetup."Sales Amount Approval Limit" THEN
+          ERROR(Text002)
+        ELSE
+          EXIT(TRUE);
+      END;
+    END;
+
+    PROCEDURE InsertExpLog@1000000000(_SalesHeader@1000000000 : Record 36);
+    VAR
+      PurchSetup@1000000004 : Record 312;
+      ProcessLog@1000000001 : Record 50015;
+      SalesLine@1000000002 : Record 37;
+      IFExportMgt@1000000003 : Codeunit 50010;
+    BEGIN
+      // B chrmu >>>>>>>>>>>>>>>>>>>>>>>>>>>
+      IF NOT _SalesHeader.Kommissionierung THEN EXIT;
+
+      WITH _SalesHeader DO
+        IF ("Document Type" = "Document Type"::Order) OR
+           ("Document Type" = "Document Type"::"Return Order") THEN BEGIN
+          CLEAR(ProcessLog);
+          SalesLine.RESET;
+          SalesLine.SETRANGE("Document Type","Document Type");
+          SalesLine.SETRANGE("Document No.","No.");
+          SalesLine.SETRANGE(Type,SalesLine.Type::Item);
+          SalesLine.SETFILTER(Quantity,'<>0');
+          IF SalesLine.FINDSET THEN
+            REPEAT
+
+              //TMI 3.00 IF IFExportMgt.IsRhenusLocation(SalesLine."Location Code") THEN BEGIN
+              //TMI 3.00 B
+              IF IsRhenusLocation(SalesLine."Location Code") THEN BEGIN
+              //TMI 3.00 E
+
+                CLEAR(ProcessLog);
+                PurchSetup.GET;
+                IF SalesLine."Line Status" = PurchSetup."Magento Status for Correction" THEN
+                  ProcessLog.AddLog(0,"Document Type","No.",1,1,SalesLine."Location Code",'RHENUS')
+                ELSE
+                  ProcessLog.AddLog(0,"Document Type","No.",1,0,SalesLine."Location Code",'RHENUS');
+                EXIT;
+              END;
+            UNTIL SalesLine.NEXT = 0;
+        END;
+      // E chrmu <<<<<<<<<<<<<<<<<<<<<<<<<<<
+    END;
+
+    PROCEDURE PostExpCom@1000000001(_DocType@1000000002 : Integer;_DocNo@1000000001 : Code[20]);
+    VAR
+      LT_ComEntry@1000000000 : Record 50003;
+      LC_ComMgt@1000000003 : Codeunit 50006;
+    BEGIN
+      // 4.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+      PurchSetup.GET;
+      IF PurchSetup."Post Exp. Commission" <> PurchSetup."Post Exp. Commission"::"On Release Order" THEN
+        EXIT;
+
+      LT_ComEntry.SETRANGE("Document No.",_DocNo);
+      LT_ComEntry.SETRANGE("Document Type",_DocType);
+      LT_ComEntry.SETFILTER("Acc. Status",'<=%1',LT_ComEntry."Acc. Status"::Error);
+      IF LT_ComEntry.ISEMPTY THEN
+        EXIT;
+
+      LC_ComMgt.PostExpCommission(_DocType,_DocNo);
+      // 4.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+    END;
+
+    PROCEDURE IsRhenusLocation@1000000004(LocationCode@1000000000 : Code[10]) : Boolean;
+    VAR
+      Location@1000000001 : Record 14;
+    BEGIN
+      //TMI B
+      IF STRPOS(LocationCode,'RHE') = 1 THEN
+        EXIT(TRUE);
+      EXIT(FALSE);
+      //TMI E
+    END;
+
+    PROCEDURE calcKommi@1170000001(VAR salesHeader@1170000001 : Record 36);
+    VAR
+      eBayNavCSalesHeader@1170000000 : Record 5251571;
+      eBayNavCWebshop@1170000003 : Record 5251553;
+      salesLine@1170000002 : Record 37;
+      Purchasing@1170000004 : Record 5721;
+      Kommissionierung@1170000005 : Boolean;
+    BEGIN
+      //CHR120531 +
+      Kommissionierung := TRUE;
+
+      salesLine.RESET;
+      salesLine.SETRANGE("Document Type",salesHeader."Document Type");
+      salesLine.SETRANGE("Document No.",salesHeader."No.");
+      salesLine.SETRANGE(Type,salesLine.Type::Item);
+      IF salesLine.FINDSET THEN
+        REPEAT
+          IF Purchasing.GET(salesLine."Purchasing Code") THEN
+            IF NOT Purchasing.Kommisionierung THEN
+              Kommissionierung := FALSE;
+        UNTIL salesLine.NEXT = 0;
+      IF Kommissionierung THEN
+        salesHeader.VALIDATE(Kommissionierung,TRUE)
+      ELSE
+        salesHeader.VALIDATE(Kommissionierung,salesHeader."XML Kommissionierung");
+      //CHR120531 -
+    END;
+
+    PROCEDURE PostSalesPrepmtInv@1108200000(_SalesHeader@1000000000 : Record 36;_Print@1000000002 : Boolean);
+    VAR
+      LC_SalesPostPrepayments@1000000001 : Codeunit 50045;
+      SalesHeader@1108200000 : Record 36;
+    BEGIN
+      SalesHeader.RESET;
+      SalesHeader.SETRANGE("Document Type",_SalesHeader."Document Type");
+      SalesHeader.SETRANGE("No.",_SalesHeader."No.");
+      IF NOT SalesHeader.FIND('-') THEN
+        EXIT;
+
+      LC_SalesPostPrepayments.Invoice(SalesHeader);
+      SalesHeader.GET(_SalesHeader."Document Type",_SalesHeader."No.");
+      SalesHeader.Status := SalesHeader.Status::Released;
+      SalesHeader.MODIFY;
+    END;
+
+    BEGIN
+    {
+      eBay1.00 eBay#001 "OnRun" Testfield "Waiting for payment receipt" hinzugefgt
+
+      25.08.11  chrmu - on release - put the document in the Document Log for the interface processing
+      DHL 26.09.11 On Release new call of CreateDHLProcessingRequest function
+
+      1.00  10.11.11  eich -Reopen: post credit memo for prepayment
+      2.00  25.11.11  eich -get purchasing code
+      3.00  07.12.11  TMI  IsRhenusLocation function, for Anveo
+      CHR120531        - Calculate Kommisionirung
+
+      +-----------------------------------------------------+
+      |               GOB Software & Systeme                |
+      +-----------------------------------------------------+
+      |                FP Commerce Anpassungen              |
+      -------------------------------------------------------
+
+      Version        Bemerkung
+      -------------------------------------------------------
+      P0015          gob-rste 31.05.2012  On Release Check for TEST TEST Orders an auto. Cancel
+      P0030          gob-rste 12.06.12  OnRelease also Check for TESTVORNAME TESTNACHNAME
+      P0022          gob-mno  08.06.12  Neue Funktion "CheckPickingAllowed", Funktion CalcKommi auskommentiert
+      P0042          gob-rste 20.06.12  Check test oders for all languages, check test comment
+
+      Kommissionierungssteuerung auskommentiert, Kommissionierung = FALSE
+    }
+    END.
+  }
+}
+

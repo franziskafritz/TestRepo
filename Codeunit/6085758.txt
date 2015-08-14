@@ -1,0 +1,234 @@
+OBJECT Codeunit 6085758 Doc. - Move to Company
+{
+  OBJECT-PROPERTIES
+  {
+    Date=10.09.13;
+    Time=01:00:00;
+    Version List=DCW13.70.00.3.50.06;
+  }
+  PROPERTIES
+  {
+    TableNo=6085590;
+    OnRun=VAR
+            Comp@1160040000 : Record 2000000006;
+            NoOfRec@1160040001 : Integer;
+          BEGIN
+            Comp.FILTERGROUP(4);
+            Comp.SETFILTER(Name,'<>%1',COMPANYNAME);
+            Comp.FILTERGROUP(0);
+            IF FORM.RUNMODAL(FORM::Companies,Comp) <> ACTION::LookupOK THEN
+              EXIT;
+
+            OldSetup.GET;
+            NewSetup.CHANGECOMPANY(Comp.Name);
+            NewSetup.GET;
+
+            IF NewSetup."Document Nos." = '' THEN
+              ERROR(Text003,NewSetup.FIELDCAPTION("Document Nos."),NewSetup.TABLECAPTION,Comp.Name);
+            IF NewSetup."TIFF File Path" = '' THEN
+              ERROR(Text003,NewSetup.FIELDCAPTION("TIFF File Path"),NewSetup.TABLECAPTION,Comp.Name);
+            IF NewSetup."PDF File Path" = '' THEN
+              ERROR(Text003,NewSetup.FIELDCAPTION("PDF File Path"),NewSetup.TABLECAPTION,Comp.Name);
+
+            SETRANGE(Status,Status::Open);
+            NoOfRec := COUNT;
+            IF FINDSET THEN
+              REPEAT
+                CopyDocument(Rec,NewSetup,Comp.Name);
+              UNTIL NEXT = 0;
+
+            MESSAGE(Text006,NoOfRec,Comp.Name);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text001@1160040004 : TextConst 'DEU=Grî·ere Nummern als %1 kînnen aus der Nummernserie &2 nicht mehr zugeweisen werden.;ENU=You cannot assign numbers greater than %1 from the number series %2.';
+      Text002@1160040003 : TextConst 'DEU=Die Nummer %1 kann maximal auf 20 Stellen erweitert werden.;ENU=The number %1 cannot be extended to more than 20 characters.';
+      Text003@1160040002 : TextConst 'DEU=%1 auf %2 darf in Mandant %3 nicht leer sein.;ENU=%1 on the %2 cannot be empty in company %3.';
+      Text004@1160040009 : TextConst 'DEU=%1 wird fÅr %2 nicht unterstÅtzt, wenn Belege zwischen Mandanten kopiert werden.;ENU=%1 not supported for %2 when copying documents between companies.';
+      Text005@1160040010 : TextConst 'DEU=Nur ein %1 wird unterstÅtzt, wenn Belege zwischen Mandanten kopiert werden.;ENU=Only one %1 is supported when copying documents between companies.';
+      Text006@1160040000 : TextConst 'DEU=%1 Beleg(e) nach Mandant %2 verschoben.;ENU=%1 document(s) were moved to company %2.';
+      OldSetup@161024013 : Record 6085573;
+      NewSetup@161024012 : Record 6085573;
+      Text007@1160040005 : TextConst 'DEU=%1 auf %2 muss in beiden Mandaten gleich sein.;ENU=%1 on the %2 must be the same in both companies.';
+
+    PROCEDURE CopyDocument@1160040000(VAR OldDocument@1160040011 : Record 6085590;NewSetup@1160040008 : Record 6085573;NewCompName@1160040000 : Text[30]);
+    VAR
+      OldDocCat@1160040013 : Record 6085575;
+      NewDocCat@1160040002 : Record 6085575;
+      OldDocuments@1160040007 : Record 6085590;
+      NewDocument@1160040001 : Record 6085590;
+      OldDocPage@1160040003 : Record 6085591;
+      NewDocPage@1160040004 : Record 6085591;
+      OldDocWord@1160040005 : Record 6085592;
+      NewDocWord@1160040006 : Record 6085592;
+    BEGIN
+      OldDocument.TESTFIELD("File Type",OldDocument."File Type"::OCR);
+      OldDocument.TESTFIELD(Status,OldDocument.Status::Open);
+
+      OldDocCat.GET(OldDocument."Document Category Code");
+      NewDocCat.CHANGECOMPANY(NewCompName);
+      NewDocCat.GET(OldDocument."Document Category Code");
+      IF NewDocCat."Archive E-mails on Document" <> OldDocCat."Archive E-mails on Document" THEN
+        ERROR(Text007,NewDocCat.FIELDCAPTION("Archive E-mails on Document"),NewDocCat.TABLECAPTION);
+
+      IF (NewDocCat."Archive E-mails on Document") AND (NewSetup."E-mail File Path" = '') THEN
+        ERROR(Text003,NewSetup.FIELDCAPTION("E-mail File Path"),NewSetup.TABLECAPTION,NewCompName);
+
+      NewDocument.CHANGECOMPANY(NewCompName);
+      NewDocument.TRANSFERFIELDS(OldDocument,TRUE);
+      NewDocument."No." := GetNextDocNo(NewCompName);
+      NewDocument.VALIDATE("Source Record ID Tree ID",0);
+      NewDocument.INSERT(TRUE);
+
+      OldDocPage.SETRANGE("Document No.",OldDocument."No.");
+      IF OldDocPage.FINDSET THEN
+        REPEAT
+          NewDocPage.CHANGECOMPANY(NewCompName);
+          NewDocPage := OldDocPage;
+          NewDocPage."Document No." := NewDocument."No.";
+          NewDocPage.INSERT;
+        UNTIL OldDocPage.NEXT = 0;
+
+      OldDocWord.SETRANGE("Document No.",OldDocument."No.");
+      IF OldDocWord.FINDSET THEN
+        REPEAT
+          NewDocWord.CHANGECOMPANY(NewCompName);
+          NewDocWord := OldDocWord;
+          NewDocWord."Document No." := NewDocument."No.";
+          NewDocWord.INSERT;
+        UNTIL OldDocWord.NEXT = 0;
+
+      NewDocument.SetDCSetup(NewSetup);
+      CopyFile(OldDocument.GetTIFServerFileName,NewDocument.GetTIFServerFileName);
+      CopyFile(OldDocument.GetPDFServerFileName,NewDocument.GetPDFServerFileName);
+      IF NewDocCat."Archive E-mails on Document" THEN
+        CopyFile(OldDocument.GetEMailServerFileName,NewDocument.GetEMailServerFileName);
+
+      OldDocument.DELETE(TRUE);
+
+      COMMIT;
+    END;
+
+    PROCEDURE GetNextDocNo@12(NewCompName@1160040001 : Text[30]) : Code[20];
+    VAR
+      NoSeries@1160040002 : Record 308;
+      NoSeriesLine@1160040004 : Record 309;
+      NoSeriesRelationship@1160040003 : Record 310;
+    BEGIN
+      NoSeriesRelationship.CHANGECOMPANY(NewCompName);
+      NoSeriesRelationship.SETRANGE(Code,NewSetup."Document Nos.");
+      IF NOT NoSeriesRelationship.ISEMPTY THEN
+        ERROR(Text004,NoSeriesRelationship.TABLECAPTION,NewSetup.FIELDCAPTION("Document Nos."));
+
+      NoSeries.CHANGECOMPANY(NewCompName);
+      NoSeries.GET(NewSetup."Document Nos.");
+      NoSeries.TESTFIELD("Default Nos.",TRUE);
+
+      NoSeriesLine.CHANGECOMPANY(NewCompName);
+      NoSeriesLine.LOCKTABLE;
+      NoSeriesLine.SETRANGE("Series Code",NewSetup."Document Nos.");
+      NoSeriesLine.FINDFIRST;
+
+      IF NoSeriesLine.COUNT > 1 THEN
+        ERROR(Text005,NoSeriesLine.TABLECAPTION);
+
+      IF NoSeriesLine."Starting Date" > WORKDATE THEN
+        NoSeriesLine.TESTFIELD("Starting Date",0D);
+
+      NoSeriesLine.TESTFIELD(Open,TRUE);
+      NoSeriesLine."Last Date Used" := WORKDATE;
+
+      IF NoSeriesLine."Last No. Used" = '' THEN BEGIN
+        NoSeriesLine.TESTFIELD("Starting No.");
+        NoSeriesLine."Last No. Used" := NoSeriesLine."Starting No.";
+      END ELSE
+        IF NoSeriesLine."Increment-by No." <= 1 THEN
+          NoSeriesLine."Last No. Used" := INCSTR(NoSeriesLine."Last No. Used")
+        ELSE
+          IncrementNoText(NoSeriesLine."Last No. Used",NoSeriesLine."Increment-by No.");
+      IF (NoSeriesLine."Ending No." <> '') AND
+         (NoSeriesLine."Last No. Used" > NoSeriesLine."Ending No.")
+      THEN
+        ERROR(Text001,NoSeriesLine."Ending No.",NewSetup."Document Nos.");
+
+      NoSeriesLine.VALIDATE(Open);
+      NoSeriesLine.MODIFY;
+
+      EXIT(NoSeriesLine."Last No. Used");
+    END;
+
+    LOCAL PROCEDURE IncrementNoText@20(VAR No@1000 : Code[20];IncrementByNo@1001 : Decimal);
+    VAR
+      DecimalNo@1002 : Decimal;
+      StartPos@1003 : Integer;
+      EndPos@1004 : Integer;
+      NewNo@1005 : Text[30];
+    BEGIN
+      GetIntegerPos(No,StartPos,EndPos);
+      EVALUATE(DecimalNo,COPYSTR(No,StartPos,EndPos - StartPos + 1));
+      NewNo := FORMAT(DecimalNo + IncrementByNo,0,1);
+      ReplaceNoText(No,NewNo,0,StartPos,EndPos);
+    END;
+
+    LOCAL PROCEDURE ReplaceNoText@7(VAR No@1000 : Code[20];NewNo@1001 : Code[20];FixedLength@1002 : Integer;StartPos@1003 : Integer;EndPos@1004 : Integer);
+    VAR
+      StartNo@1005 : Code[20];
+      EndNo@1006 : Code[20];
+      ZeroNo@1007 : Code[20];
+      NewLength@1008 : Integer;
+      OldLength@1009 : Integer;
+    BEGIN
+      IF StartPos > 1 THEN
+        StartNo := COPYSTR(No,1,StartPos - 1);
+      IF EndPos < STRLEN(No) THEN
+        EndNo := COPYSTR(No,EndPos + 1);
+      NewLength := STRLEN(NewNo);
+      OldLength := EndPos - StartPos + 1;
+      IF FixedLength > OldLength THEN
+        OldLength := FixedLength;
+      IF OldLength > NewLength THEN
+        ZeroNo := PADSTR('',OldLength - NewLength,'0');
+      IF STRLEN(StartNo) + STRLEN(ZeroNo) + STRLEN(NewNo) + STRLEN(EndNo)  > 20 THEN
+        ERROR(Text002,No);
+      No := StartNo + ZeroNo + NewNo + EndNo;
+    END;
+
+    LOCAL PROCEDURE GetIntegerPos@4(No@1000 : Code[20];VAR StartPos@1001 : Integer;VAR EndPos@1002 : Integer);
+    VAR
+      IsDigit@1003 : Boolean;
+      i@1004 : Integer;
+    BEGIN
+      StartPos := 0;
+      EndPos := 0;
+      IF No <> '' THEN BEGIN
+        i := STRLEN(No);
+        REPEAT
+          IsDigit := No[i] IN ['0'..'9'];
+          IF IsDigit THEN BEGIN
+            IF EndPos = 0 THEN
+              EndPos := i;
+            StartPos := i;
+          END;
+          i := i - 1;
+        UNTIL (i = 0) OR (StartPos <> 0) AND NOT IsDigit;
+      END;
+    END;
+
+    PROCEDURE CopyFile@1160040004(FromFile@1160040001 : Text[1024];ToFile@1160040002 : Text[1024]);
+    VAR
+      FileSystem@1160040003 : Codeunit 6085584;
+    BEGIN
+      IF FILE.EXISTS(ToFile) THEN
+        FILE.ERASE(ToFile);
+
+      FILE.COPY(FromFile,ToFile);
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

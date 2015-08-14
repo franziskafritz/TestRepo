@@ -1,0 +1,2190 @@
+OBJECT Codeunit 50303 Whse. LF Sales Interface Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=10.04.15;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=HME3974;
+  }
+  PROPERTIES
+  {
+    OnRun=VAR
+            WhseLFSetupL@1000000000 : Record 50300;
+          BEGIN
+            WhseLFSetupL.GET;
+            CASE ParameterCode OF
+              WhseLFSetupL."STA-Processing Parameter": STAProcessing;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      WhseLFSalesImport@1000000000 : Record 50306;
+      FPCGeneralSetup@1000000011 : Record 50055;
+      CUParcelStatusHistoryMgmt@1000000012 : Codeunit 80011;
+      InterfaceProcessMgt@1000000013 : Codeunit 50087;
+      ParameterCode@1000000002 : Code[10];
+      ExitBeforeModification@1000000015 : Boolean;
+      SalesChangeOrder@1000000014 : Boolean;
+      SalesReturnOrder@1000000010 : Boolean;
+      TryToDeleteEntryNo@1000000003 : Integer;
+      HMEText001@1000000008 : TextConst 'DEU=Menge darf nicht kleiner 0 sein.;ENU=Quantity must not be less than 0.';
+      HMEText002@1000000006 : TextConst 'DEU=Die Menge die von LF gemeldet wurde (%1) ist gr”áer als die Menge im Auftrag (%2).;ENU=The quantity that was reported from LF (%1) is higher than the quantity in the sales order (%2).';
+      HMEText003@1000000004 : TextConst 'DEU=Es konnten nicht genug Auftragszeilen fr die gemeldete Menge gefunden werden. Auftrag: %1, Artikel: %2, Menge: %3, Status: %4.;ENU=It couldn''t be found enough sales lines for the reported quantity. Order: %1, Item: %2, Quantity: %3, Status: %4.';
+      HMEText004@1000000001 : TextConst 'DEU=Der Status %1 fr die Auftragszeile: "Belegnr.: %2, Zeilennr. %3" wurde bereits mit dem Zeitstempel %4 eingelesen.;ENU=The status %1 was already imported for Sales Line: "Order No.: %2, Line No.: %3" with timestamp %4.';
+      HMEText005@1000000017 : TextConst 'ENU=Cancel for Order %1, Sequence %2 already exists.';
+      HMEText006@1000000019 : TextConst 'ENU=Channel change: %1 --> %2 for Item %3.';
+      New@1000000009 : Boolean;
+      Update@1000000007 : Boolean;
+      Cancel@1000000005 : Boolean;
+      UpdateKAD@1000000018 : Boolean;
+
+    PROCEDURE UpdateStatusUploaded@1000000003(FilenameV@1000000000 : Text[30]);
+    VAR
+      WhseLFSalesExportHeaderL@1000000001 : Record 50304;
+    BEGIN
+      WhseLFSalesExportHeaderL.RESET;
+      WhseLFSalesExportHeaderL.SETCURRENTKEY(Filename);
+      WhseLFSalesExportHeaderL.SETRANGE(Filename,FilenameV);
+      IF WhseLFSalesExportHeaderL.FINDSET THEN BEGIN
+        WhseLFSalesExportHeaderL.Status := WhseLFSalesExportHeaderL.Status::Uploaded;
+        WhseLFSalesExportHeaderL.MODIFY;
+      END;
+    END;
+
+    PROCEDURE SetImportSales@1000000005(ParWhseLFSalesImportV@1000000000 : Record 50306);
+    BEGIN
+      WhseLFSalesImport := ParWhseLFSalesImportV;
+    END;
+
+    PROCEDURE SetParameterCode@1000000010(ParParameterCodeV@1000000000 : Code[10]);
+    BEGIN
+      ParameterCode := ParParameterCodeV;
+    END;
+
+    PROCEDURE STAProcessing@1000000007();
+    VAR
+      DHLParcelStatusHistoryL@1000000000 : Record 50021;
+      DHLParcelStatusHistoryCheckL@1000000011 : Record 50021;
+      ParcelStatusHistoryL@1000000017 : Record 80013;
+      WhseLFSalesExportHeaderL@1000000003 : Record 50304;
+      WhseLFSalesExportLineL@1000000004 : Record 50305;
+      WhseLFSalesLineReferenceL@1000000005 : Record 50314;
+      SalesHeaderL@1000000008 : Record 36;
+      SalesLineL@1000000007 : Record 37;
+      SalesLineResourceL@1000000009 : Record 37;
+      SalesLineChargeL@1000000010 : Record 37;
+      SalesPostL@1000000013 : Codeunit 80;
+      QuantityCounterL@1000000002 : Integer;
+      CarryOutDateL@1000000015 : Date;
+      GoOnL@1000000016 : Boolean;
+      SalesLine2L@1000000019 : Record 37;
+      SalesLineArchiveL@1000000018 : Record 5108;
+      RecRefL@1000000020 : RecordRef;
+      InterfaceProcessMgtL@1000000021 : Codeunit 50087;
+      BatchSalesPostHeaderL@1000000022 : Record 50225;
+      DateL@1000000023 : Date;
+      TimeL@1000000024 : Time;
+      FotoReturnWarehouseMgtL@1000000025 : Codeunit 50249;
+      ShippingAgentCodeL@1000000026 : Code[10];
+      WhseLFTrackingNoLogL@1000000001 : Record 50316;
+      TrackingNoL@1000000006 : Code[40];
+      PurchasingCodeL@1000000027 : Code[10];
+      TrackingNoAssignmentL@1000000028 : 'None,one2one,N2N';
+    BEGIN
+      FPCGeneralSetup.GET;
+
+      CLEAR(QuantityCounterL);
+
+      IF WhseLFSalesImport.Quantity < 0 THEN
+        ERROR(HMEText001);
+
+      // Find Sales Export Header with Order No. and Transmission No.
+      WhseLFSalesExportHeaderL.SETRANGE("LF Order No.",WhseLFSalesImport."Customer Order No.");
+      //H2157 16.03.15 DMO ++++++++++++++++++++++++++++++++++++
+      WhseLFSalesExportHeaderL.SETRANGE("Whse. H24 Identifier Code",WhseLFSalesImport."Client Identifier");
+      IF WhseLFSalesExportHeaderL.FINDLAST THEN BEGIN
+      //H2157 16.03.15 DMO ------------------------------------
+        // Find Sales Export Lines with Header Information and Item No.
+        WhseLFSalesExportLineL.SETRANGE("Entry No.",WhseLFSalesExportHeaderL."Entry No.");
+        WhseLFSalesExportLineL.SETRANGE(Type,WhseLFSalesExportLineL.Type::Item);
+        WhseLFSalesExportLineL.SETRANGE("No.",WhseLFSalesImport."Item No.");
+        WhseLFSalesExportLineL.SETRANGE("Pos. No.",WhseLFSalesImport."Order Pos. No.");
+        IF WhseLFSalesExportLineL.FINDFIRST THEN BEGIN
+          // Find Sales Line References with Line Information
+          WhseLFSalesLineReferenceL.SETRANGE("Attached to Entry No.",WhseLFSalesExportLineL."Entry No.");
+          WhseLFSalesLineReferenceL.SETRANGE("Attached to Entry Line No.",WhseLFSalesExportLineL."Entry Line No.");
+          IF WhseLFSalesImport.Quantity > WhseLFSalesLineReferenceL.COUNT THEN
+            ERROR(
+              STRSUBSTNO(
+                HMEText002,
+                WhseLFSalesImport.Quantity,
+                WhseLFSalesLineReferenceL.COUNT));
+
+          //H1980 19.03.15 EHN ++++++++++++++++++++++++++++++++++++++++++++
+          WhseLFTrackingNoLogL.RESET;
+          WhseLFTrackingNoLogL.SETRANGE("Sales Import Entry No.", WhseLFSalesImport."Entry No.");
+          IF WhseLFTrackingNoLogL.COUNT <> 0 THEN BEGIN
+            IF WhseLFSalesImport.Quantity = WhseLFTrackingNoLogL.COUNT THEN
+              TrackingNoAssignmentL := TrackingNoAssignmentL::one2one
+            ELSE
+              TrackingNoAssignmentL := TrackingNoAssignmentL::N2N;
+          END;
+          //H1980 19.03.15 EHN --------------------------------------------
+
+          IF WhseLFSalesLineReferenceL.FINDSET THEN
+            REPEAT
+              //H1980 20.02.15 EHN +++++++++++
+              TrackingNoL := '';
+              //H1980 20.02.15 EHN -----------
+              IF WhseLFSalesImport."Order Status" IN ['40','41'] THEN BEGIN
+                IF SalesLine2L.GET(1,WhseLFSalesImport."Customer Order No. 2",WhseLFSalesLineReferenceL."Attached to Sales Line No.")
+                THEN BEGIN
+                  FPCGeneralSetup.GET;
+                  FPCGeneralSetup.TESTFIELD("Status Transport");
+                  FPCGeneralSetup.TESTFIELD("Interface Code Whse. LF");
+                  FPCGeneralSetup.TESTFIELD("Trigger Whse. LF Interface");
+                  IF InterfaceProcessMgt.TriggerActive(FPCGeneralSetup."Trigger Whse. LF Interface") THEN
+                    InterfaceProcessMgt.InsertInterfaceRecords(
+                      0,
+                      SalesLine2L."Document Type",
+                      SalesLine2L."Document No.",
+                      SalesLine2L."Line No.",
+                      FPCGeneralSetup."Interface Code Whse. LF",
+                      FPCGeneralSetup."Status Transport",
+                      FPCGeneralSetup."Trigger Whse. LF Interface");
+                END;
+              END;
+              CLEAR(GoOnL);
+              CASE FPCGeneralSetup."Active Parcel Status History" OF
+                FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+                FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old":
+                  BEGIN
+                    DHLParcelStatusHistoryCheckL.SETRANGE("Document No.",WhseLFSalesImport."Customer Order No. 2");
+                    DHLParcelStatusHistoryCheckL.SETRANGE("Document Type",DHLParcelStatusHistoryL."Document Type"::Order);
+                    DHLParcelStatusHistoryCheckL.SETRANGE("Document Line No.",WhseLFSalesLineReferenceL."Attached to Sales Line No.");
+                    DHLParcelStatusHistoryCheckL.SETRANGE("Status Code",WhseLFSalesImport."Order Status");
+                    DHLParcelStatusHistoryCheckL.SETRANGE("Import Time Stamp",WhseLFSalesImport."Import Timestamp");
+                    IF DHLParcelStatusHistoryCheckL.ISEMPTY THEN
+                      GoOnL := TRUE;
+                  END;
+                FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+                FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History":
+                  BEGIN
+                    WITH ParcelStatusHistoryL DO BEGIN
+                      RESET;
+                      SETCURRENTKEY("Document No.","Document Line No.","Document Type");
+                      SETRANGE("Document No.",WhseLFSalesImport."Customer Order No. 2");
+                      SETRANGE("Document Line No.",WhseLFSalesLineReferenceL."Attached to Sales Line No.");
+                      SETRANGE("Document Type","Document Type"::Order);
+                      SETRANGE("Status Sub Code",WhseLFSalesImport."Order Status");
+                      SETRANGE("Timestamp Interface",WhseLFSalesImport."Import Timestamp");
+                      IF ISEMPTY THEN
+                        GoOnL := TRUE;
+                    END;
+                  END;
+              END;
+              IF NOT GoOnL THEN BEGIN
+                ERROR(
+                  STRSUBSTNO(
+                    HMEText004,
+                    WhseLFSalesImport."Order Status",
+                    WhseLFSalesImport."Customer Order No. 2",
+                    WhseLFSalesLineReferenceL."Attached to Sales Line No.",
+                    WhseLFSalesImport."Import Timestamp"));
+              END ELSE BEGIN
+                IF FPCGeneralSetup."Active Parcel Status History" IN
+                  [FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+                   FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+                   FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New"]
+                THEN BEGIN
+                  DHLParcelStatusHistoryL.INIT;
+                  DHLParcelStatusHistoryL."Entry No." := 0;
+                  IF STRPOS(WhseLFSalesImport."Carry Out Date",'-') <> 0 THEN
+                    IF EVALUATE(DateL,COPYSTR(WhseLFSalesImport."Carry Out Date",1,STRPOS(WhseLFSalesImport."Carry Out Date",'-')-1))
+      AND
+                       EVALUATE(TimeL,COPYSTR(WhseLFSalesImport."Carry Out Date",STRPOS(WhseLFSalesImport."Carry Out Date",'-')+1))
+                    THEN
+                      DHLParcelStatusHistoryL."Time Stamp" := CREATEDATETIME(DateL,TimeL);
+
+                  IF (DHLParcelStatusHistoryL."Time Stamp"  = 0DT) AND (STRPOS(WhseLFSalesImport.Timestamp,'-') <> 0) THEN
+                    IF EVALUATE(DateL,COPYSTR(WhseLFSalesImport.Timestamp,1,STRPOS(WhseLFSalesImport.Timestamp,'-')-1)) AND
+                       EVALUATE(TimeL,COPYSTR(WhseLFSalesImport.Timestamp,STRPOS(WhseLFSalesImport.Timestamp,'-')+1))
+                    THEN
+                      DHLParcelStatusHistoryL."Time Stamp" := CREATEDATETIME(DateL,TimeL);
+
+                  IF DHLParcelStatusHistoryL."Time Stamp"  = 0DT THEN
+                    DHLParcelStatusHistoryL."Time Stamp" := CURRENTDATETIME;
+                  DHLParcelStatusHistoryL."Status Code" := WhseLFSalesImport."Order Status";
+                  DHLParcelStatusHistoryL."Document No." := WhseLFSalesImport."Customer Order No. 2";
+
+                  IF WhseLFSalesExportHeaderL."Document Type" = WhseLFSalesExportHeaderL."Document Type"::"Return Order" THEN BEGIN
+                    DHLParcelStatusHistoryL."Document Type" := DHLParcelStatusHistoryL."Document Type"::"Return Order";
+                  END ELSE
+                    DHLParcelStatusHistoryL."Document Type" := DHLParcelStatusHistoryL."Document Type"::Order;
+                  DHLParcelStatusHistoryL."Document Line No." := WhseLFSalesLineReferenceL."Attached to Sales Line No.";
+                  DHLParcelStatusHistoryL."Import Time Stamp" := WhseLFSalesImport."Import Timestamp";
+                  DHLParcelStatusHistoryL."Time Difference" :=
+                    DHLParcelStatusHistoryL."Time Stamp" - DHLParcelStatusHistoryL."Import Time Stamp";
+                  EVALUATE(DHLParcelStatusHistoryL."Order Date",WhseLFSalesImport."Order Date");
+                  DHLParcelStatusHistoryL."Delivery Time Slot-from" := WhseLFSalesImport."Delivery Time Slot-from";
+                  DHLParcelStatusHistoryL."Delivery Time Slot-to"   := WhseLFSalesImport."Delivery Time Slot-to";
+                  DHLParcelStatusHistoryL.INSERT(TRUE);
+                END;
+                IF FPCGeneralSetup."Active Parcel Status History" IN
+                   [FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+                    FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+                    FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History"]
+                THEN BEGIN
+                  CLEAR(RecRefL);
+                  CLEAR(CUParcelStatusHistoryMgmt);
+                  IF SalesLine2L.GET(
+                       SalesLine2L."Document Type"::Order,
+                       WhseLFSalesImport."Customer Order No. 2",
+                       WhseLFSalesLineReferenceL."Attached to Sales Line No.")
+                  THEN BEGIN
+                    RecRefL.GETTABLE(SalesLine2L);
+                    //H1980, H1767 03.02.15 EHN ++++++++++++++++++++++++++++++++++++++++++++
+                    PurchasingCodeL := SalesLine2L."Purchasing Code";
+                    IF TrackingNoAssignmentL = TrackingNoAssignmentL::one2one THEN BEGIN
+                      WhseLFTrackingNoLogL.RESET;
+                      WhseLFTrackingNoLogL.SETRANGE("Sales Import Entry No.", WhseLFSalesImport."Entry No.");
+                      WhseLFTrackingNoLogL.SETRANGE("Linked to Sales Line No.",0);
+                      WhseLFTrackingNoLogL.SETRANGE("Tracking No.", SalesLine2L."DHL Shipment Number");
+                      IF WhseLFTrackingNoLogL.FINDFIRST THEN BEGIN
+                        WhseLFTrackingNoLogL."Linked to Sales Line No." := SalesLine2L."Line No.";
+                        WhseLFTrackingNoLogL.MODIFY;
+                        TrackingNoL := WhseLFTrackingNoLogL."Tracking No.";
+                      END;
+                    END;
+                    //H1980, H1767 03.02.15 EHN --------------------------------------------
+                    ShippingAgentCodeL := SalesLine2L."Shipping Agent Code";
+                  END ELSE BEGIN
+                    SalesLineArchiveL.RESET;
+                    SalesLineArchiveL.SETRANGE("Document Type",SalesLineArchiveL."Document Type"::Order);
+                    SalesLineArchiveL.SETRANGE("Document No.",WhseLFSalesImport."Customer Order No. 2");
+                    SalesLineArchiveL.SETRANGE("Line No.",WhseLFSalesLineReferenceL."Attached to Sales Line No.");
+                    IF SalesLineArchiveL.FINDLAST THEN BEGIN
+                      RecRefL.GETTABLE(SalesLineArchiveL);
+                      //H1980, H1767 03.02.15 EHN ++++++++++++++++++++++++++++++++++++++++++++
+                      PurchasingCodeL := SalesLineArchiveL."Purchasing Code";
+                      IF TrackingNoAssignmentL = TrackingNoAssignmentL::one2one THEN BEGIN
+                        WhseLFTrackingNoLogL.RESET;
+                        WhseLFTrackingNoLogL.SETRANGE("Sales Import Entry No.", WhseLFSalesImport."Entry No.");
+                        WhseLFTrackingNoLogL.SETRANGE("Linked to Sales Line No.",0);
+                        WhseLFTrackingNoLogL.SETRANGE("Tracking No.", SalesLineArchiveL."DHL Shipment Number");
+                        IF WhseLFTrackingNoLogL.FINDFIRST THEN BEGIN
+                          WhseLFTrackingNoLogL."Linked to Sales Line No." := SalesLineArchiveL."Line No.";
+                          WhseLFTrackingNoLogL.MODIFY;
+                          TrackingNoL := WhseLFTrackingNoLogL."Tracking No.";
+                        END;
+                      END;
+                      //H1980, H1767 03.02.15 EHN --------------------------------------------
+                      ShippingAgentCodeL := SalesLineArchiveL."Shipping Agent Code";
+                    END ELSE
+                      IF SalesLine2L.GET(
+                           SalesLine2L."Document Type"::"Return Order",WhseLFSalesImport."Customer Order No. 2",
+                           WhseLFSalesLineReferenceL."Attached to Sales Line No.")
+                      THEN BEGIN
+                        RecRefL.GETTABLE(SalesLine2L);
+                        //H1980, H1767 03.02.15 EHN ++++++++++++++++++++++++++++++++++++++++++++
+                        PurchasingCodeL := SalesLine2L."Purchasing Code";
+                        IF TrackingNoAssignmentL = TrackingNoAssignmentL::one2one THEN BEGIN
+                          WhseLFTrackingNoLogL.RESET;
+                          WhseLFTrackingNoLogL.SETRANGE("Sales Import Entry No.", WhseLFSalesImport."Entry No.");
+                          WhseLFTrackingNoLogL.SETRANGE("Linked to Sales Line No.",0);
+                          WhseLFTrackingNoLogL.SETRANGE("Tracking No.", SalesLine2L."DHL Shipment Number");
+                          IF WhseLFTrackingNoLogL.FINDFIRST THEN BEGIN
+                            WhseLFTrackingNoLogL."Linked to Sales Line No." := SalesLine2L."Line No.";
+                            WhseLFTrackingNoLogL.MODIFY;
+                            TrackingNoL := WhseLFTrackingNoLogL."Tracking No.";
+                          END;
+                        END;
+                        //H1980, H1767 03.02.15 EHN --------------------------------------------
+                        ShippingAgentCodeL := SalesLine2L."Shipping Agent Code";
+                      END ELSE BEGIN
+                        SalesLineArchiveL.RESET;
+                        SalesLineArchiveL.SETRANGE("Document Type",SalesLineArchiveL."Document Type"::"Return Order");
+                        SalesLineArchiveL.SETRANGE("Document No.",WhseLFSalesImport."Customer Order No. 2");
+                        SalesLineArchiveL.SETRANGE("Line No.",WhseLFSalesLineReferenceL."Attached to Sales Line No.");
+                        IF SalesLineArchiveL.FINDLAST THEN BEGIN
+                          RecRefL.GETTABLE(SalesLineArchiveL);
+                          //H1980, H1767 03.02.15 EHN ++++++++++++++++++++++++++++++++++++++++++++
+                          PurchasingCodeL := SalesLineArchiveL."Purchasing Code";
+                          IF TrackingNoAssignmentL = TrackingNoAssignmentL::one2one THEN BEGIN
+                            WhseLFTrackingNoLogL.RESET;
+                            WhseLFTrackingNoLogL.SETRANGE("Sales Import Entry No.", WhseLFSalesImport."Entry No.");
+                            WhseLFTrackingNoLogL.SETRANGE("Linked to Sales Line No.",0);
+                            WhseLFTrackingNoLogL.SETRANGE("Tracking No.", SalesLineArchiveL."DHL Shipment Number");
+                            IF WhseLFTrackingNoLogL.FINDFIRST THEN BEGIN
+                              WhseLFTrackingNoLogL."Linked to Sales Line No." := SalesLineArchiveL."Line No.";
+                              WhseLFTrackingNoLogL.MODIFY;
+                              TrackingNoL := WhseLFTrackingNoLogL."Tracking No.";
+                            END;
+                          END;
+                          //H1980, H1767 03.02.15 EHN --------------------------------------------
+                          ShippingAgentCodeL := SalesLineArchiveL."Shipping Agent Code";
+                        END;
+                      END;
+                  END;
+                  //H1980, H1767 03.02.15 EHN ++++++++++++++++++++++++++++++++++++++++++++
+                  IF NOT RecRefL.ISEMPTY THEN BEGIN
+                    InsertIntoParcelStatusHistory(RecRefL,
+                                                  TrackingNoL,
+                                                  TrackingNoAssignmentL,
+                                                  ShippingAgentCodeL,
+                                                  WhseLFSalesImport."Order Status",
+                                                  WhseLFSalesImport."Import Timestamp",
+                                                  PurchasingCodeL);
+                  END;
+                  //H1980, H1767 03.02.15 EHN --------------------------------------------
+                END;
+                QuantityCounterL += 1;
+                WhseLFSalesLineReferenceL.MARK(TRUE);
+              END;
+            UNTIL (WhseLFSalesLineReferenceL.NEXT = 0) OR (QuantityCounterL = WhseLFSalesImport.Quantity);
+
+          IF QuantityCounterL < WhseLFSalesImport.Quantity THEN
+            ERROR(
+              STRSUBSTNO(
+                HMEText003,
+                WhseLFSalesImport."Customer Order No. 2",
+                WhseLFSalesImport."Item No.",
+                WhseLFSalesImport.Quantity,
+                WhseLFSalesImport."Order Status"));
+
+          // Check Status and do something:
+          CASE WhseLFSalesImport."Order Status" OF
+            '0','00':
+              BEGIN   // Set Status Received
+                WhseLFSalesExportHeaderL.Status := WhseLFSalesExportHeaderL.Status::Received;
+                WhseLFSalesExportHeaderL.MODIFY;
+              END;
+
+            '41':
+              BEGIN   // Post Sales Lines
+                FotoReturnWarehouseMgtL.CheckTransferOrderLF(WhseLFSalesImport);
+              END;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE TriggerWhsLFFromSalesHeader@1000000016(SalesHeaderV@1000000000 : Record 36);
+    VAR
+      SalesLineL@1000000001 : Record 37;
+      LocationTmpL@1000000002 : TEMPORARY Record 14;
+      WhseH24Identifier@1000000004 : Record 50508;
+      WhseH24BranchL@1000000003 : Record 50507;
+      PurchasingL@1000000005 : Record 5721;
+    BEGIN
+      // H2127  13.02.15  MKR +++++++++++++++++++++++++++++++++++++++
+      WhseH24Identifier.RESET;
+      IF WhseH24Identifier.FINDSET THEN BEGIN
+        REPEAT
+          WhseH24BranchL.SETRANGE("Whse. H24 Identifier Code", WhseH24Identifier."Whse. H24 Identifier");
+          WhseH24BranchL.SETRANGE("Trigger Kommission", TRUE);
+          IF WhseH24BranchL.FINDFIRST THEN
+            IF NOT LocationTmpL.GET(WhseH24BranchL."Location Code") THEN BEGIN
+              LocationTmpL.INIT;
+              LocationTmpL.Code := WhseH24BranchL."Location Code";
+              LocationTmpL."Branch Code" := WhseH24BranchL."Branch Code";
+              LocationTmpL."WH24 Identifier" := WhseH24BranchL."Whse. H24 Identifier Code";
+              LocationTmpL.INSERT;
+            END;
+        UNTIL WhseH24Identifier.NEXT=0;
+      END;
+
+      TriggerWhsLFInterface(SalesHeaderV, LocationTmpL);
+      // H2127  13.02.15  MKR ---------------------------------------
+    END;
+
+    PROCEDURE TriggerWhsLFInterface@1000000014(SalesHeaderV@1000000001 : Record 36;VAR LocationTmpR@1000000000 : TEMPORARY Record 14);
+    VAR
+      NewActionLocationsTmpL@1000000004 : TEMPORARY Record 14;
+      UpdateActionLocationsTmpL@1000000005 : TEMPORARY Record 14;
+      CancelActionLocationsTmpL@1000000006 : TEMPORARY Record 14;
+    BEGIN
+      // H2127  16.02.15  MKR +++++++++++++++++++++++++++++++++++++
+      IF LocationTmpR.FINDSET THEN BEGIN
+        REPEAT
+          CheckForNecessaryActions(
+            SalesHeaderV,
+            NewActionLocationsTmpL,
+            UpdateActionLocationsTmpL,
+            CancelActionLocationsTmpL,
+            LocationTmpR);
+        UNTIL LocationTmpR.NEXT=0;
+      END;
+
+      IF ExitBeforeModification THEN
+        EXIT;
+      // xxx
+      NewActionLocationsTmpL.RESET;
+      IF NewActionLocationsTmpL.FINDSET THEN
+        REPEAT
+          FillNewOrderForLocation(SalesHeaderV,NewActionLocationsTmpL);
+        UNTIL NewActionLocationsTmpL.NEXT=0;
+
+      IF UpdateActionLocationsTmpL.FINDSET THEN
+        REPEAT
+          UpdateOrderForLocation(SalesHeaderV, UpdateActionLocationsTmpL);
+        UNTIL UpdateActionLocationsTmpL.NEXT=0;
+
+      IF CancelActionLocationsTmpL.FINDSET THEN
+        REPEAT
+          CancelOrderForLocation(SalesHeaderV, CancelActionLocationsTmpL);
+        UNTIL CancelActionLocationsTmpL.NEXT=0;
+      // H2127  16.02.15  MKR ----------------------------------------
+    END;
+
+    PROCEDURE GetBrachCodeFromPurchasingCode@1000000032(PurchasingCodeV@1000000000 : Code[10]) : Code[10];
+    VAR
+      PurchasingL@1000000001 : Record 5721;
+    BEGIN
+      IF PurchasingL.GET(PurchasingCodeV) THEN
+        EXIT(PurchasingL."Whse. LF Branch Code");
+
+      EXIT('');
+    END;
+
+    PROCEDURE GetLocationFromPurchasingCode@1000000030(PurchasingCodeV@1000000000 : Code[10]) : Code[10];
+    VAR
+      PurchasingL@1000000001 : Record 5721;
+    BEGIN
+      // H2127  20.02.15  MKR ++++++++++++++++++++++++++++++++++++++++++
+      IF PurchasingL.GET(PurchasingCodeV) THEN
+        EXIT(PurchasingL."Location Code");
+
+      EXIT('');
+      // H2127  20.02.15  MKR ------------------------------------------
+    END;
+
+    PROCEDURE FillNewOrderForLocation@1000000015(SalesHeaderV@1000000002 : Record 36;LocationV@1000000003 : Record 14);
+    VAR
+      WhseH24SalesExportHeaderL@1000000000 : Record 50304;
+      WhseH24SalesExportLineL@1000000008 : Record 50305;
+      AdditionalSalesHeaderFieldsL@1000000005 : Record 50120;
+      SalesLineL@1000000006 : Record 37;
+      ItemL@1000000014 : Record 27;
+      SalesHeader2L@1000000013 : Record 36;
+      SalesHeaderArchiveL@1000000012 : Record 5107;
+      SalesLine2L@1000000011 : Record 37;
+      WhseH24SalesExportLine2L@1000000010 : Record 50305;
+      WhseH24SalesLineReferenceL@1000000009 : Record 50314;
+      WhseH24IdentifierL@1000000001 : Record 50508;
+      NextLineNoL@1000000007 : Integer;
+      WhseH24SalesExportHeaderNoL@1000000017 : Integer;
+    BEGIN
+      // H2127  24.2.15 MKR ++++++++++++++++++++++++++++++++++
+      // Complete revision
+
+      WhseH24IdentifierL.GET(LocationV."WH24 Identifier");
+      WhseH24IdentifierL.TESTFIELD("Record Type KAK");
+      WhseH24IdentifierL.TESTFIELD("Record Type KAP");
+
+      CheckAndUpdateSalesLineID(SalesHeaderV);
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type", SalesHeaderV."Document Type");
+      SalesLineL.SETRANGE("Document No.", SalesHeaderV."No.");
+      SalesLineL.SETRANGE(Type, SalesLineL.Type::Item);
+      SalesLineL.SETFILTER(Quantity,'<>%1', 0);
+      SalesLineL.SETRANGE("Location Code", LocationV.Code);
+      IF SalesLineL.FINDSET THEN BEGIN
+        NextLineNoL := 0;
+        REPEAT
+          IF NOT InterfaceProcessMgt.ExistsCancellationIPL(SalesLineL) THEN BEGIN
+            //H3974 26.03.15 EHN +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            IF (GetLocationFromPurchasingCode(SalesLineL."Purchasing Code") = LocationV.Code) AND
+               (GetBrachCodeFromPurchasingCode(SalesLineL."Purchasing Code") = LocationV."Branch Code") THEN BEGIN
+            //H3974 26.03.15 EHN -----------------------------------------------------------------
+              IF NextLineNoL = 0 THEN BEGIN
+                WhseH24SalesExportHeaderL.RESET;
+                WhseH24SalesExportHeaderL."Entry No." := WhseH24SalesExportHeaderL.GetNextEntryNo;
+                WhseH24SalesExportHeaderL.Status := WhseH24SalesExportHeaderL.Status::Creation;
+                WhseH24SalesExportHeaderL.INSERT;
+
+                WhseH24SalesExportHeaderL."Document Type" := SalesHeaderV."Document Type";
+                WhseH24SalesExportHeaderL."Document No." := SalesHeaderV."No.";
+                //H2164 03.03.15 DMO ++++++++++++++++++++++++++++++++++++
+                WhseH24SalesExportHeaderL."Sequence No." := GetNextSequenceNo(SalesHeaderV,LocationV);
+                //H2164 03.03.15 DMO ------------------------------------
+                WhseH24SalesExportHeaderL."LF Order No." :=
+                  WhseH24SalesExportHeaderL."Document No." + WhseH24SalesExportHeaderL."Sequence No.";
+                WhseH24SalesExportHeaderL."Transmission Mode" := WhseH24SalesExportHeaderL."Transmission Mode"::New;
+                WhseH24SalesExportHeaderL."Whse. H24 Identifier Code" := LocationV."WH24 Identifier";
+                WhseH24SalesExportHeaderL."Branch Code" := LocationV."Branch Code";
+                WhseH24SalesExportHeaderL."Record Type" := WhseH24IdentifierL."Record Type KAK";
+                WhseH24SalesExportHeaderL."Website No." := SalesHeaderV."Website No.";
+                WhseH24SalesExportHeaderL.Status := WhseH24SalesExportHeaderL.Status::Unprocessed;
+                WhseH24SalesExportHeaderL."Insert Timestamp" := CURRENTDATETIME;
+                WhseH24SalesExportHeaderL."Process Timestamp" := 0DT;
+                WhseH24SalesExportHeaderL.Filename := '';
+
+                IF SalesReturnOrder THEN BEGIN
+                  SalesHeader2L.RESET;
+                  SalesHeader2L.SETRANGE("Document Type", SalesHeader2L."Document Type"::Order);
+                  SalesHeader2L.SETRANGE("No.", SalesHeaderV."External Document No.");
+                  IF SalesHeader2L.FINDFIRST THEN BEGIN
+                    IF AdditionalSalesHeaderFieldsL.GET(SalesHeader2L."Document Type", SalesHeader2L."No.") THEN BEGIN
+                      WhseH24SalesExportHeaderL.Salutation := GetSalutationFromAddionalTable(AdditionalSalesHeaderFieldsL);
+                      IF AdditionalSalesHeaderFieldsL."Ship-to Company Name" <> '' THEN BEGIN
+                        WhseH24SalesExportHeaderL."Ship-to Name" := AdditionalSalesHeaderFieldsL."Ship-to Company Name";
+                        WhseH24SalesExportHeaderL."Ship-to Name 2" := AdditionalSalesHeaderFieldsL."Ship-to First Name" + ' ';
+                        WhseH24SalesExportHeaderL."Ship-to Name 2" :=
+                          COPYSTR(
+                            AdditionalSalesHeaderFieldsL."Sell-to Last Name",1,30-STRLEN(WhseH24SalesExportHeaderL."Ship-to Name 2"));
+                      END ELSE BEGIN
+                        WhseH24SalesExportHeaderL."Ship-to Name" := AdditionalSalesHeaderFieldsL."Ship-to Last Name";
+                        WhseH24SalesExportHeaderL."Ship-to Name 2" := AdditionalSalesHeaderFieldsL."Ship-to First Name";
+                        IF (WhseH24SalesExportHeaderL."Ship-to Name"='') AND (WhseH24SalesExportHeaderL."Ship-to Name 2"='') THEN BEGIN
+                          WhseH24SalesExportHeaderL."Ship-to Name" := SalesHeaderV."Ship-to Name";
+                          WhseH24SalesExportHeaderL."Ship-to Name 2" := SalesHeaderV."Ship-to Name 2";
+                        END;
+                      END;
+                    END ELSE BEGIN
+                      WhseH24SalesExportHeaderL.Salutation := WhseH24SalesExportHeaderL.Salutation::Company;
+                      WhseH24SalesExportHeaderL."Ship-to Name" := SalesHeader2L."Ship-to Name";
+                      WhseH24SalesExportHeaderL."Ship-to Name 2" := SalesHeader2L."Ship-to Name 2";
+                    END;
+
+                    WhseH24SalesExportHeaderL."Ship-to Address" := SalesHeader2L."Ship-to Address";
+                    WhseH24SalesExportHeaderL."Ship-to Address 2" := SalesHeader2L."Ship-to Address 2";
+                    WhseH24SalesExportHeaderL."Ship-to City" := SalesHeader2L."Ship-to City";
+                    WhseH24SalesExportHeaderL."Ship-to Post Code" := SalesHeader2L."Ship-to Post Code";
+                    WhseH24SalesExportHeaderL."Ship-to Country/Region Code" := SalesHeader2L."Ship-to Country/Region Code";
+                    //H1412 05.09.14 EHN ++++++++++++++++++++++++++++++++
+                    WhseH24SalesExportHeaderL."Language Code" := SalesHeader2L."Language Code";
+                    //H1412 05.09.14 EHN --------------------------------
+                    WhseH24SalesExportHeaderL."Phone No." := SalesHeader2L."Phone No.";
+                    WhseH24SalesExportHeaderL."E-Mail" := SalesHeader2L."E-Mail";
+                  END ELSE BEGIN
+                    SalesHeaderArchiveL.RESET;
+                    SalesHeaderArchiveL.SETRANGE("Document Type", SalesHeaderArchiveL."Document Type"::Order);
+                    SalesHeaderArchiveL.SETRANGE("No.", SalesHeaderV."External Document No.");
+                    IF SalesHeaderArchiveL.FINDFIRST THEN BEGIN
+                      IF AdditionalSalesHeaderFieldsL.GET(SalesHeaderArchiveL."Document Type",SalesHeaderArchiveL."No.") THEN BEGIN
+                        WhseH24SalesExportHeaderL.Salutation := GetSalutationFromAddionalTable(AdditionalSalesHeaderFieldsL);
+                        IF AdditionalSalesHeaderFieldsL."Ship-to Company Name" <> '' THEN BEGIN
+                          WhseH24SalesExportHeaderL."Ship-to Name" := AdditionalSalesHeaderFieldsL."Ship-to Company Name";
+                          WhseH24SalesExportHeaderL."Ship-to Name 2" := AdditionalSalesHeaderFieldsL."Ship-to First Name" + ' ';
+                          WhseH24SalesExportHeaderL."Ship-to Name 2" :=
+                            COPYSTR(
+                              AdditionalSalesHeaderFieldsL."Sell-to Last Name",1,30 - STRLEN(WhseH24SalesExportHeaderL."Ship-to Name 2")
+      );
+                        END ELSE BEGIN
+                          WhseH24SalesExportHeaderL."Ship-to Name" := AdditionalSalesHeaderFieldsL."Ship-to Last Name";
+                          WhseH24SalesExportHeaderL."Ship-to Name 2" := AdditionalSalesHeaderFieldsL."Ship-to First Name";
+                          IF (WhseH24SalesExportHeaderL."Ship-to Name" = '') AND (WhseH24SalesExportHeaderL."Ship-to Name 2" = '')
+                          THEN BEGIN
+                            WhseH24SalesExportHeaderL."Ship-to Name" := SalesHeaderArchiveL."Ship-to Name";
+                            WhseH24SalesExportHeaderL."Ship-to Name 2" := SalesHeaderArchiveL."Ship-to Name 2";
+                          END;
+                        END;
+                      END ELSE BEGIN
+                        WhseH24SalesExportHeaderL.Salutation := WhseH24SalesExportHeaderL.Salutation::Company;
+                        WhseH24SalesExportHeaderL."Ship-to Name" := SalesHeaderArchiveL."Ship-to Name";
+                        WhseH24SalesExportHeaderL."Ship-to Name 2" := SalesHeaderArchiveL."Ship-to Name 2";
+                      END;
+
+                      WhseH24SalesExportHeaderL."Ship-to Address" := SalesHeaderArchiveL."Ship-to Address";
+                      WhseH24SalesExportHeaderL."Ship-to Address 2" := SalesHeaderArchiveL."Ship-to Address 2";
+                      WhseH24SalesExportHeaderL."Ship-to City" := SalesHeaderArchiveL."Ship-to City";
+                      WhseH24SalesExportHeaderL."Ship-to Post Code" := SalesHeaderArchiveL."Ship-to Post Code";
+                      WhseH24SalesExportHeaderL."Ship-to Country/Region Code" := SalesHeaderArchiveL."Ship-to Country/Region Code";
+                      //H1412 05.09.14 EHN ++++++++++++++++++++++++++++++++
+                      WhseH24SalesExportHeaderL."Language Code" := SalesHeaderArchiveL."Language Code";
+                      //H1412 05.09.14 EHN --------------------------------
+                      WhseH24SalesExportHeaderL."Phone No." := SalesHeaderArchiveL."Phone No.";
+                      WhseH24SalesExportHeaderL."E-Mail" := SalesHeaderArchiveL."E-Mail";
+                    END;
+                  END;
+                END
+                ELSE BEGIN
+                  WhseH24SalesExportHeaderL."Ship-to Customer No." := SalesHeaderV."Sell-to Customer No.";
+                  // Check Addional Address in Addional Sales HEader Fields Tables
+                  IF AdditionalSalesHeaderFieldsL.GET(SalesHeaderV."Document Type", SalesHeaderV."No.") THEN BEGIN
+                    WhseH24SalesExportHeaderL.Salutation := GetSalutationFromAddionalTable(AdditionalSalesHeaderFieldsL);
+                    IF AdditionalSalesHeaderFieldsL."Ship-to Company Name" <> '' THEN BEGIN
+                      WhseH24SalesExportHeaderL."Ship-to Name" := AdditionalSalesHeaderFieldsL."Ship-to Company Name";
+                      WhseH24SalesExportHeaderL."Ship-to Name 2" := AdditionalSalesHeaderFieldsL."Ship-to First Name" + ' ';
+                      WhseH24SalesExportHeaderL."Ship-to Name 2" :=
+                        COPYSTR(
+                          AdditionalSalesHeaderFieldsL."Sell-to Last Name",1,30 - STRLEN(WhseH24SalesExportHeaderL."Ship-to Name 2"));
+                    END ELSE BEGIN
+                      WhseH24SalesExportHeaderL."Ship-to Name" := AdditionalSalesHeaderFieldsL."Ship-to Last Name";
+                      WhseH24SalesExportHeaderL."Ship-to Name 2" := AdditionalSalesHeaderFieldsL."Ship-to First Name";
+                      IF (WhseH24SalesExportHeaderL."Ship-to Name" = '') AND
+                         (WhseH24SalesExportHeaderL."Ship-to Name 2" = '')
+                      THEN BEGIN
+                        WhseH24SalesExportHeaderL."Ship-to Name" := SalesHeaderV."Ship-to Name";
+                        WhseH24SalesExportHeaderL."Ship-to Name 2" := SalesHeaderV."Ship-to Name 2";
+                      END;
+                    END;
+                  END ELSE BEGIN
+                    WhseH24SalesExportHeaderL.Salutation := WhseH24SalesExportHeaderL.Salutation::Company;
+                    WhseH24SalesExportHeaderL."Ship-to Name" := SalesHeaderV."Ship-to Name";
+                    WhseH24SalesExportHeaderL."Ship-to Name 2" := SalesHeaderV."Ship-to Name 2";
+                  END;
+
+                  WhseH24SalesExportHeaderL."Ship-to Address" := SalesHeaderV."Ship-to Address";
+                  WhseH24SalesExportHeaderL."Ship-to Address 2" := SalesHeaderV."Ship-to Address 2";
+                  WhseH24SalesExportHeaderL."Ship-to City" := SalesHeaderV."Ship-to City";
+                  WhseH24SalesExportHeaderL."Ship-to Post Code" := SalesHeaderV."Ship-to Post Code";
+                  WhseH24SalesExportHeaderL."Ship-to Country/Region Code" := SalesHeaderV."Ship-to Country/Region Code";
+                  //H1412 05.09.14 EHN ++++++++++++++++++++++++++++++++
+                  WhseH24SalesExportHeaderL."Language Code" := SalesHeaderV."Language Code";
+                  //H1412 05.09.14 EHN --------------------------------
+                  WhseH24SalesExportHeaderL."Phone No." := SalesHeaderV."Phone No.";
+                  WhseH24SalesExportHeaderL."E-Mail" := SalesHeaderV."E-Mail";
+                END;
+
+                WhseH24SalesExportHeaderL."Order Date" := SalesHeaderV."Order Date";
+                WhseH24SalesExportHeaderL."Desired Time From" := 0T;
+                WhseH24SalesExportHeaderL."Desired Time To" := 0T;
+                IF SalesHeaderV.Status = SalesHeaderV.Status::"Pending Prepayment" THEN
+                  WhseH24SalesExportHeaderL."Shipment Date" := 11112911D
+                ELSE
+                  WhseH24SalesExportHeaderL."Shipment Date" := 0D;
+
+                WhseH24SalesExportHeaderL."Change Sales Order" := SalesChangeOrder;
+                WhseH24SalesExportHeaderL."Sales Return Order" := SalesReturnOrder;
+                WhseH24SalesExportHeaderNoL := WhseH24SalesExportHeaderL."Entry No.";
+
+                WhseH24SalesExportHeaderL.MODIFY;
+              END;  // IF NextLineNo = 0 THEN BEGIN
+              WhseH24SalesExportLineL.RESET;
+              WhseH24SalesExportLineL.SETRANGE("Entry No.", WhseH24SalesExportHeaderL."Entry No.");
+              WhseH24SalesExportLineL.SETRANGE(Type, WhseH24SalesExportLineL.Type::Item);
+              WhseH24SalesExportLineL.SETRANGE("No.", SalesLineL."No.");
+              WhseH24SalesExportLineL.SETRANGE(Crossdock, GetCrossdockFlagFromSalesLine(SalesLineL));
+
+              IF SalesLineL."Return Type" IN [SalesLineL."Return Type"::" ",SalesLineL."Return Type"::Change] THEN
+                WhseH24SalesExportLineL.SETRANGE("Action Type",WhseH24SalesExportLineL."Action Type"::Delivery)
+              ELSE
+                IF SalesLineL."Return Type" = SalesLineL."Return Type"::Return THEN
+                  WhseH24SalesExportLineL.SETRANGE("Action Type",WhseH24SalesExportLineL."Action Type"::Pickup);
+
+              IF NOT WhseH24SalesExportLineL.FINDSET THEN BEGIN
+                NextLineNoL += 10000;
+                WhseH24SalesExportLineL.INIT;
+                WhseH24SalesExportLineL."Entry No." := WhseH24SalesExportHeaderL."Entry No.";
+                WhseH24SalesExportLineL."Entry Line No." := NextLineNoL;
+                WhseH24SalesExportLineL.INSERT;
+
+                WhseH24SalesLineReferenceL.RESET;
+                WhseH24SalesLineReferenceL."Attached to Entry No." := WhseH24SalesExportLineL."Entry No.";
+                WhseH24SalesLineReferenceL."Attached to Entry Line No." := WhseH24SalesExportLineL."Entry Line No.";
+                WhseH24SalesLineReferenceL."Attached to Sales Line No." := SalesLineL."Line No.";
+                WhseH24SalesLineReferenceL.Quantity := SalesLineL.Quantity;
+                WhseH24SalesLineReferenceL.INSERT;
+
+                WhseH24SalesExportLineL."Attached to Document Type" := SalesHeaderV."Document Type";
+                WhseH24SalesExportLineL."Attached to Document No." := SalesHeaderV."No.";
+                WhseH24SalesExportLineL."Record Type" := WhseH24IdentifierL."Record Type KAP";
+                WhseH24SalesExportLineL.Type := WhseH24SalesExportLineL.Type::Item;
+                WhseH24SalesExportLineL."No." := SalesLineL."No.";
+                WhseH24SalesExportLineL.Description := SalesLineL.Description;
+                WhseH24SalesExportLineL."Attached to Pos. No." := 0;
+                WhseH24SalesExportLineL."Location Code" := SalesLineL."Location Code";
+                WhseH24SalesExportLineL.Quantity := SalesLineL.Quantity;
+                WhseH24SalesExportLineL.Crossdock := GetCrossdockFlagFromSalesLine(SalesLineL);
+                WhseH24SalesExportLineL."Purchase Order No." := SalesLineL."Special Order Purchase No.";
+                WhseH24SalesExportLineL."Purch. Order Line No." := SalesLineL."Special Order Purch. Line No.";
+                WhseH24SalesExportLineL."Partial Delivery" := FALSE;
+                WhseH24SalesExportLineL."Unit Volume" := GetVolumeRounding(SalesLineL."Unit Volume");
+                WhseH24SalesExportLineL."Unit Weight" := SalesLineL."Net Weight";
+                WhseH24SalesExportLineL.Barcode := '';
+                WhseH24SalesExportLineL."Purchasing Code" := SalesLineL."Purchasing Code";
+                //H1812 13.11.14 EHN ++++++++++++++++++++++++++++++
+                WhseH24SalesExportLineL."Shipping Agent Code" := SalesLineL."Shipping Agent Code";
+                //H1812 13.11.14 EHN ------------------------------
+                ItemL.GET(WhseH24SalesExportLineL."No.");
+                ItemL.CALCFIELDS("Parcels Number");
+                IF ItemL."Parcels Number" = 0 THEN
+                  WhseH24SalesExportLineL."No. of Packages" := 1
+                ELSE
+                  WhseH24SalesExportLineL."No. of Packages" := ItemL."Parcels Number";
+                WhseH24SalesExportLineL."Package Entry No." := 0;
+                WhseH24SalesExportLineL."Pos. No." := SalesLineL.ID;
+
+                IF SalesLineL."Return Type" = SalesLineL."Return Type"::Return THEN BEGIN
+                  WhseH24SalesExportLineL."Return Line" := TRUE;
+                  WhseH24SalesExportLineL."Action Type" := WhseH24SalesExportLineL."Action Type"::Pickup;
+                  SalesReturnOrder := TRUE;
+                END;
+
+                WhseH24SalesExportLineL.MODIFY;
+
+                IF SalesLineL."Return Type" = SalesLineL."Return Type"::Change THEN BEGIN
+                  // Item does not already exist for order
+                  NextLineNoL += 10000;
+                  WhseH24SalesExportLine2L.RESET;
+                  WhseH24SalesExportLine2L.INIT;
+                  WhseH24SalesExportLine2L."Entry No." := WhseH24SalesExportHeaderL."Entry No.";
+                  WhseH24SalesExportLine2L."Entry Line No." := NextLineNoL;
+                  WhseH24SalesExportLine2L.INSERT;
+
+                  WhseH24SalesLineReferenceL.RESET;
+                  WhseH24SalesLineReferenceL."Attached to Entry No." := WhseH24SalesExportLine2L."Entry No.";
+                  WhseH24SalesLineReferenceL."Attached to Entry Line No." := WhseH24SalesExportLine2L."Entry Line No.";
+                  WhseH24SalesLineReferenceL."Attached to Sales Line No." := SalesLineL."Line No.";
+                  WhseH24SalesLineReferenceL.Quantity := SalesLineL.Quantity;
+                  WhseH24SalesLineReferenceL.INSERT;
+
+                  WhseH24SalesExportLine2L."Attached to Document Type" := SalesHeaderV."Document Type";
+                  WhseH24SalesExportLine2L."Attached to Document No." := SalesHeaderV."No.";
+                  WhseH24SalesExportLine2L."Record Type" := WhseH24IdentifierL."Record Type KAP";
+                  WhseH24SalesExportLine2L.Type := WhseH24SalesExportLineL.Type::Item;
+                  WhseH24SalesExportLine2L."No." := SalesLineL."No.";
+                  WhseH24SalesExportLine2L.Description := SalesLineL.Description;
+                  WhseH24SalesExportLine2L."Attached to Pos. No." := 0;
+                  WhseH24SalesExportLine2L."Location Code" := SalesLineL."Location Code";
+                  WhseH24SalesExportLine2L.Quantity := SalesLineL.Quantity;
+                  WhseH24SalesExportLine2L.Crossdock := GetCrossdockFlagFromSalesLine(SalesLineL);
+                  WhseH24SalesExportLine2L."Purchase Order No." := SalesLineL."Special Order Purchase No.";
+                  WhseH24SalesExportLine2L."Purch. Order Line No." := SalesLineL."Special Order Purch. Line No.";
+                  WhseH24SalesExportLine2L."Partial Delivery" := FALSE;
+                  WhseH24SalesExportLine2L."Unit Volume" := GetVolumeRounding(SalesLineL."Unit Volume");
+                  WhseH24SalesExportLine2L."Unit Weight" := SalesLineL."Net Weight";
+                  WhseH24SalesExportLine2L.Barcode := '';
+                  WhseH24SalesExportLine2L."Purchasing Code" := SalesLineL."Purchasing Code";
+                  ItemL.GET(WhseH24SalesExportLine2L."No.");
+                  ItemL.CALCFIELDS("Parcels Number");
+                  IF ItemL."Parcels Number" = 0 THEN
+                    WhseH24SalesExportLine2L."No. of Packages" := 1
+                  ELSE
+                    WhseH24SalesExportLine2L."No. of Packages" := ItemL."Parcels Number";
+                  WhseH24SalesExportLine2L."Package Entry No." := 0;
+
+                  SalesLine2L.RESET;
+                  SalesLine2L.SETRANGE("Document Type", SalesHeaderV."Document Type");
+                  SalesLine2L.SETRANGE("Document No.", SalesHeaderV."No.");
+                  WhseH24SalesExportLine2L."Pos. No." := SalesLine2L.COUNT + SalesLineL.ID;
+                  WhseH24SalesExportLine2L."Change Line" := TRUE;
+                  WhseH24SalesExportLine2L."Action Type" := WhseH24SalesExportLineL."Action Type"::Pickup;
+                  SalesChangeOrder := TRUE;
+                  WhseH24SalesExportLine2L.MODIFY;
+                END;
+
+              END ELSE BEGIN  // IF NOT WhseH24SalesExportLine.FINDSET THEN BEGIN
+                // Item already exists, Update Qty and Insert Line Reference
+                WhseH24SalesExportLineL.Quantity += SalesLineL.Quantity;
+                WhseH24SalesExportLineL.MODIFY;
+
+                WhseH24SalesLineReferenceL.RESET;
+                WhseH24SalesLineReferenceL."Attached to Entry No." := WhseH24SalesExportLineL."Entry No.";
+                WhseH24SalesLineReferenceL."Attached to Entry Line No." := WhseH24SalesExportLineL."Entry Line No.";
+                WhseH24SalesLineReferenceL."Attached to Sales Line No." := SalesLineL."Line No.";
+                WhseH24SalesLineReferenceL.Quantity := SalesLineL.Quantity;
+                WhseH24SalesLineReferenceL.INSERT;
+
+                IF SalesLineL."Return Type" = SalesLineL."Return Type"::Change THEN BEGIN
+                  WhseH24SalesExportLine2L.Quantity += SalesLineL.Quantity;
+                  WhseH24SalesExportLine2L.MODIFY;
+
+                  WhseH24SalesLineReferenceL.RESET;
+                  WhseH24SalesLineReferenceL."Attached to Entry No." := WhseH24SalesExportLine2L."Entry No.";
+                  WhseH24SalesLineReferenceL."Attached to Entry Line No." := WhseH24SalesExportLine2L."Entry Line No.";
+                  WhseH24SalesLineReferenceL."Attached to Sales Line No." := SalesLineL."Line No.";
+                  WhseH24SalesLineReferenceL.Quantity := SalesLineL.Quantity;
+                  WhseH24SalesLineReferenceL.INSERT;
+                END;
+              END;  // IF NOT WhseLFSalesExportLine.FINDSET THEN BEGIN
+              IF SalesReturnOrder OR SalesChangeOrder THEN
+                IF WhseH24SalesExportHeaderL.GET(WhseH24SalesExportHeaderNoL) THEN
+                  IF (WhseH24SalesExportHeaderL."Sales Return Order" <> SalesReturnOrder) OR
+                     (WhseH24SalesExportHeaderL."Change Sales Order" <> SalesChangeOrder)
+                  THEN BEGIN
+                    WhseH24SalesExportHeaderL."Sales Return Order" := SalesReturnOrder;
+                    WhseH24SalesExportHeaderL."Change Sales Order" := SalesChangeOrder;
+                    WhseH24SalesExportHeaderL.MODIFY;
+                  END;
+            END;  // IF GetBrachCodeFromPurchasingCode(SalesLine."Purchasing Code") = p_Branch THEN BEGIN
+          END;
+        UNTIL SalesLineL.NEXT = 0;
+      END;
+      // H2127  24.02.15  MKR ------------------------------------------------------------------
+    END;
+
+    PROCEDURE UpdateOrderForLocation@1000000101(SalesHeaderV@1000000002 : Record 36;LocationV@1000000003 : Record 14);
+    VAR
+      SalesHeaderL@1000000001 : Record 36;
+      SalesHeaderArchiveL@1000000013 : Record 5107;
+      AdditionalSalesHeaderFieldsL@1000000005 : Record 50120;
+      SalesLineL@1000000006 : Record 37;
+      SalesLine2L@1000000016 : Record 37;
+      ItemL@1000000009 : Record 27;
+      WhseH24SalesExportHeaderL@1000000008 : Record 50304;
+      WhseH24SalesExportLineL@1000000000 : Record 50305;
+      WhseH24SalesLineReferenceL@1000000010 : Record 50314;
+      WhseH24SalesExportHeader2L@1000000012 : Record 50304;
+      WhseH24SalesExportLine2L@1000000015 : Record 50305;
+      WhseH24IdentifierL@1000000017 : Record 50508;
+      PurchasingL@1000000019 : Record 5721;
+      WhseH24SalesExportHeaderNoL@1000000014 : Integer;
+      NextLineNoL@1000000007 : Integer;
+      TryToDeleteEntryNoL@1000000011 : Integer;
+      ExistingEntryNoL@1000000018 : Integer;
+      DeleteOldCreateNewL@1000000020 : Boolean;
+    BEGIN
+      // H2127  24.02.15  MKR ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Complete revision
+      SetSalesReturnOrderValue(SalesHeaderV."Document Type" = SalesHeaderV."Document Type"::"Return Order");
+
+      WhseH24IdentifierL.GET(LocationV."WH24 Identifier");
+      WhseH24IdentifierL.TESTFIELD("Record Type KAK");
+      WhseH24IdentifierL.TESTFIELD("Record Type KAP");
+
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type", SalesHeaderV."Document Type");
+      SalesLineL.SETRANGE("Document No.", SalesHeaderV."No.");
+      SalesLineL.SETRANGE(Type, SalesLineL.Type::Item);
+      SalesLineL.SETFILTER(Quantity, '<>%1', 0);
+      SalesLineL.SETRANGE("Location Code", LocationV.Code);
+      IF SalesLineL.FINDSET THEN BEGIN
+        NextLineNoL := 0;
+        REPEAT
+          //H2164 03.03.15 DMO ++++++++++++++++++++++++++++++++++++
+          UpdateKAD := GetKADAction(SalesLineL);
+          //H2164 03.03.15 DMO ------------------------------------
+          IF NOT InterfaceProcessMgt.ExistsCancellationIPL(SalesLineL) THEN BEGIN
+          //H3974 26.03.15 EHN +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+          IF (GetLocationFromPurchasingCode(SalesLineL."Purchasing Code") = LocationV.Code) AND
+             (GetBrachCodeFromPurchasingCode(SalesLineL."Purchasing Code") = LocationV."Branch Code") THEN BEGIN
+          //H3974 26.03.15 EHN -----------------------------------------------------------------
+            //H2164 03.03.15 DMO ++++++++++++++++++++++++++++++++++++
+            DeleteOldCreateNewL := TRUE;
+            IF UpdateKAD THEN BEGIN
+              IF NOT EVALUATE(ExistingEntryNoL,LocationV."Phone No.") THEN
+                ExistingEntryNoL := 0;
+              IF (ExistingEntryNoL <> 0) AND WhseH24SalesExportHeader2L.GET(ExistingEntryNoL) AND
+                 (WhseH24SalesExportHeader2L.Status = WhseH24SalesExportHeader2L.Status::Unprocessed)
+              THEN BEGIN
+                DeleteOldCreateNewL := FALSE;
+                WhseH24SalesExportHeader2L."Transmission Mode" := WhseH24SalesExportHeader2L."Transmission Mode"::Update;
+                IF PurchasingL.GET(SalesLineL."Purchasing Code") THEN
+                  IF PurchasingL."Delivery Type" = PurchasingL."Delivery Type"::Kunde THEN
+                    IF PurchasingL."Parcel Channel" THEN
+                      WhseH24SalesExportHeader2L."Shipping Type" := 'K'
+                    ELSE
+                      WhseH24SalesExportHeader2L."Shipping Type" := 'C';
+                WhseH24SalesExportHeader2L.MODIFY;
+
+                WhseH24SalesExportLineL.RESET;
+                WhseH24SalesExportLineL.SETRANGE("Entry No.",WhseH24SalesExportHeader2L."Entry No.");
+                WhseH24SalesExportLineL.SETRANGE(Type,WhseH24SalesExportLineL.Type::Item);
+                WhseH24SalesExportLineL.SETRANGE("No.",SalesLineL."No.");
+                IF NOT WhseH24SalesExportLineL.ISEMPTY THEN BEGIN
+                  WhseH24SalesExportLineL.MODIFYALL("Shipping Agent Code",SalesLineL."Shipping Agent Code");
+                  WhseH24SalesExportLineL.MODIFYALL("Purchasing Code",SalesLineL."Purchasing Code");
+                END;
+              END;
+            END;
+            IF DeleteOldCreateNewL THEN BEGIN
+            //H2164 03.03.15 DMO ------------------------------------
+              IF NextLineNoL = 0 THEN BEGIN
+                //Create Rec with Status Creation
+                WhseH24SalesExportHeaderL.RESET;
+                WhseH24SalesExportHeaderL."Entry No." := WhseH24SalesExportHeaderL.GetNextEntryNo;
+                WhseH24SalesExportHeaderL.Status := WhseH24SalesExportHeaderL.Status::Creation;
+                WhseH24SalesExportHeaderL.INSERT;
+
+                //Fill General Fields
+                WhseH24SalesExportHeaderL."Document Type" := SalesHeaderV."Document Type";
+                WhseH24SalesExportHeaderL."Document No." := SalesHeaderV."No.";
+                WhseH24SalesExportHeaderL."Whse. H24 Identifier Code" := LocationV."WH24 Identifier";
+                WhseH24SalesExportHeaderL."Branch Code" := LocationV."Branch Code";
+                WhseH24SalesExportHeaderL."Record Type" := WhseH24IdentifierL."Record Type KAK";
+                WhseH24SalesExportHeaderL."Website No." := SalesHeaderV."Website No.";
+                WhseH24SalesExportHeaderL.Status := WhseH24SalesExportHeaderL.Status::Unprocessed;
+                WhseH24SalesExportHeaderL."Insert Timestamp" := CURRENTDATETIME;
+                WhseH24SalesExportHeaderL."Process Timestamp" := 0DT;
+                WhseH24SalesExportHeaderL.Filename := '';
+                // If existing unprocessed Sequence then Set to Delete and Use Sequence + Transmission
+                IF NOT EVALUATE(TryToDeleteEntryNoL, LocationV."Phone No.") THEN
+                  TryToDeleteEntryNoL := 0;
+                IF (TryToDeleteEntryNoL <> 0) AND
+                   WhseH24SalesExportHeader2L.GET(TryToDeleteEntryNoL) AND
+                   (WhseH24SalesExportHeader2L.Status = WhseH24SalesExportHeader2L.Status::Unprocessed)
+                THEN BEGIN
+                  WhseH24SalesExportHeader2L.Status := WhseH24SalesExportHeader2L.Status::Delete;
+                  WhseH24SalesExportHeader2L.MODIFY;
+
+                  WhseH24SalesExportHeaderL."Sequence No." := WhseH24SalesExportHeader2L."Sequence No.";
+                  WhseH24SalesExportHeaderL."LF Order No." :=
+                    WhseH24SalesExportHeader2L."Document No." + WhseH24SalesExportHeader2L."Sequence No.";
+                  WhseH24SalesExportHeaderL."Transmission Mode" := WhseH24SalesExportHeader2L."Transmission Mode";
+                END ELSE BEGIN
+                  //H1911 11.12.14 DMA +++++++++++++++++++++++++++
+                  IF NOT IsSequenceLocked(SalesHeaderV) THEN
+                    WhseH24SalesExportHeaderL."Sequence No." := GetSequenceNoForUpdate(SalesHeaderV, LocationV)
+                  ELSE
+                    WhseH24SalesExportHeaderL."Sequence No." := GetNextSequenceNo(SalesHeaderL,LocationV);
+                  //H1911 11.12.14 DMA ---------------------------
+                  WhseH24SalesExportHeaderL."LF Order No." :=
+                    WhseH24SalesExportHeaderL."Document No." + WhseH24SalesExportHeaderL."Sequence No.";
+                  WhseH24SalesExportHeaderL."Transmission Mode" := WhseH24SalesExportHeaderL."Transmission Mode"::Update;
+                END;
+
+                IF SalesReturnOrder THEN BEGIN
+                  SalesHeaderL.RESET;
+                  SalesHeaderL.SETRANGE("Document Type", SalesHeaderV."Document Type"::Order);
+                  SalesHeaderL.SETRANGE("No.", SalesHeaderV."External Document No.");
+                  IF SalesHeaderL.FINDFIRST THEN BEGIN
+                    IF AdditionalSalesHeaderFieldsL.GET(SalesHeaderV."Document Type", SalesHeaderV."No.") THEN BEGIN
+                      WhseH24SalesExportHeaderL.Salutation := GetSalutationFromAddionalTable(AdditionalSalesHeaderFieldsL);
+                      IF AdditionalSalesHeaderFieldsL."Ship-to Company Name" <> '' THEN BEGIN
+                        WhseH24SalesExportHeaderL."Ship-to Name" := AdditionalSalesHeaderFieldsL."Ship-to Company Name";
+                        WhseH24SalesExportHeaderL."Ship-to Name 2" := AdditionalSalesHeaderFieldsL."Ship-to First Name" + ' ';
+                        WhseH24SalesExportHeaderL."Ship-to Name 2" :=
+                          COPYSTR(
+                            AdditionalSalesHeaderFieldsL."Sell-to Last Name",
+                            1,
+                            30 - STRLEN(WhseH24SalesExportHeaderL."Ship-to Name 2"));
+                      END ELSE BEGIN
+                        WhseH24SalesExportHeaderL."Ship-to Name" := AdditionalSalesHeaderFieldsL."Ship-to Last Name";
+                        WhseH24SalesExportHeaderL."Ship-to Name 2" := AdditionalSalesHeaderFieldsL."Ship-to First Name";
+                        IF (WhseH24SalesExportHeaderL."Ship-to Name" = '') AND
+                           (WhseH24SalesExportHeaderL."Ship-to Name 2" = '')
+                        THEN BEGIN
+                          WhseH24SalesExportHeaderL."Ship-to Name" := SalesHeaderV."Ship-to Name";
+                          WhseH24SalesExportHeaderL."Ship-to Name 2" := SalesHeaderV."Ship-to Name 2";
+                        END;
+                      END;
+                    END ELSE BEGIN
+                      WhseH24SalesExportHeaderL.Salutation := WhseH24SalesExportHeaderL.Salutation::Company;
+                      WhseH24SalesExportHeaderL."Ship-to Name" := SalesHeaderV."Ship-to Name";
+                      WhseH24SalesExportHeaderL."Ship-to Name 2" := SalesHeaderV."Ship-to Name 2";
+                    END;
+
+                    WhseH24SalesExportHeaderL."Ship-to Address" := SalesHeaderV."Ship-to Address";
+                    WhseH24SalesExportHeaderL."Ship-to Address 2" := SalesHeaderV."Ship-to Address 2";
+                    WhseH24SalesExportHeaderL."Ship-to City" := SalesHeaderV."Ship-to City";
+                    WhseH24SalesExportHeaderL."Ship-to Post Code" := SalesHeaderV."Ship-to Post Code";
+                    WhseH24SalesExportHeaderL."Ship-to Country/Region Code" := SalesHeaderV."Ship-to Country/Region Code";
+                    //H1412 05.09.14 EHN ++++++++++++++++++++++++++++++++
+                    WhseH24SalesExportHeaderL."Language Code" := SalesHeaderV."Language Code";
+                    //H1412 05.09.14 EHN --------------------------------
+                    WhseH24SalesExportHeaderL."Phone No." := SalesHeaderV."Phone No.";
+                    WhseH24SalesExportHeaderL."E-Mail" := SalesHeaderV."E-Mail";
+                  END ELSE BEGIN
+                    SalesHeaderArchiveL.RESET;
+                    SalesHeaderArchiveL.SETRANGE("Document Type", SalesHeaderArchiveL."Document Type"::Order);
+                    SalesHeaderArchiveL.SETRANGE("No.", SalesHeaderV."External Document No.");
+                    IF SalesHeaderArchiveL.FINDFIRST THEN BEGIN
+                      IF AdditionalSalesHeaderFieldsL.GET(SalesHeaderArchiveL."Document Type", SalesHeaderArchiveL."No.")
+                      THEN BEGIN
+                        WhseH24SalesExportHeaderL.Salutation := GetSalutationFromAddionalTable(AdditionalSalesHeaderFieldsL);
+                        IF AdditionalSalesHeaderFieldsL."Ship-to Company Name" <> '' THEN BEGIN
+                          WhseH24SalesExportHeaderL."Ship-to Name" := AdditionalSalesHeaderFieldsL."Ship-to Company Name";
+                          WhseH24SalesExportHeaderL."Ship-to Name 2" := AdditionalSalesHeaderFieldsL."Ship-to First Name" + ' ';
+                          WhseH24SalesExportHeaderL."Ship-to Name 2" :=
+                            COPYSTR(
+                              AdditionalSalesHeaderFieldsL."Sell-to Last Name",
+                              1,
+                              30 - STRLEN(WhseH24SalesExportHeaderL."Ship-to Name 2"));
+                        END ELSE BEGIN
+                          WhseH24SalesExportHeaderL."Ship-to Name" := AdditionalSalesHeaderFieldsL."Ship-to Last Name";
+                          WhseH24SalesExportHeaderL."Ship-to Name 2" := AdditionalSalesHeaderFieldsL."Ship-to First Name";
+                          IF (WhseH24SalesExportHeaderL."Ship-to Name" = '') AND (WhseH24SalesExportHeaderL."Ship-to Name 2" = '')
+                          THEN BEGIN
+                            WhseH24SalesExportHeaderL."Ship-to Name" := SalesHeaderArchiveL."Ship-to Name";
+                            WhseH24SalesExportHeaderL."Ship-to Name 2" := SalesHeaderArchiveL."Ship-to Name 2";
+                          END;
+                        END;
+                      END ELSE BEGIN
+                        WhseH24SalesExportHeaderL.Salutation := WhseH24SalesExportHeaderL.Salutation::Company;
+                        WhseH24SalesExportHeaderL."Ship-to Name" := SalesHeaderArchiveL."Ship-to Name";
+                        WhseH24SalesExportHeaderL."Ship-to Name 2" := SalesHeaderArchiveL."Ship-to Name 2";
+                      END;
+
+                      WhseH24SalesExportHeaderL."Ship-to Address" := SalesHeaderArchiveL."Ship-to Address";
+                      WhseH24SalesExportHeaderL."Ship-to Address 2" := SalesHeaderArchiveL."Ship-to Address 2";
+                      WhseH24SalesExportHeaderL."Ship-to City" := SalesHeaderArchiveL."Ship-to City";
+                      WhseH24SalesExportHeaderL."Ship-to Post Code" := SalesHeaderArchiveL."Ship-to Post Code";
+                      WhseH24SalesExportHeaderL."Ship-to Country/Region Code" := SalesHeaderArchiveL."Ship-to Country/Region Code";
+                      //H1412 05.09.14 EHN ++++++++++++++++++++++++++++++++
+                      WhseH24SalesExportHeaderL."Language Code" := SalesHeaderArchiveL."Language Code";
+                      //H1412 05.09.14 EHN --------------------------------
+                      WhseH24SalesExportHeaderL."Phone No." := SalesHeaderArchiveL."Phone No.";
+                      WhseH24SalesExportHeaderL."E-Mail" := SalesHeaderArchiveL."E-Mail";
+                    END;
+                  END;
+                END ELSE BEGIN
+
+                  WhseH24SalesExportHeaderL."Ship-to Customer No." := SalesHeaderV."Sell-to Customer No.";
+
+                  // Get Address from Addional Fields Table
+                  IF AdditionalSalesHeaderFieldsL.GET(SalesHeaderV."Document Type", SalesHeaderV."No.") THEN BEGIN
+                    WhseH24SalesExportHeaderL.Salutation := GetSalutationFromAddionalTable(AdditionalSalesHeaderFieldsL);
+                    IF AdditionalSalesHeaderFieldsL."Ship-to Company Name" <> '' THEN BEGIN
+                      WhseH24SalesExportHeaderL."Ship-to Name" := AdditionalSalesHeaderFieldsL."Ship-to Company Name";
+                      WhseH24SalesExportHeaderL."Ship-to Name 2" := AdditionalSalesHeaderFieldsL."Ship-to First Name" + ' ';
+                      WhseH24SalesExportHeaderL."Ship-to Name 2" :=
+                        COPYSTR(
+                          AdditionalSalesHeaderFieldsL."Sell-to Last Name",1,
+                          30 - STRLEN(WhseH24SalesExportHeaderL."Ship-to Name 2"))
+                    END ELSE BEGIN
+                      WhseH24SalesExportHeaderL."Ship-to Name" := AdditionalSalesHeaderFieldsL."Ship-to Last Name";
+                      WhseH24SalesExportHeaderL."Ship-to Name 2" := AdditionalSalesHeaderFieldsL."Ship-to First Name";
+                      IF (WhseH24SalesExportHeaderL."Ship-to Name" = '') AND
+                         (WhseH24SalesExportHeaderL."Ship-to Name 2" = '')
+                      THEN BEGIN
+                        WhseH24SalesExportHeaderL."Ship-to Name" := SalesHeaderV."Ship-to Name";
+                        WhseH24SalesExportHeaderL."Ship-to Name 2" := SalesHeaderV."Ship-to Name 2";
+                      END;
+                    END;
+                  END ELSE BEGIN
+                    WhseH24SalesExportHeaderL.Salutation := WhseH24SalesExportHeaderL.Salutation::Company;
+                    WhseH24SalesExportHeaderL."Ship-to Name" := SalesHeaderV."Ship-to Name";
+                    WhseH24SalesExportHeaderL."Ship-to Name 2" := SalesHeaderV."Ship-to Name 2";
+                  END;
+                  WhseH24SalesExportHeaderL."Ship-to Address" := SalesHeaderV."Ship-to Address";
+                  WhseH24SalesExportHeaderL."Ship-to Address 2" := SalesHeaderV."Ship-to Address 2";
+                  WhseH24SalesExportHeaderL."Ship-to City" := SalesHeaderV."Ship-to City";
+                  WhseH24SalesExportHeaderL."Ship-to Post Code" := SalesHeaderV."Ship-to Post Code";
+                  WhseH24SalesExportHeaderL."Ship-to Country/Region Code" := SalesHeaderV."Ship-to Country/Region Code";
+                  //H1412 05.09.14 EHN ++++++++++++++++++++++++++++++++
+                  WhseH24SalesExportHeaderL."Language Code" := SalesHeaderV."Language Code";
+                  //H1412 05.09.14 EHN --------------------------------
+                  WhseH24SalesExportHeaderL."Phone No." := SalesHeaderV."Phone No.";
+                  WhseH24SalesExportHeaderL."E-Mail" := SalesHeaderV."E-Mail";
+                END;
+
+                WhseH24SalesExportHeaderL."Order Date" := SalesHeaderV."Order Date";
+                WhseH24SalesExportHeaderL."Desired Time From" := 0T;
+                WhseH24SalesExportHeaderL."Desired Time To" := 0T;
+                IF SalesHeaderV.Status = SalesHeaderV.Status::"Pending Prepayment" THEN
+                  WhseH24SalesExportHeaderL."Shipment Date" := 11112911D
+                ELSE
+                  WhseH24SalesExportHeaderL."Shipment Date" := 0D;
+
+                WhseH24SalesExportHeaderL."Change Sales Order" := SalesChangeOrder;
+                WhseH24SalesExportHeaderL."Sales Return Order" := SalesReturnOrder;
+                WhseH24SalesExportHeaderNoL := WhseH24SalesExportHeaderL."Entry No.";
+
+                WhseH24SalesExportHeaderL.MODIFY;
+              END;
+
+              WhseH24SalesExportLineL.RESET;
+              WhseH24SalesExportLineL.SETRANGE("Entry No.", WhseH24SalesExportHeaderL."Entry No.");
+              WhseH24SalesExportLineL.SETRANGE(Type, WhseH24SalesExportLineL.Type::Item);
+              WhseH24SalesExportLineL.SETRANGE("No.", SalesLineL."No.");
+              WhseH24SalesExportLineL.SETRANGE(Crossdock, GetCrossdockFlagFromSalesLine(SalesLineL));
+              IF SalesLineL."Return Type" IN [SalesLineL."Return Type"::" ",SalesLineL."Return Type"::Change] THEN
+                WhseH24SalesExportLineL.SETRANGE("Action Type",WhseH24SalesExportLineL."Action Type"::Delivery)
+              ELSE
+                IF SalesLineL."Return Type" = SalesLineL."Return Type"::Return THEN
+                  WhseH24SalesExportLineL.SETRANGE("Action Type",WhseH24SalesExportLineL."Action Type"::Pickup);
+              IF NOT WhseH24SalesExportLineL.FINDSET THEN BEGIN
+                NextLineNoL += 10000;
+                WhseH24SalesExportLineL.INIT;
+                WhseH24SalesExportLineL."Entry No." := WhseH24SalesExportHeaderL."Entry No.";
+                WhseH24SalesExportLineL."Entry Line No." := NextLineNoL;
+                WhseH24SalesExportLineL.INSERT;
+
+                WhseH24SalesLineReferenceL.RESET;
+                WhseH24SalesLineReferenceL."Attached to Entry No." := WhseH24SalesExportLineL."Entry No.";
+                WhseH24SalesLineReferenceL."Attached to Entry Line No." := WhseH24SalesExportLineL."Entry Line No.";
+                WhseH24SalesLineReferenceL."Attached to Sales Line No." := SalesLineL."Line No.";
+                WhseH24SalesLineReferenceL.Quantity := SalesLineL.Quantity;
+                WhseH24SalesLineReferenceL.INSERT;
+
+                WhseH24SalesExportLineL."Attached to Document Type" := SalesLineL."Document Type";
+                WhseH24SalesExportLineL."Attached to Document No." := SalesLineL."Document No.";
+                WhseH24SalesExportLineL."Record Type" := WhseH24IdentifierL."Record Type KAP";
+                WhseH24SalesExportLineL.Type := WhseH24SalesExportLineL.Type::Item;
+                WhseH24SalesExportLineL."No." := SalesLineL."No.";
+                WhseH24SalesExportLineL.Description := SalesLineL.Description;
+                WhseH24SalesExportLineL."Attached to Pos. No." := 0;
+                WhseH24SalesExportLineL.Quantity := SalesLineL.Quantity;
+                WhseH24SalesExportLineL."Location Code" := SalesLineL."Location Code";
+                WhseH24SalesExportLineL.Crossdock := GetCrossdockFlagFromSalesLine(SalesLineL);
+                WhseH24SalesExportLineL."Purchase Order No." := SalesLineL."Special Order Purchase No.";
+                WhseH24SalesExportLineL."Purch. Order Line No." := SalesLineL."Special Order Purch. Line No.";
+                WhseH24SalesExportLineL."Partial Delivery" := FALSE;
+                WhseH24SalesExportLineL."Unit Volume" := GetVolumeRounding(SalesLineL."Unit Volume");
+                WhseH24SalesExportLineL."Unit Weight" := SalesLineL."Net Weight";
+                WhseH24SalesExportLineL.Barcode := '';
+                WhseH24SalesExportLineL."Purchasing Code" := SalesLineL."Purchasing Code";
+                //H1812 13.11.14 EHN ++++++++++++++++++++++++++++++
+                WhseH24SalesExportLineL."Shipping Agent Code" := SalesLineL."Shipping Agent Code";
+                //H1812 13.11.14 EHN ------------------------------
+                ItemL.GET(SalesLineL."No.");
+                ItemL.CALCFIELDS("Parcels Number");
+                IF ItemL."Parcels Number" = 0 THEN
+                  WhseH24SalesExportLineL."No. of Packages" := 1
+                ELSE
+                  WhseH24SalesExportLineL."No. of Packages" := ItemL."Parcels Number";
+                WhseH24SalesExportLineL."Pos. No." :=
+                  GetPosNoForUpdate(WhseH24SalesExportHeaderL, WhseH24SalesExportLineL, SalesLineL);
+                IF SalesLineL."Return Type" = SalesLineL."Return Type"::Return THEN BEGIN
+                  WhseH24SalesExportLineL."Return Line" := TRUE;
+                  WhseH24SalesExportLineL."Action Type" := WhseH24SalesExportLineL."Action Type"::Pickup;
+                  SalesReturnOrder := TRUE;
+                END;
+                WhseH24SalesExportLineL.MODIFY;
+                IF SalesLineL."Return Type" = SalesLineL."Return Type"::Change THEN BEGIN
+                  // Item does not already exist for order
+                  NextLineNoL += 10000;
+                  WhseH24SalesExportLine2L.RESET;
+                  WhseH24SalesExportLine2L.INIT;
+                  WhseH24SalesExportLine2L."Entry No." := WhseH24SalesExportHeaderL."Entry No.";
+                  WhseH24SalesExportLine2L."Entry Line No." := NextLineNoL;
+                  WhseH24SalesExportLine2L.INSERT;
+
+                  WhseH24SalesLineReferenceL.INIT;
+                  WhseH24SalesLineReferenceL."Attached to Entry No." := WhseH24SalesExportLine2L."Entry No.";
+                  WhseH24SalesLineReferenceL."Attached to Entry Line No." := WhseH24SalesExportLine2L."Entry Line No.";
+                  WhseH24SalesLineReferenceL."Attached to Sales Line No." := SalesLineL."Line No.";
+                  WhseH24SalesLineReferenceL.Quantity := SalesLineL.Quantity;
+                  WhseH24SalesLineReferenceL.INSERT;
+
+                  WhseH24SalesExportLine2L."Attached to Document Type" := SalesHeaderV."Document Type";
+                  WhseH24SalesExportLine2L."Attached to Document No." := SalesHeaderV."No.";
+                  WhseH24SalesExportLine2L."Record Type" := WhseH24IdentifierL."Record Type KAP";
+                  WhseH24SalesExportLine2L.Type := WhseH24SalesExportLineL.Type::Item;
+                  WhseH24SalesExportLine2L."No." := SalesLineL."No.";
+                  WhseH24SalesExportLine2L.Description := SalesLineL.Description;
+                  WhseH24SalesExportLine2L."Attached to Pos. No." := 0;
+                  WhseH24SalesExportLine2L."Location Code" := SalesLineL."Location Code";
+                  WhseH24SalesExportLine2L.Quantity := SalesLineL.Quantity;
+                  WhseH24SalesExportLine2L.Crossdock := GetCrossdockFlagFromSalesLine(SalesLineL);
+                  WhseH24SalesExportLine2L."Purchase Order No." := SalesLineL."Special Order Purchase No.";
+                  WhseH24SalesExportLine2L."Purch. Order Line No." := SalesLineL."Special Order Purch. Line No.";
+                  WhseH24SalesExportLine2L."Partial Delivery" := FALSE;
+                  WhseH24SalesExportLine2L."Unit Volume" := GetVolumeRounding(SalesLineL."Unit Volume");
+                  WhseH24SalesExportLine2L."Unit Weight" := SalesLineL."Net Weight";
+                  WhseH24SalesExportLine2L.Barcode := '';
+                  WhseH24SalesExportLine2L."Purchasing Code" := SalesLineL."Purchasing Code";
+                  ItemL.GET(WhseH24SalesExportLine2L."No.");
+                  ItemL.CALCFIELDS("Parcels Number");
+                  IF ItemL."Parcels Number" = 0 THEN
+                    WhseH24SalesExportLine2L."No. of Packages" := 1
+                  ELSE
+                    WhseH24SalesExportLine2L."No. of Packages" := ItemL."Parcels Number";
+                  WhseH24SalesExportLine2L."Package Entry No." := 0;
+
+                  SalesLine2L.RESET;
+                  SalesLine2L.SETRANGE("Document Type", SalesHeaderV."Document Type");
+                  SalesLine2L.SETRANGE("Document No.", SalesHeaderV."No.");
+                  WhseH24SalesExportLine2L."Pos. No." := SalesLine2L.COUNT + SalesLineL.ID;
+                  WhseH24SalesExportLine2L."Change Line" := TRUE;
+                  WhseH24SalesExportLine2L."Action Type" := WhseH24SalesExportLineL."Action Type"::Pickup;
+                  SalesChangeOrder := TRUE;
+                  WhseH24SalesExportLine2L.MODIFY;
+                END;
+              END ELSE BEGIN
+                WhseH24SalesExportLineL.Quantity += SalesLineL.Quantity;
+                WhseH24SalesExportLineL.MODIFY;
+                WhseH24SalesLineReferenceL.RESET;
+                WhseH24SalesLineReferenceL."Attached to Entry No." := WhseH24SalesExportLineL."Entry No.";
+                WhseH24SalesLineReferenceL."Attached to Entry Line No." := WhseH24SalesExportLineL."Entry Line No.";
+                WhseH24SalesLineReferenceL."Attached to Sales Line No." := SalesLineL."Line No.";
+                WhseH24SalesLineReferenceL.Quantity := SalesLineL.Quantity;
+                WhseH24SalesLineReferenceL.INSERT;
+                IF SalesLineL."Return Type" = SalesLineL."Return Type"::Change THEN BEGIN
+                  WhseH24SalesExportLine2L.Quantity += SalesLineL.Quantity;
+                  WhseH24SalesExportLine2L.MODIFY;
+
+                  WhseH24SalesLineReferenceL.INIT;
+                  WhseH24SalesLineReferenceL."Attached to Entry No." := WhseH24SalesExportLine2L."Entry No.";
+                  WhseH24SalesLineReferenceL."Attached to Entry Line No." := WhseH24SalesExportLine2L."Entry Line No.";
+                  WhseH24SalesLineReferenceL."Attached to Sales Line No." := SalesLineL."Line No.";
+                  WhseH24SalesLineReferenceL.Quantity := SalesLineL.Quantity;
+                  WhseH24SalesLineReferenceL.INSERT;
+                END;
+              END;
+              IF SalesReturnOrder OR SalesChangeOrder THEN
+                IF WhseH24SalesExportHeaderL.GET(WhseH24SalesExportHeaderNoL) THEN
+                  IF (WhseH24SalesExportHeaderL."Sales Return Order" <> SalesReturnOrder) OR
+                     (WhseH24SalesExportHeaderL."Change Sales Order" <> SalesChangeOrder)
+                  THEN BEGIN
+                    WhseH24SalesExportHeaderL."Sales Return Order" := SalesReturnOrder;
+                    WhseH24SalesExportHeaderL."Change Sales Order" := SalesChangeOrder;
+                    WhseH24SalesExportHeaderL.MODIFY;
+                  END;
+            //H2164 03.03.15 DMO ++++++++++++++++++++++++++++++++++++
+            END;
+            //H2164 03.03.15 DMO ------------------------------------
+            END;
+          END;
+        UNTIL SalesLineL.NEXT = 0;
+        // Refresh and Delete
+        IF TryToDeleteEntryNoL <> 0 THEN BEGIN
+          WhseH24SalesExportHeader2L.GET(TryToDeleteEntryNoL);
+          WhseH24SalesExportHeader2L.DELETE(TRUE);
+        END;
+      END;
+      // H2127  24.02.15  MKR ----------------------------------------------------
+    END;
+
+    PROCEDURE CancelOrderForLocation@1000000011(SalesHeaderV@1000000002 : Record 36;LocationV@1000000001 : Record 14);
+    VAR
+      LastWhseH24SalesExportHeaderL@1000000000 : Record 50304;
+      LastWhseH24SalesExportLineL@1000000007 : Record 50305;
+      LastWhseH24SalesLineReferenceL@1000000006 : Record 50314;
+      WhseH24SalesExportHeaderL@1000000003 : Record 50304;
+      WhseH24SalesExportLineL@1000000004 : Record 50305;
+      WhseH24SalesLineReferenceL@1000000005 : Record 50314;
+      BatchPostDocumentL@1000000009 : Record 50043;
+      PurchaseHeaderL@1000000010 : Record 38;
+    BEGIN
+      // H2127  24.02.15  MKR ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Complete revision
+
+      // Insert Cancel for last Sequence/Branch
+      LastWhseH24SalesExportHeaderL.RESET;
+      LastWhseH24SalesExportHeaderL.SETCURRENTKEY("Document Type","Document No.","Sequence No.");
+      LastWhseH24SalesExportHeaderL.SETRANGE("Document Type", SalesHeaderV."Document Type");
+      LastWhseH24SalesExportHeaderL.SETRANGE("Document No.", SalesHeaderV."No.");
+      LastWhseH24SalesExportHeaderL.SETRANGE("Whse. H24 Identifier Code", LocationV."WH24 Identifier");
+      LastWhseH24SalesExportHeaderL.SETRANGE("Branch Code", LocationV."Branch Code");
+      IF LastWhseH24SalesExportHeaderL.FINDLAST AND
+         (LastWhseH24SalesExportHeaderL."Transmission Mode" <> LastWhseH24SalesExportHeaderL."Transmission Mode"::Cancel)
+      THEN BEGIN
+        IF (LastWhseH24SalesExportHeaderL.COUNT = 1) AND
+           (LastWhseH24SalesExportHeaderL.Status = LastWhseH24SalesExportHeaderL.Status::Unprocessed)
+        THEN
+          LastWhseH24SalesExportHeaderL.DELETE(TRUE)
+        ELSE BEGIN
+          WhseH24SalesExportHeaderL.RESET;
+          WhseH24SalesExportHeaderL.TRANSFERFIELDS(LastWhseH24SalesExportHeaderL);
+          //H2164 03.03.15 DMO ++++++++++++++++++++++++++++++++++++
+          WhseH24SalesExportHeaderL."Whse. H24 Identifier Code" := LocationV."WH24 Identifier";
+          //H2164 03.03.15 DMO ------------------------------------
+          WhseH24SalesExportHeaderL."Entry No." := WhseH24SalesExportHeaderL.GetNextEntryNo;
+          WhseH24SalesExportHeaderL.Status := WhseH24SalesExportHeaderL.Status::Creation;
+          WhseH24SalesExportHeaderL.INSERT;
+
+          WhseH24SalesExportHeaderL."Transmission Mode" := WhseH24SalesExportHeaderL."Transmission Mode"::Cancel;
+          WhseH24SalesExportHeaderL.Status := WhseH24SalesExportHeaderL.Status::Unprocessed;
+          WhseH24SalesExportHeaderL."Insert Timestamp" := CURRENTDATETIME;
+          WhseH24SalesExportHeaderL."Process Timestamp" := 0DT;
+          WhseH24SalesExportHeaderL.Filename := '';
+
+          LastWhseH24SalesExportLineL.RESET;
+          LastWhseH24SalesExportLineL.SETRANGE("Entry No.", LastWhseH24SalesExportHeaderL."Entry No.");
+          IF LastWhseH24SalesExportLineL.FINDSET THEN
+            REPEAT
+              WhseH24SalesExportLineL.RESET;
+              WhseH24SalesExportLineL.TRANSFERFIELDS(LastWhseH24SalesExportLineL);
+              WhseH24SalesExportLineL."Entry No." := WhseH24SalesExportHeaderL."Entry No.";
+              WhseH24SalesExportLineL.INSERT;
+            UNTIL LastWhseH24SalesExportLineL.NEXT = 0;
+
+          LastWhseH24SalesLineReferenceL.RESET;
+          LastWhseH24SalesLineReferenceL.SETRANGE("Attached to Entry No.",LastWhseH24SalesExportHeaderL."Entry No.");
+          IF LastWhseH24SalesLineReferenceL.FINDSET THEN
+            REPEAT
+              WhseH24SalesLineReferenceL.RESET;
+              WhseH24SalesLineReferenceL.TRANSFERFIELDS(LastWhseH24SalesLineReferenceL);
+              WhseH24SalesLineReferenceL."Attached to Entry No." := WhseH24SalesExportHeaderL."Entry No.";
+              WhseH24SalesLineReferenceL.INSERT;
+            UNTIL LastWhseH24SalesLineReferenceL.NEXT = 0;
+
+          WhseH24SalesExportHeaderL.MODIFY;
+        END;
+      END;
+
+      PurchaseHeaderL.RESET;
+      IF PurchaseHeaderL.GET(PurchaseHeaderL."Document Type"::Order, WhseH24SalesExportLineL."Purchase Order No.") THEN
+        BatchPostDocumentL.CreatePurchEMailBatch(PurchaseHeaderL);
+      // H2127  24.02.15  MKR --------------------------------------------
+    END;
+
+    PROCEDURE CheckForNecessaryActions@1000000023(SalesHeaderV@1000000001 : Record 36;VAR NewTmpR@1000000011 : TEMPORARY Record 14;VAR UpdateTmpR@1000000003 : TEMPORARY Record 14;VAR CancelTmpR@1000000008 : TEMPORARY Record 14;LocationTmpV@1000000002 : TEMPORARY Record 14);
+    VAR
+      ExistingWhseSequenceL@1000000006 : Record 50304;
+      AdditionalSalesHeaderFieldsL@1000000005 : Record 50120;
+      SalesLineL@1000000012 : Record 37;
+      SalesLine2L@1000000023 : Record 37;
+      WhseH24SalesExportLineL@1000000010 : Record 50305;
+      WhseH24SalesExportLine2L@1000000009 : Record 50305;
+      WhseH24SalesLineReferenceL@1000000004 : Record 50314;
+      WhseH24SalesLineReference2L@1000000000 : Record 50314;
+      ItemL@1000000019 : Record 27;
+      ChannelFilterL@1000000013 : Code[300];
+      WrongBranchError@1000000014 : TextConst 'ENU=Invalid Branch Code.';
+      ShipToNameL@1000000018 : Text[50];
+      ShipToName2L@1000000016 : Text[50];
+      OrderHasWhsH24PositionsL@1000000015 : Boolean;
+      QtyAdditionL@1000000021 : Decimal;
+      SalutationL@1000000030 : Integer;
+      ShipToDateL@1000000031 : Date;
+    BEGIN
+      // H2127  24.02.15  MKR +++++++++++++++++++++++++++++++++++++
+      // Complete revision
+
+      OrderHasWhsH24PositionsL := FALSE;
+
+      IF SalesHeaderV.Status IN [SalesHeaderV.Status::Open,SalesHeaderV.Status::"Pending Approval"] THEN
+        EXIT;
+
+      IF SalesHeaderV.Status = SalesHeaderV.Status::Canceled THEN BEGIN
+        IF NOT CancelTmpR.GET(LocationTmpV.Code) THEN BEGIN
+          CancelTmpR := LocationTmpV;
+          CancelTmpR.INSERT;
+        END;
+        EXIT;
+      END;
+
+      // Check if WhseH24 Sequence already exists
+      ExistingWhseSequenceL.RESET;
+      ExistingWhseSequenceL.SETCURRENTKEY("Document Type","Document No.","Sequence No.");
+      ExistingWhseSequenceL.SETRANGE("Document Type", SalesHeaderV."Document Type");
+      ExistingWhseSequenceL.SETRANGE("Document No.", SalesHeaderV."No.");
+      ExistingWhseSequenceL.SETRANGE("Whse. H24 Identifier Code", LocationTmpV."WH24 Identifier");
+      ExistingWhseSequenceL.SETRANGE("Branch Code", LocationTmpV."Branch Code");
+      IF ExistingWhseSequenceL.FINDLAST THEN BEGIN
+        IF ExistingWhseSequenceL."Transmission Mode" = ExistingWhseSequenceL."Transmission Mode"::Cancel THEN BEGIN
+          IF NOT NewTmpR.GET(LocationTmpV.Code) THEN BEGIN
+            NewTmpR := LocationTmpV;
+            NewTmpR.INSERT;
+          END;
+        END ELSE BEGIN
+          IF (SalesHeaderV."Document Type" <> ExistingWhseSequenceL."Document Type") OR
+             (SalesHeaderV."No." <> ExistingWhseSequenceL."Document No.") OR
+             (SalesHeaderV."Website No." <> ExistingWhseSequenceL."Website No.") OR
+             (SalesHeaderV."Sell-to Customer No." <> ExistingWhseSequenceL."Ship-to Customer No.") OR
+             (SalesHeaderV."Ship-to Address" <> ExistingWhseSequenceL."Ship-to Address") OR
+             (SalesHeaderV."Ship-to Address 2" <> ExistingWhseSequenceL."Ship-to Address 2") OR
+             (SalesHeaderV."Ship-to City" <> ExistingWhseSequenceL."Ship-to City") OR
+             (SalesHeaderV."Ship-to Post Code" <> ExistingWhseSequenceL."Ship-to Post Code") OR
+             (SalesHeaderV."Ship-to Country/Region Code" <> ExistingWhseSequenceL."Ship-to Country/Region Code") OR
+             (SalesHeaderV."Order Date" <> ExistingWhseSequenceL."Order Date") OR
+             (SalesHeaderV."Phone No." <> ExistingWhseSequenceL."Phone No.") OR
+             (SalesHeaderV."E-Mail" <> ExistingWhseSequenceL."E-Mail")
+          THEN BEGIN
+            IF NOT UpdateTmpR.GET(LocationTmpV.Code) THEN BEGIN
+              UpdateTmpR := LocationTmpV;
+              UpdateTmpR.INSERT;
+            END;
+          END ELSE BEGIN
+            ShipToNameL := '';
+            ShipToName2L := '';
+            SalutationL := 0;
+            IF AdditionalSalesHeaderFieldsL.GET(SalesHeaderV."Document Type",SalesHeaderV."No.") THEN BEGIN
+              SalutationL := GetSalutationFromAddionalTable(AdditionalSalesHeaderFieldsL);
+              IF AdditionalSalesHeaderFieldsL."Ship-to Company Name" <> '' THEN BEGIN
+                ShipToNameL := AdditionalSalesHeaderFieldsL."Ship-to Company Name";
+                ShipToName2L := AdditionalSalesHeaderFieldsL."Ship-to First Name" + ' ';
+                ShipToName2L :=
+                  COPYSTR(
+                    AdditionalSalesHeaderFieldsL."Sell-to Last Name",
+                    1,
+                    30 - STRLEN(ShipToName2L));
+              END ELSE BEGIN
+                ShipToNameL := AdditionalSalesHeaderFieldsL."Ship-to Last Name";
+                ShipToName2L := AdditionalSalesHeaderFieldsL."Ship-to First Name";
+                IF (ShipToNameL = '') AND (ShipToName2L = '') THEN BEGIN
+                  ShipToNameL := SalesHeaderV."Ship-to Name";
+                  ShipToName2L := SalesHeaderV."Ship-to Name 2";
+                END;
+              END;
+            END ELSE BEGIN
+              SalutationL := 2;
+              ShipToNameL := SalesHeaderV."Ship-to Name";
+              ShipToName2L := SalesHeaderV."Ship-to Name 2";
+            END;
+            IF (ExistingWhseSequenceL."Ship-to Name" <> ShipToNameL) OR
+               (ExistingWhseSequenceL."Ship-to Name 2" <> ShipToName2L)
+            THEN
+              IF NOT UpdateTmpR.GET(LocationTmpV.Code) THEN BEGIN
+                UpdateTmpR := LocationTmpV;
+                UpdateTmpR.INSERT;
+              END;
+
+            ShipToDateL := 0D;
+            IF SalesHeaderV.Status = SalesHeaderV.Status::"Pending Prepayment" THEN
+              ShipToDateL := 11112911D;
+            IF ShipToDateL <> ExistingWhseSequenceL."Shipment Date" THEN
+              IF NOT UpdateTmpR.GET(LocationTmpV.Code) THEN BEGIN
+                UpdateTmpR := LocationTmpV;
+                UpdateTmpR.INSERT;
+              END;
+          END;
+        END;
+      END ELSE BEGIN
+        IF NOT NewTmpR.GET(LocationTmpV.Code) THEN BEGIN
+          NewTmpR := LocationTmpV;
+          NewTmpR.INSERT;
+        END;
+        ExistingWhseSequenceL.INIT;
+      END;
+
+      // Check if Sales Lines contain corresponding Location Lines
+      ChannelFilterL := GetPurchasingCodeFilter(LocationTmpV);
+      OrderHasWhsH24PositionsL := CheckSalesLinesForWH24Pos(SalesHeaderV, ChannelFilterL);
+
+      // If everything is clear exit without triggering Whse. H24 interface
+      IF NewTmpR.GET(LocationTmpV.Code) AND NOT OrderHasWhsH24PositionsL THEN
+        EXIT;
+
+      // Check existing lines with Interface if Update is necessary
+      IF NOT NewTmpR.GET(LocationTmpV.Code) THEN BEGIN
+        // Check for Interface <> Sales Line
+        WhseH24SalesExportLineL.RESET;
+        WhseH24SalesExportLineL.SETRANGE("Entry No.", ExistingWhseSequenceL."Entry No.");
+        WhseH24SalesExportLineL.SETRANGE(Type, WhseH24SalesExportLineL.Type::Item);
+        WhseH24SalesExportLineL.SETRANGE("Location Code", LocationTmpV.Code);
+        IF WhseH24SalesExportLineL.FINDSET THEN BEGIN
+          REPEAT
+            WhseH24SalesLineReferenceL.RESET;
+            WhseH24SalesLineReferenceL.SETRANGE("Attached to Entry No.", WhseH24SalesExportLineL."Entry No.");
+            WhseH24SalesLineReferenceL.SETRANGE("Attached to Entry Line No.", WhseH24SalesExportLineL."Entry Line No.");
+            IF WhseH24SalesLineReferenceL.FIND('-') THEN BEGIN
+              QtyAdditionL := 0;
+              REPEAT
+                SalesLineL.GET(
+                  SalesHeaderV."Document Type",
+                  SalesHeaderV."No.",
+                  WhseH24SalesLineReferenceL."Attached to Sales Line No.");
+
+                IF NOT InterfaceProcessMgt.ExistsCancellationIPL(SalesLineL) THEN
+                  QtyAdditionL += SalesLineL.Quantity;
+
+                IF SalesLineL.Type = SalesLineL.Type::Item THEN BEGIN
+                  ItemL.GET(SalesLineL."No.");
+                  ItemL.CALCFIELDS("Parcels Number");
+                  CASE TRUE OF
+                    WhseH24SalesExportLineL."Attached to Document Type" <> SalesLineL."Document Type",
+                    WhseH24SalesExportLineL."Attached to Document No." <> SalesLineL."Document No.",
+                    WhseH24SalesExportLineL."No." <> SalesLineL."No.",
+                    WhseH24SalesExportLineL.Description <> SalesLineL.Description,
+                    WhseH24SalesExportLineL."Location Code" <> SalesLineL."Location Code",
+                    WhseH24SalesExportLineL.Crossdock <> GetCrossdockFlagFromSalesLine(SalesLineL),
+                    WhseH24SalesExportLineL."Purchase Order No." <> SalesLineL."Special Order Purchase No.",
+                    WhseH24SalesExportLineL."Purch. Order Line No." <> SalesLineL."Special Order Purch. Line No.",
+                    WhseH24SalesExportLineL."Unit Volume" <> GetVolumeRounding(SalesLineL."Unit Volume"),
+                    WhseH24SalesExportLineL."Unit Weight" <> SalesLineL."Net Weight",
+                    WhseH24SalesExportLineL."Purchasing Code" <> SalesLineL."Purchasing Code",
+                    //H1812 13.11.14 EHN ++++++++++++++++++++++++++++++++++++++++++
+                    WhseH24SalesExportLineL."Shipping Agent Code" <> SalesLineL."Shipping Agent Code",
+                    //H1812 13.11.14 EHN ------------------------------------------
+                    (WhseH24SalesExportLineL."No. of Packages" <> ItemL."Parcels Number") AND (ItemL."Parcels Number" <> 0):
+                      BEGIN
+                        IF NOT UpdateTmpR.GET(LocationTmpV.Code) THEN BEGIN
+                          UpdateTmpR := LocationTmpV;
+                          UpdateTmpR.INSERT;
+                        END;
+                      END;
+                  END;
+                END;
+                IF (SalesLineL.Type = SalesLineL.Type::Resource) AND (SalesLineL."Resource Type" = SalesLineL."Resource Type"::Assembly)
+                THEN BEGIN
+                  // Item Line Attached to Assembly
+                  SalesLine2L.RESET;
+                  SalesLine2L.SETRANGE("Document Type", SalesLineL."Document Type");
+                  SalesLine2L.SETRANGE("Document No.", SalesLineL."Document No.");
+                  SalesLine2L.SETRANGE(Type, SalesLine2L.Type::Item);
+                  SalesLine2L.SETRANGE(ID, SalesLineL."Parent ID");
+                  SalesLine2L.FINDLAST;
+                  // Item Line Reference in H24 Export
+                  WhseH24SalesLineReference2L.RESET;
+                  WhseH24SalesLineReference2L.SETRANGE("Attached to Entry No.", WhseH24SalesLineReferenceL."Attached to Entry No.");
+                  WhseH24SalesLineReference2L.SETRANGE("Attached to Sales Line No.", SalesLine2L."Line No.");
+                  IF WhseH24SalesLineReference2L.FINDLAST THEN BEGIN
+                    // Item Line Reference H24 Export
+                    IF WhseH24SalesExportLine2L.GET(
+                         WhseH24SalesLineReference2L."Attached to Entry No.",
+                         WhseH24SalesLineReference2L."Attached to Entry Line No.")
+                    THEN BEGIN
+                      IF WhseH24SalesExportLineL."Attached to Pos. No." <> WhseH24SalesExportLine2L."Pos. No." THEN BEGIN
+                        IF NOT UpdateTmpR.GET(LocationTmpV.Code) THEN BEGIN
+                          UpdateTmpR := LocationTmpV;
+                          UpdateTmpR.INSERT;
+                        END;
+                      END;
+                    END ELSE BEGIN
+                      IF NOT UpdateTmpR.GET(LocationTmpV.Code) THEN BEGIN
+                        UpdateTmpR := LocationTmpV;
+                        UpdateTmpR.INSERT;
+                      END;
+                    END;
+                  END ELSE BEGIN
+                    IF NOT UpdateTmpR.GET(LocationTmpV.Code) THEN BEGIN
+                      UpdateTmpR := LocationTmpV;
+                      UpdateTmpR.INSERT;
+                    END;
+                  END;
+                END;
+              UNTIL (WhseH24SalesLineReferenceL.NEXT = 0) OR UpdateTmpR.GET(LocationTmpV.Code);
+              IF WhseH24SalesExportLineL.Quantity <> QtyAdditionL THEN BEGIN
+                IF NOT UpdateTmpR.GET(LocationTmpV.Code) THEN BEGIN
+                  UpdateTmpR := LocationTmpV;
+                  UpdateTmpR.INSERT;
+                END;
+              END;
+            END;
+          UNTIL (WhseH24SalesExportLineL.NEXT = 0) OR UpdateTmpR.GET(LocationTmpV.Code);
+        END;
+        IF NOT UpdateTmpR.GET(LocationTmpV.Code) AND NOT NewTmpR.GET(LocationTmpV.Code) THEN BEGIN
+          // Check Sales Line <> Interface
+          SalesLine2L.RESET;
+          SalesLine2L.SETRANGE("Document Type", SalesHeaderV."Document Type");
+          SalesLine2L.SETRANGE("Document No.", SalesHeaderV."No.");
+          SalesLine2L.SETRANGE(Type, SalesLine2L.Type::Item);
+          SalesLine2L.SETRANGE("Location Code", LocationTmpV.Code);
+          IF SalesLine2L.FINDSET THEN BEGIN
+            REPEAT
+              IF GetLocationFromPurchasingCode(SalesLine2L."Purchasing Code") = SalesLine2L."Location Code" THEN BEGIN
+                ItemL.GET(SalesLine2L."No.");
+                ItemL.CALCFIELDS("Parcels Number");
+                WhseH24SalesLineReference2L.RESET;
+                WhseH24SalesLineReference2L.SETRANGE("Attached to Entry No.", ExistingWhseSequenceL."Entry No.");
+                WhseH24SalesLineReference2L.SETRANGE("Attached to Sales Line No.", SalesLine2L."Line No.");
+                IF WhseH24SalesLineReference2L.FINDLAST THEN BEGIN
+                  IF WhseH24SalesExportLine2L.GET(
+                       WhseH24SalesLineReference2L."Attached to Entry No.",
+                       WhseH24SalesLineReference2L."Attached to Entry Line No.")
+                  THEN BEGIN
+                    CASE TRUE OF
+                      WhseH24SalesExportLine2L."Attached to Document Type" <> SalesLine2L."Document Type",
+                      WhseH24SalesExportLine2L."Attached to Document No." <> SalesLine2L."Document No.",
+                      WhseH24SalesExportLine2L."No." <> SalesLine2L."No.",
+                      WhseH24SalesExportLine2L.Description <> SalesLine2L.Description,
+                      WhseH24SalesExportLine2L."Location Code" <> SalesLine2L."Location Code",
+                      WhseH24SalesExportLine2L.Crossdock <> GetCrossdockFlagFromSalesLine(SalesLine2L),
+                      WhseH24SalesExportLine2L."Purchase Order No." <> SalesLine2L."Special Order Purchase No.",
+                      WhseH24SalesExportLine2L."Purch. Order Line No." <> SalesLine2L."Special Order Purch. Line No.",
+                      WhseH24SalesExportLine2L."Unit Volume" <> GetVolumeRounding(SalesLine2L."Unit Volume"),
+                      WhseH24SalesExportLine2L."Unit Weight" <> SalesLine2L."Net Weight",
+                      WhseH24SalesExportLine2L."Purchasing Code" <> SalesLine2L."Purchasing Code",
+                      (WhseH24SalesExportLine2L."No. of Packages" <> ItemL."Parcels Number") AND (ItemL."Parcels Number" <> 0):
+                        BEGIN
+                          IF NOT UpdateTmpR.GET(LocationTmpV.Code) THEN BEGIN
+                            UpdateTmpR := LocationTmpV;
+                            UpdateTmpR.INSERT;
+                          END;
+                        END;
+                    END;
+                  END ELSE BEGIN
+                    IF NOT UpdateTmpR.GET(LocationTmpV.Code) THEN BEGIN
+                      UpdateTmpR := LocationTmpV;
+                      UpdateTmpR.INSERT;
+                    END;
+                  END;
+                END ELSE BEGIN
+                  IF NOT UpdateTmpR.GET(LocationTmpV.Code) THEN BEGIN
+                    UpdateTmpR := LocationTmpV;
+                    UpdateTmpR.INSERT;
+                  END;
+                END;
+              END;
+            UNTIL (SalesLine2L.NEXT = 0) OR UpdateTmpR.GET(LocationTmpV.Code);
+          END;
+        END;
+      END;
+
+      IF UpdateTmpR.GET(LocationTmpV.Code) AND NOT NewTmpR.GET(LocationTmpV.Code) THEN
+        IF ExistingWhseSequenceL.Status = ExistingWhseSequenceL.Status::Unprocessed THEN BEGIN
+          // "Phone No." here "TryToDeleteEntryNo"
+          // Misuse of text field because T14 doesn't have any integer field to store that information
+          UpdateTmpR."Phone No." := FORMAT(ExistingWhseSequenceL."Entry No.");
+          UpdateTmpR.MODIFY;
+        END;
+
+      // Change and no more active pos = cancel seq
+      IF UpdateTmpR.GET(LocationTmpV.Code) AND NOT OrderHasWhsH24PositionsL THEN BEGIN
+        IF NOT CancelTmpR.GET(LocationTmpV.Code) THEN BEGIN
+          CancelTmpR := LocationTmpV;
+          CancelTmpR.INSERT;
+        END;
+        // if already canceled no second cancel needed
+        IF ExistingWhseSequenceL."Transmission Mode" = ExistingWhseSequenceL."Transmission Mode"::Cancel THEN BEGIN
+          IF CancelTmpR.GET(LocationTmpV.Code) THEN
+            CancelTmpR.DELETE;
+        END;
+      END;
+      // H2127  24.02.15  MKR ---------------------------------------------
+    END;
+
+    PROCEDURE CheckSalesLinesForWH24Pos@1000000029(SalesHeaderV@1000000000 : Record 36;ChannelFilterV@1000000001 : Code[300]) : Boolean;
+    VAR
+      SalesLineL@1000000002 : Record 37;
+    BEGIN
+      // H2127  19.02.15  MKR ++++++++++++++++++++++++++++++++++++++++++++++
+      // Check for affected sales lines
+
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type",SalesHeaderV."Document Type");
+      SalesLineL.SETRANGE("Document No.",SalesHeaderV."No.");
+      SalesLineL.SETFILTER(Quantity,'<>%1',0);
+      //SalesLineL.SETFILTER("Purchasing Code", '%1', ChannelFilterV);
+      IF SalesLineL.FINDSET THEN
+        REPEAT
+          IF STRPOS(ChannelFilterV, SalesLineL."Purchasing Code") > 0 THEN
+            IF NOT InterfaceProcessMgt.ExistsCancellationIPL(SalesLineL) THEN
+              EXIT(TRUE);
+        UNTIL SalesLineL.NEXT=0;
+
+      // Check for channel changed lines that has to be considered
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type",SalesHeaderV."Document Type");
+      SalesLineL.SETRANGE("Document No.",SalesHeaderV."No.");
+      SalesLineL.SETFILTER(Quantity,'<>%1',0);
+      //SalesLineL.SETFILTER("Old Purchasing Code", '%1', ChannelFilterV);
+      IF SalesLineL.FINDSET THEN
+        REPEAT
+          IF STRPOS(ChannelFilterV, SalesLineL."Purchasing Code") > 0 THEN
+            IF NOT InterfaceProcessMgt.ExistsCancellationIPL(SalesLineL) THEN
+              EXIT(TRUE);
+        UNTIL SalesLineL.NEXT=0;
+
+      EXIT(FALSE);
+      // H2127  19.02.15  MKR ----------------------------------------------
+    END;
+
+    PROCEDURE GetPurchasingCodeFilter@1000000013(LocationV@1000000000 : Record 14) ChannelFilterO : Code[300];
+    VAR
+      PurchasingL@1000000001 : Record 5721;
+    BEGIN
+      // H2127  16.02.15  MKR ++++++++++++++++++++++++++++++++++++++++++++++++
+      PurchasingL.SETRANGE("Location Code", LocationV.Code);
+      IF PurchasingL.FINDSET THEN
+        REPEAT
+          ChannelFilterO := STRSUBSTNO('%1%2%3', ChannelFilterO, PurchasingL.Code, '|');
+        UNTIL PurchasingL.NEXT=0;
+
+      IF ChannelFilterO <> '' THEN
+        ChannelFilterO := COPYSTR(ChannelFilterO, 1, STRLEN(ChannelFilterO)-1);
+      // H2127  16.02.15  MKR ------------------------------------------------
+    END;
+
+    PROCEDURE GetNextSequenceNo@1000000008(SalesHeaderV@1000000000 : Record 36;LocationV@1000000002 : Record 14) : Code[10];
+    VAR
+      WhseLFSalesExportHeaderL@1000000001 : Record 50304;
+    BEGIN
+      WhseLFSalesExportHeaderL.RESET;
+      WhseLFSalesExportHeaderL.SETCURRENTKEY("Document Type","Document No.","Sequence No.");
+      WhseLFSalesExportHeaderL.SETRANGE("Document Type",SalesHeaderV."Document Type");
+      WhseLFSalesExportHeaderL.SETRANGE("Document No.",SalesHeaderV."No.");
+      //H2164 03.03.15 DMO ++++++++++++++++++++++++++++++++++++
+      WhseLFSalesExportHeaderL.SETRANGE("Whse. H24 Identifier Code", LocationV."WH24 Identifier");
+      WhseLFSalesExportHeaderL.SETRANGE("Branch Code", LocationV."Branch Code");
+      //H2164 03.03.15 DMO ------------------------------------
+      IF WhseLFSalesExportHeaderL.FINDLAST THEN
+        EXIT(INCSTR(WhseLFSalesExportHeaderL."Sequence No."));
+
+      EXIT('001');
+    END;
+
+    PROCEDURE GetSequenceNoForUpdate@1000000006(SalesHeaderV@1000000000 : Record 36;LocationV@1000000002 : Record 14) : Code[10];
+    VAR
+      WhseH24SalesExportHeaderL@1000000001 : Record 50304;
+    BEGIN
+      WhseH24SalesExportHeaderL.RESET;
+      WhseH24SalesExportHeaderL.SETCURRENTKEY("Document Type","Document No.","Sequence No.");
+      WhseH24SalesExportHeaderL.SETRANGE("Document Type",SalesHeaderV."Document Type");
+      WhseH24SalesExportHeaderL.SETRANGE("Document No.",SalesHeaderV."No.");
+      WhseH24SalesExportHeaderL.SETRANGE("Whse. H24 Identifier Code", LocationV."WH24 Identifier");
+      WhseH24SalesExportHeaderL.SETRANGE("Branch Code", LocationV."Branch Code");
+      IF WhseH24SalesExportHeaderL.FINDLAST THEN
+        EXIT(WhseH24SalesExportHeaderL."Sequence No.");
+
+      EXIT('001');
+    END;
+
+    PROCEDURE GetNextPackageEntryNo@1000000028(WhseLFSalesExportLineV@1000000000 : Record 50305) HighestEntryNoRP : Integer;
+    VAR
+      WhseLFSalesExportLineL@1000000001 : Record 50305;
+    BEGIN
+      HighestEntryNoRP := 0;
+      WhseLFSalesExportLineL.RESET;
+      WhseLFSalesExportLineL.SETRANGE("Entry No.",WhseLFSalesExportLineV."Entry No.");
+      WhseLFSalesExportLineL.SETFILTER("Package Entry No.",'<>%1',0);
+      IF WhseLFSalesExportLineL.FINDSET THEN
+        REPEAT
+          IF HighestEntryNoRP < WhseLFSalesExportLineL."Package Entry No." THEN
+            HighestEntryNoRP := WhseLFSalesExportLineL."Package Entry No.";
+        UNTIL WhseLFSalesExportLineL.NEXT = 0;
+      EXIT(HighestEntryNoRP + 1);
+    END;
+
+    PROCEDURE GetPosNoForBarcodeLine@1000000025(WhseLFSalesExportLineV@1000000000 : Record 50305) : Integer;
+    VAR
+      SalesLineL@1000000001 : Record 37;
+      HighestReservedPosNoL@1000000002 : Integer;
+      UniquePosNoL@1000000003 : Boolean;
+      WhseLFSalesExportLineL@1000000005 : Record 50305;
+    BEGIN
+      HighestReservedPosNoL := 0;
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type",WhseLFSalesExportLineV."Attached to Document Type");
+      SalesLineL.SETRANGE("Document No.",WhseLFSalesExportLineV."Attached to Document No.");
+      IF SalesLineL.FINDSET THEN
+        REPEAT
+         IF HighestReservedPosNoL < SalesLineL.ID THEN
+           HighestReservedPosNoL := SalesLineL.ID;
+        UNTIL SalesLineL.NEXT = 0;
+
+      UniquePosNoL := FALSE;
+      REPEAT
+        HighestReservedPosNoL += 1;
+        WhseLFSalesExportLineL.RESET;
+        WhseLFSalesExportLineL.SETRANGE("Entry No.",WhseLFSalesExportLineV."Entry No.");
+        WhseLFSalesExportLineL.SETFILTER("Pos. No.",'>=%1',HighestReservedPosNoL);
+        IF WhseLFSalesExportLineL.ISEMPTY THEN
+          UniquePosNoL := TRUE;
+      UNTIL UniquePosNoL;
+
+      EXIT(HighestReservedPosNoL);
+    END;
+
+    PROCEDURE GetSalutationFromAddionalTable@1000000002(AdditionalSalesHeaderFieldsV@1000000000 : Record 50120) : Integer;
+    VAR
+      JobTitleCodeL@1000000001 : Code[30];
+    BEGIN
+      IF AdditionalSalesHeaderFieldsV."Ship-to Company Name" <> '' THEN
+        EXIT(2);
+
+      JobTitleCodeL := AdditionalSalesHeaderFieldsV."Ship-to Job Title";
+      IF (STRPOS(JobTitleCodeL,'MENEER') <> 0) OR
+         (STRPOS(JobTitleCodeL,'MIJNHEER') <> 0) OR
+         (STRPOS(JobTitleCodeL,'MONSIEUR') <> 0) OR
+         (STRPOS(JobTitleCodeL,'HERR') <> 0) OR
+         (STRPOS(JobTitleCodeL,'M') = 1)
+      THEN
+        EXIT(0);
+      IF (STRPOS(JobTitleCodeL,'MENVROUW') <> 0) OR
+         (STRPOS(JobTitleCodeL,'VROUW') <> 0) OR
+         (STRPOS(JobTitleCodeL,'MADAME') <> 0) OR
+         (STRPOS(JobTitleCodeL,'FRAU') <> 0) OR
+         (STRPOS(JobTitleCodeL,'F') = 1)
+      THEN
+        EXIT(1);
+
+      EXIT(2);
+    END;
+
+    PROCEDURE GetVolumeRounding@1000000000(UnitVolumeV@1000000000 : Decimal) : Decimal;
+    BEGIN
+      UnitVolumeV := UnitVolumeV * 1000;
+
+      IF UnitVolumeV = 0 THEN
+        EXIT(0);
+
+      IF UnitVolumeV < 1 THEN
+        EXIT(1);
+
+      EXIT(ROUND(UnitVolumeV,1));
+    END;
+
+    PROCEDURE GetCrossdockFlagFromSalesLine@1000000017(SalesLineV@1000000000 : Record 37) : Boolean;
+    VAR
+      PurchasingL@1000000001 : Record 5721;
+    BEGIN
+      IF PurchasingL.GET(SalesLineV."Purchasing Code") AND PurchasingL."Whse. LF Real Crossdocking" THEN
+        EXIT(TRUE);
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE GetPosNoForUpdate@1000000018(WhseLFSalesExportHeaderV@1000000003 : Record 50304;WhseLFSalesExportLineV@1000000000 : Record 50305;SalesLineV@1000000008 : Record 37) r_PosNo : Integer;
+    VAR
+      SalesLineL@1000000001 : Record 37;
+      WhseLFSalesExportLineL@1000000002 : Record 50305;
+    BEGIN
+      WhseLFSalesExportLineL.RESET;
+      WhseLFSalesExportLineL.SETRANGE("Attached to Document Type",WhseLFSalesExportLineV."Attached to Document Type");
+      WhseLFSalesExportLineL.SETRANGE("Attached to Document No.",WhseLFSalesExportLineV."Attached to Document No.");
+      WhseLFSalesExportLineL.SETRANGE(Type,WhseLFSalesExportLineV.Type::Item);
+      WhseLFSalesExportLineL.SETRANGE("No.",WhseLFSalesExportLineV."No.");
+      WhseLFSalesExportLineL.SETRANGE(Crossdock,WhseLFSalesExportLineV.Crossdock);
+      IF WhseLFSalesExportLineL.FINDLAST THEN
+        IF WhseLFSalesExportLineL."Pos. No." <> 0 THEN
+          EXIT(WhseLFSalesExportLineL."Pos. No.");
+
+      WhseLFSalesExportLineL.RESET;
+      WhseLFSalesExportLineL.SETRANGE("Attached to Document Type",WhseLFSalesExportLineL."Pos. No.");
+      WhseLFSalesExportLineL.SETRANGE("Attached to Document No.",WhseLFSalesExportLineV."Attached to Document No.");
+      WhseLFSalesExportLineL.SETRANGE("Pos. No.",SalesLineV.ID);
+      IF WhseLFSalesExportLineL.ISEMPTY THEN
+        EXIT(SalesLineV.ID)
+      ELSE
+        EXIT(GetPosNoForBarcodeLine(WhseLFSalesExportLineV));
+    END;
+
+    PROCEDURE CheckAndUpdateSalesLineID@1000000031(SalesHeaderV@1000000000 : Record 36);
+    VAR
+      SalesLineL@1000000001 : Record 37;
+      HighestIdL@1000000003 : Integer;
+    BEGIN
+      // H2127  24.02.15  MKR ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Complete revision
+
+      HighestIdL := 0;
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type", SalesHeaderV."Document Type");
+      SalesLineL.SETRANGE("Document No.", SalesHeaderV."No.");
+      IF SalesLineL.FINDSET THEN
+        REPEAT
+          IF HighestIdL < SalesLineL.ID THEN
+            HighestIdL := SalesLineL.ID;
+        UNTIL SalesLineL.NEXT = 0;
+
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type", SalesHeaderV."Document Type");
+      SalesLineL.SETRANGE("Document No.", SalesHeaderV."No.");
+      SalesLineL.SETRANGE(Type, SalesLineL.Type::Item);
+      SalesLineL.SETRANGE(ID, 0);
+      IF SalesLineL.FINDSET THEN
+        REPEAT
+          HighestIdL +=1;
+          SalesLineL.ID := HighestIdL;
+          SalesLineL.MODIFY;
+        UNTIL SalesLineL.NEXT = 0;
+      // H2127  24.02.15  MKR ------------------------------------------------------
+    END;
+
+    PROCEDURE CreateBarcode@1000000001(WhseLFSalesExportHeaderV@1000000004 : Record 50304;WhseLFSalesExportLineV@1000000003 : Record 50305;EntryNoV@1000000006 : Integer) BarcodeRP : Text[50];
+    VAR
+      LocationL@1000000002 : Record 14;
+      PurchaseHeaderL@1000000001 : Record 38;
+      WhseLFSetupL@1000000000 : Record 50300;
+      WhseLFGeneralMgtL@1000000005 : Codeunit 50307;
+    BEGIN
+      WhseLFSetupL.GET;
+      WhseLFSetupL.TESTFIELD("LF Client Identifier");
+      IF PurchaseHeaderL.GET(PurchaseHeaderL."Document Type"::Order,WhseLFSalesExportLineV."Purchase Order No.") THEN BEGIN
+        LocationL.GET(PurchaseHeaderL."Location Code");
+        LocationL.TESTFIELD("Branch Code",WhseLFSalesExportHeaderV."Branch Code");
+      END;
+      BarcodeRP := WhseLFSetupL."LF Client Identifier" + WhseLFSalesExportHeaderV."LF Order No.";
+      WhseLFGeneralMgtL.AppendToString(BarcodeRP,FORMAT(EntryNoV),3,'0',0);
+    END;
+
+    PROCEDURE SetExitBeforeModification@1000000019(ExitBeforeModificationV@1000000000 : Boolean);
+    BEGIN
+      ExitBeforeModification := ExitBeforeModificationV;
+    END;
+
+    PROCEDURE GetNecessaryActionsByVarPar@1000000021(VAR NewV@1000000007 : Boolean;VAR UpdateV@1000000005 : Boolean;VAR CancelV@1000000003 : Boolean;VAR TryToDeleteEntryNoV@1000000001 : Integer);
+    BEGIN
+      NewV := New;
+      UpdateV := Update;
+      CancelV := Cancel;
+      TryToDeleteEntryNoV := TryToDeleteEntryNo;
+    END;
+
+    PROCEDURE TryToAddCancelForSequence@1000000020(WhseLFSalesExportHeaderV@1000000000 : Record 50304);
+    VAR
+      WhseLFSalesExportHeaderL@1000000001 : Record 50304;
+      LastWhseLFSalesExportLineL@1000000003 : Record 50305;
+      WhseLFSalesExportLineL@1000000004 : Record 50305;
+      WhseLFSalesLineReferenceL@1000000005 : Record 50314;
+      LastWhseLFSalesLineReferenceL@1000000006 : Record 50314;
+      PurchaseHeaderL@1000000007 : Record 38;
+      BatchPostDocumentL@1000000008 : Record 50043;
+    BEGIN
+      WhseLFSalesExportHeaderL.RESET;
+      WhseLFSalesExportHeaderL.SETRANGE("Document Type",WhseLFSalesExportHeaderV."Document Type");
+      WhseLFSalesExportHeaderL.SETRANGE("Document No.",WhseLFSalesExportHeaderV."Document No.");
+      WhseLFSalesExportHeaderL.SETRANGE("Sequence No.",WhseLFSalesExportHeaderV."Sequence No.");
+      WhseLFSalesExportHeaderL.SETRANGE("Transmission Mode",WhseLFSalesExportHeaderL."Transmission Mode"::Cancel);
+      IF NOT WhseLFSalesExportHeaderL.ISEMPTY THEN
+        ERROR(HMEText005,WhseLFSalesExportHeaderV."Document No.",WhseLFSalesExportHeaderV."Sequence No.");
+
+      WhseLFSalesExportHeaderL.RESET;
+      WhseLFSalesExportHeaderL.TRANSFERFIELDS(WhseLFSalesExportHeaderV);
+      WhseLFSalesExportHeaderL."Entry No." := WhseLFSalesExportHeaderL.GetNextEntryNo;
+      WhseLFSalesExportHeaderL.Status := WhseLFSalesExportHeaderL.Status::Creation;
+      WhseLFSalesExportHeaderL.INSERT;
+      WhseLFSalesExportHeaderL."Transmission Mode" := WhseLFSalesExportHeaderL."Transmission Mode"::Cancel;
+      WhseLFSalesExportHeaderL.Status := WhseLFSalesExportHeaderL.Status::Unprocessed;
+      WhseLFSalesExportHeaderL."Insert Timestamp" := CURRENTDATETIME;
+      WhseLFSalesExportHeaderL."Process Timestamp" := 0DT;
+      WhseLFSalesExportHeaderL.Filename := '';
+      LastWhseLFSalesExportLineL.RESET;
+      LastWhseLFSalesExportLineL.SETRANGE("Entry No.",WhseLFSalesExportHeaderV."Entry No.");
+      IF LastWhseLFSalesExportLineL.FINDSET THEN
+        REPEAT
+          WhseLFSalesExportLineL.RESET;
+          WhseLFSalesExportLineL.TRANSFERFIELDS(LastWhseLFSalesExportLineL);
+          WhseLFSalesExportLineL."Entry No." := WhseLFSalesExportHeaderL."Entry No.";
+          WhseLFSalesExportLineL.INSERT;
+        UNTIL LastWhseLFSalesExportLineL.NEXT = 0;
+
+      LastWhseLFSalesLineReferenceL.RESET;
+      LastWhseLFSalesLineReferenceL.SETRANGE("Attached to Entry No.",WhseLFSalesExportHeaderV."Entry No.");
+      IF LastWhseLFSalesLineReferenceL.FINDSET THEN
+        REPEAT
+          WhseLFSalesLineReferenceL.RESET;
+          WhseLFSalesLineReferenceL.TRANSFERFIELDS(LastWhseLFSalesLineReferenceL);
+          WhseLFSalesLineReferenceL."Attached to Entry No." := WhseLFSalesExportHeaderL."Entry No.";
+          WhseLFSalesLineReferenceL.INSERT;
+        UNTIL LastWhseLFSalesLineReferenceL.NEXT = 0;
+
+      WhseLFSalesExportHeaderL.MODIFY;
+      PurchaseHeaderL.RESET;
+      IF PurchaseHeaderL.GET(PurchaseHeaderL."Document Type"::Order,WhseLFSalesExportLineL."Purchase Order No.") THEN
+        BatchPostDocumentL.CreatePurchEMailBatch(PurchaseHeaderL);
+    END;
+
+    PROCEDURE SetSalesChangeOrderValue@1000000024(SalesChangeOrderV@1000000000 : Boolean);
+    BEGIN
+      SalesChangeOrder := SalesChangeOrderV;
+    END;
+
+    PROCEDURE SetSalesReturnOrderValue@1000000027(SalesReturnOrderV@1000000000 : Boolean);
+    BEGIN
+      SalesReturnOrder := SalesReturnOrderV;
+    END;
+
+    PROCEDURE IsSequenceLocked@1000000022(SalesHeaderV@1000000000 : Record 36) IsSequenceLockedO : Boolean;
+    VAR
+      WhseLFSetupL@1000000006 : Record 50300;
+      SalesLineL@1000000005 : Record 37;
+      ParcelStatusHistoryL@1000000004 : Record 80013;
+      LocationL@1000000002 : Record 14;
+      OrderHistoryL@1000000001 : Record 97;
+      ChannelChangeStr@1000000003 : Text[80];
+    BEGIN
+      //H1911 11.12.14 DMA +++++++++++++++++++++
+      IsSequenceLockedO := FALSE;
+      WhseLFSetupL.GET;
+      WhseLFSetupL.TESTFIELD("Sequence Locking Status");
+
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type",SalesHeaderV."Document Type");
+      SalesLineL.SETRANGE("Document No.",SalesHeaderV."No.");
+      IF SalesLineL.FINDSET THEN
+        REPEAT
+          LocationL.RESET;
+          LocationL.SETRANGE("Is LF Whse.",TRUE);
+          LocationL.SETRANGE(Code,SalesLineL."Location Code");
+          IF NOT LocationL.ISEMPTY THEN BEGIN
+            ParcelStatusHistoryL.RESET;
+            ParcelStatusHistoryL.SETRANGE("Document Type",SalesHeaderV."Document Type");
+            ParcelStatusHistoryL.SETRANGE("Document No.",SalesHeaderV."No.");
+            ParcelStatusHistoryL.SETRANGE("Document Line No.",SalesLineL."Line No.");
+            ParcelStatusHistoryL.SETRANGE("Status Sub Code",WhseLFSetupL."Sequence Locking Status");
+            IsSequenceLockedO := IsSequenceLockedO OR (NOT ParcelStatusHistoryL.ISEMPTY);
+
+            ParcelStatusHistoryL.RESET;
+            ParcelStatusHistoryL.SETRANGE("Document Type",SalesHeaderV."Document Type");
+            ParcelStatusHistoryL.SETRANGE("Document No.",SalesHeaderV."No.");
+            ParcelStatusHistoryL.SETRANGE("Document Line No.",SalesLineL."Line No.");
+            ParcelStatusHistoryL.SETRANGE("Status Code",WhseLFSetupL."Sequence Locking Status");
+            IsSequenceLockedO := IsSequenceLockedO OR (NOT ParcelStatusHistoryL.ISEMPTY);
+          END;
+
+          //H2164 03.03.15 DMO ++++++++++++++++++++++++++++++++++++
+          //check whether the channels were changed A->B and then B->A again
+          IF NOT IsSequenceLockedO THEN BEGIN
+            OrderHistoryL.RESET;
+            OrderHistoryL.SETRANGE("Table Name",OrderHistoryL."Table Name"::"Order History");
+            OrderHistoryL.SETRANGE("No.",SalesLineL."Document No.");
+            OrderHistoryL.SETRANGE("Order Line No.",SalesLineL."Line No.");
+            ChannelChangeStr := STRSUBSTNO(HMEText006,SalesLineL."Purchasing Code",SalesLineL."Old Purchasing Code",SalesLineL."No.");
+            OrderHistoryL.SETRANGE(Comment,ChannelChangeStr);
+            IsSequenceLockedO := IsSequenceLockedO OR NOT OrderHistoryL.ISEMPTY;
+          END;
+          //H2164 03.03.15 DMO ------------------------------------
+        UNTIL (SalesLineL.NEXT = 0) OR IsSequenceLockedO;
+
+      EXIT(IsSequenceLockedO);
+      //H1911 11.12.14 DMA ---------------------
+    END;
+
+    PROCEDURE GetKADAction@1000000004(SalesLineV@1000000001 : Record 37) : Boolean;
+    VAR
+      OrderHistoryL@1000000002 : Record 97;
+    BEGIN
+      //H2164 03.03.15 DMO ++++++++++++++++++++++++++++++++++++
+      OrderHistoryL.RESET;
+      OrderHistoryL.SETRANGE("Table Name",OrderHistoryL."Table Name"::"Order History");
+      OrderHistoryL.SETRANGE("No.",SalesLineV."Document No.");
+      OrderHistoryL.SETRANGE("Order Line No.",SalesLineV."Line No.");
+      IF OrderHistoryL.FINDLAST THEN
+        EXIT(OrderHistoryL."Update KAD");
+      //H2164 03.03.15 DMO ------------------------------------
+    END;
+
+    PROCEDURE InsertIntoParcelStatusHistory@1000000009(RecRefR@1000000003 : RecordRef;TrackingNoV@1000000000 : Code[40];TrackingNoAssignmentV@1000000001 : 'None,one2one,N2N';ShippingAgentCodeV@1000000004 : Code[10];OrderStatusV@1000000005 : Text[30];ImportTimestampV@1000000008 : DateTime;PurchasingCodeL@1000000009 : Code[10]);
+    VAR
+      SalesLineL@1000000012 : Record 37;
+      SalesLineArchiveL@1000000011 : Record 5108;
+      SalesOrderShipmentsDHLL@1000000002 : Record 50020;
+      WhseLFTrackingNoLogL@1000000006 : Record 50316;
+      DocumentNoL@1000000007 : Code[20];
+      FieldRefL@1000000010 : FieldRef;
+      LineNoL@1000000013 : Integer;
+    BEGIN
+      //H1980, H1767 03.02.15 EHN +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      CLEAR(CUParcelStatusHistoryMgmt);
+      CUParcelStatusHistoryMgmt.SetDateTimeGlobal(ImportTimestampV);
+      FieldRefL := RecRefR.FIELD(SalesLineL.FIELDNO("Document No."));
+      DocumentNoL := FieldRefL.VALUE;
+      FieldRefL := RecRefR.FIELD(SalesLineL.FIELDNO("Line No."));
+      LineNoL := FieldRefL.VALUE;
+
+      IF TrackingNoV <> '' THEN BEGIN
+        // In case we've already received same tracking no
+        CUParcelStatusHistoryMgmt.FillHistoryByDocLine(
+          RecRefR,                        // Rec
+          1,                              // p_Command
+          0,                              // p_InfoDirection::  Incoming,Outgoing
+          8,                              // p_UsedInterface::  ,EDI,DHL,DocData,Drop Shipment,Rhenus,UPS,WHse. LF
+          ShippingAgentCodeV,             // p_ShippingAgentCode
+          TrackingNoV,                    // p_TrackingCode
+          '',                             // p_PieceCode
+          '',                             // p_StatusCode
+          OrderStatusV,                   // p_StatusRICCode
+          '',                             // p_Comment
+          0);                             // p_HowToHandleStatusDescription
+        EXIT;
+      END;
+
+      CASE TrackingNoAssignmentV OF
+        TrackingNoAssignmentV::one2one:
+        BEGIN
+          WhseLFTrackingNoLogL.RESET;
+          WhseLFTrackingNoLogL.SETRANGE("Sales Import Entry No.", WhseLFSalesImport."Entry No.");
+          WhseLFTrackingNoLogL.SETRANGE("Linked to Sales Line No.",0);
+          IF WhseLFTrackingNoLogL.FINDFIRST THEN BEGIN
+            SalesOrderShipmentsDHLL.RESET;
+            SalesOrderShipmentsDHLL.SETRANGE("DHL Shipment Number Code",WhseLFTrackingNoLogL."Tracking No.");
+            SalesOrderShipmentsDHLL.SETRANGE("Shipping Agent Code",ShippingAgentCodeV);
+            SalesOrderShipmentsDHLL.SETRANGE("SO No.",DocumentNoL);
+            IF SalesOrderShipmentsDHLL.ISEMPTY THEN BEGIN
+              SalesOrderShipmentsDHLL.INIT;
+              SalesOrderShipmentsDHLL."DHL Shipment Number Code" := WhseLFTrackingNoLogL."Tracking No.";
+              SalesOrderShipmentsDHLL."Shipping Agent Code" := ShippingAgentCodeV;
+              SalesOrderShipmentsDHLL."SO No." := DocumentNoL;
+              SalesOrderShipmentsDHLL."Purchasing Code" := PurchasingCodeL;
+              SalesOrderShipmentsDHLL.INSERT;
+            END;
+
+            IF RecRefR.NUMBER = DATABASE::"Sales Line" THEN BEGIN
+              FieldRefL := RecRefR.FIELD(SalesLineL.FIELDNO("DHL Shipment Number"));
+              IF FORMAT(FieldRefL.VALUE) = '' THEN BEGIN
+                FieldRefL.VALIDATE(WhseLFTrackingNoLogL."Tracking No.");
+                RecRefR.MODIFY;
+              END;
+            END ELSE
+              IF RecRefR.NUMBER = DATABASE::"Sales Line Archive" THEN BEGIN
+                FieldRefL := RecRefR.FIELD(SalesLineArchiveL.FIELDNO("DHL Shipment Number"));
+                IF FORMAT(FieldRefL.VALUE) = '' THEN BEGIN
+                  FieldRefL.VALIDATE(WhseLFTrackingNoLogL."Tracking No.");
+                  RecRefR.MODIFY;
+                END;
+            END;
+            WhseLFTrackingNoLogL."Linked to Sales Line No." := LineNoL;
+            WhseLFTrackingNoLogL.MODIFY;
+            CUParcelStatusHistoryMgmt.FillHistoryByDocLine(
+              RecRefR,                              // Rec
+              1,                                    // p_Command
+              0,                                    // p_InfoDirection::  Incoming,Outgoing
+              8,                                    // p_UsedInterface::  ,EDI,DHL,DocData,Drop Shipment,Rhenus,UPS,WHse. LF
+              ShippingAgentCodeV,                   // p_ShippingAgentCode
+              WhseLFTrackingNoLogL."Tracking No.",  // p_TrackingCode
+              '',                                   // p_PieceCode
+              '',                                   // p_StatusCode
+              OrderStatusV,                         // p_StatusRICCode
+              '',                                   // p_Comment
+              0);                                   // p_HowToHandleStatusDescription
+          END;
+        END;
+        TrackingNoAssignmentV::N2N:
+        BEGIN
+          WhseLFTrackingNoLogL.RESET;
+          WhseLFTrackingNoLogL.SETRANGE("Sales Import Entry No.", WhseLFSalesImport."Entry No.");
+          WhseLFTrackingNoLogL.SETRANGE("Linked to Sales Line No.",0);
+          IF WhseLFTrackingNoLogL.FINDFIRST THEN BEGIN
+            REPEAT
+              SalesOrderShipmentsDHLL.RESET;
+              SalesOrderShipmentsDHLL.SETRANGE("DHL Shipment Number Code",WhseLFTrackingNoLogL."Tracking No.");
+              SalesOrderShipmentsDHLL.SETRANGE("Shipping Agent Code",ShippingAgentCodeV);
+              SalesOrderShipmentsDHLL.SETRANGE("SO No.",DocumentNoL);
+              IF SalesOrderShipmentsDHLL.ISEMPTY THEN BEGIN
+                SalesOrderShipmentsDHLL.INIT;
+                SalesOrderShipmentsDHLL."DHL Shipment Number Code" := WhseLFTrackingNoLogL."Tracking No.";
+                SalesOrderShipmentsDHLL."Shipping Agent Code" := ShippingAgentCodeV;
+                SalesOrderShipmentsDHLL."SO No." := DocumentNoL;
+                SalesOrderShipmentsDHLL."Purchasing Code" := PurchasingCodeL;
+                SalesOrderShipmentsDHLL.INSERT;
+              END;
+
+              IF RecRefR.NUMBER = DATABASE::"Sales Line" THEN BEGIN
+                FieldRefL := RecRefR.FIELD(SalesLineL.FIELDNO("DHL Shipment Number"));
+                IF FORMAT(FieldRefL.VALUE) = '' THEN BEGIN
+                  FieldRefL.VALIDATE(WhseLFTrackingNoLogL."Tracking No.");
+                  RecRefR.MODIFY;
+                END;
+              END ELSE
+                IF RecRefR.NUMBER = DATABASE::"Sales Line Archive" THEN BEGIN
+                  FieldRefL := RecRefR.FIELD(SalesLineArchiveL.FIELDNO("DHL Shipment Number"));
+                  IF FORMAT(FieldRefL.VALUE) = '' THEN BEGIN
+                    FieldRefL.VALIDATE(WhseLFTrackingNoLogL."Tracking No.");
+                    RecRefR.MODIFY;
+                  END;
+              END;
+              CUParcelStatusHistoryMgmt.FillHistoryByDocLine(
+                RecRefR,                              // Rec
+                1,                                    // p_Command
+                0,                                    // p_InfoDirection::  Incoming,Outgoing
+                8,                                    // p_UsedInterface::  ,EDI,DHL,DocData,Drop Shipment,Rhenus,UPS,WHse. LF
+                ShippingAgentCodeV,                   // p_ShippingAgentCode
+                WhseLFTrackingNoLogL."Tracking No.",  // p_TrackingCode
+                '',                                   // p_PieceCode
+                '',                                   // p_StatusCode
+                OrderStatusV,                         // p_StatusRICCode
+                '',                                   // p_Comment
+                0);                                   // p_HowToHandleStatusDescription
+            UNTIL WhseLFTrackingNoLogL.NEXT = 0;
+          END;
+        END;
+        TrackingNoAssignmentV::None:
+        BEGIN
+          CUParcelStatusHistoryMgmt.FillHistoryByDocLine(
+            RecRefR,                        // Rec
+            1,                              // p_Command
+            0,                              // p_InfoDirection::  Incoming,Outgoing
+            8,                              // p_UsedInterface::  ,EDI,DHL,DocData,Drop Shipment,Rhenus,UPS,WHse. LF
+            ShippingAgentCodeV,             // p_ShippingAgentCode
+            '',                             // p_TrackingCode
+            '',                             // p_PieceCode
+            '',                             // p_StatusCode
+            OrderStatusV,                   // p_StatusRICCode
+            '',                             // p_Comment
+            0);                             // p_HowToHandleStatusDescription
+        END;
+      END;
+      //H1980, H1767 03.02.15 EHN -------------------------------------------------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+      H1408     05.08.14   DMA       Copy RHD Interface, rename and implement as Whs LF Interface
+      H1411     08.08.14   EHN       Clean up Whs LF interface of not needed functionalities: KAB and KAS
+      H1412     05.09.14   EHN       Functional adjustment to the Whs LF Interface
+      H1767     06.11.14   EHN       WHSLF: process tracking number to status parcel history
+      H1812     13.11.14   EHN       BUG: WHSLF - only DHL is transfered to KAD
+      H1911     11.12.14   DMA       WHSLF: KAD update after channel change (seq. number),CODECHANGE
+      H1999     15.01.15   DMA       BUG:Deliverd item transmitted again in new Seq no. KAD  (H1911)
+      H1980     03.02.15   EHN       Set ADD for LF lines without tracking information - fill in DHL Shipment Number
+      H2104     10.02.15   EHN       BUG: WHSLF - Follow Up Order contains wrong PosNo in KAD File
+      H2127     19.02.15   MKR       Dynamic Locations for KAD processing
+      H2164     04.03.15   DMO       CheckForNecessaryActions,UpdateOrderForLocation,IsSequenceLocked are modified;GetKADAction is added;
+      H2157     16.03.15   DMO       STAProcessing is corrected; GetNextTransmissionNo is deleted
+      H3974     26.03.15   EHN       Warehouse H24: create setup to (de-)activate interface per branchcode
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,1282 @@
+OBJECT Codeunit 50066 Rhenus Export Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=19.07.13;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=GOB1.01;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+            //A/gob-rste/20.09.12/P0358
+            //CreateKAD(GLOBRhenusChangeLog);
+
+            CreateExtraCancelKAD(GlobalRhenusExtraCancel);
+            //E/gob-rste/20.09.12/P0358
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      UTFWriter@1000000000 : Automation "{B691E011-1797-432E-907A-4D8C69339129} 6.0:{00000566-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 6.0 Library'.Stream";
+      GLOBRhenusChangeLog@1000000001 : Record 50070;
+      LineCounter@1000000002 : Integer;
+      GlobalRhenusExtraCancel@1000000003 : Record 50076;
+
+    PROCEDURE CreateKAD@1000000004(p_RhenusChangeLog@1000000002 : Record 50070);
+    VAR
+      FileName@1000000001 : Text[1024];
+      RhenusChangeLogLoc@1000000000 : Record 50070;
+      ProcessDateTime@1000000004 : DateTime;
+      TempRhenusChangeLog@1000000005 : TEMPORARY Record 50070;
+      TotalLines@1000000006 : Integer;
+      FPCInterfaceSetup@1000000007 : Record 50014;
+      SalesHeader@1000000008 : Record 36;
+      LocText001@1000000009 : TextConst 'ENU=Rhenus KAD file';
+      i@1000000010 : Integer;
+      UpdatePaymentLine@1000000011 : Boolean;
+      RhenusChangeLogLoc2@1000000012 : Record 50070;
+    BEGIN
+      FPCInterfaceSetup.GET('RHENUS');
+      UpdatePaymentLine := FALSE;
+      RhenusChangeLogLoc.RESET;
+      RhenusChangeLogLoc.SETRANGE("Source Type",p_RhenusChangeLog."Source Type");
+      RhenusChangeLogLoc.SETRANGE("Document Type",p_RhenusChangeLog."Document Type");
+      RhenusChangeLogLoc.SETRANGE("Document No.",p_RhenusChangeLog."Document No.");
+      RhenusChangeLogLoc.SETRANGE("Seq. Code",p_RhenusChangeLog."Seq. Code");
+      RhenusChangeLogLoc.SETRANGE("Branch Code",p_RhenusChangeLog."Branch Code");
+      RhenusChangeLogLoc.SETRANGE(Processed,FALSE);
+      RhenusChangeLogLoc.SETRANGE("Interface Code",'RHENUS');
+      RhenusChangeLogLoc.SETFILTER("Line No.",'<>%1',0);
+      IF RhenusChangeLogLoc.FIND('-') THEN BEGIN
+        ProcessDateTime := 0DT;
+        ProcessDateTime := CURRENTDATETIME;
+        FileName := '';
+        FileName := 'KADFPCO' + FORMAT(ProcessDateTime,0,'<Year4><Month,2><Day,2><Hours24><Minutes,2><Seconds,2>') + '.txt';
+        LineCounter := 0;
+        IF NOT ISCLEAR(UTFWriter) THEN
+          CLEAR(UTFWriter);
+        CREATE(UTFWriter);
+        UTFWriter.Open;
+        UTFWriter.Charset('UTF-8');
+        // PrePayment
+        IF CheckIfPaymentUpdate(RhenusChangeLogLoc) THEN
+          EXIT;
+        TempRhenusChangeLog.DELETEALL;
+        GroupRhenusChangeLog2(RhenusChangeLogLoc,TempRhenusChangeLog,FALSE);
+        TempRhenusChangeLog.RESET;
+        IF TempRhenusChangeLog.FIND('-') THEN BEGIN
+          TotalLines := TempRhenusChangeLog.COUNT;
+          REPEAT
+            LineCounter +=1;
+            IF LineCounter = 1 THEN
+              CreateKAK(TempRhenusChangeLog,FALSE);
+            CASE TempRhenusChangeLog.Type OF
+              TempRhenusChangeLog.Type::Item :
+                CreateKAP(TempRhenusChangeLog);
+              TempRhenusChangeLog.Type::Resource:
+                CreateKAS(TempRhenusChangeLog);
+            END;
+            IF LineCounter = TotalLines THEN BEGIN
+              CreatePartialShipKAP(TempRhenusChangeLog);
+            END;
+            SalesHeader.GET(SalesHeader."Document Type"::Order,TempRhenusChangeLog."Document No.");
+          UNTIL TempRhenusChangeLog.NEXT = 0;
+        END;
+        i := 0;
+        i := UTFWriter.Size;
+        IF i > 0 THEN BEGIN
+          REPEAT
+            RhenusChangeLogLoc."Processing Date" := ProcessDateTime;
+            RhenusChangeLogLoc.Processed := TRUE;
+            RhenusChangeLogLoc."Export File Name" := FileName;
+            RhenusChangeLogLoc.MODIFY;
+          UNTIL RhenusChangeLogLoc.NEXT = 0;
+          UTFWriter.SaveToFile(FPCInterfaceSetup."Export Folder" + FileName);
+          UTFWriter.Close;
+          SLEEP(1000);
+          IF EXISTS(FPCInterfaceSetup."Export Folder" + FileName) THEN
+            IF FILE.COPY(FPCInterfaceSetup."Export Folder" + FileName,FPCInterfaceSetup."Archive Root Folder" + FileName) THEN
+              SalesHeader.ADDLINK(FPCInterfaceSetup."Archive Root Folder" + FileName,LocText001);
+        END ELSE BEGIN
+          // Log No FIle
+        END;
+      END;
+
+      RhenusChangeLogLoc.RESET;
+      RhenusChangeLogLoc.SETRANGE("Source Type",p_RhenusChangeLog."Source Type");
+      RhenusChangeLogLoc.SETRANGE("Document Type",p_RhenusChangeLog."Document Type");
+      RhenusChangeLogLoc.SETRANGE("Document No.",p_RhenusChangeLog."Document No.");
+      RhenusChangeLogLoc.SETRANGE("Seq. Code",p_RhenusChangeLog."Seq. Code");
+      RhenusChangeLogLoc.SETRANGE("Branch Code",p_RhenusChangeLog."Branch Code");
+      RhenusChangeLogLoc.SETRANGE(Processed,FALSE);
+      RhenusChangeLogLoc.SETRANGE("Interface Code",'RHENUS');
+      RhenusChangeLogLoc.SETRANGE("Line No.",0);
+      //RhenusChangeLogLoc.SETFILTER(Action,'<>%1',RhenusChangeLogLoc.Action::PaymentUpdate);
+      IF RhenusChangeLogLoc.FIND('-') THEN BEGIN
+        ProcessDateTime := 0DT;
+        ProcessDateTime := CURRENTDATETIME;
+        FileName := '';
+        FileName := 'KADFPCO' + FORMAT(ProcessDateTime,0,'<Year4><Month,2><Day,2><Hours24><Minutes,2><Seconds,2>') + '.txt';
+        LineCounter := 0;
+        IF NOT ISCLEAR(UTFWriter) THEN
+          CLEAR(UTFWriter);
+        CREATE(UTFWriter);
+        UTFWriter.Open;
+        UTFWriter.Charset('UTF-8');
+        TempRhenusChangeLog.DELETEALL;
+        GroupRhenusChangeLog2(RhenusChangeLogLoc,TempRhenusChangeLog,TRUE);
+        TempRhenusChangeLog.RESET;
+        IF TempRhenusChangeLog.FIND('-') THEN BEGIN
+          TotalLines := TempRhenusChangeLog.COUNT;
+          REPEAT
+            LineCounter +=1;
+            IF LineCounter = 1 THEN
+              CreateKAK(TempRhenusChangeLog,TRUE);
+            CASE TempRhenusChangeLog.Type OF
+              TempRhenusChangeLog.Type::Item :
+                CreateKAP(TempRhenusChangeLog);
+              TempRhenusChangeLog.Type::Resource:
+                CreateKAS(TempRhenusChangeLog);
+            END;
+            IF LineCounter = TotalLines THEN BEGIN
+              CreatePartialShipKAP(TempRhenusChangeLog);
+            END;
+            SalesHeader.GET(SalesHeader."Document Type"::Order,TempRhenusChangeLog."Document No.");
+          UNTIL TempRhenusChangeLog.NEXT = 0;
+        END;
+        i := 0;
+        i := UTFWriter.Size;
+        IF i > 0 THEN BEGIN
+          REPEAT
+            RhenusChangeLogLoc."Processing Date" := ProcessDateTime;
+            RhenusChangeLogLoc.Processed := TRUE;
+            RhenusChangeLogLoc."Export File Name" := FileName;
+            RhenusChangeLogLoc.MODIFY;
+          UNTIL RhenusChangeLogLoc.NEXT = 0;
+          UTFWriter.SaveToFile(FPCInterfaceSetup."Export Folder" + FileName);
+          UTFWriter.Close;
+          SLEEP(1000);
+          IF EXISTS(FPCInterfaceSetup."Export Folder" + FileName) THEN
+            IF FILE.COPY(FPCInterfaceSetup."Export Folder" + FileName,FPCInterfaceSetup."Archive Root Folder" + FileName) THEN
+              SalesHeader.ADDLINK(FPCInterfaceSetup."Archive Root Folder" + FileName,LocText001);
+        END;
+      END;
+
+      //COMMIT;  //need?
+    END;
+
+    PROCEDURE CreateKAK@1000000000(p_RhenusChangeLog@1000000006 : Record 50070;p_Cancel@1000000021 : Boolean);
+    VAR
+      ImportFrameworkHeader@1000000000 : Record 50010;
+      ImportFrameworkLine@1000000001 : Record 50011;
+      TextToWrite@1000000002 : Text[1024];
+      CRLF@1000000003 : Text[2];
+      CR@1000000004 : Char;
+      LF@1000000005 : Char;
+      SalesHeader@1000000007 : Record 36;
+      WebSiteTransfer@1000000008 : Record 50033;
+      SalesLine@1000000009 : Record 37;
+      Purchasing@1000000010 : Record 5721;
+      DeliveryType@1000000011 : Text[1];
+      LocText001@1000000012 : TextConst 'ENU=!!!! Avisierung erst ab Status - Auftrag vollstÑndig im Standort !!!!';
+      SalutionInt@1000000013 : Integer;
+      CountyRegionCode@1000000014 : Text[10];
+      Country@1000000015 : Record 9;
+      ShiptoAddress@1000000016 : Record 222;
+      PhoneNo@1000000017 : Text[30];
+      Customer@1000000018 : Record 18;
+      EMail@1000000019 : Text[80];
+      PostCode@1000000020 : Code[20];
+    BEGIN
+      CR := 13;
+      LF := 10;
+      CRLF := FORMAT(CR,0,'<Char>');
+      CRLF := CRLF + FORMAT(LF,0,'<Char>');
+      SalesHeader.GET(SalesHeader."Document Type"::Order,p_RhenusChangeLog."Document No.");
+      //A/gob-rste/20.09.12/P0316
+      //SalesHeader.CALCFIELDS("Website No.");
+      //E/gob-rste/20.09.12/P0316
+      IF NOT SalesHeader.Kommissionierung THEN
+        EXIT; // Log
+
+      TextToWrite := '';
+      TextToWrite := 'KAK';
+      TextToWrite := TextToWrite + 'FPCO';
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(p_RhenusChangeLog."Branch Code",6);
+      //WebSiteTransfer.RESET;
+      //WebSiteTransfer.SETRANGE("Website No.",SalesHeader."Website No.");
+      //WebSiteTransfer.FINDFIRST;
+      //TextToWrite := TextToWrite + FillValueWithFixedFormat(FORMAT(WebSiteTransfer."Rhenus Website No."),20);
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('',20);
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(p_RhenusChangeLog."Document No." + p_RhenusChangeLog."Seq. Code",20);
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(SalesHeader."External Document No.",20);
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(SalesHeader."Sell-to Customer No.",15);
+      IF NOT p_Cancel THEN BEGIN
+          IF p_RhenusChangeLog.Action = p_RhenusChangeLog.Action::New THEN
+            TextToWrite := TextToWrite + FillValueWithFixedFormat('1',1);  // 1 = new 2 = change 3 = cancel
+          IF p_RhenusChangeLog.Action = p_RhenusChangeLog.Action::PaymentUpdate THEN
+            TextToWrite := TextToWrite + FillValueWithFixedFormat('2',1);  // 1 = new 2 = change 3 = cancel
+      END ELSE
+          TextToWrite := TextToWrite + FillValueWithFixedFormat('3',1);  // 1 = new 2 = change 3 = cancel
+
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(FORMAT(CREATEDATETIME(p_RhenusChangeLog."Order Date",TIME),
+                                                                   0,
+                                                                   '<Day,2>.<Month,2>.<Year4>-<Hours24,2>:<Minutes,2>:<Seconds,2>')
+                                                                   ,19);
+      //END;
+      DeliveryType := 'K';
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type",SalesHeader."Document Type");
+      SalesLine.SETRANGE("Document No.",SalesHeader."No.");
+      IF SalesLine.FINDSET THEN
+        REPEAT
+          IF (Purchasing.GET(SalesLine."Purchasing Code")) AND
+             (Purchasing."Delivery Type" = Purchasing."Delivery Type"::Selbstabholer)
+          THEN
+            DeliveryType := 'S';
+      UNTIL SalesLine.NEXT = 0;
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(DeliveryType,1);
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('',1); // Payment Method
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('',7); // inkasso
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('',7); // Gross-Value
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('',7); // Gross-value assembly
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('',5); // Order Volume (liter)
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('',4); // Order weight
+      IF p_RhenusChangeLog."Branch Code" = '639' THEN
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(LocText001,250)
+        ELSE
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('',250);
+      TextToWrite := TextToWrite + ';';
+      UTFWriter.WriteText(TextToWrite + CRLF);
+
+
+      // Start KAL
+      TextToWrite := '';
+      IF SalesHeader."Document Type" = SalesHeader."Document Type"::Order THEN
+        TextToWrite := TextToWrite + FillValueWithFixedFormat('KAL',3)
+      ELSE
+        TextToWrite := TextToWrite + FillValueWithFixedFormat('KAA',3);
+      SalutionInt := 0;
+      IF STRPOS(UPPERCASE(SalesHeader."Ship-to Name"),'HERR') = 1 THEN
+        SalutionInt := 1;
+      IF STRPOS(UPPERCASE(SalesHeader."Ship-to Name"),'FRAU') = 1 THEN
+        SalutionInt := 2;
+      IF SalutionInt = 0 THEN
+        SalutionInt := 3;
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(FORMAT(SalutionInt),1); //Anrede
+
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(SalesHeader."Ship-to Name",60); //Anrede
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(SalesHeader."Ship-to Name 2",30); //Anrede 2
+      //TextToWrite := TextToWrite + FillValueWithFixedFormat(SalesHeader."Ship-to Name",30); //Anrede 2
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(SalesHeader."Ship-to Address 2",60); //Additional Address
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(SalesHeader."Ship-to Address",50); // Street
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('',8); // HouseNo
+      PostCode := '';
+      PostCode := SalesHeader."Ship-to Post Code";
+      //A/gob-rste/20.09.12/P0316
+      //SalesHeader.CALCFIELDS("Website No.");
+      //E/gob-rste/20.09.12/P0316
+      IF SalesHeader."Website No." = 3 THEN
+       PostCode := FormatNLPostCode(PostCode);
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(PostCode,8); // PLZ
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(SalesHeader."Ship-to City",50); // city
+      CountyRegionCode := '';
+      IF Country.GET(SalesHeader."Ship-to Country/Region Code") THEN
+        CountyRegionCode := Country."Country Code Rhenus"; // Log wenn leer nachziehen
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(CountyRegionCode,3); // Rhenus Country/Region
+      PhoneNo := '';
+      IF ShiptoAddress.GET(SalesHeader."Ship-to Code") THEN
+        IF ShiptoAddress."Phone No." <> '' THEN
+          PhoneNo := ShiptoAddress."Phone No.";
+      IF PhoneNo = '' THEN BEGIN
+        IF Customer.GET(SalesHeader."Sell-to Customer No.") THEN
+          PhoneNo := Customer."Phone No.";
+      END;
+      IF PhoneNo = '' THEN BEGIN
+        //InsertLogEntry(ImportFrameworkLine.Code, Text011, TRUE, FALSE);
+        PhoneNo := '999999';
+      END;
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(PhoneNo,20); // Phone No
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('',20); // Phone No 2
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('',20); // Phone No 3
+
+      EMail := '';
+      IF ShiptoAddress.GET(SalesHeader."Ship-to Code") THEN
+        IF ShiptoAddress."E-Mail" <> '' THEN
+          EMail := ShiptoAddress."E-Mail";
+      IF EMail = '' THEN BEGIN
+        IF Customer.GET(SalesHeader."Sell-to Customer No.") THEN
+          EMail := Customer."E-Mail";
+      END;
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(EMail,50); // EMail
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('',20); // Fax
+      IF SalesHeader.Status = SalesHeader.Status::"Pending Prepayment" THEN
+        TextToWrite := TextToWrite + FillValueWithFixedFormat(FORMAT(CREATEDATETIME(11112911D,TIME),
+                                                                     0,
+                                                                     '<Day,2>.<Month,2>.<Year4>-<Hours24,2>:<Minutes,2>:<Seconds,2>')
+                                                                     ,10)
+      ELSE
+        TextToWrite := TextToWrite + FillValueWithFixedFormat('',10);
+
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('',5); // Requested deliveryˇtimeˇfrom
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('',5); // Requested deliveryˇtimeˇto
+      TextToWrite := TextToWrite + ';';
+      UTFWriter.WriteText(TextToWrite + CRLF);
+    END;
+
+    PROCEDURE CreateKAP@1000000001(p_RhenusChangeLog@1000000000 : Record 50070);
+    VAR
+      TextToWrite@1000000004 : Text[1024];
+      CRLF@1000000003 : Text[2];
+      CR@1000000002 : Char;
+      LF@1000000001 : Char;
+      SalesHeader@1000000005 : Record 36;
+      SalesLine@1000000006 : Record 37;
+      Location@1000000007 : Record 14;
+      ItemQualitiy@1000000008 : Code[10];
+      ExtraOrder@1000000009 : Integer;
+      Item@1000000010 : Record 27;
+      NoOfPackages@1000000011 : Text[30];
+      ArticleCapacity@1000000012 : Text[30];
+      UnitVolume@1000000013 : Decimal;
+      NetWeight@1000000014 : Decimal;
+      ItemWeight@1000000015 : Text[30];
+    BEGIN
+      CR := 13;
+      LF := 10;
+      CRLF := FORMAT(CR,0,'<Char>');
+      CRLF := CRLF + FORMAT(LF,0,'<Char>');
+      TextToWrite := '';
+
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('KAP',3);
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(FORMAT(p_RhenusChangeLog."Seq. No."),5);
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(FORMAT(1),3);  // DocNo Fix Order
+      SalesLine.GET(SalesHeader."Document Type"::Order,p_RhenusChangeLog."Document No.",p_RhenusChangeLog."Line No.");
+      IF p_RhenusChangeLog.Quantity > 0 THEN
+        TextToWrite := TextToWrite + FillValueWithFixedFormat(FORMAT(p_RhenusChangeLog.Quantity),5)  // Qty
+      ELSE
+        TextToWrite := TextToWrite + FillValueWithFixedFormat(FORMAT(p_RhenusChangeLog."Cancellation Qty."),3);  // Qty to Cancel
+      ItemQualitiy := '';
+      IF Location.GET(p_RhenusChangeLog."Location Code") THEN
+        ItemQualitiy := Location."Item Quality Code";
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(ItemQualitiy,1);  // Item Quality
+      ExtraOrder := 0;
+      IF p_RhenusChangeLog."Special Order" THEN
+        ExtraOrder := 1;
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(FORMAT(ExtraOrder),1);  // Extra Order
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(FORMAT(p_RhenusChangeLog."Delivery Type",0,9),1);  //  Delivery Type
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(p_RhenusChangeLog."No.",30); // Item No.
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(p_RhenusChangeLog.Description,50); // Description
+      NoOfPackages := '1';
+      NetWeight := 0;
+      UnitVolume := 0;
+      ItemWeight := '';
+      ArticleCapacity := '';
+      Item.RESET;
+      IF p_RhenusChangeLog.Type = p_RhenusChangeLog.Type::Item THEN BEGIN
+        IF Item.GET(p_RhenusChangeLog."No.") THEN BEGIN
+          Item.CALCFIELDS("Parcels Number");
+          IF Item."Parcels Number" <> 0 THEN
+            NoOfPackages := FORMAT(Item."Parcels Number",0,'<Integer>');
+          IF Item."Unit Volume" >= 1 THEN
+            UnitVolume := ROUND(Item."Unit Volume",1);
+          IF Item."Unit Volume" < 1 THEN
+            UnitVolume := 1;
+          IF Item."Unit Volume" = 0 THEN
+            UnitVolume := 0;
+          ArticleCapacity :=  FORMAT(UnitVolume,0,'<Integer>');
+          IF Item."Net Weight" >= 1 THEN
+            NetWeight := ROUND(Item."Net Weight",1);
+          IF Item."Net Weight" < 1 THEN
+            NetWeight := 1;
+          IF Item."Net Weight" = 0 THEN
+            NetWeight := 0;
+          ItemWeight :=  FORMAT(NetWeight,0,'<Integer>');
+        END;
+      END;
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(NoOfPackages,2);  //Packages
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(ArticleCapacity,5);  //Article Capacity
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(ItemWeight,4);  //item weight
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(p_RhenusChangeLog."Cross-Reference No.",35);  //cross ref no.
+      TextToWrite := TextToWrite + ';';
+
+      UTFWriter.WriteText(TextToWrite + CRLF);
+    END;
+
+    PROCEDURE CreateKAS@1000000002(p_RhenusChangeLog@1000000000 : Record 50070);
+    VAR
+      TextToWrite@1000000004 : Text[1024];
+      CRLF@1000000003 : Text[2];
+      CR@1000000002 : Char;
+      LF@1000000001 : Char;
+    BEGIN
+      CR := 13;
+      LF := 10;
+      CRLF := FORMAT(CR,0,'<Char>');
+      CRLF := CRLF + FORMAT(LF,0,'<Char>');
+      TextToWrite := '';
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('KAS',3);
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(FORMAT(p_RhenusChangeLog."Seq. No."),5);
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('272',3);
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(FORMAT(p_RhenusChangeLog.Quantity,0,'<Integer>'),5);
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(FORMAT(ROUND(p_RhenusChangeLog."Amount Including VAT" * 100),
+                                                            0,'<Integer>'),7);
+      TextToWrite := TextToWrite + ';';
+      UTFWriter.WriteText(TextToWrite + CRLF);
+    END;
+
+    PROCEDURE CreatePartialShipKAP@1000000007(p_RhenusChangeLog@1000000000 : Record 50070);
+    VAR
+      TextToWrite@1000000005 : Text[1024];
+      CRLF@1000000004 : Text[2];
+      CR@1000000003 : Char;
+      LF@1000000002 : Char;
+      SalesLine@1000000001 : Record 37;
+      LocText001@1000000006 : TextConst 'DEU=Weitere Artikel werden separat angeliefert.';
+    BEGIN
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type",SalesLine."Document Type"::Order);
+      SalesLine.SETRANGE("Document No.",p_RhenusChangeLog."Document No.");
+      SalesLine.SETRANGE(Type,SalesLine.Type::Item);
+      SalesLine.SETFILTER("Location Code",'RHE*');
+      IF NOT SalesLine.ISEMPTY THEN BEGIN
+        SalesLine.RESET;
+        SalesLine.SETRANGE("Document Type",SalesLine."Document Type"::Order);
+        SalesLine.SETRANGE("Document No.",p_RhenusChangeLog."Document No.");
+        SalesLine.SETRANGE(Type,SalesLine.Type::Item);
+        SalesLine.SETFILTER("Location Code",'<>RHE*');
+        IF NOT SalesLine.ISEMPTY THEN BEGIN
+          CR := 13;
+          LF := 10;
+          CRLF := FORMAT(CR,0,'<Char>');
+          CRLF := CRLF + FORMAT(LF,0,'<Char>');
+          TextToWrite := '';
+          TextToWrite := TextToWrite + FillValueWithFixedFormat('KAP',3);
+          TextToWrite := TextToWrite + FillValueWithFixedFormat(FORMAT(LineCounter+1),5);
+          TextToWrite := TextToWrite + FillValueWithFixedFormat('15',3);  // DocNo Fix Order
+          TextToWrite := TextToWrite + FillValueWithFixedFormat('1',5);  // Qty
+          TextToWrite := TextToWrite + FillValueWithFixedFormat('',1);  // Item Quality
+          TextToWrite := TextToWrite + FillValueWithFixedFormat('',1);  // Extra Order
+          TextToWrite := TextToWrite + FillValueWithFixedFormat('0',1);  //  Delivery Type
+          TextToWrite := TextToWrite + FillValueWithFixedFormat('Order-Info',30); // Item No.
+          TextToWrite := TextToWrite + FillValueWithFixedFormat(LocText001,50); // Description
+          TextToWrite := TextToWrite + FillValueWithFixedFormat('',2);  //Packages
+          TextToWrite := TextToWrite + FillValueWithFixedFormat('',5);  //Article Capacity
+          TextToWrite := TextToWrite + FillValueWithFixedFormat('',4);  //item weight
+          TextToWrite := TextToWrite + FillValueWithFixedFormat('',35);  //cross ref no.
+          TextToWrite := TextToWrite + ';';
+          UTFWriter.WriteText(TextToWrite + CRLF);
+        END;
+      END;
+    END;
+
+    PROCEDURE FillValueWithFixedFormat@1000000011(p_Text@1000000000 : Text[1024];FixedStrLen@1000000001 : Integer) : Text[1024];
+    BEGIN
+      IF STRLEN(p_Text) < FixedStrLen THEN BEGIN
+        REPEAT
+          p_Text := p_Text + ' ';
+        UNTIL STRLEN(p_Text) = FixedStrLen;
+      END ELSE BEGIN
+        p_Text := COPYSTR(p_Text,1,FixedStrLen);
+      END;
+      EXIT(p_Text);
+    END;
+
+    PROCEDURE FormatNLPostCode@1000000012(p_PostCode@1170000000 : Code[20]) : Text[30];
+    VAR
+      i@1170000002 : Integer;
+      HelpText@1170000001 : Text[1];
+    BEGIN
+      IF p_PostCode = '' THEN
+        EXIT('');
+      p_PostCode := DELCHR(p_PostCode,'=',' ');
+      FOR i := 1 TO STRLEN(p_PostCode) DO BEGIN
+          HelpText := COPYSTR(p_PostCode,i,1);
+          IF NOT ((HelpText >= '0') AND (HelpText <= '9')) THEN
+            EXIT(COPYSTR(p_PostCode,1,i-1) + ' ' + COPYSTR(p_PostCode,i,STRLEN(p_PostCode) - i + 1));
+      END;
+      EXIT(p_PostCode);
+    END;
+
+    PROCEDURE GroupRhenusChangeLog@1000000003(p_RhenusChangeLog@1000000000 : Record 50070;VAR p_TempRhenusChangeLog@1000000001 : TEMPORARY Record 50070;p_GroupCancelLines@1000000007 : Boolean);
+    VAR
+      RhenusChangeLogLoc@1000000002 : Record 50070;
+      SalesLine@1000000003 : Record 37;
+      SalesLine2@1000000004 : Record 37;
+      Item@1000000005 : Record 27;
+      TempRhenusChangeLog2@1000000006 : TEMPORARY Record 50070;
+    BEGIN
+      p_TempRhenusChangeLog.DELETEALL;
+      RhenusChangeLogLoc.RESET;
+      RhenusChangeLogLoc.SETRANGE("Source Type",p_RhenusChangeLog."Source Type");
+      RhenusChangeLogLoc.SETRANGE("Document Type",p_RhenusChangeLog."Document Type");
+      RhenusChangeLogLoc.SETRANGE("Document No.",p_RhenusChangeLog."Document No.");
+      RhenusChangeLogLoc.SETRANGE("Seq. Code",p_RhenusChangeLog."Seq. Code");
+      RhenusChangeLogLoc.SETRANGE("Branch Code",p_RhenusChangeLog."Branch Code");
+      RhenusChangeLogLoc.SETFILTER("Line No.",'<>%1',0);
+      IF p_GroupCancelLines THEN BEGIN
+        RhenusChangeLogLoc.SETRANGE(Processed,TRUE);
+        RhenusChangeLogLoc.SETFILTER(Action,'<>%1',RhenusChangeLogLoc.Action::PaymentUpdate);
+      END ELSE BEGIN
+        RhenusChangeLogLoc.SETRANGE(Processed,FALSE);
+      END;
+
+      IF RhenusChangeLogLoc.FIND('-') THEN BEGIN
+        TempRhenusChangeLog2.DELETEALL;
+        REPEAT
+          p_TempRhenusChangeLog.RESET;
+          p_TempRhenusChangeLog.SETRANGE("Source Type",RhenusChangeLogLoc."Source Type");
+          p_TempRhenusChangeLog.SETRANGE("Document Type",RhenusChangeLogLoc."Document Type");
+          p_TempRhenusChangeLog.SETRANGE("Document No.",RhenusChangeLogLoc."Document No.");
+          p_TempRhenusChangeLog.SETRANGE("Seq. Code",RhenusChangeLogLoc."Seq. Code");
+          p_TempRhenusChangeLog.SETRANGE("Branch Code",RhenusChangeLogLoc."Branch Code");
+          p_TempRhenusChangeLog.SETRANGE(Type,p_TempRhenusChangeLog.Type::Item);
+          p_TempRhenusChangeLog.SETRANGE("No.",RhenusChangeLogLoc."No.");
+          p_TempRhenusChangeLog.SETRANGE("Purchasing Code",RhenusChangeLogLoc."Purchasing Code");
+          IF p_TempRhenusChangeLog.FIND('-') THEN BEGIN
+            p_TempRhenusChangeLog.Quantity := p_TempRhenusChangeLog.Quantity + RhenusChangeLogLoc.Quantity;
+            p_TempRhenusChangeLog.MODIFY;
+          END ELSE BEGIN
+            p_TempRhenusChangeLog.TRANSFERFIELDS(RhenusChangeLogLoc);
+            p_TempRhenusChangeLog.INSERT;
+          END;
+          IF RhenusChangeLogLoc.Type = RhenusChangeLogLoc.Type::Resource THEN BEGIN
+            SalesLine.RESET;
+            IF SalesLine.GET(SalesLine."Document Type"::Order,RhenusChangeLogLoc."Document No.",RhenusChangeLogLoc."Line No.") THEN
+      BEGIN
+              IF SalesLine."Resource Type" = SalesLine."Resource Type"::Assembly THEN BEGIN
+                SalesLine2.RESET;
+                SalesLine2.SETRANGE("Document Type",SalesLine."Document Type");
+                SalesLine2.SETRANGE("Document No.",SalesLine."Document No.");
+                SalesLine2.SETRANGE(ID,SalesLine."Parent ID");
+                IF (SalesLine2.FINDFIRST) AND (SalesLine2.Type = SalesLine2.Type::Item) THEN BEGIN
+                  Item.RESET;
+                  IF Item.GET(SalesLine2."No.") THEN BEGIN
+                    p_TempRhenusChangeLog.RESET;
+                    p_TempRhenusChangeLog.SETRANGE("Source Type",RhenusChangeLogLoc."Source Type");
+                    p_TempRhenusChangeLog.SETRANGE("Document Type",RhenusChangeLogLoc."Document Type");
+                    p_TempRhenusChangeLog.SETRANGE("Document No.",RhenusChangeLogLoc."Document No.");
+                    p_TempRhenusChangeLog.SETRANGE("Seq. Code",RhenusChangeLogLoc."Seq. Code");
+                    p_TempRhenusChangeLog.SETRANGE("Branch Code",RhenusChangeLogLoc."Branch Code");
+                    p_TempRhenusChangeLog.SETRANGE(Type,p_TempRhenusChangeLog.Type::Item);
+                    p_TempRhenusChangeLog.SETRANGE("No.",SalesLine."No.");
+                    IF p_TempRhenusChangeLog.FINDFIRST THEN BEGIN
+                      TempRhenusChangeLog2.SETRANGE("Source Type",p_TempRhenusChangeLog."Source Type");
+                      TempRhenusChangeLog2.SETRANGE("Document Type",p_TempRhenusChangeLog."Document Type");
+                      TempRhenusChangeLog2.SETRANGE("Document No.",p_TempRhenusChangeLog."Document No.");
+                      TempRhenusChangeLog2.SETRANGE("Seq. Code",p_TempRhenusChangeLog."Seq. Code");
+                      TempRhenusChangeLog2.SETRANGE("Branch Code",p_TempRhenusChangeLog."Branch Code");
+                      TempRhenusChangeLog2.SETRANGE("Assembly for Line No.",p_TempRhenusChangeLog."Line No.");
+                      IF TempRhenusChangeLog2.FINDFIRST THEN BEGIN
+                        TempRhenusChangeLog2.Quantity := TempRhenusChangeLog2.Quantity + Item."Assembly Service Amount";
+                        TempRhenusChangeLog2.MODIFY;
+                      END ELSE BEGIN
+                        TempRhenusChangeLog2.TRANSFERFIELDS(RhenusChangeLogLoc);
+                        TempRhenusChangeLog2.Quantity := Item."Assembly Service Amount";
+                        TempRhenusChangeLog2."Assembly for Line No." := p_TempRhenusChangeLog."Line No.";
+                        TempRhenusChangeLog2.INSERT;
+                      END;
+                    END;
+                  END;
+                END;
+              END;
+            END;
+          END;
+        UNTIL RhenusChangeLogLoc.NEXT = 0;
+        TempRhenusChangeLog2.RESET;
+        IF TempRhenusChangeLog2.FIND('-') THEN
+          REPEAT
+            p_TempRhenusChangeLog.TRANSFERFIELDS(TempRhenusChangeLog2);
+            IF p_TempRhenusChangeLog.INSERT THEN;
+          UNTIL TempRhenusChangeLog2.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE InsertLogEntry@1113800003(p_RhenusChangeLog@1000000001 : Record 50070;p_LogText@1113800000 : Text[250];p_Error@1113800002 : Boolean);
+    VAR
+      ImportLog@1000000003 : Record 50013;
+      Next@1000000000 : Integer;
+    BEGIN
+    END;
+
+    PROCEDURE InitCodeunit@1000000006(p_RhenusChangeLog@1000000000 : Record 50070);
+    BEGIN
+      GLOBRhenusChangeLog.RESET;
+      GLOBRhenusChangeLog := p_RhenusChangeLog;
+    END;
+
+    PROCEDURE CheckIfPaymentUpdate@1000000005(VAR p_RhenusChangeLog@1000000000 : Record 50070) : Boolean;
+    VAR
+      RhenusChangeLogLoc@1000000001 : Record 50070;
+      RhenusChangeLogLoc2@1000000002 : Record 50070;
+      IsUpdate@1000000003 : Boolean;
+      TEMPRhenusChangeLogLoc@1000000004 : TEMPORARY Record 50070;
+      RhenusChangeLogLoc3@1000000005 : Record 50070;
+    BEGIN
+      IF p_RhenusChangeLog."Line No."  = 0 THEN
+        EXIT(FALSE);
+      IsUpdate := FALSE;
+      RhenusChangeLogLoc.RESET;
+      RhenusChangeLogLoc.SETRANGE("Source Type",p_RhenusChangeLog."Source Type");
+      RhenusChangeLogLoc.SETRANGE("Document Type",p_RhenusChangeLog."Document Type");
+      RhenusChangeLogLoc.SETRANGE("Document No.",p_RhenusChangeLog."Document No.");
+      RhenusChangeLogLoc.SETFILTER("Seq. Code",'<>%1',p_RhenusChangeLog."Seq. Code"); // new Seq Code
+      RhenusChangeLogLoc.SETRANGE("Branch Code",p_RhenusChangeLog."Branch Code");
+      RhenusChangeLogLoc.SETRANGE("Interface Code",p_RhenusChangeLog."Interface Code");
+      RhenusChangeLogLoc.SETRANGE(Processed,TRUE);
+      RhenusChangeLogLoc.SETRANGE("Line No.",p_RhenusChangeLog."Line No.");
+      IF RhenusChangeLogLoc.FINDLAST THEN BEGIN
+        IF (p_RhenusChangeLog."Shipment Date" = 0D) AND (RhenusChangeLogLoc."Shipment Date" = 11112911D) THEN BEGIN
+          RhenusChangeLogLoc2.RESET;
+          RhenusChangeLogLoc2.SETRANGE("Source Type",p_RhenusChangeLog."Source Type");
+          RhenusChangeLogLoc2.SETRANGE("Document Type",p_RhenusChangeLog."Document Type");
+          RhenusChangeLogLoc2.SETRANGE("Document No.",p_RhenusChangeLog."Document No.");
+          RhenusChangeLogLoc2.SETFILTER("Seq. Code",p_RhenusChangeLog."Seq. Code");
+          RhenusChangeLogLoc2.SETRANGE("Branch Code",p_RhenusChangeLog."Branch Code");
+          RhenusChangeLogLoc2.SETRANGE("Interface Code",p_RhenusChangeLog."Interface Code");
+          RhenusChangeLogLoc2.SETFILTER("Line No.",'<>%1',0);
+          //RhenusChangeLogLoc2.SETFILTER("Line No.",'<>%1&<>%2',p_RhenusChangeLog."Line No.",0);
+          RhenusChangeLogLoc2.SETRANGE(Processed,FALSE);
+          //A/gob-adb/08.07.13
+          //IF RhenusChangeLogLoc2.FINDSET(TRUE,TRUE) THEN
+          IF RhenusChangeLogLoc2.FIND('-') THEN
+          //E/gob-adb/08.07.13
+            REPEAT
+              TEMPRhenusChangeLogLoc.DELETEALL;
+              TEMPRhenusChangeLogLoc.TRANSFERFIELDS(RhenusChangeLogLoc2);
+              TEMPRhenusChangeLogLoc."Seq. Code" := RhenusChangeLogLoc."Seq. Code";
+              TEMPRhenusChangeLogLoc.Action := RhenusChangeLogLoc2.Action::PaymentUpdate;
+              TEMPRhenusChangeLogLoc.INSERT;
+              RhenusChangeLogLoc2.DELETE;
+              //IF RhenusChangeLogLoc2.RENAME(RhenusChangeLogLoc2."Source Type",
+                                         //RhenusChangeLogLoc2."Document Type",
+                                         //RhenusChangeLogLoc2."Document No.",
+                                         //RhenusChangeLogLoc2."Seq. Code",
+                                         //RhenusChangeLogLoc2."Line No.",
+                                         //RhenusChangeLogLoc2.Action) THEN;
+              RhenusChangeLogLoc3.INIT;
+              RhenusChangeLogLoc3.TRANSFERFIELDS(TEMPRhenusChangeLogLoc);
+              IF RhenusChangeLogLoc3.INSERT THEN;
+            UNTIL RhenusChangeLogLoc2.NEXT = 0;
+          p_RhenusChangeLog.Action := p_RhenusChangeLog.Action::PaymentUpdate;
+          p_RhenusChangeLog."Seq. Code" := RhenusChangeLogLoc."Seq. Code";
+      //IF p_RhenusChangeLog.RENAME(p_RhenusChangeLog."Source Type",p_RhenusChangeLog."Document Type",p_RhenusChangeLog."Document No.",
+                                   //p_RhenusChangeLog."Seq. Code",p_RhenusChangeLog."Line No.",p_RhenusChangeLog.Action) THEN;
+          IsUpdate := TRUE;
+          //p_RhenusChangeLog.MODIFY;
+        END;
+      END;
+      EXIT(IsUpdate);
+    END;
+
+    PROCEDURE GroupRhenusChangeLog2@1000000008(p_RhenusChangeLog@1000000000 : Record 50070;VAR p_TempRhenusChangeLog@1000000001 : TEMPORARY Record 50070;p_GroupCancelLines@1000000007 : Boolean);
+    VAR
+      RhenusChangeLogLoc@1000000002 : Record 50070;
+      RhenusChangeLogLoc2@1000000008 : Record 50070;
+      SalesLine@1000000003 : Record 37;
+      SalesLine2@1000000004 : Record 37;
+      Item@1000000005 : Record 27;
+      TempRhenusChangeLog2@1000000006 : TEMPORARY Record 50070;
+    BEGIN
+      p_TempRhenusChangeLog.DELETEALL;
+      RhenusChangeLogLoc.RESET;
+      RhenusChangeLogLoc.SETRANGE("Source Type",p_RhenusChangeLog."Source Type");
+      RhenusChangeLogLoc.SETRANGE("Document Type",p_RhenusChangeLog."Document Type");
+      RhenusChangeLogLoc.SETRANGE("Document No.",p_RhenusChangeLog."Document No.");
+      RhenusChangeLogLoc.SETRANGE("Seq. Code",p_RhenusChangeLog."Seq. Code");
+      RhenusChangeLogLoc.SETRANGE("Branch Code",p_RhenusChangeLog."Branch Code");
+      RhenusChangeLogLoc.SETFILTER("Line No.",'<>%1',0);
+      RhenusChangeLogLoc.SETRANGE(Type, RhenusChangeLogLoc.Type::Item);
+      IF p_GroupCancelLines THEN BEGIN
+        RhenusChangeLogLoc.SETRANGE(Processed,TRUE);
+        //RhenusChangeLogLoc.SETFILTER(Action,'<>%1',RhenusChangeLogLoc.Action::PaymentUpdate);
+      END ELSE BEGIN
+        RhenusChangeLogLoc.SETRANGE(Processed,FALSE);
+        //RhenusChangeLogLoc.SETFILTER(Action,'<>%1',RhenusChangeLogLoc.Action::PaymentUpdate);
+      END;
+      IF p_RhenusChangeLog.Action <> p_RhenusChangeLog.Action::PaymentUpdate THEN
+        RhenusChangeLogLoc.SETFILTER(Action,'<>%1',RhenusChangeLogLoc.Action::PaymentUpdate)
+      ELSE
+        RhenusChangeLogLoc.SETRANGE(Action,RhenusChangeLogLoc.Action::PaymentUpdate);
+      // check doppelgrouping
+
+      IF RhenusChangeLogLoc.FIND('-') THEN BEGIN
+        TempRhenusChangeLog2.DELETEALL;
+        REPEAT
+          p_TempRhenusChangeLog.RESET;
+          p_TempRhenusChangeLog.SETRANGE("Source Type",RhenusChangeLogLoc."Source Type");
+          p_TempRhenusChangeLog.SETRANGE("Document Type",RhenusChangeLogLoc."Document Type");
+          p_TempRhenusChangeLog.SETRANGE("Document No.",RhenusChangeLogLoc."Document No.");
+          p_TempRhenusChangeLog.SETRANGE("Seq. Code",RhenusChangeLogLoc."Seq. Code");
+          p_TempRhenusChangeLog.SETRANGE("Branch Code",RhenusChangeLogLoc."Branch Code");
+          p_TempRhenusChangeLog.SETRANGE(Type,p_TempRhenusChangeLog.Type::Item);
+          p_TempRhenusChangeLog.SETRANGE("No.",RhenusChangeLogLoc."No.");
+          p_TempRhenusChangeLog.SETRANGE("Purchasing Code",RhenusChangeLogLoc."Purchasing Code");
+          IF p_TempRhenusChangeLog.FIND('-') THEN BEGIN
+            p_TempRhenusChangeLog.Quantity := p_TempRhenusChangeLog.Quantity + RhenusChangeLogLoc.Quantity;
+            p_TempRhenusChangeLog."Assembly for Line No." := RhenusChangeLogLoc."Line No.";
+            p_TempRhenusChangeLog.MODIFY;
+          END ELSE BEGIN
+            p_TempRhenusChangeLog.TRANSFERFIELDS(RhenusChangeLogLoc);
+            p_TempRhenusChangeLog."Assembly for Line No." := RhenusChangeLogLoc."Line No.";
+            p_TempRhenusChangeLog.INSERT;
+          END;
+          IF SalesLine.GET(SalesLine."Document Type"::Order,RhenusChangeLogLoc."Document No.",RhenusChangeLogLoc."Line No.")
+          THEN BEGIN
+            Item.GET(SalesLine."No.");
+            SalesLine2.RESET;
+            SalesLine2.SETRANGE("Document Type", SalesLine."Document Type");
+            SalesLine2.SETRANGE("Document No.", SalesLine."Document No.");
+            SalesLine2.SETRANGE("Parent ID", SalesLine.ID);
+            SalesLine2.SETRANGE(Type, SalesLine2.Type::Resource);
+            SalesLine2.SETRANGE("Resource Type", SalesLine2."Resource Type"::Assembly);
+            IF SalesLine2.FIND('-') THEN BEGIN
+              IF RhenusChangeLogLoc2.GET(RhenusChangeLogLoc."Source Type",
+                                         SalesLine2."Document Type",
+                                         SalesLine2."Document No.",
+                                         RhenusChangeLogLoc."Seq. Code",
+                                         SalesLine2."Line No.",
+                                         RhenusChangeLogLoc.Action) THEN BEGIN
+                p_TempRhenusChangeLog.RESET;
+                p_TempRhenusChangeLog.SETRANGE("Source Type",RhenusChangeLogLoc."Source Type");
+                p_TempRhenusChangeLog.SETRANGE("Document Type",RhenusChangeLogLoc."Document Type");
+                p_TempRhenusChangeLog.SETRANGE("Document No.",RhenusChangeLogLoc."Document No.");
+                p_TempRhenusChangeLog.SETRANGE("Seq. Code",RhenusChangeLogLoc."Seq. Code");
+                p_TempRhenusChangeLog.SETRANGE("Branch Code",RhenusChangeLogLoc."Branch Code");
+                p_TempRhenusChangeLog.SETRANGE(Type,p_TempRhenusChangeLog.Type::Item);
+                p_TempRhenusChangeLog.SETRANGE("No.",SalesLine."No.");
+                //p_TempRhenusChangeLog.SETRANGE("Purchasing Code",RhenusChangeLogLoc."Purchasing Code");
+                IF p_TempRhenusChangeLog.FINDFIRST THEN BEGIN
+                  TempRhenusChangeLog2.RESET;
+                  TempRhenusChangeLog2.SETRANGE("Source Type",RhenusChangeLogLoc2."Source Type");
+                  TempRhenusChangeLog2.SETRANGE("Document Type",RhenusChangeLogLoc2."Document Type");
+                  TempRhenusChangeLog2.SETRANGE("Document No.",RhenusChangeLogLoc2."Document No.");
+                  TempRhenusChangeLog2.SETRANGE("Seq. Code",RhenusChangeLogLoc2."Seq. Code");
+                  TempRhenusChangeLog2.SETRANGE("Branch Code",RhenusChangeLogLoc2."Branch Code");
+                  TempRhenusChangeLog2.SETRANGE(Type,p_TempRhenusChangeLog.Type::Resource);
+                  TempRhenusChangeLog2.SETRANGE("No.",RhenusChangeLogLoc2."No.");
+                  TempRhenusChangeLog2.SETRANGE("Assembly for Line No.",p_TempRhenusChangeLog."Line No.");
+                  IF TempRhenusChangeLog2.FIND('-') THEN BEGIN
+                    TempRhenusChangeLog2.Quantity := TempRhenusChangeLog2.Quantity + Item."Assembly Service Amount"; // auf item
+                    //TempRhenusChangeLog2."Assembly for Line No." := ;
+                    TempRhenusChangeLog2.MODIFY;
+                  END ELSE BEGIN
+                    TempRhenusChangeLog2.TRANSFERFIELDS(RhenusChangeLogLoc2);
+                    TempRhenusChangeLog2."Assembly for Line No." := SalesLine."Line No.";
+                    TempRhenusChangeLog2.Quantity := Item."Assembly Service Amount";
+                    TempRhenusChangeLog2.INSERT;
+                  END;
+                END;
+                //p_TempRhenusChangeLog.RESET;
+                //p_TempRhenusChangeLog.SETRANGE("Source Type",RhenusChangeLogLoc2."Source Type");
+                //p_TempRhenusChangeLog.SETRANGE("Document Type",RhenusChangeLogLoc2."Document Type");
+                //p_TempRhenusChangeLog.SETRANGE("Document No.",RhenusChangeLogLoc2."Document No.");
+                //p_TempRhenusChangeLog.SETRANGE("Seq. Code",RhenusChangeLogLoc2."Seq. Code");
+                //p_TempRhenusChangeLog.SETRANGE("Branch Code",RhenusChangeLogLoc2."Branch Code");
+                //p_TempRhenusChangeLog.SETRANGE(Type,p_TempRhenusChangeLog.Type::Resource);
+                //p_TempRhenusChangeLog.SETRANGE("No.",RhenusChangeLogLoc."No.");
+                //p_TempRhenusChangeLog.SETRANGE("Purchasing Code",RhenusChangeLogLoc."Purchasing Code");
+                //IF p_TempRhenusChangeLog.FIND('-') THEN BEGIN
+                  //p_TempRhenusChangeLog.Quantity := p_TempRhenusChangeLog.Quantity + RhenusChangeLogLoc.Quantity;
+                  //p_TempRhenusChangeLog.MODIFY;
+                //END ELSE BEGIN
+                  //p_TempRhenusChangeLog.TRANSFERFIELDS(RhenusChangeLogLoc);
+                  //p_TempRhenusChangeLog.INSERT;
+                //END;
+              END;
+            END;
+          END;
+        UNTIL RhenusChangeLogLoc.NEXT = 0;
+        TempRhenusChangeLog2.RESET;
+        IF TempRhenusChangeLog2.FIND('-') THEN BEGIN
+          REPEAT
+            p_TempRhenusChangeLog.TRANSFERFIELDS(TempRhenusChangeLog2);
+            IF p_TempRhenusChangeLog.INSERT THEN;
+          UNTIL TempRhenusChangeLog2.NEXT =0;
+        END;
+      END;
+    END;
+
+    PROCEDURE AddSalesLogKAD@1000000009(p_SalesLine@1000000000 : Record 37);
+    BEGIN
+    END;
+
+    PROCEDURE CreateExtraCancelKAD@1000000010(p_RhenusExtraCancel@1000000002 : Record 50076);
+    VAR
+      FileName@1000000001 : Text[1024];
+      RhenusChangeLogLoc@1000000000 : Record 50070;
+      ProcessDateTime@1000000004 : DateTime;
+      TempRhenusChangeLog@1000000005 : TEMPORARY Record 50070;
+      TotalLines@1000000006 : Integer;
+      FPCInterfaceSetup@1000000007 : Record 50014;
+      SalesHeader@1000000008 : Record 36;
+      LocText001@1000000009 : TextConst 'ENU=Rhenus KAD file';
+      i@1000000010 : Integer;
+      UpdatePaymentLine@1000000011 : Boolean;
+      RhenusChangeLogLoc2@1000000012 : Record 50070;
+    BEGIN
+      p_RhenusExtraCancel.TESTFIELD(OrderNo);
+      p_RhenusExtraCancel.TESTFIELD("Seq. Code");
+      p_RhenusExtraCancel.TESTFIELD("Branch Code");
+      FPCInterfaceSetup.GET('EXTRCNCLRH');
+      FPCInterfaceSetup.TESTFIELD("Export Folder");
+      //UpdatePaymentLine := FALSE;
+      RhenusChangeLogLoc.RESET;
+      RhenusChangeLogLoc.SETRANGE("Source Type",RhenusChangeLogLoc."Source Type"::Sales);
+      RhenusChangeLogLoc.SETRANGE("Document Type",RhenusChangeLogLoc."Document Type"::Order);
+      RhenusChangeLogLoc.SETRANGE("Document No.",p_RhenusExtraCancel.OrderNo);
+      RhenusChangeLogLoc.SETRANGE("Seq. Code",p_RhenusExtraCancel."Seq. Code");
+      RhenusChangeLogLoc.SETRANGE("Branch Code",p_RhenusExtraCancel."Branch Code");
+      //RhenusChangeLogLoc.SETRANGE(Processed,FALSE);
+      RhenusChangeLogLoc.SETRANGE("Interface Code",'RHENUS');
+      RhenusChangeLogLoc.SETFILTER("Line No.",'<>%1',0);
+      IF RhenusChangeLogLoc.FIND('-') THEN BEGIN
+        ProcessDateTime := 0DT;
+        ProcessDateTime := CURRENTDATETIME;
+        FileName := '';
+        FileName := 'KADFPCO' + FORMAT(ProcessDateTime,0,'<Year4><Month,2><Day,2><Hours24><Minutes,2><Seconds,2>') + '.txt';
+        LineCounter := 0;
+        IF NOT ISCLEAR(UTFWriter) THEN
+          CLEAR(UTFWriter);
+        CREATE(UTFWriter);
+        UTFWriter.Open;
+        UTFWriter.Charset('UTF-8');
+        TempRhenusChangeLog.DELETEALL;
+        GroupChangeLogExtraCancel(RhenusChangeLogLoc,TempRhenusChangeLog,FALSE);
+        //GroupRhenusChangeLog2(RhenusChangeLogLoc,TempRhenusChangeLog,FALSE);
+        TempRhenusChangeLog.RESET;
+        IF TempRhenusChangeLog.FIND('-') THEN BEGIN
+          TotalLines := TempRhenusChangeLog.COUNT;
+          REPEAT
+            LineCounter +=1;
+            IF LineCounter = 1 THEN
+              CreateExtraCancelKAK(TempRhenusChangeLog,TRUE);
+            CASE TempRhenusChangeLog.Type OF
+              TempRhenusChangeLog.Type::Item :
+                CreateExtraCancelKAP(TempRhenusChangeLog);
+              TempRhenusChangeLog.Type::Resource:
+                CreateExtraCancelKAS(TempRhenusChangeLog);
+            END;
+            // Need ??
+            //IF LineCounter = TotalLines THEN BEGIN
+              //CreatePartialShipKAP(TempRhenusChangeLog);
+            //END;
+            SalesHeader.GET(SalesHeader."Document Type"::Order,TempRhenusChangeLog."Document No.");
+          UNTIL TempRhenusChangeLog.NEXT = 0;
+        END;
+        i := 0;
+        i := UTFWriter.Size;
+        IF i > 0 THEN BEGIN
+          REPEAT
+            //RhenusChangeLogLoc."Processing Date" := ProcessDateTime;
+            //RhenusChangeLogLoc.Processed := TRUE;
+            //RhenusChangeLogLoc."Export File Name" := FileName;
+            //RhenusChangeLogLoc.MODIFY;
+            p_RhenusExtraCancel.Processed := TRUE;
+            p_RhenusExtraCancel."Processing Datetime" := ProcessDateTime;
+            p_RhenusExtraCancel.FileName := FileName;
+            p_RhenusExtraCancel.MODIFY;
+          UNTIL RhenusChangeLogLoc.NEXT = 0;
+          UTFWriter.SaveToFile(FPCInterfaceSetup."Export Folder" + FileName);
+          UTFWriter.Close;
+          SLEEP(1000);
+          //IF EXISTS(FPCInterfaceSetup."Export Folder" + FileName) THEN
+            //IF FILE.COPY(FPCInterfaceSetup."Export Folder" + FileName,FPCInterfaceSetup."Archive Root Folder" + FileName) THEN
+              //SalesHeader.ADDLINK(FPCInterfaceSetup."Archive Root Folder" + FileName,LocText001);
+        END ELSE BEGIN
+          // Log No FIle
+        END;
+      END ELSE
+        ERROR('Die Kombination aus Sequenznummer und Branch Code existiert nicht.' +
+              'Bitte ÅberprÅfen Sie in der AuftragsÅbersicht die vorliegenden Informationen.');
+    END;
+
+    PROCEDURE CreateExtraCancelKAK@1000000015(p_RhenusChangeLog@1000000006 : Record 50070;p_Cancel@1000000021 : Boolean);
+    VAR
+      ImportFrameworkHeader@1000000000 : Record 50010;
+      ImportFrameworkLine@1000000001 : Record 50011;
+      TextToWrite@1000000002 : Text[1024];
+      CRLF@1000000003 : Text[2];
+      CR@1000000004 : Char;
+      LF@1000000005 : Char;
+      SalesHeader@1000000007 : Record 36;
+      WebSiteTransfer@1000000008 : Record 50033;
+      SalesLine@1000000009 : Record 37;
+      Purchasing@1000000010 : Record 5721;
+      DeliveryType@1000000011 : Text[1];
+      LocText001@1000000012 : TextConst 'ENU=!!!! Avisierung erst ab Status - Auftrag vollstÑndig im Standort !!!!';
+      SalutionInt@1000000013 : Integer;
+      CountyRegionCode@1000000014 : Text[10];
+      Country@1000000015 : Record 9;
+      ShiptoAddress@1000000016 : Record 222;
+      PhoneNo@1000000017 : Text[30];
+      Customer@1000000018 : Record 18;
+      EMail@1000000019 : Text[80];
+      PostCode@1000000020 : Code[20];
+    BEGIN
+      CR := 13;
+      LF := 10;
+      CRLF := FORMAT(CR,0,'<Char>');
+      CRLF := CRLF + FORMAT(LF,0,'<Char>');
+      SalesHeader.GET(SalesHeader."Document Type"::Order,p_RhenusChangeLog."Document No.");
+      //A/gob-rste/20.09.12/P0316
+      //SalesHeader.CALCFIELDS("Website No.");
+      //E/gob-rste/20.09.12/P0316
+      IF NOT SalesHeader.Kommissionierung THEN
+        EXIT; // Log
+
+      TextToWrite := '';
+      TextToWrite := 'KAK';
+      TextToWrite := TextToWrite + 'FPCO';
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(p_RhenusChangeLog."Branch Code",6);
+      //WebSiteTransfer.RESET;
+      //WebSiteTransfer.SETRANGE("Website No.",SalesHeader."Website No.");
+      //WebSiteTransfer.FINDFIRST;
+      //TextToWrite := TextToWrite + FillValueWithFixedFormat(FORMAT(WebSiteTransfer."Rhenus Website No."),20);
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('',20);
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(p_RhenusChangeLog."Document No." + p_RhenusChangeLog."Seq. Code",20);
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(SalesHeader."External Document No.",20);
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(SalesHeader."Sell-to Customer No.",15);
+      IF NOT p_Cancel THEN BEGIN
+          IF p_RhenusChangeLog.Action = p_RhenusChangeLog.Action::New THEN
+            TextToWrite := TextToWrite + FillValueWithFixedFormat('1',1);  // 1 = new 2 = change 3 = cancel
+          IF p_RhenusChangeLog.Action = p_RhenusChangeLog.Action::PaymentUpdate THEN
+            TextToWrite := TextToWrite + FillValueWithFixedFormat('2',1);  // 1 = new 2 = change 3 = cancel
+      END ELSE
+          TextToWrite := TextToWrite + FillValueWithFixedFormat('3',1);  // 1 = new 2 = change 3 = cancel
+
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(FORMAT(CREATEDATETIME(p_RhenusChangeLog."Order Date",TIME),
+                                                                   0,
+                                                                   '<Day,2>.<Month,2>.<Year4>-<Hours24,2>:<Minutes,2>:<Seconds,2>')
+                                                                   ,19);
+      //END;
+      DeliveryType := 'K';
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type",SalesHeader."Document Type");
+      SalesLine.SETRANGE("Document No.",SalesHeader."No.");
+      IF SalesLine.FINDSET THEN
+        REPEAT
+          IF (Purchasing.GET(SalesLine."Purchasing Code")) AND
+             (Purchasing."Delivery Type" = Purchasing."Delivery Type"::Selbstabholer)
+          THEN
+            DeliveryType := 'S';
+      UNTIL SalesLine.NEXT = 0;
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(DeliveryType,1);
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('',1); // Payment Method
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('',7); // inkasso
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('',7); // Gross-Value
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('',7); // Gross-value assembly
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('',5); // Order Volume (liter)
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('',4); // Order weight
+      IF p_RhenusChangeLog."Branch Code" = '639' THEN
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(LocText001,250)
+        ELSE
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('',250);
+      TextToWrite := TextToWrite + ';';
+      UTFWriter.WriteText(TextToWrite + CRLF);
+
+
+      // Start KAL
+      TextToWrite := '';
+      IF SalesHeader."Document Type" = SalesHeader."Document Type"::Order THEN
+        TextToWrite := TextToWrite + FillValueWithFixedFormat('KAL',3)
+      ELSE
+        TextToWrite := TextToWrite + FillValueWithFixedFormat('KAA',3);
+      SalutionInt := 0;
+      IF STRPOS(UPPERCASE(SalesHeader."Ship-to Name"),'HERR') = 1 THEN
+        SalutionInt := 1;
+      IF STRPOS(UPPERCASE(SalesHeader."Ship-to Name"),'FRAU') = 1 THEN
+        SalutionInt := 2;
+      IF SalutionInt = 0 THEN
+        SalutionInt := 3;
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(FORMAT(SalutionInt),1); //Anrede
+
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(SalesHeader."Ship-to Name",60); //Anrede
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(SalesHeader."Ship-to Name 2",30); //Anrede 2
+      //TextToWrite := TextToWrite + FillValueWithFixedFormat(SalesHeader."Ship-to Name",30); //Anrede 2
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(SalesHeader."Ship-to Address 2",60); //Additional Address
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(SalesHeader."Ship-to Address",50); // Street
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('',8); // HouseNo
+      PostCode := '';
+      PostCode := SalesHeader."Ship-to Post Code";
+      //A/gob-rste/20.09.12/P0316
+      //SalesHeader.CALCFIELDS("Website No.");
+      //E/gob-rste/20.09.12/P0316
+      IF SalesHeader."Website No." = 3 THEN
+       PostCode := FormatNLPostCode(PostCode);
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(PostCode,8); // PLZ
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(SalesHeader."Ship-to City",50); // city
+      CountyRegionCode := '';
+      IF Country.GET(SalesHeader."Ship-to Country/Region Code") THEN
+        CountyRegionCode := Country."Country Code Rhenus"; // Log wenn leer nachziehen
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(CountyRegionCode,3); // Rhenus Country/Region
+      PhoneNo := '';
+      IF ShiptoAddress.GET(SalesHeader."Ship-to Code") THEN
+        IF ShiptoAddress."Phone No." <> '' THEN
+          PhoneNo := ShiptoAddress."Phone No.";
+      IF PhoneNo = '' THEN BEGIN
+        IF Customer.GET(SalesHeader."Sell-to Customer No.") THEN
+          PhoneNo := Customer."Phone No.";
+      END;
+      IF PhoneNo = '' THEN BEGIN
+        //InsertLogEntry(ImportFrameworkLine.Code, Text011, TRUE, FALSE);
+        PhoneNo := '999999';
+      END;
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(PhoneNo,20); // Phone No
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('',20); // Phone No 2
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('',20); // Phone No 3
+
+      EMail := '';
+      IF ShiptoAddress.GET(SalesHeader."Ship-to Code") THEN
+        IF ShiptoAddress."E-Mail" <> '' THEN
+          EMail := ShiptoAddress."E-Mail";
+      IF EMail = '' THEN BEGIN
+        IF Customer.GET(SalesHeader."Sell-to Customer No.") THEN
+          EMail := Customer."E-Mail";
+      END;
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(EMail,50); // EMail
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('',20); // Fax
+      IF SalesHeader.Status = SalesHeader.Status::"Pending Prepayment" THEN
+        TextToWrite := TextToWrite + FillValueWithFixedFormat(FORMAT(CREATEDATETIME(11112911D,TIME),
+                                                                     0,
+                                                                     '<Day,2>.<Month,2>.<Year4>-<Hours24,2>:<Minutes,2>:<Seconds,2>')
+                                                                     ,10)
+      ELSE
+        TextToWrite := TextToWrite + FillValueWithFixedFormat('',10);
+
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('',5); // Requested deliveryˇtimeˇfrom
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('',5); // Requested deliveryˇtimeˇto
+      TextToWrite := TextToWrite + ';';
+      UTFWriter.WriteText(TextToWrite + CRLF);
+    END;
+
+    PROCEDURE CreateExtraCancelKAP@1000000014(p_RhenusChangeLog@1000000000 : Record 50070);
+    VAR
+      TextToWrite@1000000004 : Text[1024];
+      CRLF@1000000003 : Text[2];
+      CR@1000000002 : Char;
+      LF@1000000001 : Char;
+      SalesHeader@1000000005 : Record 36;
+      SalesLine@1000000006 : Record 37;
+      Location@1000000007 : Record 14;
+      ItemQualitiy@1000000008 : Code[10];
+      ExtraOrder@1000000009 : Integer;
+      Item@1000000010 : Record 27;
+      NoOfPackages@1000000011 : Text[30];
+      ArticleCapacity@1000000012 : Text[30];
+      UnitVolume@1000000013 : Decimal;
+      NetWeight@1000000014 : Decimal;
+      ItemWeight@1000000015 : Text[30];
+    BEGIN
+      CR := 13;
+      LF := 10;
+      CRLF := FORMAT(CR,0,'<Char>');
+      CRLF := CRLF + FORMAT(LF,0,'<Char>');
+      TextToWrite := '';
+
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('KAP',3);
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(FORMAT(p_RhenusChangeLog."Seq. No."),5);
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(FORMAT(1),3);  // DocNo Fix Order
+      SalesLine.GET(SalesHeader."Document Type"::Order,p_RhenusChangeLog."Document No.",p_RhenusChangeLog."Line No.");
+      IF p_RhenusChangeLog.Quantity > 0 THEN
+        TextToWrite := TextToWrite + FillValueWithFixedFormat(FORMAT(p_RhenusChangeLog.Quantity),5)  // Qty
+      ELSE
+        TextToWrite := TextToWrite + FillValueWithFixedFormat(FORMAT(p_RhenusChangeLog."Cancellation Qty."),3);  // Qty to Cancel
+      ItemQualitiy := '';
+      IF Location.GET(p_RhenusChangeLog."Location Code") THEN
+        ItemQualitiy := Location."Item Quality Code";
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(ItemQualitiy,1);  // Item Quality
+      ExtraOrder := 0;
+      IF p_RhenusChangeLog."Special Order" THEN
+        ExtraOrder := 1;
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(FORMAT(ExtraOrder),1);  // Extra Order
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(FORMAT(p_RhenusChangeLog."Delivery Type",0,9),1);  //  Delivery Type
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(p_RhenusChangeLog."No.",30); // Item No.
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(p_RhenusChangeLog.Description,50); // Description
+      NoOfPackages := '1';
+      NetWeight := 0;
+      UnitVolume := 0;
+      ItemWeight := '';
+      ArticleCapacity := '';
+      Item.RESET;
+      IF p_RhenusChangeLog.Type = p_RhenusChangeLog.Type::Item THEN BEGIN
+        IF Item.GET(p_RhenusChangeLog."No.") THEN BEGIN
+          Item.CALCFIELDS("Parcels Number");
+          IF Item."Parcels Number" <> 0 THEN
+            NoOfPackages := FORMAT(Item."Parcels Number",0,'<Integer>');
+          IF Item."Unit Volume" >= 1 THEN
+            UnitVolume := ROUND(Item."Unit Volume",1);
+          IF Item."Unit Volume" < 1 THEN
+            UnitVolume := 1;
+          IF Item."Unit Volume" = 0 THEN
+            UnitVolume := 0;
+          ArticleCapacity :=  FORMAT(UnitVolume,0,'<Integer>');
+          IF Item."Net Weight" >= 1 THEN
+            NetWeight := ROUND(Item."Net Weight",1);
+          IF Item."Net Weight" < 1 THEN
+            NetWeight := 1;
+          IF Item."Net Weight" = 0 THEN
+            NetWeight := 0;
+          ItemWeight :=  FORMAT(NetWeight,0,'<Integer>');
+        END;
+      END;
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(NoOfPackages,2);  //Packages
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(ArticleCapacity,5);  //Article Capacity
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(ItemWeight,4);  //item weight
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(p_RhenusChangeLog."Cross-Reference No.",35);  //cross ref no.
+      TextToWrite := TextToWrite + ';';
+
+      UTFWriter.WriteText(TextToWrite + CRLF);
+    END;
+
+    PROCEDURE CreateExtraCancelKAS@1000000013(p_RhenusChangeLog@1000000000 : Record 50070);
+    VAR
+      TextToWrite@1000000004 : Text[1024];
+      CRLF@1000000003 : Text[2];
+      CR@1000000002 : Char;
+      LF@1000000001 : Char;
+    BEGIN
+      CR := 13;
+      LF := 10;
+      CRLF := FORMAT(CR,0,'<Char>');
+      CRLF := CRLF + FORMAT(LF,0,'<Char>');
+      TextToWrite := '';
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('KAS',3);
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(FORMAT(p_RhenusChangeLog."Seq. No."),5);
+      TextToWrite := TextToWrite + FillValueWithFixedFormat('272',3);
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(FORMAT(p_RhenusChangeLog.Quantity,0,'<Integer>'),5);
+      TextToWrite := TextToWrite + FillValueWithFixedFormat(FORMAT(ROUND(p_RhenusChangeLog."Amount Including VAT" * 100),
+                                                            0,'<Integer>'),7);
+      TextToWrite := TextToWrite + ';';
+      UTFWriter.WriteText(TextToWrite + CRLF);
+    END;
+
+    PROCEDURE InitExtraCancel@1000000022(RhenusExtraCancel@1000000000 : Record 50076);
+    BEGIN
+      GlobalRhenusExtraCancel := RhenusExtraCancel;
+    END;
+
+    PROCEDURE GroupChangeLogExtraCancel@1000000016(p_RhenusChangeLog@1000000000 : Record 50070;VAR p_TempRhenusChangeLog@1000000001 : TEMPORARY Record 50070;p_GroupCancelLines@1000000007 : Boolean);
+    VAR
+      RhenusChangeLogLoc@1000000002 : Record 50070;
+      RhenusChangeLogLoc2@1000000008 : Record 50070;
+      SalesLine@1000000003 : Record 37;
+      SalesLine2@1000000004 : Record 37;
+      Item@1000000005 : Record 27;
+      TempRhenusChangeLog2@1000000006 : TEMPORARY Record 50070;
+    BEGIN
+      p_TempRhenusChangeLog.DELETEALL;
+      RhenusChangeLogLoc.RESET;
+      RhenusChangeLogLoc.SETRANGE("Source Type",p_RhenusChangeLog."Source Type");
+      RhenusChangeLogLoc.SETRANGE("Document Type",p_RhenusChangeLog."Document Type");
+      RhenusChangeLogLoc.SETRANGE("Document No.",p_RhenusChangeLog."Document No.");
+      RhenusChangeLogLoc.SETRANGE("Seq. Code",p_RhenusChangeLog."Seq. Code");
+      RhenusChangeLogLoc.SETRANGE("Branch Code",p_RhenusChangeLog."Branch Code");
+      RhenusChangeLogLoc.SETFILTER("Line No.",'<>%1',0);
+      RhenusChangeLogLoc.SETRANGE(Type, RhenusChangeLogLoc.Type::Item);
+      IF p_RhenusChangeLog.Action <> p_RhenusChangeLog.Action::PaymentUpdate THEN
+        RhenusChangeLogLoc.SETFILTER(Action,'<>%1',RhenusChangeLogLoc.Action::PaymentUpdate);
+      // check doppelgrouping
+      IF RhenusChangeLogLoc.FIND('-') THEN BEGIN
+        TempRhenusChangeLog2.DELETEALL;
+        REPEAT
+          p_TempRhenusChangeLog.RESET;
+          p_TempRhenusChangeLog.SETRANGE("Source Type",RhenusChangeLogLoc."Source Type");
+          p_TempRhenusChangeLog.SETRANGE("Document Type",RhenusChangeLogLoc."Document Type");
+          p_TempRhenusChangeLog.SETRANGE("Document No.",RhenusChangeLogLoc."Document No.");
+          p_TempRhenusChangeLog.SETRANGE("Seq. Code",RhenusChangeLogLoc."Seq. Code");
+          p_TempRhenusChangeLog.SETRANGE("Branch Code",RhenusChangeLogLoc."Branch Code");
+          p_TempRhenusChangeLog.SETRANGE(Type,p_TempRhenusChangeLog.Type::Item);
+          p_TempRhenusChangeLog.SETRANGE("No.",RhenusChangeLogLoc."No.");
+          p_TempRhenusChangeLog.SETRANGE("Purchasing Code",RhenusChangeLogLoc."Purchasing Code");
+          IF p_TempRhenusChangeLog.FIND('-') THEN BEGIN
+            p_TempRhenusChangeLog.Quantity := p_TempRhenusChangeLog.Quantity + RhenusChangeLogLoc.Quantity;
+            p_TempRhenusChangeLog."Assembly for Line No." := RhenusChangeLogLoc."Line No.";
+            p_TempRhenusChangeLog.MODIFY;
+          END ELSE BEGIN
+            p_TempRhenusChangeLog.TRANSFERFIELDS(RhenusChangeLogLoc);
+            p_TempRhenusChangeLog."Assembly for Line No." := RhenusChangeLogLoc."Line No.";
+            p_TempRhenusChangeLog.INSERT;
+          END;
+          IF SalesLine.GET(SalesLine."Document Type"::Order,RhenusChangeLogLoc."Document No.",RhenusChangeLogLoc."Line No.")
+          THEN BEGIN
+            Item.GET(SalesLine."No.");
+            SalesLine2.RESET;
+            SalesLine2.SETRANGE("Document Type", SalesLine."Document Type");
+            SalesLine2.SETRANGE("Document No.", SalesLine."Document No.");
+            SalesLine2.SETRANGE("Parent ID", SalesLine.ID);
+            SalesLine2.SETRANGE(Type, SalesLine2.Type::Resource);
+            SalesLine2.SETRANGE("Resource Type", SalesLine2."Resource Type"::Assembly);
+            IF SalesLine2.FIND('-') THEN BEGIN
+              IF RhenusChangeLogLoc2.GET(RhenusChangeLogLoc."Source Type",
+                                         SalesLine2."Document Type",
+                                         SalesLine2."Document No.",
+                                         RhenusChangeLogLoc."Seq. Code",
+                                         SalesLine2."Line No.",
+                                         RhenusChangeLogLoc.Action) THEN BEGIN
+                p_TempRhenusChangeLog.RESET;
+                p_TempRhenusChangeLog.SETRANGE("Source Type",RhenusChangeLogLoc."Source Type");
+                p_TempRhenusChangeLog.SETRANGE("Document Type",RhenusChangeLogLoc."Document Type");
+                p_TempRhenusChangeLog.SETRANGE("Document No.",RhenusChangeLogLoc."Document No.");
+                p_TempRhenusChangeLog.SETRANGE("Seq. Code",RhenusChangeLogLoc."Seq. Code");
+                p_TempRhenusChangeLog.SETRANGE("Branch Code",RhenusChangeLogLoc."Branch Code");
+                p_TempRhenusChangeLog.SETRANGE(Type,p_TempRhenusChangeLog.Type::Item);
+                p_TempRhenusChangeLog.SETRANGE("No.",SalesLine."No.");
+                IF p_TempRhenusChangeLog.FINDFIRST THEN BEGIN
+                  TempRhenusChangeLog2.RESET;
+                  TempRhenusChangeLog2.SETRANGE("Source Type",RhenusChangeLogLoc2."Source Type");
+                  TempRhenusChangeLog2.SETRANGE("Document Type",RhenusChangeLogLoc2."Document Type");
+                  TempRhenusChangeLog2.SETRANGE("Document No.",RhenusChangeLogLoc2."Document No.");
+                  TempRhenusChangeLog2.SETRANGE("Seq. Code",RhenusChangeLogLoc2."Seq. Code");
+                  TempRhenusChangeLog2.SETRANGE("Branch Code",RhenusChangeLogLoc2."Branch Code");
+                  TempRhenusChangeLog2.SETRANGE(Type,p_TempRhenusChangeLog.Type::Resource);
+                  TempRhenusChangeLog2.SETRANGE("No.",RhenusChangeLogLoc2."No.");
+                  TempRhenusChangeLog2.SETRANGE("Assembly for Line No.",p_TempRhenusChangeLog."Line No.");
+                  IF TempRhenusChangeLog2.FIND('-') THEN BEGIN
+                    TempRhenusChangeLog2.Quantity := TempRhenusChangeLog2.Quantity + Item."Assembly Service Amount"; // auf item
+                    TempRhenusChangeLog2.MODIFY;
+                  END ELSE BEGIN
+                    TempRhenusChangeLog2.TRANSFERFIELDS(RhenusChangeLogLoc2);
+                    TempRhenusChangeLog2."Assembly for Line No." := SalesLine."Line No.";
+                    TempRhenusChangeLog2.Quantity := Item."Assembly Service Amount";
+                    TempRhenusChangeLog2.INSERT;
+                  END;
+                END;
+              END;
+            END;
+          END;
+        UNTIL RhenusChangeLogLoc.NEXT = 0;
+        TempRhenusChangeLog2.RESET;
+        IF TempRhenusChangeLog2.FIND('-') THEN BEGIN
+          REPEAT
+            p_TempRhenusChangeLog.TRANSFERFIELDS(TempRhenusChangeLog2);
+            IF p_TempRhenusChangeLog.INSERT THEN;
+          UNTIL TempRhenusChangeLog2.NEXT =0;
+        END;
+      END;
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------------+
+      |                   ∏  Copyright                   |
+      |       GOB Software & Systeme GmbH & Co. KG       |
+      +--------------------------------------------------+
+      |                     FP Commerce                  |
+      +--------------------------------------------------+
+
+      Version   Date      Consultant  Project  Comment
+      ____________________________________________________________________________________________________________________________________
+      GOB1.00   20.08.12  gob-rste    P0214    gob-rste
+      GOB1.01   20.09.12  gob-rste    P0358    New Code for Extra Cancel
+      GOB1.02   24.09.12  gob-rste    P0316    Calcfields removed
+      GOB1.03   08.07.13  gob-adb     P1014    Performance
+    }
+    END.
+  }
+}
+

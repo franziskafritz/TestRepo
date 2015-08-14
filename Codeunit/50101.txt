@@ -1,0 +1,347 @@
+OBJECT Codeunit 50101 SplittVoucher
+{
+  OBJECT-PROPERTIES
+  {
+    Date=10.01.13;
+    Time=14:01:43;
+    Version List=GOB1.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      gSalesHeader@1000000000 : Record 36;
+      gSalesLine@1000000001 : Record 37;
+
+    PROCEDURE Code@1000000015(pSalesHeader@1000000001 : Record 36) : Boolean;
+    VAR
+      lSalesLineNew@1000000000 : Record 37;
+    BEGIN
+      IF (pSalesHeader."Document Type" <> pSalesHeader."Document Type"::Order) THEN
+        EXIT(FALSE); // *** EXIT ***
+
+      IF NOT FindVoucher(pSalesHeader,gSalesLine) THEN
+        EXIT(FALSE); // *** EXIT ***
+
+      CASE FindItemLines(pSalesHeader,gSalesLine) OF
+        0: EXIT(FALSE); // *** EXIT ***
+        1: EXIT(TRUE); // *** EXIT ***
+      END;
+
+      SuggestAssignment2(gSalesLine,gSalesLine.Quantity);
+
+      gSalesLine.DELETE;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE FindVoucher@1000000000(pSalesHeader@1000000000 : Record 36;VAR vSalesLine@1000000002 : Record 37) : Boolean;
+    BEGIN
+      vSalesLine.SETRANGE("Document Type",pSalesHeader."Document Type");
+      vSalesLine.SETRANGE("Document No.",pSalesHeader."No.");
+      vSalesLine.SETRANGE(Type,vSalesLine.Type::Resource);
+      vSalesLine.SETRANGE("Resource Type",vSalesLine."Resource Type"::"Credit Bon");
+      vSalesLine.SETFILTER(Quantity,'>0');
+      vSalesLine.SETFILTER("Unit Price",'<>0');
+      EXIT(vSalesLine.FINDFIRST);
+    END;
+
+    PROCEDURE FindItemLines@1000000001(pSalesHeader@1000000000 : Record 36;VAR vSalesLine@1000000003 : Record 37) : Integer;
+    VAR
+      lSalesLineItem@1000000001 : Record 37;
+      lSalesLineRes@1000000002 : Record 37;
+      lSalesLineNew@1000000004 : Record 37;
+      DocumentDimension@1000000007 : Record 357;
+      newDocumentDimension@1000000006 : Record 357;
+      lLineNo@1000000005 : Integer;
+    BEGIN
+      lSalesLineItem.SETCURRENTKEY("Document No.",Type,"Document Type","Resource Type");
+      lSalesLineItem.SETRANGE("Document No.",pSalesHeader."No.");
+      lSalesLineItem.SETRANGE(Type,lSalesLineItem.Type::Item);
+      lSalesLineItem.SETRANGE("Document Type",pSalesHeader."Document Type");
+
+      lSalesLineRes.SETCURRENTKEY("Document No.",Type,"Document Type","Resource Type");
+      lSalesLineRes.SETRANGE("Document No.",pSalesHeader."No.");
+      lSalesLineRes.SETRANGE(Type,lSalesLineRes.Type::Resource);
+      lSalesLineRes.SETRANGE("Document Type",pSalesHeader."Document Type");
+      lSalesLineRes.SETFILTER("Resource Type",'%1|%2',lSalesLineRes."Resource Type"::Assembly,
+                              lSalesLineRes."Resource Type"::"Trusted Shop");
+
+      IF (lSalesLineItem.ISEMPTY AND lSalesLineRes.ISEMPTY) THEN
+        EXIT(0); // *** EXIT ***
+
+      IF (lSalesLineItem.COUNT + lSalesLineRes.COUNT = 1) THEN BEGIN
+        DocumentDimension.SETRANGE("Table ID",37);
+        DocumentDimension.SETRANGE("Document Type",DocumentDimension."Document Type"::Order);
+
+        IF lSalesLineItem.FINDFIRST THEN BEGIN
+          DocumentDimension.SETRANGE("Document No.",lSalesLineItem."Document No.");
+          DocumentDimension.SETRANGE("Line No.",lSalesLineItem."Line No.");
+        END ELSE
+          IF lSalesLineRes.FINDFIRST THEN BEGIN
+            DocumentDimension.SETRANGE("Document No.",lSalesLineRes."Document No.");
+            DocumentDimension.SETRANGE("Line No.",lSalesLineRes."Line No.");
+          END;
+
+        IF DocumentDimension.FINDSET THEN
+          REPEAT
+            IF NOT newDocumentDimension.GET(37,newDocumentDimension."Document Type"::Order,vSalesLine."Document No.",
+              vSalesLine."Line No.",DocumentDimension."Dimension Code") THEN BEGIN
+              newDocumentDimension.INIT;
+              newDocumentDimension := DocumentDimension;
+              newDocumentDimension."Line No." := vSalesLine."Line No.";
+              newDocumentDimension.INSERT;
+            END;
+          UNTIL (DocumentDimension.NEXT = 0);
+
+        vSalesLine.InitQtyToShip();
+        vSalesLine.MODIFY;
+
+        EXIT(1); // *** EXIT ***
+      END;
+
+      IF lSalesLineItem.FINDSET THEN BEGIN
+        REPEAT
+          InsertSplittedLine(vSalesLine,lSalesLineItem);
+        UNTIL (lSalesLineItem.NEXT = 0);
+      END;
+
+      IF lSalesLineRes.FINDSET THEN BEGIN
+        REPEAT
+          InsertSplittedLine(vSalesLine,lSalesLineRes);
+        UNTIL (lSalesLineRes.NEXT = 0);
+      END;
+
+      EXIT(2);
+    END;
+
+    PROCEDURE InsertDimInLine@1000000005(VAR vSalesLine@1000000000 : Record 37;pDefaultDim@1000000001 : Record 352);
+    VAR
+      lDocDim@1000000002 : Record 357;
+    BEGIN
+      CLEAR(lDocDim);
+      IF lDocDim.GET(DATABASE::"Sales Line",vSalesLine."Document Type",vSalesLine."Document No.",
+                      vSalesLine."Line No.",pDefaultDim."Dimension Code") THEN BEGIN
+        lDocDim."Dimension Value Code" := pDefaultDim."Dimension Value Code";
+        lDocDim.MODIFY(TRUE);
+        EXIT; // *** EXIT ***
+      END;
+
+      lDocDim."Table ID" := DATABASE::"Sales Line";
+      lDocDim."Document Type" := vSalesLine."Document Type";
+      lDocDim."Document No." := vSalesLine."Document No.";
+      lDocDim."Line No." := vSalesLine."Line No.";
+      lDocDim."Dimension Code" := pDefaultDim."Dimension Code";
+      lDocDim."Dimension Value Code" := pDefaultDim."Dimension Value Code";
+      lDocDim.INSERT(TRUE);
+    END;
+
+    PROCEDURE InsertSplittedLine@1000000008(VAR vSalesLine@1000000005 : Record 37;pSalesLine@1000000006 : Record 37);
+    VAR
+      lSalesLineNew@1000000002 : Record 37;
+      DocumentDimension@1000000001 : Record 357;
+      newDocumentDimension@1000000003 : Record 357;
+      lLineNo@1000000000 : Integer;
+    BEGIN
+      lSalesLineNew.SETRANGE("Document Type",vSalesLine."Document Type");
+      lSalesLineNew.SETRANGE("Document No.",vSalesLine."Document No.");
+      IF lSalesLineNew.FINDLAST THEN;
+      lSalesLineNew.SuspendStatusCheck(TRUE);
+      lSalesLineNew.SetHideValidationDialog(TRUE);
+
+      IF (pSalesLine."Line Amount" <> 0) THEN BEGIN
+        lSalesLineNew.INIT;
+        lLineNo := lSalesLineNew."Line No." + 10000;
+        lSalesLineNew := vSalesLine;
+        lSalesLineNew."Line No." := lLineNo;
+        lSalesLineNew.Quantity := 0;
+        lSalesLineNew."Line Amount" := pSalesLine."Line Amount";
+        lSalesLineNew.INSERT(TRUE);
+
+        //Dimensionen der Artikelposition an die Ressourcenposition hÑngen
+        DocumentDimension.SETRANGE("Table ID",37);
+        DocumentDimension.SETRANGE("Document Type",DocumentDimension."Document Type"::Order);
+        DocumentDimension.SETRANGE("Document No.",pSalesLine."Document No.");
+        DocumentDimension.SETRANGE("Line No.",pSalesLine."Line No.");
+        IF DocumentDimension.FIND('-') THEN
+          REPEAT
+            newDocumentDimension := DocumentDimension;
+            newDocumentDimension."Line No." := lSalesLineNew."Line No.";
+            newDocumentDimension.INSERT;
+          UNTIL DocumentDimension.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE SuggestAssignment2@6(SalesLine2@1000 : Record 37;TotalQtyToAssign@1001 : Decimal);
+    VAR
+      pSalesLine@1000000000 : Record 37;
+      Currency@1016 : Record 4;
+      CurrExchRate@1002 : Record 330;
+      GLSetup@1017 : Record 98;
+      SalesHeader@1003 : Record 36;
+      SalesLine@1004 : Record 37;
+      TempItemChargeAssgntSales@1008 : TEMPORARY Record 5809;
+      TotalAmount@1010 : Decimal;
+      QtyToAssign@1011 : Decimal;
+      QtyRemainder@1012 : Decimal;
+      AmountRemainder@1013 : Decimal;
+      RoundingPrecision@1018 : Decimal;
+      TotalLines@1015 : Integer;
+      LineAmount@1000000001 : Decimal;
+      PrepmtLineAmount@1000000002 : Decimal;
+      AmountMargin@1000000003 : Decimal;
+    BEGIN
+      WITH SalesLine2 DO BEGIN
+        SalesHeader.GET("Document Type","Document No.");
+        IF (SalesHeader."Currency Code" <> '') THEN BEGIN
+          Currency.GET(SalesHeader."Currency Code");
+          RoundingPrecision := Currency."Amount Rounding Precision";
+        END ELSE BEGIN
+          GLSetup.GET;
+          RoundingPrecision := GLSetup."Amount Rounding Precision";
+        END;
+        pSalesLine.SuspendStatusCheck(TRUE);
+        pSalesLine.SetHideValidationDialog(TRUE);
+        pSalesLine.SETRANGE("Document Type",SalesLine2."Document Type");
+        pSalesLine.SETRANGE("Document No.",SalesLine2."Document No.");
+        pSalesLine.SETRANGE(Type,SalesLine2.Type);
+        pSalesLine.SETRANGE("No.",SalesLine2."No.");
+        pSalesLine.SETRANGE(Quantity,0);
+        IF pSalesLine.FIND('-') THEN BEGIN
+          REPEAT
+            TempItemChargeAssgntSales.INIT;
+            TempItemChargeAssgntSales."Document Type" := pSalesLine."Document Type";
+            TempItemChargeAssgntSales."Document No." := pSalesLine."Document No.";
+            TempItemChargeAssgntSales."Line No." := pSalesLine."Line No.";
+            TempItemChargeAssgntSales."Document Line No." := SalesLine2."Line No.";
+            TempItemChargeAssgntSales."Applies-to Doc. Line Amount" :=
+              ABS(pSalesLine."Line Amount");
+            IF TempItemChargeAssgntSales."Applies-to Doc. Line Amount" <> 0 THEN
+              TempItemChargeAssgntSales.INSERT;
+            TotalAmount := TotalAmount + TempItemChargeAssgntSales."Applies-to Doc. Line Amount";
+          UNTIL pSalesLine.NEXT = 0;
+
+          IF TempItemChargeAssgntSales.FIND('-') THEN
+            REPEAT
+              TempItemChargeAssgntSales."Qty. to Assign" :=
+                TempItemChargeAssgntSales."Applies-to Doc. Line Amount" / TotalAmount * TotalQtyToAssign + QtyRemainder;
+              pSalesLine.GET(
+                TempItemChargeAssgntSales."Document Type",
+                TempItemChargeAssgntSales."Document No.",
+                TempItemChargeAssgntSales."Line No.");
+              pSalesLine.Quantity :=
+                ROUND(TempItemChargeAssgntSales."Qty. to Assign",0.00001);
+
+              //ggf. gibt es schon einen Wert in "Prepmt. Amt. Inv.", dieser darf dann
+              //nicht kleiner sein als "Prepmt. Line Amount"
+              //Currency holen
+              IF SalesHeader."Currency Code" = '' THEN
+                Currency.InitRoundingPrecision
+              ELSE BEGIN
+                SalesHeader.TESTFIELD("Currency Factor");
+                Currency.GET(SalesHeader."Currency Code");
+                Currency.TESTFIELD("Amount Rounding Precision");
+              END;
+
+              //nur notwendig, wenn Line Amount aktualisiert wird
+              IF pSalesLine."Line Amount" <> ROUND(pSalesLine.Quantity * pSalesLine."Unit Price",Currency."Amount Rounding Precision")
+                - pSalesLine."Line Discount Amount" THEN
+
+                LineAmount := ROUND(pSalesLine.Quantity * pSalesLine."Unit Price",
+                  Currency."Amount Rounding Precision") - pSalesLine."Line Discount Amount";
+                //Line Amount wie in Sales Line neu berechnen
+                //PrePayment Line Amount neu berechnen
+                PrepmtLineAmount := ROUND(LineAmount * pSalesLine."Prepayment %" / 100,Currency."Amount Rounding Precision");
+
+                IF PrepmtLineAmount <= 0 THEN BEGIN
+                  IF PrepmtLineAmount > pSalesLine."Prepmt. Amt. Inv." THEN
+                    BEGIN
+                      pSalesLine."Prepmt. Amt. Inv." := LineAmount;
+                      pSalesLine."Prepmt. Amt. Incl. VAT" := LineAmount;
+                      pSalesLine."Prepmt. Amount Inv. Incl. VAT" := LineAmount;
+                      pSalesLine."Prepmt. Amount Inv. (LCY)" := LineAmount;
+                    END;
+              END;
+
+              pSalesLine.VALIDATE(Quantity);
+              pSalesLine.InitQtyToShip();
+              pSalesLine.InitQtyToInvoice();
+              pSalesLine.Amount :=
+                pSalesLine.Quantity * SalesLine2."Unit Cost" + AmountRemainder;
+              AmountRemainder :=
+                pSalesLine.Amount -
+                ROUND(pSalesLine.Amount,RoundingPrecision);
+              QtyRemainder :=
+                TempItemChargeAssgntSales."Qty. to Assign" - pSalesLine.Quantity;
+              pSalesLine.Amount :=
+                ROUND(pSalesLine.Amount,RoundingPrecision);
+              pSalesLine.VALIDATE(Amount);
+              pSalesLine.MODIFY;
+            UNTIL TempItemChargeAssgntSales.NEXT = 0;
+
+          //Gesamtsumme der Positionen prÅfen
+          TotalAmount := 0;
+          IF TempItemChargeAssgntSales.FIND('-') THEN
+            REPEAT
+              pSalesLine.GET(
+                TempItemChargeAssgntSales."Document Type",
+                TempItemChargeAssgntSales."Document No.",
+                TempItemChargeAssgntSales."Line No.");
+
+              TotalAmount += pSalesLine."Line Amount";
+            UNTIL TempItemChargeAssgntSales.NEXT = 0;
+          IF TotalAmount <> pSalesLine."Unit Price" THEN BEGIN
+            AmountMargin := pSalesLine."Unit Price" - TotalAmount;
+            pSalesLine."Unit Price" := (pSalesLine."Line Amount" + AmountMargin) / pSalesLine.Quantity;
+
+            //nur notwendig, wenn Line Amount aktualisiert wird
+            IF pSalesLine."Line Amount" <> ROUND(pSalesLine.Quantity * pSalesLine."Unit Price",Currency."Amount Rounding Precision")
+              - pSalesLine."Line Discount Amount" THEN
+
+              LineAmount := ROUND(pSalesLine.Quantity * pSalesLine."Unit Price",
+                Currency."Amount Rounding Precision") - pSalesLine."Line Discount Amount";
+              //Line Amount wie in Sales Line neu berechnen
+              //PrePayment Line Amount neu berechnen
+              PrepmtLineAmount := ROUND(LineAmount * pSalesLine."Prepayment %" / 100,Currency."Amount Rounding Precision");
+
+              IF PrepmtLineAmount <= 0 THEN BEGIN
+                IF PrepmtLineAmount > pSalesLine."Prepmt. Amt. Inv." THEN
+                  BEGIN
+                    pSalesLine."Prepmt. Amt. Inv." := LineAmount;
+                    pSalesLine."Prepmt. Amt. Incl. VAT" := LineAmount;
+                    pSalesLine."Prepmt. Amount Inv. Incl. VAT" := LineAmount;
+                    pSalesLine."Prepmt. Amount Inv. (LCY)" := LineAmount;
+                  END;
+            END;
+
+
+            pSalesLine.VALIDATE(pSalesLine."Unit Price");
+            pSalesLine.MODIFY;
+          END;
+
+
+          TempItemChargeAssgntSales.DELETEALL;
+        END;
+      END;
+    END;
+
+    BEGIN
+    {
+      +-----------------------------------------------------+
+      |               GOB Software & Systeme                |
+      +-----------------------------------------------------+
+      |                      FP Commerce                    |
+      +-----------------------------------------------------+
+
+      Version   Date      Consultant  Comment
+      -------------------------------------------------------
+      P0691     18.12.12  gob-sil     new object for posting voucher
+    }
+    END.
+  }
+}
+

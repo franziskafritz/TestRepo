@@ -1,0 +1,1777 @@
+OBJECT Codeunit 5001907 Automatic Application
+{
+  OBJECT-PROPERTIES
+  {
+    Date=17.02.14;
+    Time=15:55:49;
+    Modified=Yes;
+    Version List=AR5.00.01,eBay1.07.02,HME0466,HME0757;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text1105400000@1105400000 : TextConst 'DEU=Keine offenen Posten vorhanden.;ENU=No open entries found.';
+      Text1105400001@1105400001 : TextConst 'DEU=Kein Kontoauszug fÅr diese Zeile vorhanden;ENU=There is no bank statement for this line';
+      Text1105400002@1105400002 : TextConst 'DEU=Ermittlung Ausgleich fÅr:\;ENU=Searching Application for:\';
+      Text1105400003@1105400003 : TextConst 'DEU=Konto : #1##########\;ENU=Account : #1##########\';
+      Text1105400004@1105400004 : TextConst 'DEU=Auszug: #2##########\;ENU=Statem. : #2##########\';
+      Text1105400005@1105400005 : TextConst 'DEU=Lfd-Nr: #3##########;ENU=EntryNo.: #3##########';
+      Text1105400006@1105400006 : TextConst 'DEU=Ausgleich wird entfernt fÅr:\;ENU=Removing Application for:';
+      BankAccSetStmtNo@1105400007 : Codeunit 375;
+      Acc@1105400008 : Code[20];
+      I@1105400009 : Integer;
+      X@1105400010 : Text[30];
+      Text50000@1000000000 : TextConst 'DEU=Zahlungsdienstleister %1 unbekannt.;ENU=Unknown payment service provider %1.';
+      Text50001@1000000001 : TextConst 'DEU=Ermittlung Ausgleichsrechung fÅr %1:\;ENU=Searching application invoice for %1:\';
+
+    PROCEDURE GetAccount@1105400011(VAR BankAppl@1105400001 : Record 274) success@1105400000 : Boolean;
+    VAR
+      BankStatement@1105400002 : Record 5001911;
+      BankStmtLine@1105400003 : Record 5001913;
+      VendorBank@1105400004 : Record 288;
+      CustBank@1105400005 : Record 287;
+      BankAccount@1105400006 : Record 270;
+    BEGIN
+      // Try to find a customer-, vendor or bank based on
+      // information in BankApplication and bank statement.
+      // Fills Acoount in BankApplication and returns true
+      // If nothing's found, function returns false.
+
+      IF BankAppl."Import Journal Entry No." <> 0 THEN BEGIN // Is there any bank statement?
+        BankStatement.GET(BankAppl."Import Journal Entry No.");
+
+      //01 - START
+        BankStatement."Bank Orderer" := DELCHR(BankStatement."Bank Orderer",'<>');
+        BankStatement."Account Orderer" := DELCHR(BankStatement."Account Orderer", '<>');
+      //01 - END
+
+        IF (BankStatement."Bank Orderer" <> '') AND (BankStatement."Account Orderer" <> '') THEN BEGIN
+          // searching customers
+          CustBank.SETCURRENTKEY("Bank Branch No.");
+          CustBank.SETRANGE("Bank Branch No.", BankStatement."Bank Orderer");
+          CustBank.SETRANGE("Bank Account No.", BankStatement."Account Orderer");
+          IF CustBank.FINDFIRST THEN BEGIN // found
+            BankAppl."Bal. Account Type" := BankAppl."Bal. Account Type"::Customer;
+            BankAppl.VALIDATE("Bal. Account No.",CustBank."Customer No.");
+            IF BankAppl."Bal. Account No. found" = BankAppl."Bal. Account No. found"::Vendor THEN
+              BankAppl."Bal. Account No. found" := BankAppl."Bal. Account No. found"::"Customer&Vendor"
+            ELSE
+              BankAppl."Bal. Account No. found" := BankAppl."Bal. Account No. found"::Customer;
+          END;
+
+          // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+          // searching Document No.
+          //original IF (BankAppl."Applies-to Doc. No." = '') AND (BankAppl."Applies-to ID" = '') THEN
+          //original   SearchingCustDokNo(BankStatement,BankAppl);
+          // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+          // searching vendors
+          IF BankAppl."Bal. Account No." = '' THEN BEGIN
+            VendorBank.SETCURRENTKEY("Bank Branch No.");
+            VendorBank.SETRANGE("Bank Branch No.", BankStatement."Bank Orderer");
+            VendorBank.SETRANGE("Bank Account No.", BankStatement."Account Orderer");
+            IF VendorBank.FINDFIRST THEN BEGIN // found
+              BankAppl."Bal. Account Type" := BankAppl."Bal. Account Type"::Vendor;
+              BankAppl.VALIDATE("Bal. Account No.",VendorBank."Vendor No.");
+              BankAppl."Bal. Account No. found" := BankAppl."Bal. Account No. found"::Vendor;
+            END;
+          END;
+
+          IF BankAppl."Bal. Account No." = '' THEN BEGIN
+            // searching in banks
+            BankAccount.SETCURRENTKEY("Bank Branch No.");
+            BankAccount.SETRANGE("Bank Branch No.", BankStatement."Bank Orderer");
+            BankAccount.SETRANGE("Bank Account No.", BankStatement."Account Orderer");
+            IF BankAccount.FINDFIRST THEN BEGIN
+              BankAppl."Bal. Account Type" := BankAppl."Bal. Account Type"::"Bank Account";
+              BankAppl."Bal. Account No." := BankAccount."No.";
+              BankAppl."Bal. Account No. found" := BankAppl."Bal. Account No. found"::Bank;
+            END;
+          END;
+
+          IF (BankAppl."Bal. Account No. found" <> BankAppl."Bal. Account No. found"::" ") THEN BEGIN
+            BankAppl."Applies-to Doc. found" := TRUE;
+            BankAppl.MODIFY;
+          END;
+        END;
+      END ELSE
+        EXIT(FALSE);
+    END;
+
+    PROCEDURE GetLedgeEntry@1105400012(VAR BankAppl@1105400000 : Record 274);
+    VAR
+      CustLedgEntry@1105400001 : Record 21;
+      VendLedgEntry@1105400002 : Record 25;
+      BankLedgEntry@1105400003 : Record 271;
+      GlAccPost@1105400004 : Record 5001915;
+      BankStatement@1105400005 : Record 5001911;
+      BankStmtLine@1105400006 : Record 5001913;
+      L_CustNo@1000000000 : Code[20];
+      L_DocFound@1000000001 : Boolean;
+    BEGIN
+      // try to find a balance entry in vendors and customers.
+      // There are results if there is already a balance account no
+      // found.
+      // Searching in Applicationaccounts for an account and put it
+      // as balance account.
+
+      WITH BankAppl DO BEGIN
+        CASE "Bal. Account Type" OF
+          "Bal. Account Type"::"G/L Account" :
+            BEGIN
+              GlAccPost.RESET;
+              IF "Import Journal Entry No." <> 0 THEN  // Is there any bank statement?
+                IF BankStatement.GET(BankAppl."Import Journal Entry No.") THEN BEGIN
+                   IF "Bal. Account No." <> '' THEN
+                     EXIT;
+                   Acc := SearchingGLAcc(BankStatement,BankAppl);
+                   VALIDATE("Bal. Account No.",Acc);
+                   MODIFY;
+                END;
+            END;
+          "Bal. Account Type"::Customer :
+            IF "Applies-to Doc. No." = '' THEN BEGIN
+
+              // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+              IF "Import Journal Entry No." <> 0 THEN  // Is there any bank statement?
+                IF BankStatement.GET(BankAppl."Import Journal Entry No.") THEN
+                //A/gob-ko/P0294/060912
+                //  IF GetOrderNo2(BankStatement,"Statement Amount" >= 0,L_CustNo) THEN BEGIN
+                 IF GetOrderNo3(BankStatement,"Statement Amount" >= 0,L_CustNo) THEN BEGIN
+                //E/gob-ko/P0294/060912
+                    "Bal. Account Type" := "Bal. Account Type"::Customer;
+                    VALIDATE("Bal. Account No.",L_CustNo);
+                  END;
+              // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+      //A/gob-ko/P0294/060912
+              IF "Bal. Account No." = '' THEN
+                  RecognitionCust(BankAppl);
+      //E/gob-ko/P0294/060912
+              CustLedgEntry.RESET;
+              CustLedgEntry.SETCURRENTKEY("Customer No.",Open,Positive,"Due Date","Currency Code");
+              IF "Bal. Account No." <> '' THEN
+
+              // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+              //original  CustLedgEntry.SETRANGE("Customer No.", "Bal. Account No.");
+                CustLedgEntry.SETRANGE("Customer No.", "Bal. Account No.")
+              ELSE
+                //A/gob-czi/P0143
+                //CustLedgEntry.SETRANGE("Payment Method Code 2",'VORK'); //##### temporÑr
+                CustLedgEntry.SETRANGE("Payment Method Code",'VORK');
+                //E/gob-czi/P0143
+              L_DocFound := FALSE;
+              // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+              CustLedgEntry.SETRANGE(Open, TRUE);
+              CustLedgEntry.SETRANGE(Positive,"Statement Amount" >= 0);
+              CustLedgEntry.SETRANGE("Currency Code", BankAppl."Currency Code");
+
+      //temp        IF CustLedgEntry.FINDFIRST AND ("Bal. Account No." <> '') THEN REPEAT
+
+            //A/gob-ko/P0294/060912
+            //  IF CustLedgEntry.FINDFIRST THEN REPEAT
+              IF (CustLedgEntry.FIND('-')) AND ("Bal. Account No." <> '') THEN REPEAT
+            //E/gob-ko/P0294/060912
+                // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                //A/gob-ko/P0294/060912
+                //IF "Import Journal Entry No." <> 0 THEN  // Is there any bank statement?
+                  IF ("Import Journal Entry No." <> 0) AND ("Bal. Account No." = '')  THEN  // Is there any bank statement?
+                //E/gob-ko/P0294/060912
+                  IF BankStatement.GET(BankAppl."Import Journal Entry No.") THEN
+                    IF SearchingOrderNo(CustLedgEntry,BankStatement,BankAppl) THEN BEGIN
+                      "Bal. Account Type" := "Bal. Account Type"::Customer;
+                      VALIDATE("Bal. Account No.",CustLedgEntry."Customer No.");
+                    END;
+
+                IF ("Bal. Account Type" = "Bal. Account Type"::Customer) AND ("Bal. Account No." <> '') THEN BEGIN
+                // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+                      CustLedgEntry.CALCFIELDS("Remaining Amount");
+                      IF ("Transaction Date" <= CustLedgEntry."Pmt. Discount Date") AND
+                        ((CustLedgEntry."Remaining Amount" - CustLedgEntry."Remaining Pmt. Disc. Possible") =
+                        "Statement Amount") OR
+                        ("Statement Amount" = CustLedgEntry."Remaining Amount") THEN BEGIN
+                          "Applies-to Doc. Type" := CustLedgEntry."Document Type";
+                          "Applies-to Doc. No." := CustLedgEntry."Document No.";
+                          "Applies-to Doc. found" := TRUE;
+                          "Apply completed" := TRUE;
+                          MODIFY;
+                          L_DocFound := TRUE;
+
+                // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> temporÑr wegen rabattfahler
+                      END ELSE BEGIN
+                        IF ABS("Statement Amount" - CustLedgEntry."Remaining Amount") <= 0.01 THEN BEGIN
+                          "Applies-to Doc. Type" := CustLedgEntry."Document Type";
+                          "Applies-to Doc. No." := CustLedgEntry."Document No.";
+                          "Applies-to Doc. found" := TRUE;
+                          "Apply completed" := TRUE;
+                          MODIFY;
+                          L_DocFound := TRUE;
+                        END;
+                      END;
+                // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< temporÑr wegen rabattfahler
+
+                END;
+
+              // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+              //original UNTIL CustLedgEntry.NEXT = 0;
+              UNTIL (CustLedgEntry.NEXT = 0) OR L_DocFound;
+              // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+            END;
+          "Bal. Account Type"::Vendor :
+            IF "Applies-to Doc. No." = '' THEN BEGIN
+
+              // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+              {original
+              VendLedgEntry.RESET;
+              VendLedgEntry.SETCURRENTKEY("Vendor No.",Open,Positive,"Due Date","Currency Code");
+              IF "Bal. Account No." <> '' THEN
+                VendLedgEntry.SETRANGE("Vendor No.", "Bal. Account No.");
+              VendLedgEntry.SETRANGE(Open, TRUE);
+              VendLedgEntry.SETRANGE(Positive,"Statement Amount" >= 0);
+              VendLedgEntry.SETRANGE("Currency Code", BankAppl."Currency Code");
+              IF VendLedgEntry.FINDFIRST THEN REPEAT
+                VendLedgEntry.CALCFIELDS("Remaining Amount");
+
+                IF ("Transaction Date" <= VendLedgEntry."Pmt. Discount Date") AND
+                  ((VendLedgEntry."Remaining Amount" - VendLedgEntry."Remaining Pmt. Disc. Possible") =
+                  "Statement Amount") OR
+                  ("Statement Amount" = VendLedgEntry."Remaining Amount") THEN BEGIN
+                  "Bal. Account Type" := "Bal. Account Type"::Vendor;
+                  VALIDATE("Bal. Account No.",VendLedgEntry."Vendor No.");
+                  "Applies-to Doc. Type" := VendLedgEntry."Document Type";
+                  "Applies-to Doc. No." := VendLedgEntry."Document No.";
+                  "Applies-to Doc. found" := TRUE;
+                  "Apply completed" := TRUE;
+                  MODIFY;
+                END;
+              UNTIL VendLedgEntry.NEXT = 0;
+              }
+              // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+            END;
+        END;
+      END;
+    END;
+
+    PROCEDURE RemoveApplication@1105400013(VAR BankAppl@1105400000 : Record 274);
+    BEGIN
+      // Initializing Application fields and saving...
+
+      //eBay#002
+      IF BankAppl."PayPal Costs" THEN
+        EXIT;
+      //eBay#002
+
+      CLEAR(BankAppl."Bal. Account Type");
+      BankAppl."Bal. Account No." := '';
+      BankAppl."Applies-to Doc. Type" := BankAppl."Applies-to Doc. Type"::" ";
+      BankAppl."Applies-to Doc. No." := '';
+      BankAppl."Bal. Account No. found" :=  BankAppl."Bal. Account No. found"::" ";
+      BankAppl."Applies-to Doc. found" := FALSE;
+      BankAppl."Apply completed" := FALSE;
+      BankAppl."Applied Entry No." := 0;
+      BankAppl."Global Dimension 1 Code" := '';
+      BankAppl."Global Dimension 2 Code" := '';
+      //eBay#001
+      BankAppl.Comment := '';
+      //eBay#001
+      BankAppl.ClearVATFields;
+
+      BankAppl.MODIFY;
+    END;
+
+    PROCEDURE CompleteApplication@1105400014(VAR ApplLine@1105400000 : Record 274);
+    VAR
+      BankDocument@1105400001 : Record 5001911;
+      Suggestion@1105400002 : Record 5001914;
+      CustLedgEntry@1105400003 : Record 21;
+      VendLedgEntry@1105400004 : Record 25;
+    BEGIN
+      // Opens the form for manual application
+      // Fills Suggestion Table and evaluates them
+      BankDocument.RESET;
+      BankDocument.SETRANGE("Entry No.", ApplLine."Import Journal Entry No.");
+      IF BankDocument.FINDFIRST THEN BEGIN
+        Suggestion.RESET;
+        Suggestion.SETCURRENTKEY("Bank Document Entry No.","Entry Type","Entry No.");
+        Suggestion.SETRANGE("Bank Document Entry No.", BankDocument."Entry No.");
+        Suggestion.LOCKTABLE;
+        Suggestion.DELETEALL;
+
+        IF ApplLine."Bal. Account Type" <> ApplLine."Bal. Account Type"::Vendor THEN
+
+        IF (ApplLine."Bal. Account No. found" = ApplLine."Bal. Account No. found"::Customer) OR
+           (ApplLine."Bal. Account No. found" = ApplLine."Bal. Account No. found"::" ") OR
+           (ApplLine."Bal. Account No. found" = ApplLine."Bal. Account No. found"::"Customer&Vendor") THEN BEGIN
+          CustLedgEntry.RESET;
+          CustLedgEntry.SETCURRENTKEY("Customer No.",Open,Positive,"Due Date","Currency Code");
+          IF (ApplLine."Bal. Account Type" = ApplLine."Bal. Account Type"::Customer) AND (ApplLine."Bal. Account No." <> '') THEN
+            CustLedgEntry.SETRANGE(CustLedgEntry."Customer No.", ApplLine."Bal. Account No.");
+          CustLedgEntry.SETRANGE(Open, TRUE);
+          CustLedgEntry.SETRANGE(Positive, (ApplLine."Statement Amount" > 0));
+          IF CustLedgEntry.FINDFIRST THEN REPEAT
+            CustLedgEntry.CALCFIELDS(Amount,"Remaining Amount","Original Amt. (LCY)","Remaining Amt. (LCY)","Amount (LCY)"); // 03
+            Suggestion."Bank Document Entry No." := ApplLine."Import Journal Entry No.";
+            Suggestion."Entry Type" := Suggestion."Entry Type"::Customer;
+            Suggestion."Entry No." := CustLedgEntry."Entry No.";
+            Suggestion."Document Type" := CustLedgEntry."Document Type";
+            Suggestion."Document No." := CustLedgEntry."Document No.";
+            Suggestion.Description := CustLedgEntry.Description;
+            Suggestion."Currency Code" := CustLedgEntry."Currency Code";
+            Suggestion.Amount := CustLedgEntry.Amount;
+            Suggestion."Remaining Amount" := CustLedgEntry."Remaining Amount";
+            Suggestion."Original Amr. (LCY)" := CustLedgEntry."Original Amt. (LCY)";
+            Suggestion."Remaining Amt. (LCY)" := CustLedgEntry."Remaining Amt. (LCY)";
+            Suggestion."Amount (LCY)" := CustLedgEntry."Amount (LCY)";
+            Suggestion.Application := ((ApplLine."Applies-to Doc. No." = CustLedgEntry."Document No.") AND
+                                   (ApplLine."Applies-to Doc. Type" = CustLedgEntry."Document Type"));
+            Suggestion.Account := CustLedgEntry."Customer No.";
+            Suggestion."Posting Date" := CustLedgEntry."Posting Date";
+            Suggestion."External Document No." := CustLedgEntry."External Document No.";
+            Suggestion.INSERT;
+          UNTIL CustLedgEntry.NEXT = 0;
+        END;
+
+        IF ApplLine."Bal. Account Type" <> ApplLine."Bal. Account Type"::Customer THEN
+
+        IF (ApplLine."Bal. Account No. found" = ApplLine."Bal. Account No. found"::Vendor) OR
+           (ApplLine."Bal. Account No. found" = ApplLine."Bal. Account No. found"::" ") OR
+           (ApplLine."Bal. Account No. found" = ApplLine."Bal. Account No. found"::"Customer&Vendor") THEN BEGIN
+          IF (ApplLine."Bal. Account Type" = ApplLine."Bal. Account Type"::Vendor) AND (ApplLine."Bal. Account No." <> '') THEN
+            VendLedgEntry.SETRANGE(VendLedgEntry."Vendor No.", ApplLine."Bal. Account No.");
+          VendLedgEntry.SETRANGE(Open, TRUE);
+          VendLedgEntry.SETRANGE(Positive, (ApplLine."Statement Amount" > 0));
+          IF VendLedgEntry.FINDFIRST THEN REPEAT
+            VendLedgEntry.CALCFIELDS(Amount,"Remaining Amount","Original Amt. (LCY)","Remaining Amt. (LCY)","Amount (LCY)");  // 03
+            Suggestion."Bank Document Entry No." := ApplLine."Import Journal Entry No.";
+            Suggestion."Entry Type" := Suggestion."Entry Type"::Vendor;
+            Suggestion."Entry No." := VendLedgEntry."Entry No.";
+            Suggestion."Document Type" := VendLedgEntry."Document Type";
+            Suggestion."Document No." := VendLedgEntry."Document No.";
+            Suggestion.Description := VendLedgEntry.Description;
+            Suggestion."Currency Code" := VendLedgEntry."Currency Code";
+            Suggestion.Amount := VendLedgEntry.Amount;
+            Suggestion."Remaining Amount" := VendLedgEntry."Remaining Amount";
+            Suggestion."Original Amr. (LCY)" := VendLedgEntry."Original Amt. (LCY)";
+            Suggestion."Remaining Amt. (LCY)" := VendLedgEntry."Remaining Amt. (LCY)";
+            Suggestion."Amount (LCY)" := VendLedgEntry."Amount (LCY)";
+            Suggestion.Application := ((ApplLine."Applies-to Doc. No." = VendLedgEntry."Document No.") AND
+                                   (ApplLine."Applies-to Doc. Type" = VendLedgEntry."Document Type"));
+            Suggestion.Account := VendLedgEntry."Vendor No.";
+            Suggestion."Posting Date" := VendLedgEntry."Posting Date";
+            Suggestion."External Document No." := VendLedgEntry."External Document No.";
+            Suggestion.INSERT;
+          UNTIL VendLedgEntry.NEXT = 0;
+        END;
+
+        COMMIT;
+        IF Suggestion.FINDFIRST THEN BEGIN
+          FORM.RUNMODAL(FORM::"Apply G/L Account", BankDocument);
+          Suggestion.RESET;
+          Suggestion.SETCURRENTKEY("Bank Document Entry No.",Application);
+          Suggestion.SETRANGE("Bank Document Entry No.", BankDocument."Entry No.");
+          Suggestion.SETRANGE(Application, TRUE);
+          IF Suggestion.FINDFIRST THEN BEGIN
+            IF Suggestion."Entry Type" = Suggestion."Entry Type"::Customer THEN BEGIN
+              ApplLine."Bal. Account Type" := ApplLine."Bal. Account Type"::Customer;
+              ApplLine."Bal. Account No. found" := ApplLine."Bal. Account No. found"::Customer;
+            END ELSE BEGIN
+              ApplLine."Bal. Account Type" := ApplLine."Bal. Account Type"::Vendor;
+              ApplLine."Bal. Account No. found" := ApplLine."Bal. Account No. found"::Vendor;
+            END;
+
+            ApplLine."Applies-to Doc. Type" := Suggestion."Document Type";
+            ApplLine."Applies-to Doc. No." := Suggestion."Document No.";
+            ApplLine.VALIDATE("Bal. Account No.",Suggestion.Account);
+            ApplLine."Applies-to Doc. found" := TRUE;
+            ApplLine."Apply completed" := TRUE;
+            ApplLine."Applied Entry No." := Suggestion."Entry No.";
+            ApplLine.MODIFY;
+          END ELSE BEGIN
+            CLEAR(ApplLine."Applies-to Doc. Type");
+            CLEAR(ApplLine."Applies-to Doc. No.");
+            CLEAR(ApplLine."Applies-to Doc. found");
+            CLEAR(ApplLine."Apply completed");
+            CLEAR(ApplLine."Applied Entry No.");
+            ApplLine.MODIFY;
+          END;
+          Suggestion.SETRANGE(Application);
+          Suggestion.DELETEALL;
+        END ELSE
+          ERROR(Text1105400000);
+
+      END ELSE
+        ERROR(Text1105400001);
+    END;
+
+    PROCEDURE SuggestApplication@1105400015(VAR BankAppl@1105400000 : Record 273);
+    VAR
+      ApplicationLine@1105400001 : Record 274;
+      Window@1105400002 : Dialog;
+      BalAccType@1105400003 : 'G/L Account,Customer,Vendor,Bank Account,Fixed Asset';
+      "--eBay"@5095810 : Boolean;
+      eBayPayment@5095811 : Codeunit 5095807;
+    BEGIN
+      // Searching account and matching entries for existing application
+      Window.OPEN(Text1105400002+
+        Text1105400003+
+        Text1105400004+
+        Text1105400005);
+      Window.UPDATE(1, BankAppl."Bank Account No.");
+      Window.UPDATE(2, BankAppl."Statement No.");
+
+      ApplicationLine.RESET;
+      ApplicationLine.SETCURRENTKEY("Bank Account No.","Statement No.","Statement Line No.");
+      ApplicationLine.SETRANGE("Bank Account No.", BankAppl."Bank Account No.");
+      ApplicationLine.SETRANGE("Statement No.", BankAppl."Statement No.");
+      IF ApplicationLine.FINDFIRST THEN REPEAT
+        Window.UPDATE(3, ApplicationLine."Statement Line No.");
+        GetAccount(ApplicationLine);
+        GetBankLedgEntries(ApplicationLine);
+
+        // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        //original Recognition(ApplicationLine);
+        //A/GOB-ko/P0327/14092012/RÅckÑnderung auf Standard
+        Recognition(ApplicationLine);
+        //E/GOB-ko/P0327/14092012/RÅckÑnderung auf Standard
+        // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+        IF ApplicationLine."Bal. Account No." <> '' THEN BEGIN
+          IF ApplicationLine."Applies-to Doc. No." = '' THEN BEGIN
+            GetLedgeEntry(ApplicationLine);
+          END;
+        END ELSE
+          FOR BalAccType := BalAccType::"G/L Account" TO BalAccType::Vendor DO BEGIN
+            IF (ApplicationLine."Applies-to Doc. No." = '') THEN BEGIN
+              ApplicationLine."Bal. Account Type" := BalAccType;
+              GetLedgeEntry(ApplicationLine);
+            END;
+          END;
+
+      //eBay#001
+      //###  CLEAR(eBayPayment);
+      //###  eBayPayment.ZuordnungZahlung(ApplicationLine);
+      //eBay#001
+
+        // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        COMMIT;
+        // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+      UNTIL ApplicationLine.NEXT = 0;
+      Window.CLOSE;
+    END;
+
+    PROCEDURE RemoveApplStatement@1105400016(VAR BankAppl@1105400000 : Record 273);
+    VAR
+      Window@1105400001 : Dialog;
+      ApplicationLine@1105400002 : Record 274;
+      JnlLineDim@1105400003 : Record 356;
+      DimMgt@1105400004 : Codeunit 408;
+    BEGIN
+      // Deletes all Applications for a bank / statement
+
+      Window.OPEN(
+        Text1105400006+
+        Text1105400003+
+        Text1105400004+
+        Text1105400005);
+      Window.UPDATE(1, BankAppl."Bank Account No.");
+      Window.UPDATE(2, BankAppl."Statement No.");
+
+      ApplicationLine.RESET;
+      ApplicationLine.SETCURRENTKEY("Bank Account No.","Statement No.","Statement Line No.");
+      ApplicationLine.SETRANGE("Bank Account No.", BankAppl."Bank Account No.");
+      ApplicationLine.SETRANGE("Statement No.", BankAppl."Statement No.");
+      IF ApplicationLine.FINDFIRST THEN REPEAT
+        Window.UPDATE(3, ApplicationLine."Statement Line No.");
+        IF ApplicationLine."Applies-to ID" <> '' THEN
+          ApplicationLine.VALIDATE("Applies-to ID",'');
+        RemoveApplication(ApplicationLine);
+
+        JnlLineDim.SETRANGE("Table ID",DATABASE::"Bank Acc. Reconciliation Line");
+        JnlLineDim.SETRANGE("Journal Template Name",COPYSTR(ApplicationLine."Bank Account No.",1,10));
+        JnlLineDim.SETRANGE("Journal Batch Name",COPYSTR(ApplicationLine."Statement No.",1,10));
+        JnlLineDim.SETRANGE("Journal Line No.",ApplicationLine."Statement Line No.");
+        JnlLineDim.DELETEALL;
+
+        DimMgt.DeleteJnlLineDim(
+          DATABASE::"Bank Acc. Reconciliation Line",
+          COPYSTR(ApplicationLine."Bank Account No.",1,10),
+          COPYSTR(ApplicationLine."Statement No.",1,10),
+          ApplicationLine."Statement Line No.",0);
+      UNTIL ApplicationLine.NEXT = 0;
+      Window.CLOSE;
+    END;
+
+    PROCEDURE GetBankLedgEntries@1105400017(VAR ApplicationLine@1105400000 : Record 274);
+    VAR
+      BankLedgEntry@1105400001 : Record 271;
+    BEGIN
+      WITH ApplicationLine DO BEGIN
+        CASE "Bal. Account Type" OF
+          "Bal. Account Type"::"G/L Account" :
+            BEGIN
+              BankLedgEntry.SETCURRENTKEY("Bank Account No.","Document Type","Document No.","External Document No.","Posting Date");
+              BankLedgEntry.SETRANGE("Bank Account No.","Bank Account No.");
+              BankLedgEntry.SETRANGE("Posting Date","Transaction Date");
+              BankLedgEntry.SETRANGE("Document No.","Document No.");
+              BankLedgEntry.SETRANGE(Amount,Difference);
+              BankLedgEntry.SETRANGE(Open,TRUE);
+              IF BankLedgEntry.FINDFIRST THEN BEGIN
+                "Applied Entries" := 1;
+                "Applied Amount" := "Statement Amount";
+                Difference := Difference - "Applied Amount";
+                BankAccSetStmtNo.SetReconNo(BankLedgEntry,ApplicationLine);
+                MODIFY;
+              END
+            END;
+        END;
+      END;
+    END;
+
+    PROCEDURE SearchingGLAcc@1105400018(BankStatement@1105400000 : Record 5001911;VAR ApplicationLine@1105400001 : Record 274) : Code[20];
+    BEGIN
+      IF BankStatement."Purpose 1"<>'' THEN BEGIN
+        IF STRLEN(
+           DELCHR(ApplicationLine.Description) +
+           DELCHR(BankStatement."Purpose 1")+
+           DELCHR(BankStatement."Purpose 2")+
+           DELCHR(BankStatement."Purpose 3")+
+           DELCHR(BankStatement."Purpose 4")+
+           DELCHR(BankStatement."Purpose 5")+
+           DELCHR(BankStatement."Purpose 6")+
+           DELCHR(BankStatement."Purpose 7")+
+           DELCHR(BankStatement."Purpose 8")+
+           DELCHR(BankStatement."Purpose 9")+
+           DELCHR(BankStatement."Purpose 10")+
+           DELCHR(BankStatement."Purpose 11")+
+           DELCHR(BankStatement."Purpose 12")+
+           DELCHR(BankStatement."Purpose 13")+
+           DELCHR(BankStatement."Purpose 14")) <= 260 THEN BEGIN
+             Acc := GetGLAcc(
+               DELCHR(ApplicationLine.Description) +
+               DELCHR(BankStatement."Purpose 1")+
+               DELCHR(BankStatement."Purpose 2")+
+               DELCHR(BankStatement."Purpose 3")+
+               DELCHR(BankStatement."Purpose 4")+
+               DELCHR(BankStatement."Purpose 5")+
+               DELCHR(BankStatement."Purpose 6")+
+               DELCHR(BankStatement."Purpose 7")+
+               DELCHR(BankStatement."Purpose 8")+
+               DELCHR(BankStatement."Purpose 9")+
+               DELCHR(BankStatement."Purpose 10")+
+               DELCHR(BankStatement."Purpose 11")+
+               DELCHR(BankStatement."Purpose 12")+
+               DELCHR(BankStatement."Purpose 13")+
+               DELCHR(BankStatement."Purpose 14"));
+             IF Acc<>'' THEN EXIT(Acc);
+           END ELSE BEGIN
+             Acc := GetGLAcc(
+               DELCHR(ApplicationLine.Description) +
+               DELCHR(BankStatement."Purpose 1")+
+               DELCHR(BankStatement."Purpose 2")+
+               DELCHR(BankStatement."Purpose 3")+
+               DELCHR(BankStatement."Purpose 4")+
+               DELCHR(BankStatement."Purpose 5")+
+               DELCHR(BankStatement."Purpose 6")+
+               DELCHR(BankStatement."Purpose 7")+
+               DELCHR(BankStatement."Purpose 8")+
+               DELCHR(BankStatement."Purpose 9"));
+             IF Acc<>'' THEN
+               EXIT(Acc)
+             ELSE
+               Acc := GetGLAcc(
+                 DELCHR(ApplicationLine.Description) +
+                 DELCHR(BankStatement."Purpose 6")+
+                 DELCHR(BankStatement."Purpose 7")+
+                 DELCHR(BankStatement."Purpose 8")+
+                 DELCHR(BankStatement."Purpose 9")+
+                 DELCHR(BankStatement."Purpose 10")+
+                 DELCHR(BankStatement."Purpose 11")+
+                 DELCHR(BankStatement."Purpose 12")+
+                 DELCHR(BankStatement."Purpose 13")+
+                 DELCHR(BankStatement."Purpose 14"));
+             IF Acc<>'' THEN
+               EXIT(Acc);
+           END;
+      END;
+    END;
+
+    PROCEDURE GetGLAcc@1105400019(Purposal@1105400000 : Text[260]) : Code[20];
+    VAR
+      GLAccAppl@1105400001 : Record 5001915;
+      TXT@1105400002 : Text[260];
+    BEGIN
+      IF GLAccAppl.FINDFIRST THEN REPEAT
+        Purposal := UPPERCASE(Purposal);  // 03
+        IF STRPOS(Purposal,DELCHR(GLAccAppl.Catchword))>0 THEN
+          EXIT(GLAccAppl."G/L Account");
+      UNTIL (GLAccAppl.NEXT=0);
+    END;
+
+    PROCEDURE Recognition@1105400020(VAR ApplicationLine@1105400000 : Record 274);
+    VAR
+      ApplRecognition@1105400001 : Record 5001916;
+      Cust@1105400002 : Record 18;
+      Vend@1105400003 : Record 23;
+      CustLedgEntry@1105400004 : Record 21;
+      VendLedgEntry@1105400005 : Record 25;
+      BankDocument@1105400006 : Record 5001911;
+      Doc@1105400007 : Code[20];
+      SearchString@1105400008 : Code[20];
+      FullText@1105400009 : Text[260];
+      Position@1105400010 : Integer;
+      Length@1105400011 : Integer;
+      PersonFound@1105400012 : Boolean;
+      DocFound@1105400013 : Boolean;
+    BEGIN
+      // Searching Customer/Vendor No.
+      IF NOT BankDocument.GET(ApplicationLine."Import Journal Entry No.") THEN
+        EXIT;
+
+      FullText := COPYSTR(
+        DELCHR(ApplicationLine.Description,'<>',' ') +
+        DELCHR(BankDocument.Reference,'<>',' ') +
+        DELCHR(BankDocument.Infotext,'<>',' ') +
+        DELCHR(BankDocument."Purpose 1",'<>',' ') +
+        DELCHR(BankDocument."Purpose 2",'<>',' ') +
+        DELCHR(BankDocument."Purpose 3",'<>',' ') +
+        DELCHR(BankDocument."Purpose 4",'<>',' ') +
+        DELCHR(BankDocument."Purpose 5",'<>',' ') +
+        DELCHR(BankDocument."Purpose 6",'<>',' ') +
+        DELCHR(BankDocument."Purpose 7",'<>',' ') +
+        DELCHR(BankDocument."Purpose 8",'<>',' ') +
+        DELCHR(BankDocument."Purpose 9",'<>',' ') +
+        DELCHR(BankDocument."Purpose 10",'<>',' ') +
+        DELCHR(BankDocument."Purpose 11",'<>',' ') +
+        DELCHR(BankDocument."Purpose 12",'<>',' ') +
+        DELCHR(BankDocument."Purpose 13",'<>',' ') +
+        DELCHR(BankDocument."Purpose 14",'<>',' ') +
+        DELCHR(BankDocument."Additional Info",'<>',' ') +
+        DELCHR(BankDocument."Addition Info 2",'<>',' '),1,MAXSTRLEN(FullText));
+      FullText := UPPERCASE(FullText);
+
+      PersonFound := FALSE;
+      DocFound := FALSE;
+
+      // FIND ACCOUNT FOR APPLICATION
+      IF ApplicationLine."Bal. Account No." = '' THEN
+        GetAccount(ApplicationLine);
+
+      IF ApplicationLine."Bal. Account No." = '' THEN BEGIN
+        ApplRecognition.RESET;
+        ApplRecognition.SETRANGE(Type,ApplRecognition.Type::"Customer/Vendor No.");
+        IF ApplRecognition.FINDFIRST THEN REPEAT
+          Position := STRPOS(FullText,ApplRecognition.Catchword);
+          IF Position <> 0 THEN BEGIN
+            Length := 20;
+            REPEAT
+              SearchString := COPYSTR(FullText,Position+STRLEN(ApplRecognition.Catchword),Length);
+              SearchString := DELCHR(SearchString,'<>',' ');
+              // Check Customers
+              IF Cust.GET(SearchString) THEN BEGIN
+                Length := 9999;
+                PersonFound := TRUE;
+
+                ApplicationLine."Bal. Account Type" := ApplicationLine."Bal. Account Type"::Customer;
+                ApplicationLine.VALIDATE("Bal. Account No.",Cust."No.");
+                ApplicationLine."Bal. Account No. found" := ApplicationLine."Bal. Account No. found"::Customer;
+                ApplicationLine.MODIFY;
+              END;
+              // Check vendors
+              IF NOT PersonFound THEN
+                IF Vend.GET(SearchString) THEN BEGIN
+                  Length := 9999;
+                  PersonFound := TRUE;
+                  ApplicationLine."Bal. Account Type" := ApplicationLine."Bal. Account Type"::Vendor;
+                  ApplicationLine.VALIDATE("Bal. Account No.",Vend."No.");
+                  ApplicationLine."Bal. Account No. found" := ApplicationLine."Bal. Account No. found"::Vendor;
+                  ApplicationLine.MODIFY;
+                END;
+              Length := Length - 1;
+            UNTIL (Length = 4) OR PersonFound;
+          END;
+        UNTIL (ApplRecognition.NEXT = 0) OR PersonFound;
+      END;
+
+      // FIND DOCUMENT NO. FOR APPLICATION
+      IF ApplicationLine."Bal. Account No." <> '' THEN BEGIN
+        ApplRecognition.RESET;
+        ApplRecognition.SETRANGE(Type,ApplRecognition.Type::"Document No.");
+        IF ApplRecognition.FINDFIRST THEN REPEAT
+          Position := STRPOS(FullText,ApplRecognition.Catchword);
+          IF Position <> 0 THEN BEGIN
+            Length := 20;
+            REPEAT
+              SearchString := COPYSTR(FullText,Position+STRLEN(ApplRecognition.Catchword),Length);
+              SearchString := DELCHR(SearchString,'<>',' ');
+              CASE ApplicationLine."Bal. Account Type" OF
+                ApplicationLine."Bal. Account Type"::Customer:
+                  BEGIN
+                    CustLedgEntry.RESET;
+                    CustLedgEntry.SETCURRENTKEY("Customer No.","Document No.");
+                    CustLedgEntry.SETRANGE("Customer No.",ApplicationLine."Bal. Account No.");
+                    CustLedgEntry.SETRANGE("Document No.",SearchString);
+                    CustLedgEntry.SETRANGE(Open,TRUE);
+                    IF CustLedgEntry.FINDFIRST THEN BEGIN
+                      Length := 9999;
+                      DocFound := TRUE;
+                      ApplicationLine."Applies-to Doc. Type" := CustLedgEntry."Document Type";
+                      ApplicationLine."Applies-to Doc. No." := CustLedgEntry."Document No.";
+                      ApplicationLine."Applies-to Doc. found" := TRUE;
+                      ApplicationLine."Apply completed" := TRUE;
+                      ApplicationLine."Applied Entry No." := CustLedgEntry."Entry No.";
+                      ApplicationLine.MODIFY;
+                    END;
+                  END;
+                ApplicationLine."Bal. Account Type"::Vendor:
+                  BEGIN
+                    VendLedgEntry.RESET;
+                    VendLedgEntry.SETCURRENTKEY("External Document No.","Document Type","Vendor No.");
+                    VendLedgEntry.SETRANGE("Vendor No.",ApplicationLine."Bal. Account No.");
+                    VendLedgEntry.SETRANGE("External Document No.",SearchString);
+                    VendLedgEntry.SETRANGE(Open,TRUE);
+                    IF VendLedgEntry.FINDFIRST THEN BEGIN
+                      Length := 9999;
+                      DocFound := TRUE;
+                      ApplicationLine."Applies-to Doc. Type" := VendLedgEntry."Document Type";
+                      ApplicationLine."Applies-to Doc. No." := VendLedgEntry."Document No.";
+                      ApplicationLine."Applies-to Doc. found" := TRUE;
+                      ApplicationLine."Apply completed" := TRUE;
+                      ApplicationLine."Applied Entry No." := VendLedgEntry."Entry No.";
+                      ApplicationLine.MODIFY;
+                    END;
+                  END;
+              END; {CASE}
+              Length := Length - 1;
+            UNTIL (Length = 4) OR DocFound;
+          END; {IF Position...}
+        UNTIL (ApplRecognition.NEXT = 0) OR DocFound;
+      END ELSE BEGIN
+        // Try to find documents without customer/vendor
+        ApplRecognition.RESET;
+        ApplRecognition.SETRANGE(Type,ApplRecognition.Type::"Document No.");
+        IF ApplRecognition.FINDFIRST THEN REPEAT
+          Position := STRPOS(FullText,ApplRecognition.Catchword);
+          IF Position <> 0 THEN BEGIN
+            Length := 20;
+            REPEAT
+              SearchString := COPYSTR(FullText,Position+STRLEN(ApplRecognition.Catchword),Length);
+              SearchString := DELCHR(SearchString,'<>',' ');
+              // First search customer ledger entries
+              CustLedgEntry.RESET;
+              CustLedgEntry.SETCURRENTKEY("Document No.","Document Type","Customer No.");
+              CustLedgEntry.SETRANGE("Document Type",CustLedgEntry."Document Type"::Invoice);
+              CustLedgEntry.SETRANGE("Document No.",SearchString);
+              CustLedgEntry.SETRANGE(Open,TRUE);
+              IF CustLedgEntry.FINDFIRST THEN BEGIN
+                Length := 9999;
+                DocFound := TRUE;
+                ApplicationLine."Bal. Account Type" := ApplicationLine."Bal. Account Type"::Customer;
+                ApplicationLine.VALIDATE("Bal. Account No.",CustLedgEntry."Customer No.");
+                ApplicationLine."Bal. Account No. found" := ApplicationLine."Bal. Account No. found"::Customer;
+                ApplicationLine."Applies-to Doc. Type" := CustLedgEntry."Document Type";
+                ApplicationLine."Applies-to Doc. No." := CustLedgEntry."Document No.";
+                ApplicationLine."Applies-to Doc. found" := TRUE;
+                ApplicationLine."Apply completed" := TRUE;
+                ApplicationLine."Applied Entry No." := CustLedgEntry."Entry No.";
+                ApplicationLine.MODIFY;
+              END;
+              // Next search vendor ledger entries
+              IF NOT DocFound THEN BEGIN
+                //A/gob-ko/27092012/P0392
+                IF SearchString <> '' THEN BEGIN
+                //E/gob-ko/27092012/P0392
+                  VendLedgEntry.RESET;
+                  VendLedgEntry.SETCURRENTKEY("External Document No.","Document Type","Vendor No.");
+                  VendLedgEntry.SETRANGE("External Document No.",SearchString);
+                  VendLedgEntry.SETRANGE(Open,TRUE);
+                  IF VendLedgEntry.FINDFIRST THEN BEGIN
+                    Length := 9999;
+                    DocFound := TRUE;
+                    ApplicationLine."Bal. Account Type" := ApplicationLine."Bal. Account Type"::Vendor;
+                    ApplicationLine.VALIDATE("Bal. Account No.",VendLedgEntry."Vendor No.");
+                    ApplicationLine."Bal. Account No. found" := ApplicationLine."Bal. Account No. found"::Vendor;
+                    ApplicationLine."Applies-to Doc. Type" := VendLedgEntry."Document Type";
+                    ApplicationLine."Applies-to Doc. No." := VendLedgEntry."Document No.";
+                    ApplicationLine."Applies-to Doc. found" := TRUE;
+                    ApplicationLine."Apply completed" := TRUE;
+                    ApplicationLine."Applied Entry No." := VendLedgEntry."Entry No.";
+                    ApplicationLine.MODIFY;
+                  END;
+                //A/gob-ko/27092012/P0392
+                END;
+                //E/gob-ko/27092012/P0392
+              END;  {If not DocFound...}
+              Length := Length - 1;
+            UNTIL (Length = 4) OR DocFound;
+          END; {IF Position...}
+        UNTIL (ApplRecognition.NEXT = 0) OR DocFound;
+      END;
+    END;
+
+    PROCEDURE SuggestCustVendAppl@1105400021(VAR BankAppl@1105400000 : Record 273);
+    VAR
+      ApplicationLine@1105400001 : Record 274;
+      Window@1105400002 : Dialog;
+    BEGIN
+      // Searching account and matching entries for existing application
+      Window.OPEN(Text1105400002+
+        Text1105400003+
+        Text1105400004+
+        Text1105400005);
+      Window.UPDATE(1, BankAppl."Bank Account No.");
+      Window.UPDATE(2, BankAppl."Statement No.");
+
+      ApplicationLine.RESET;
+      ApplicationLine.SETCURRENTKEY("Bank Account No.","Statement No.","Statement Line No.");
+      ApplicationLine.SETRANGE("Bank Account No.", BankAppl."Bank Account No.");
+      ApplicationLine.SETRANGE("Statement No.", BankAppl."Statement No.");
+      IF ApplicationLine.FINDFIRST THEN REPEAT
+        Window.UPDATE(3, ApplicationLine."Statement Line No.");
+        Recognition(ApplicationLine);
+        ApplicationLine.MODIFY;
+      UNTIL ApplicationLine.NEXT = 0;
+      Window.CLOSE;
+    END;
+
+    PROCEDURE SearchingCustDokNo@1105400022(BankDocument@1000 : Record 5001911;VAR "BankAccReconciliation Line"@1001 : Record 274);
+    BEGIN
+      IF BankDocument."Purpose 1"<>'' THEN BEGIN
+        GetDocNo(DELCHR(BankDocument."Purpose 1")+
+        DELCHR(BankDocument."Purpose 2")+
+        DELCHR(BankDocument."Purpose 3")+
+        DELCHR(BankDocument."Purpose 4")+
+        DELCHR(BankDocument."Purpose 5")+
+        DELCHR(BankDocument."Purpose 6")+
+        DELCHR(BankDocument."Purpose 7")+
+        DELCHR(BankDocument."Purpose 8")+
+        DELCHR(BankDocument."Purpose 9"),
+
+        DELCHR(BankDocument."Purpose 9")+
+        DELCHR(BankDocument."Purpose 10")+
+        DELCHR(BankDocument."Purpose 11")+
+        DELCHR(BankDocument."Purpose 12")+
+        DELCHR(BankDocument."Purpose 13")+
+        DELCHR(BankDocument."Purpose 14"),
+        "BankAccReconciliation Line");
+      END;
+    END;
+
+    PROCEDURE GetDocNo@1105400023(Purpose@1000 : Text[260];Purpose2@1001 : Text[260];VAR BankAccReconciliationLine@1002 : Record 274);
+    VAR
+      CustLedgEntry@1003 : Record 21;
+      Customer@1004 : Record 18;
+    BEGIN
+      CustLedgEntry.SETRANGE(Open);
+      CustLedgEntry.SETRANGE(CustLedgEntry."Customer No.");
+
+      CustLedgEntry.SETCURRENTKEY("Customer No.",Open,Positive,"Due Date","Currency Code");
+        IF BankAccReconciliationLine."Bal. Account No." <> '' THEN
+          CustLedgEntry.SETRANGE("Customer No.",BankAccReconciliationLine."Bal. Account No.")
+        ELSE
+          CustLedgEntry.SETCURRENTKEY (Open,"Due Date");
+        CustLedgEntry.SETRANGE(Open,TRUE);
+      //  CustLedgEntry.SETRANGE(CustLedgEntry.Positive, TRUE);
+
+      IF CustLedgEntry.FINDFIRST THEN REPEAT
+        IF (STRPOS(Purpose,DELCHR(CustLedgEntry."Document No.",'<>='))>0) THEN BEGIN
+          CustLedgEntry.CALCFIELDS("Remaining Amount");
+          BankAccReconciliationLine."Bal. Account Type" := BankAccReconciliationLine."Bal. Account Type"::Customer;
+          BankAccReconciliationLine.VALIDATE("Bal. Account No.",CustLedgEntry."Customer No.");
+          BankAccReconciliationLine."Applies-to Doc. Type" := CustLedgEntry."Document Type";
+          IF (BankAccReconciliationLine."Transaction Date" <= CustLedgEntry."Pmt. Discount Date") AND
+            ((CustLedgEntry."Remaining Amount"-CustLedgEntry."Remaining Pmt. Disc. Possible") =
+              BankAccReconciliationLine."Statement Amount") OR
+             (BankAccReconciliationLine."Statement Amount" = CustLedgEntry."Remaining Amount") THEN BEGIN
+            BankAccReconciliationLine."Applies-to Doc. No." := CustLedgEntry."Document No.";
+            BankAccReconciliationLine."Applies-to Doc. found" := TRUE;
+          END;
+          BankAccReconciliationLine.MODIFY;
+          EXIT;
+        END;
+        IF (STRPOS(Purpose2,DELCHR(CustLedgEntry."Document No.",'<>='))>0) THEN BEGIN
+          CustLedgEntry.CALCFIELDS("Remaining Amount");
+          BankAccReconciliationLine."Bal. Account Type" := BankAccReconciliationLine."Bal. Account Type"::Customer;
+          BankAccReconciliationLine.VALIDATE("Bal. Account No.",CustLedgEntry."Customer No.");
+          BankAccReconciliationLine."Applies-to Doc. Type" := CustLedgEntry."Document Type";
+          IF (BankAccReconciliationLine."Transaction Date" <= CustLedgEntry."Pmt. Discount Date") AND
+             ((CustLedgEntry."Remaining Amount"-CustLedgEntry."Remaining Pmt. Disc. Possible") =
+              BankAccReconciliationLine."Statement Amount") OR
+             (BankAccReconciliationLine."Statement Amount" = CustLedgEntry."Remaining Amount") THEN BEGIN
+            BankAccReconciliationLine."Applies-to Doc. No." := CustLedgEntry."Document No.";
+            BankAccReconciliationLine."Applies-to Doc. found" := TRUE;
+          END;
+          BankAccReconciliationLine.MODIFY;
+          EXIT;
+        END;
+      UNTIL CustLedgEntry.NEXT=0;
+    END;
+
+    PROCEDURE SearchingOrderNo@1000000002(_CustLedgEntry@1000000000 : Record 21;BankStatement@1105400000 : Record 5001911;VAR ApplicationLine@1105400001 : Record 274) : Boolean;
+    BEGIN
+      // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+      IF BankStatement."Purpose 1" <> '' THEN BEGIN
+        IF STRLEN(
+           DELCHR(ApplicationLine.Description) +
+           DELCHR(BankStatement."Purpose 1")+
+           DELCHR(BankStatement."Purpose 2")+
+           DELCHR(BankStatement."Purpose 3")+
+           DELCHR(BankStatement."Purpose 4")+
+           DELCHR(BankStatement."Purpose 5")+
+           DELCHR(BankStatement."Purpose 6")+
+           DELCHR(BankStatement."Purpose 7")+
+           DELCHR(BankStatement."Purpose 8")+
+           DELCHR(BankStatement."Purpose 9")+
+           DELCHR(BankStatement."Purpose 10")+
+           DELCHR(BankStatement."Purpose 11")+
+           DELCHR(BankStatement."Purpose 12")+
+           DELCHR(BankStatement."Purpose 13")+
+           DELCHR(BankStatement."Purpose 14")) <= 260 THEN BEGIN
+             IF GetOrderNo(_CustLedgEntry,
+                DELCHR(ApplicationLine.Description) +
+                DELCHR(BankStatement."Purpose 1")+
+                DELCHR(BankStatement."Purpose 2")+
+                DELCHR(BankStatement."Purpose 3")+
+                DELCHR(BankStatement."Purpose 4")+
+                DELCHR(BankStatement."Purpose 5")+
+                DELCHR(BankStatement."Purpose 6")+
+                DELCHR(BankStatement."Purpose 7")+
+                DELCHR(BankStatement."Purpose 8")+
+                DELCHR(BankStatement."Purpose 9")+
+                DELCHR(BankStatement."Purpose 10")+
+                DELCHR(BankStatement."Purpose 11")+
+                DELCHR(BankStatement."Purpose 12")+
+                DELCHR(BankStatement."Purpose 13")+
+                DELCHR(BankStatement."Purpose 14")) THEN
+               EXIT(TRUE);
+           END ELSE BEGIN
+             IF GetOrderNo(_CustLedgEntry,
+                DELCHR(ApplicationLine.Description) +
+                DELCHR(BankStatement."Purpose 1")+
+                DELCHR(BankStatement."Purpose 2")+
+                DELCHR(BankStatement."Purpose 3")+
+                DELCHR(BankStatement."Purpose 4")+
+                DELCHR(BankStatement."Purpose 5")+
+                DELCHR(BankStatement."Purpose 6")+
+                DELCHR(BankStatement."Purpose 7")+
+                DELCHR(BankStatement."Purpose 8")+
+                DELCHR(BankStatement."Purpose 9")) THEN
+               EXIT(TRUE)
+             ELSE
+               IF GetOrderNo(_CustLedgEntry,
+                  DELCHR(ApplicationLine.Description) +
+                  DELCHR(BankStatement."Purpose 6")+
+                  DELCHR(BankStatement."Purpose 7")+
+                  DELCHR(BankStatement."Purpose 8")+
+                  DELCHR(BankStatement."Purpose 9")+
+                  DELCHR(BankStatement."Purpose 10")+
+                  DELCHR(BankStatement."Purpose 11")+
+                  DELCHR(BankStatement."Purpose 12")+
+                  DELCHR(BankStatement."Purpose 13")+
+                  DELCHR(BankStatement."Purpose 14")) THEN
+                 EXIT(TRUE);
+           END;
+      END;
+      EXIT(FALSE);
+      // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+    END;
+
+    PROCEDURE GetOrderNo@1000000001(_CustLedgEntry@1000000000 : Record 21;_Purposal@1105400000 : Text[260]) : Boolean;
+    VAR
+      LT_SalesHeader@1000000001 : Record 36;
+      LT_SalesLine@1000000002 : Record 37;
+    BEGIN
+      // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+      _Purposal := UPPERCASE(_Purposal);
+      IF _CustLedgEntry."External Document No." <> '' THEN BEGIN
+        IF STRPOS(_Purposal,DELCHR(_CustLedgEntry."External Document No.")) > 0 THEN
+          EXIT(TRUE);
+        LT_SalesHeader.SETRANGE("External Document No.",_CustLedgEntry."External Document No.");
+        IF _CustLedgEntry."Document Type" = _CustLedgEntry."Document Type"::Invoice THEN
+          LT_SalesHeader.SETRANGE("Document Type",LT_SalesHeader."Document Type"::Order)
+        ELSE
+          LT_SalesHeader.SETRANGE("Document Type",LT_SalesHeader."Document Type"::"Return Order");
+        IF LT_SalesHeader.FINDFIRST THEN REPEAT
+          LT_SalesLine.SETRANGE("Document No.",LT_SalesHeader."No.");
+          LT_SalesLine.SETRANGE("Document Type",LT_SalesHeader."Document Type");
+          LT_SalesLine.SETFILTER("Payment Transaction No.",'<>%1','');
+          //A/gob-ko/P0294/060912
+          //IF LT_SalesLine.FINDSET THEN REPEAT
+          IF LT_SalesLine.FIND('-') THEN REPEAT
+          //E/gob-ko/P0294/060912
+            IF STRPOS(_Purposal,DELCHR(LT_SalesLine."Payment Transaction No.")) > 0 THEN
+              EXIT(TRUE);
+          UNTIL LT_SalesLine.NEXT = 0;
+        UNTIL LT_SalesHeader.NEXT = 0;
+      END;
+      EXIT(FALSE);
+      // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+    END;
+
+    PROCEDURE GetOrderNo2@1000000000(_BankStatement@1000000000 : Record 5001911;_Positive@1000000005 : Boolean;VAR _CustNo@1000000001 : Code[20]) : Boolean;
+    VAR
+      LT_SalesHeader@1000000006 : Record 36;
+      LT_SalesLine@1000000002 : Record 37;
+      LT_ApplRecognition@1000000007 : Record 5001916;
+      LT_CustLedgEntry@1000000012 : Record 21;
+      L_Int@1000000003 : BigInteger;
+      L_Purposal@1000000004 : Code[20];
+      L_Position@1000000008 : Integer;
+      L_Length@1000000009 : Integer;
+      L_SearchString@1000000011 : Code[20];
+      L_FullText@1000000010 : Text[260];
+      L_DocFound@1000000013 : Boolean;
+      L_Rec_SalesHeader@1000000014 : Record 36;
+    BEGIN
+      // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+      _CustNo := '';
+      IF EVALUATE(L_Int,_BankStatement.Reference) THEN
+        L_Purposal := COPYSTR(_BankStatement.Reference,1,20)
+      ELSE
+        IF EVALUATE(L_Int,_BankStatement."Purpose 1") THEN
+          L_Purposal := COPYSTR(_BankStatement."Purpose 1",1,20)
+        ELSE
+          IF EVALUATE(L_Int,_BankStatement."Purpose 2") THEN
+            L_Purposal := COPYSTR(_BankStatement."Purpose 2",1,20)
+          ELSE BEGIN
+            L_FullText := COPYSTR(
+              DELCHR(_BankStatement.Reference,'<>',' ') +
+              DELCHR(_BankStatement.Infotext,'<>',' ') +
+              DELCHR(_BankStatement."Purpose 1",'<>',' ') +
+              DELCHR(_BankStatement."Purpose 2",'<>',' ') +
+              DELCHR(_BankStatement."Purpose 3",'<>',' ') +
+              DELCHR(_BankStatement."Purpose 4",'<>',' ') +
+              DELCHR(_BankStatement."Purpose 5",'<>',' ') +
+              DELCHR(_BankStatement."Purpose 6",'<>',' ') +
+              DELCHR(_BankStatement."Purpose 7",'<>',' ') +
+              DELCHR(_BankStatement."Purpose 8",'<>',' ') +
+              DELCHR(_BankStatement."Purpose 9",'<>',' ') +
+              DELCHR(_BankStatement."Purpose 10",'<>',' ') +
+              DELCHR(_BankStatement."Purpose 11",'<>',' ') +
+              DELCHR(_BankStatement."Purpose 12",'<>',' ') +
+              DELCHR(_BankStatement."Purpose 13",'<>',' ') +
+              DELCHR(_BankStatement."Purpose 14",'<>',' ') +
+              DELCHR(_BankStatement."Additional Info",'<>',' ') +
+              DELCHR(_BankStatement."Addition Info 2",'<>',' '),1,MAXSTRLEN(L_FullText));
+            L_FullText := UPPERCASE(L_FullText);
+            L_DocFound := FALSE;
+            LT_ApplRecognition.RESET;
+            LT_ApplRecognition.SETRANGE(Type,LT_ApplRecognition.Type::"Document No.");
+            IF LT_ApplRecognition.FINDFIRST THEN REPEAT
+              L_Position := STRPOS(L_FullText,LT_ApplRecognition.Catchword);
+              IF L_Position <> 0 THEN BEGIN
+                L_Length := 20;
+                REPEAT
+                  L_SearchString := COPYSTR(L_FullText,L_Position + STRLEN(LT_ApplRecognition.Catchword),L_Length);
+                  L_SearchString := DELCHR(L_SearchString,'<>',' ');
+
+                  // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                  L_SearchString := DELCHR(L_SearchString,'=','()');
+                  // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+                  LT_CustLedgEntry.RESET;
+                  LT_CustLedgEntry.SETRANGE("External Document No.",L_SearchString);
+                  IF _Positive THEN
+                    LT_CustLedgEntry.SETRANGE("Document Type",LT_CustLedgEntry."Document Type"::Invoice)
+                  ELSE
+                    LT_CustLedgEntry.SETRANGE("Document Type",LT_CustLedgEntry."Document Type"::"Credit Memo");
+                  LT_CustLedgEntry.SETRANGE(Open,TRUE);
+                  IF LT_CustLedgEntry.FINDFIRST THEN BEGIN
+                    L_Length := 9999;
+                    L_DocFound := TRUE;
+                    _CustNo := LT_CustLedgEntry."Customer No.";
+                  END ELSE BEGIN
+                    //A/gob-ko/P0294/060912
+                    IF L_Rec_SalesHeader.GET(1,L_SearchString) THEN BEGIN
+                      L_Length := 9999;
+                      L_DocFound := TRUE;
+                      _CustNo := L_Rec_SalesHeader."Bill-to Customer No.";
+
+                    END;
+                    LT_SalesLine.SETCURRENTKEY("Payment Transaction No.");
+                   //e/gob-ko/P0294/060912
+                    LT_SalesLine.SETFILTER("Payment Transaction No.",L_SearchString);
+                    IF _Positive THEN
+                      LT_SalesLine.SETRANGE("Document Type",LT_SalesLine."Document Type"::Order)
+                    ELSE
+                      LT_SalesLine.SETRANGE("Document Type",LT_SalesLine."Document Type"::"Return Order");
+                    IF LT_SalesLine.FINDFIRST THEN BEGIN
+                      LT_SalesHeader.GET(LT_SalesLine."Document Type",LT_SalesLine."Document No.");
+                      L_Length := 9999;
+                      L_DocFound := TRUE;
+                      _CustNo := LT_SalesHeader."Bill-to Customer No.";
+                    END;
+                  END;
+                  L_Length := L_Length - 1;
+                UNTIL (L_Length = 4) OR L_DocFound;
+              END;
+            UNTIL (LT_ApplRecognition.NEXT = 0) OR L_DocFound;
+            EXIT(L_DocFound);
+          END;
+
+      LT_SalesLine.SETFILTER("Payment Transaction No.",L_Purposal);
+      IF _Positive THEN
+        LT_SalesLine.SETRANGE("Document Type",LT_SalesLine."Document Type"::Order)
+      ELSE
+        LT_SalesLine.SETRANGE("Document Type",LT_SalesLine."Document Type"::"Return Order");
+      IF LT_SalesLine.FINDFIRST THEN BEGIN
+        LT_SalesHeader.GET(LT_SalesLine."Document Type",LT_SalesLine."Document No.");
+        _CustNo := LT_SalesHeader."Bill-to Customer No.";
+        EXIT(TRUE);
+      END;
+
+      LT_CustLedgEntry.RESET;
+      //A/gob-ko/P0294/060912
+      //LT_CustLedgEntry.SETCURRENTKEY("Document No.","Document Type","Customer No.");
+      LT_CustLedgEntry.SETCURRENTKEY("External Document No.");
+      //E/gob-ko/P0294/060912
+      LT_CustLedgEntry.SETRANGE("External Document No.",L_Purposal);
+      IF _Positive THEN
+        LT_CustLedgEntry.SETRANGE("Document Type",LT_CustLedgEntry."Document Type"::Invoice)
+      ELSE
+        LT_CustLedgEntry.SETRANGE("Document Type",LT_CustLedgEntry."Document Type"::"Credit Memo");
+      LT_CustLedgEntry.SETRANGE(Open,TRUE);
+      //A/gob-ko/P0294/060912
+      //IF LT_CustLedgEntry.FINDFIRST THEN BEGIN
+      IF LT_CustLedgEntry.FIND('-') THEN BEGIN
+      //E/gob-ko/P0294/060912
+        _CustNo := LT_CustLedgEntry."Customer No.";
+        EXIT(TRUE);
+      END;
+
+      EXIT(FALSE);
+      // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+    END;
+
+    PROCEDURE RecognitionCust@1000000004(VAR ApplicationLine@1105400000 : Record 274);
+    VAR
+      ApplRecognition@1105400001 : Record 5001916;
+      Cust@1105400002 : Record 18;
+      Vend@1105400003 : Record 23;
+      CustLedgEntry@1105400004 : Record 21;
+      VendLedgEntry@1105400005 : Record 25;
+      BankDocument@1105400006 : Record 5001911;
+      Doc@1105400007 : Code[20];
+      SearchString@1105400008 : Code[20];
+      FullText@1105400009 : Text[260];
+      Position@1105400010 : Integer;
+      Length@1105400011 : Integer;
+      PersonFound@1105400012 : Boolean;
+      DocFound@1105400013 : Boolean;
+    BEGIN
+      // Searching Customer/Vendor No.
+      IF NOT BankDocument.GET(ApplicationLine."Import Journal Entry No.") THEN
+        EXIT;
+
+      FullText := COPYSTR(
+        DELCHR(ApplicationLine.Description,'<>',' ') +
+        DELCHR(BankDocument.Reference,'<>',' ') +
+        DELCHR(BankDocument.Infotext,'<>',' ') +
+        DELCHR(BankDocument."Purpose 1",'<>',' ') +
+        DELCHR(BankDocument."Purpose 2",'<>',' ') +
+        DELCHR(BankDocument."Purpose 3",'<>',' ') +
+        DELCHR(BankDocument."Purpose 4",'<>',' ') +
+        DELCHR(BankDocument."Purpose 5",'<>',' ') +
+        DELCHR(BankDocument."Purpose 6",'<>',' ') +
+        DELCHR(BankDocument."Purpose 7",'<>',' ') +
+        DELCHR(BankDocument."Purpose 8",'<>',' ') +
+        DELCHR(BankDocument."Purpose 9",'<>',' ') +
+        DELCHR(BankDocument."Purpose 10",'<>',' ') +
+        DELCHR(BankDocument."Purpose 11",'<>',' ') +
+        DELCHR(BankDocument."Purpose 12",'<>',' ') +
+        DELCHR(BankDocument."Purpose 13",'<>',' ') +
+        DELCHR(BankDocument."Purpose 14",'<>',' ') +
+        DELCHR(BankDocument."Additional Info",'<>',' ') +
+        DELCHR(BankDocument."Addition Info 2",'<>',' '),1,MAXSTRLEN(FullText));
+      FullText := UPPERCASE(FullText);
+
+      PersonFound := FALSE;
+      DocFound := FALSE;
+
+      // FIND ACCOUNT FOR APPLICATION
+      IF ApplicationLine."Bal. Account No." = '' THEN
+        GetAccount(ApplicationLine);
+
+      IF ApplicationLine."Bal. Account No." = '' THEN BEGIN
+        ApplRecognition.RESET;
+        ApplRecognition.SETRANGE(Type,ApplRecognition.Type::"Customer/Vendor No.");
+        IF ApplRecognition.FINDFIRST THEN REPEAT
+          Position := STRPOS(FullText,ApplRecognition.Catchword);
+          IF Position <> 0 THEN BEGIN
+            Length := 20;
+            REPEAT
+              SearchString := COPYSTR(FullText,Position+STRLEN(ApplRecognition.Catchword),Length);
+              SearchString := DELCHR(SearchString,'<>',' ');
+              // Check Customers
+              IF Cust.GET(SearchString) THEN BEGIN
+                Length := 9999;
+                PersonFound := TRUE;
+
+                ApplicationLine."Bal. Account Type" := ApplicationLine."Bal. Account Type"::Customer;
+                ApplicationLine.VALIDATE("Bal. Account No.",Cust."No.");
+                ApplicationLine."Bal. Account No. found" := ApplicationLine."Bal. Account No. found"::Customer;
+                ApplicationLine.MODIFY;
+              END;
+              // Check vendors
+              IF NOT PersonFound THEN
+                IF Vend.GET(SearchString) THEN BEGIN
+                  Length := 9999;
+                  PersonFound := TRUE;
+                  ApplicationLine."Bal. Account Type" := ApplicationLine."Bal. Account Type"::Vendor;
+                  ApplicationLine.VALIDATE("Bal. Account No.",Vend."No.");
+                  ApplicationLine."Bal. Account No. found" := ApplicationLine."Bal. Account No. found"::Vendor;
+                  ApplicationLine.MODIFY;
+                END;
+              Length := Length - 1;
+            UNTIL (Length = 4) OR PersonFound;
+          END;
+        UNTIL (ApplRecognition.NEXT = 0) OR PersonFound;
+      END;
+    END;
+
+    PROCEDURE GetOrderNo3@1000000003(_BankStatement@1000000000 : Record 5001911;_Positive@1000000005 : Boolean;VAR _CustNo@1000000001 : Code[20]) : Boolean;
+    VAR
+      LT_SalesHeader@1000000006 : Record 36;
+      LT_SalesLine@1000000002 : Record 37;
+      LT_ApplRecognition@1000000007 : Record 5001916;
+      LT_CustLedgEntry@1000000012 : Record 21;
+      L_Int@1000000003 : BigInteger;
+      L_Purposal@1000000004 : Code[20];
+      L_Position@1000000008 : Integer;
+      L_Length@1000000009 : Integer;
+      L_SearchString@1000000011 : Code[20];
+      L_FullText@1000000010 : Text[260];
+      L_DocFound@1000000013 : Boolean;
+      L_Rec_SalesHeader@1000000014 : Record 36;
+    BEGIN
+      // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+      _CustNo := '';
+      IF EVALUATE(L_Int,_BankStatement.Reference) THEN BEGIN
+        L_Purposal := COPYSTR(_BankStatement.Reference,1,20);
+        LT_SalesLine.SETCURRENTKEY("Payment Transaction No.");
+        LT_SalesLine.SETFILTER("Payment Transaction No.",L_Purposal);
+        IF _Positive THEN
+          LT_SalesLine.SETRANGE("Document Type",LT_SalesLine."Document Type"::Order)
+        ELSE
+          LT_SalesLine.SETRANGE("Document Type",LT_SalesLine."Document Type"::"Return Order");
+        //xxIF LT_SalesLine.FINDFIRST THEN BEGIN
+        IF LT_SalesLine.FIND('-') THEN BEGIN
+          LT_SalesHeader.GET(LT_SalesLine."Document Type",LT_SalesLine."Document No.");
+          _CustNo := LT_SalesHeader."Bill-to Customer No.";
+          EXIT(TRUE);
+        END;
+
+
+
+
+        LT_CustLedgEntry.RESET;
+        //xxLT_CustLedgEntry.SETCURRENTKEY("Document No.","Document Type","Customer No.");
+        LT_CustLedgEntry.SETCURRENTKEY("External Document No.");
+        LT_CustLedgEntry.SETRANGE("External Document No.",L_Purposal);
+        IF _Positive THEN
+          LT_CustLedgEntry.SETRANGE("Document Type",LT_CustLedgEntry."Document Type"::Invoice)
+        ELSE
+          LT_CustLedgEntry.SETRANGE("Document Type",LT_CustLedgEntry."Document Type"::"Credit Memo");
+        LT_CustLedgEntry.SETRANGE(Open,TRUE);
+        //xxIF LT_CustLedgEntry.FINDFIRST THEN BEGIN
+        IF LT_CustLedgEntry.FIND('-') THEN BEGIN
+          _CustNo := LT_CustLedgEntry."Customer No.";
+          EXIT(TRUE);
+        END;
+
+      END;
+
+
+          L_Purposal := COPYSTR(_BankStatement."Purpose 1",1,20);
+          L_Position := 1;
+          IF L_Position <> 0 THEN BEGIN
+             L_Length := 20;
+             REPEAT
+                L_SearchString := COPYSTR(L_Purposal,L_Position,L_Length);
+                L_SearchString := DELCHR(L_SearchString,'<>',' ');
+
+               // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+               L_SearchString := DELCHR(L_SearchString,'=','()');
+               // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+               LT_CustLedgEntry.RESET;
+               LT_CustLedgEntry.SETRANGE("External Document No.",L_SearchString);
+               IF _Positive THEN
+                   LT_CustLedgEntry.SETRANGE("Document Type",LT_CustLedgEntry."Document Type"::Invoice)
+               ELSE
+                  LT_CustLedgEntry.SETRANGE("Document Type",LT_CustLedgEntry."Document Type"::"Credit Memo");
+               LT_CustLedgEntry.SETRANGE(Open,TRUE);
+               IF LT_CustLedgEntry.FINDFIRST THEN BEGIN
+                    L_Length := 9999;
+                    L_DocFound := TRUE;
+                    _CustNo := LT_CustLedgEntry."Customer No.";
+               END ELSE BEGIN
+                    //xx
+                   IF L_Rec_SalesHeader.GET(1,L_SearchString) THEN BEGIN
+                      L_Length := 9999;
+                      L_DocFound := TRUE;
+                      _CustNo := L_Rec_SalesHeader."Bill-to Customer No.";
+                      EXIT(TRUE);
+                   END;
+                   // LT_SalesLine.SETCURRENTKEY("Payment Transaction No.");
+                    //xx
+                   LT_SalesLine.SETFILTER("Payment Transaction No.",L_SearchString);
+                   IF _Positive THEN
+                       LT_SalesLine.SETRANGE("Document Type",LT_SalesLine."Document Type"::Order)
+                   ELSE
+                      LT_SalesLine.SETRANGE("Document Type",LT_SalesLine."Document Type"::"Return Order");
+                   IF LT_SalesLine.FINDFIRST THEN BEGIN
+                      LT_SalesHeader.GET(LT_SalesLine."Document Type",LT_SalesLine."Document No.");
+                      L_Length := 9999;
+                      L_DocFound := TRUE;
+                      _CustNo := LT_SalesHeader."Bill-to Customer No.";
+                      EXIT(TRUE);
+                   END;
+               END;
+                  L_Length := L_Length - 1;
+             UNTIL (L_Length = 4) OR L_DocFound;
+           END;
+
+
+
+          L_Purposal := COPYSTR(_BankStatement."Purpose 2",1,20);
+
+          L_Position := 1;
+          IF L_Position <> 0 THEN BEGIN
+             L_Length := 20;
+             REPEAT
+                L_SearchString := COPYSTR(L_Purposal,L_Position,L_Length);
+                L_SearchString := DELCHR(L_SearchString,'<>',' ');
+
+               // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+               L_SearchString := DELCHR(L_SearchString,'=','()');
+               // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+               LT_CustLedgEntry.RESET;
+               LT_CustLedgEntry.SETRANGE("External Document No.",L_SearchString);
+               IF _Positive THEN
+                   LT_CustLedgEntry.SETRANGE("Document Type",LT_CustLedgEntry."Document Type"::Invoice)
+               ELSE
+                  LT_CustLedgEntry.SETRANGE("Document Type",LT_CustLedgEntry."Document Type"::"Credit Memo");
+               LT_CustLedgEntry.SETRANGE(Open,TRUE);
+               IF LT_CustLedgEntry.FINDFIRST THEN BEGIN
+                    L_Length := 9999;
+                    L_DocFound := TRUE;
+                    _CustNo := LT_CustLedgEntry."Customer No.";
+               END ELSE BEGIN
+                    //xx
+                   IF L_Rec_SalesHeader.GET(1,L_SearchString) THEN BEGIN
+                      L_Length := 9999;
+                      L_DocFound := TRUE;
+                      _CustNo := L_Rec_SalesHeader."Bill-to Customer No.";
+                      EXIT(TRUE);
+                   END;
+                   // LT_SalesLine.SETCURRENTKEY("Payment Transaction No.");
+                    //xx
+                   LT_SalesLine.SETFILTER("Payment Transaction No.",L_SearchString);
+                   IF _Positive THEN
+                       LT_SalesLine.SETRANGE("Document Type",LT_SalesLine."Document Type"::Order)
+                   ELSE
+                      LT_SalesLine.SETRANGE("Document Type",LT_SalesLine."Document Type"::"Return Order");
+                   IF LT_SalesLine.FINDFIRST THEN BEGIN
+                      LT_SalesHeader.GET(LT_SalesLine."Document Type",LT_SalesLine."Document No.");
+                      L_Length := 9999;
+                      L_DocFound := TRUE;
+                      _CustNo := LT_SalesHeader."Bill-to Customer No.";
+                      EXIT(TRUE);
+                   END;
+               END;
+                  L_Length := L_Length - 1;
+             UNTIL (L_Length = 4) OR L_DocFound;
+           END;
+
+
+
+      L_FullText := COPYSTR(
+      DELCHR(_BankStatement.Reference,'<>',' ') +
+      DELCHR(_BankStatement.Infotext,'<>',' ') +
+      DELCHR(_BankStatement."Purpose 1",'<>',' ') +
+      DELCHR(_BankStatement."Purpose 2",'<>',' ') +
+      DELCHR(_BankStatement."Purpose 3",'<>',' ') +
+      DELCHR(_BankStatement."Purpose 4",'<>',' ') +
+      DELCHR(_BankStatement."Purpose 5",'<>',' ') +
+      DELCHR(_BankStatement."Purpose 6",'<>',' ') +
+      DELCHR(_BankStatement."Purpose 7",'<>',' ') +
+      DELCHR(_BankStatement."Purpose 8",'<>',' ') +
+      DELCHR(_BankStatement."Purpose 9",'<>',' ') +
+      DELCHR(_BankStatement."Purpose 10",'<>',' ') +
+      DELCHR(_BankStatement."Purpose 11",'<>',' ') +
+      DELCHR(_BankStatement."Purpose 12",'<>',' ') +
+      DELCHR(_BankStatement."Purpose 13",'<>',' ') +
+      DELCHR(_BankStatement."Purpose 14",'<>',' ') +
+      DELCHR(_BankStatement."Additional Info",'<>',' ') +
+      DELCHR(_BankStatement."Addition Info 2",'<>',' '),1,MAXSTRLEN(L_FullText));
+      L_FullText := UPPERCASE(L_FullText);
+      L_DocFound := FALSE;
+      LT_ApplRecognition.RESET;
+      LT_ApplRecognition.SETRANGE(Type,LT_ApplRecognition.Type::"Document No.");
+      IF LT_ApplRecognition.FINDFIRST THEN REPEAT
+          L_Position := STRPOS(L_FullText,LT_ApplRecognition.Catchword);
+          IF L_Position <> 0 THEN BEGIN
+             L_Length := 20;
+             REPEAT
+                L_SearchString := COPYSTR(L_FullText,L_Position + STRLEN(LT_ApplRecognition.Catchword),L_Length);
+                L_SearchString := DELCHR(L_SearchString,'<>',' ');
+
+               // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+               L_SearchString := DELCHR(L_SearchString,'=','()');
+               // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+               LT_CustLedgEntry.RESET;
+               LT_CustLedgEntry.SETRANGE("External Document No.",L_SearchString);
+               IF _Positive THEN
+                   LT_CustLedgEntry.SETRANGE("Document Type",LT_CustLedgEntry."Document Type"::Invoice)
+               ELSE
+                  LT_CustLedgEntry.SETRANGE("Document Type",LT_CustLedgEntry."Document Type"::"Credit Memo");
+               LT_CustLedgEntry.SETRANGE(Open,TRUE);
+               IF LT_CustLedgEntry.FINDFIRST THEN BEGIN
+                  //A/GOB-ko/P0327/14092012
+                  IF LT_CustLedgEntry."External Document No." <> '' THEN BEGIN
+                  //E/GOB-ko/P0327/14092012/
+                    L_Length := 9999;
+                    L_DocFound := TRUE;
+                    _CustNo := LT_CustLedgEntry."Customer No.";
+                  //A/GOB-ko/P0327/14092012/
+                  END;
+                  //E/GOB-ko/P0327/14092012/
+               END ELSE BEGIN
+                    //xx
+                   IF L_Rec_SalesHeader.GET(1,L_SearchString) THEN BEGIN
+                      L_Length := 9999;
+                      L_DocFound := TRUE;
+                      _CustNo := L_Rec_SalesHeader."Bill-to Customer No.";
+
+                   END;
+                   // LT_SalesLine.SETCURRENTKEY("Payment Transaction No.");
+                    //xx
+                   LT_SalesLine.SETFILTER("Payment Transaction No.",L_SearchString);
+                   IF _Positive THEN
+                       LT_SalesLine.SETRANGE("Document Type",LT_SalesLine."Document Type"::Order)
+                   ELSE
+                      LT_SalesLine.SETRANGE("Document Type",LT_SalesLine."Document Type"::"Return Order");
+                   IF LT_SalesLine.FINDFIRST THEN BEGIN
+                      LT_SalesHeader.GET(LT_SalesLine."Document Type",LT_SalesLine."Document No.");
+                      L_Length := 9999;
+                      L_DocFound := TRUE;
+                      _CustNo := LT_SalesHeader."Bill-to Customer No.";
+                   END;
+               END;
+                  L_Length := L_Length - 1;
+             UNTIL (L_Length = 4) OR L_DocFound;
+           END;
+        UNTIL (LT_ApplRecognition.NEXT = 0) OR L_DocFound;
+         EXIT(L_DocFound);
+      LT_SalesLine.SETCURRENTKEY("Payment Transaction No.");
+      LT_SalesLine.SETFILTER("Payment Transaction No.",L_Purposal);
+      IF _Positive THEN
+        LT_SalesLine.SETRANGE("Document Type",LT_SalesLine."Document Type"::Order)
+      ELSE
+        LT_SalesLine.SETRANGE("Document Type",LT_SalesLine."Document Type"::"Return Order");
+      //xxIF LT_SalesLine.FINDFIRST THEN BEGIN
+      IF LT_SalesLine.FIND('-') THEN BEGIN
+        LT_SalesHeader.GET(LT_SalesLine."Document Type",LT_SalesLine."Document No.");
+        _CustNo := LT_SalesHeader."Bill-to Customer No.";
+        EXIT(TRUE);
+      END;
+
+      LT_CustLedgEntry.RESET;
+      LT_CustLedgEntry.SETCURRENTKEY("External Document No.");
+      LT_CustLedgEntry.SETRANGE("External Document No.",L_Purposal);
+      IF _Positive THEN
+        LT_CustLedgEntry.SETRANGE("Document Type",LT_CustLedgEntry."Document Type"::Invoice)
+      ELSE
+        LT_CustLedgEntry.SETRANGE("Document Type",LT_CustLedgEntry."Document Type"::"Credit Memo");
+      LT_CustLedgEntry.SETRANGE(Open,TRUE);
+      IF LT_CustLedgEntry.FIND('-') THEN BEGIN
+        _CustNo := LT_CustLedgEntry."Customer No.";
+        EXIT(TRUE);
+      END;
+      EXIT(FALSE);
+      // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+    END;
+
+    PROCEDURE "***HME************************"@1000000005();
+    BEGIN
+    END;
+
+    PROCEDURE GetOrderNofromDescription@1000000006(BankReconHeaderV@1000000001 : Record 273);
+    VAR
+      BankReconLineL@1000000000 : Record 274;
+      OrderNoL@1000000002 : Code[20];
+      DimensionValueL@1000000003 : Record 349;
+      SalesOrder@1000000004 : Record 36;
+      SalesOrderArchiv@1000000005 : Record 5107;
+      VorgabeDim@1000000006 : Record 352;
+    BEGIN
+      //H0466 22.07.13 ARI +++++++++++++++++++++++++++++
+      BankReconLineL.SETRANGE("Bank Account No.",BankReconHeaderV."Bank Account No.");
+      BankReconLineL.SETRANGE("Statement No.",BankReconHeaderV."Statement No.");
+      BankReconLineL.SETRANGE("Bal. Account Type",BankReconLineL."Bal. Account Type"::"G/L Account");
+      BankReconLineL.SETRANGE("Bal. Account No.",'6853');
+
+      IF BankReconLineL.FIND('-') THEN BEGIN
+        REPEAT
+          IF STRLEN(COPYSTR(BankReconLineL.Description,STRPOS(BankReconLineL.Description,':')+1)) <= 20 THEN BEGIN
+            OrderNoL := COPYSTR(BankReconLineL.Description,STRPOS(BankReconLineL.Description,':')+1);
+            DimensionValueL.SETRANGE("Dimension Code",'AUFTRAG');
+            DimensionValueL.SETRANGE(Code,OrderNoL);
+            IF DimensionValueL.FIND('-') THEN BEGIN
+              BankReconLineL.ValidateShortcutDimCode(3,OrderNoL);
+              BankReconLineL.MODIFY;
+            END;
+            //A/gob-ko/P1105/13092013
+            SalesOrder.RESET;
+            IF SalesOrder.GET(SalesOrder."Document Type"::Order,OrderNoL) THEN BEGIN
+               VorgabeDim.SETRANGE("Table ID",18);
+               VorgabeDim.SETRANGE("No.",SalesOrder."Bill-to Customer No.");
+               VorgabeDim.SETRANGE("Dimension Code",'LAND');
+               IF VorgabeDim.FINDFIRST THEN BEGIN
+                  BankReconLineL.ValidateShortcutDimCode(4,VorgabeDim."Dimension Value Code");
+                  BankReconLineL.MODIFY;
+               END;
+            END ELSE BEGIN
+              SalesOrderArchiv.RESET;
+              SalesOrderArchiv.SETRANGE("No.",OrderNoL);
+              IF SalesOrderArchiv.FINDLAST THEN BEGIN
+                 VorgabeDim.SETRANGE("Table ID",18);
+                 VorgabeDim.SETRANGE("No.",SalesOrderArchiv."Bill-to Customer No.");
+                 VorgabeDim.SETRANGE("Dimension Code",'LAND');
+                 IF VorgabeDim.FINDFIRST THEN BEGIN
+                    BankReconLineL.ValidateShortcutDimCode(4,VorgabeDim."Dimension Value Code");
+                    BankReconLineL.MODIFY;
+
+                 END;
+              END;
+            END;
+            //E/gob-ko/P1105/13092013
+          END;
+        UNTIL BankReconLineL.NEXT = 0;
+      END;
+      //H0466 22.07.13 ARI -----------------------------
+    END;
+
+    PROCEDURE GetInvoiceNoFromTransactionNo@1000000007(BankReconHeaderV@1000000000 : Record 273;PaymentServiceProviderV@1000000011 : Code[10]);
+    VAR
+      Window@1000000014 : Dialog;
+      BankReconLineL@1000000006 : Record 274;
+      OrderNoL@1000000005 : Code[20];
+      DimensionValueL@1000000004 : Record 349;
+      SalesOrder@1000000003 : Record 36;
+      SalesOrderArchive@1000000002 : Record 5107;
+      DefaultDim@1000000001 : Record 352;
+      eBayImportPayPalBillPayPayOneL@1000000008 : Record 5095913;
+      CustLedgEntryL@1000000009 : Record 21;
+      PostedSalesInvoice@1000000013 : Record 112;
+      TransactionNoL@1000000007 : Code[30];
+      CommentLenL@1000000010 : Integer;
+      CustLedgEntryFoundByExtDocNoL@1000000012 : Boolean;
+    BEGIN
+      //A/H24-EOT/06.02.14/H0757
+      Window.OPEN(STRSUBSTNO(Text50001,  PaymentServiceProviderV) +
+        Text1105400003+
+        Text1105400004+
+        Text1105400005);
+
+      BankReconLineL.SETRANGE("Bank Account No.",BankReconHeaderV."Bank Account No.");
+      BankReconLineL.SETRANGE("Statement No.",BankReconHeaderV."Statement No.");
+      BankReconLineL.SETRANGE("Applies-to Doc. No.", '');
+
+      IF BankReconLineL.FIND('-') THEN BEGIN
+        Window.UPDATE(1, BankReconLineL."Bank Account No.");
+        Window.UPDATE(2, BankReconLineL."Statement No.");
+        REPEAT
+          Window.UPDATE(3, BankReconLineL."Statement Line No.");
+          IF NOT ((BankReconLineL."Bal. Account Type" = BankReconLineL."Bal. Account Type"::"G/L Account") AND
+                  (BankReconLineL."Bal. Account No." <> '')) THEN BEGIN
+            CustLedgEntryFoundByExtDocNoL := FALSE;
+            CommentLenL := STRLEN(TransactionNoL);             // Comment = Transaction No. of Payment Service Provider
+            IF CommentLenL > 30 THEN
+              TransactionNoL := COPYSTR(BankReconLineL.Comment,1,30)
+            ELSE
+              TransactionNoL := BankReconLineL.Comment;
+            IF TransactionNoL <> '' THEN BEGIN
+              eBayImportPayPalBillPayPayOneL.SETCURRENTKEY("Transaction Code", Status, "Account Code");
+              eBayImportPayPalBillPayPayOneL.SETRANGE("Transaction Code", TransactionNoL);
+              CASE PaymentServiceProviderV OF
+                'BILLPAY':
+                  eBayImportPayPalBillPayPayOneL.SETRANGE("Account Code", 'BILLPAY');
+                'PAYPAL':
+                  eBayImportPayPalBillPayPayOneL.SETRANGE("Account Code", 'PAYPAL');
+                'PAYONE':
+                  eBayImportPayPalBillPayPayOneL.SETRANGE("Account Code", 'PAYONE');
+                ELSE
+                  ERROR(Text50000, PaymentServiceProviderV);
+              END;
+              IF eBayImportPayPalBillPayPayOneL.FIND('-') THEN BEGIN
+                BankReconLineL."eBay Purchaser ID" := eBayImportPayPalBillPayPayOneL."Ebay User-Id";
+                IF eBayImportPayPalBillPayPayOneL.InvoiceID <> '' THEN
+                  // 1 - Search H24 Order No. in "External Document No." in Cust. Ledg. Entry
+                  SuggestCustLedgEntryByOrderNo(eBayImportPayPalBillPayPayOneL.InvoiceID, BankReconLineL, CustLedgEntryFoundByExtDocNoL);
+                  IF NOT CustLedgEntryFoundByExtDocNoL THEN
+                    BEGIN
+                      // 2 - Search H24 Order No. in Posted Sales Invoices
+                      PostedSalesInvoice.RESET;
+                      PostedSalesInvoice.SETCURRENTKEY("Order No.");
+                      PostedSalesInvoice.SETRANGE("Order No.", eBayImportPayPalBillPayPayOneL.InvoiceID);
+                      IF PostedSalesInvoice.FINDLAST THEN BEGIN
+                        BankReconLineL.VALIDATE("Bal. Account Type", BankReconLineL."Bal. Account Type"::Customer);
+                        BankReconLineL.VALIDATE("Bal. Account No.", PostedSalesInvoice."Bill-to Customer No.");
+                        BankReconLineL.VALIDATE("Applies-to Doc. Type", BankReconLineL."Applies-to Doc. Type"::Invoice);
+                        BankReconLineL.VALIDATE("Applies-to Doc. No.", PostedSalesInvoice."No.");
+                        // Connect to H0636 for improved referencing
+                        BankReconLineL."Order No." := SalesOrder."No.";
+                        IF BankReconLineL."Amount (LCY)" > 0 THEN
+                          BankReconLineL."Payment Direction" := BankReconLineL."Payment Direction"::inbound
+                        ELSE
+                          BankReconLineL."Payment Direction" := BankReconLineL."Payment Direction"::outbound;
+                        BankReconLineL."Payment Method Code" := PostedSalesInvoice."Payment Method Code";
+                        // Dimensions - Order, Country
+                        DimensionValueL.SETRANGE("Dimension Code",'AUFTRAG');
+                        DimensionValueL.SETRANGE(Code, PostedSalesInvoice."Order No.");
+                        IF NOT DimensionValueL.FIND('-') THEN BEGIN
+                          DimensionValueL.INIT;
+                          DimensionValueL."Dimension Code" := 'AUFTRAG';
+                          DimensionValueL.Code := PostedSalesInvoice."Order No.";
+                          DimensionValueL.INSERT;
+                        END ELSE
+                          BankReconLineL.ValidateShortcutDimCode(3, PostedSalesInvoice."Order No.");
+                        DefaultDim.SETRANGE("Table ID",18);
+                        DefaultDim.SETRANGE("No.",PostedSalesInvoice."Bill-to Customer No.");
+                        DefaultDim.SETRANGE("Dimension Code",'LAND');
+                        IF DefaultDim.FINDFIRST THEN
+                          BankReconLineL.ValidateShortcutDimCode(4, DefaultDim."Dimension Value Code");
+                        BankReconLineL.MODIFY;
+                      END ELSE BEGIN
+                        // 2 - Search H24 Order No. in Sales Orders
+                        SalesOrder.RESET;
+                        IF SalesOrder.GET(SalesOrder."Document Type"::Order, eBayImportPayPalBillPayPayOneL.InvoiceID) THEN BEGIN
+                          BankReconLineL.VALIDATE("Bal. Account Type", BankReconLineL."Bal. Account Type"::Customer);
+                          BankReconLineL.VALIDATE("Bal. Account No.", SalesOrder."Bill-to Customer No.");
+                          BankReconLineL.VALIDATE("Applies-to Doc. Type", BankReconLineL."Applies-to Doc. Type"::Order);
+                          BankReconLineL.VALIDATE("Applies-to Doc. No.", SalesOrder."No.");
+                          // Connect to H0636 for improved referencing
+                          BankReconLineL."Order No." := SalesOrder."No.";
+                          IF BankReconLineL."Amount (LCY)" > 0 THEN
+                            BankReconLineL."Payment Direction" := BankReconLineL."Payment Direction"::inbound
+                          ELSE
+                            BankReconLineL."Payment Direction" := BankReconLineL."Payment Direction"::outbound;
+                          // Dimensions - Order, Country (order not posted yet; "Apply-to Document No." can't be filled in BankReconLineL)
+                          DimensionValueL.SETRANGE("Dimension Code",'AUFTRAG');
+                          DimensionValueL.SETRANGE(Code, SalesOrder."No.");
+                          IF NOT DimensionValueL.FIND('-') THEN BEGIN
+                            DimensionValueL.INIT;
+                            DimensionValueL."Dimension Code" := 'AUFTRAG';
+                            DimensionValueL.Code := SalesOrder."No.";
+                            DimensionValueL.INSERT;
+                          END ELSE
+                            BankReconLineL.ValidateShortcutDimCode(3,  SalesOrder."No.");
+                          DefaultDim.SETRANGE("Table ID",18);
+                          DefaultDim.SETRANGE("No.", SalesOrder."Bill-to Customer No.");
+                          DefaultDim.SETRANGE("Dimension Code",'LAND');
+                          IF DefaultDim.FINDFIRST THEN
+                            BankReconLineL.ValidateShortcutDimCode(4, DefaultDim."Dimension Value Code");
+                          BankReconLineL.MODIFY;
+                        END;
+                      END;
+                    END;
+                  END;
+              END;
+          END;
+        UNTIL BankReconLineL.NEXT = 0;
+      END;
+      //E/H24-EOT/06.02.14/H0757
+    END;
+
+    PROCEDURE SuggestCustLedgEntryByOrderNo@1000000008(OrderNo_from_eBayImportPayPalV@1000000000 : Code[20];VAR BankAccReconLineP@1000000001 : Record 274;VAR CustLedgEntryFoundByExtDocNoP@1000000003 : Boolean);
+    VAR
+      CustLedgEntryL@1000000002 : Record 21;
+      DimensionValueL@1000000004 : Record 349;
+      DefaultDim@1000000005 : Record 352;
+    BEGIN
+      //A/H24-EOT/14.02.14/H0757
+      CustLedgEntryL.SETCURRENTKEY("External Document No.");
+      CustLedgEntryL.SETRANGE("External Document No.", OrderNo_from_eBayImportPayPalV); // InvoiceID = H24 OrderNo.(!)
+      CustLedgEntryL.SETRANGE("Document Type", CustLedgEntryL."Document Type"::Invoice);
+      CustLedgEntryL.SETRANGE(Open, TRUE);
+      IF CustLedgEntryL.FIND('-') THEN
+        BEGIN
+          CustLedgEntryFoundByExtDocNoP := TRUE;
+          BankAccReconLineP.VALIDATE("Bal. Account Type", BankAccReconLineP."Bal. Account Type"::Customer);
+          BankAccReconLineP.VALIDATE("Bal. Account No.", CustLedgEntryL."Customer No.");
+          BankAccReconLineP.VALIDATE("Applies-to Doc. Type", BankAccReconLineP."Applies-to Doc. Type"::Invoice);
+          BankAccReconLineP.VALIDATE("Applies-to Doc. No.",  CustLedgEntryL."Document No.");
+          // Connect to H0636 for improved referencing
+          BankAccReconLineP."Order No." := OrderNo_from_eBayImportPayPalV;
+          IF BankAccReconLineP."Amount (LCY)" > 0 THEN
+            BankAccReconLineP."Payment Direction" := BankAccReconLineP."Payment Direction"::inbound
+          ELSE
+            BankAccReconLineP."Payment Direction" := BankAccReconLineP."Payment Direction"::outbound;
+          BankAccReconLineP."Payment Method Code" := CustLedgEntryL."Payment Method Code";
+          // Dimensions - Order, Country
+          DimensionValueL.SETRANGE("Dimension Code",'AUFTRAG');
+          DimensionValueL.SETRANGE(Code, OrderNo_from_eBayImportPayPalV);
+          IF NOT DimensionValueL.FIND('-') THEN BEGIN
+            DimensionValueL.INIT;
+            DimensionValueL."Dimension Code" := 'AUFTRAG';
+            DimensionValueL.Code := OrderNo_from_eBayImportPayPalV;
+            DimensionValueL.INSERT;
+          END ELSE
+            BankAccReconLineP.ValidateShortcutDimCode(3, OrderNo_from_eBayImportPayPalV);
+          DefaultDim.SETRANGE("Table ID", 18);
+          DefaultDim.SETRANGE("No.", CustLedgEntryL."Customer No.");
+          DefaultDim.SETRANGE("Dimension Code",'LAND');
+          IF DefaultDim.FINDFIRST THEN
+             BankAccReconLineP.ValidateShortcutDimCode(4 ,DefaultDim."Dimension Value Code");
+          BankAccReconLineP.MODIFY;
+        END;
+      //E/H24-EOT/14.02.14/H0757
+    END;
+
+    BEGIN
+    {
+      énderungen in Erkennungsroutinen
+      1.Wenn bereits ein Ausgleich vorhanden/eingetragen ist, soll dieser bestehen bleiben und
+        nicht mehr angetastet werden
+      2.Wenn bereits ein Gegenkonto gefunden wurde (durch die Umstellung der Suchroutine),
+        soll dieses bestehen bleiben und die Suche in den Posten filtern.
+      3.Verbesserung. Sucht nun unter BerÅcksichtigung des Vorzeichens in den Posten.
+      4.Verbesserung. Skontobetrag berÅcksichtigen
+      5.Verbesserung. Die Routine wurde umgestellt. Es wird nun zuerst das Gegenkonto aus dem
+        Verwendungszweck ermittelt und dann erst die Belegnummer. Dadurch wird die Suchgeschwindigkeit
+        erhîht.
+      6.Der VALIDATE fÅhrte zu fehl erhaften Ergebnissen, wenn nicht die Gegenkontoart gefÅllt war.
+      7.MODIFY eingebaut, da die Suchroutinen gelegentlich FIND('-') ausfÅhren und eventuell bis
+        dahin gefundene Suchergebnisse sonst verloren gingen
+
+      eBay1.00
+      eBay#001 Erweiterung Funktion "SuggestApplication", Leeren Feld Bemerkung
+
+      eBay1.06.12
+      eBay#002 SuggestApplication nicht durchfÅhren bei Paypalkostenzeilen
+
+      1.00   27.03.12  eich     change search applies
+      2.00   22.05.12  eich     exclude '()' from search string
+      P0294  06.09.12  gob-ko   change search applies
+      P0327  14.09.12  gob-ko   change search appies
+      P0392  27.09.12  gob-ko   Anpassung Ausgleich fÅr Kreditor
+      P1105  13.09.13  gob-ko   Anpassung fÅr Vorbelegung Land
+      H0757  06.02.14  h24-eot  New function GetInvoiceNoFromTransactionNo (for BILLPAY, PAYPAL, PAYONE; easily extensible for others)
+      H0757  14.02.14  h24-eot  New function SuggestCustLedgEntryByOrderNo to enable external call from import routines in the future
+                                Call SuggestCustLedgEntryByOrderNo from GetInvoiceNoFromTransactionNo
+    }
+    END.
+  }
+}
+

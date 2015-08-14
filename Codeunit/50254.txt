@@ -1,0 +1,159 @@
+OBJECT Codeunit 50254 Hermes Tracking Info Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=13.03.15;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=HME3878;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      HermesSetup@1000000006 : Record 50319;
+      GlobalRunType@1000000000 : ' ,ImportTrackingInfo,ProcessTrackingInfo,ErrorTrackingInfo';
+      GlobalEntryNo@1000000003 : Integer;
+      GlobalFilename@1000000002 : Text[1024];
+      GlobalDestinationFilename@1000000001 : Text[1024];
+      WasNewRecord@1000000004 : Boolean;
+      UnknownOrderNoError@1000000005 : TextConst 'ENU=Unknown Order No. %1';
+      NoDocumentLineFoundError@1000000007 : TextConst 'ENU=No %1 or %2 found. Document Type %3 No. %4 Line No. %5';
+      NoSeparatorError@1000000008 : TextConst 'ENU="There is no Separator in File %1. Expected Value ;"';
+      NoGroupError@1000000009 : TextConst 'ENU=There is no Separator in Field _S002_KOMM_NR. Expected Value: _';
+      UnknownGroupingNoError@1000000010 : TextConst 'ENU=Unknown Grouping No. %1 in Order No. %2';
+      Delimiter@1000000011 : TextConst 'ENU=";"';
+
+    PROCEDURE PrepCDLabelGeneration4Header@1000000011(PurchaseHeaderV@1000000000 : Record 38;StatusCodeV@1000000002 : Code[20]);
+    VAR
+      PurchaseLineL@1000000001 : Record 39;
+      HermesTrackingGroupL@1000000003 : Record 50332;
+      HermesSetupL@1000000005 : Record 50319;
+      EntryNoL@1000000004 : Integer;
+    BEGIN
+      //H1698 09.02.15 tec-ar ++++++++++++++++++++
+      //CreateHermesGroupPurchHeader
+      HermesSetupL.GET;
+
+      PurchaseLineL.SETRANGE("Document Type",PurchaseHeaderV."Document Type");
+      PurchaseLineL.SETRANGE("Document No.",PurchaseHeaderV."No.");
+      PurchaseLineL.SETRANGE(Type,PurchaseLineL.Type::Item);
+      PurchaseLineL.SETFILTER("Purchasing Code", '%1', STRSUBSTNO('*-%1', FORMAT(HermesSetupL."Channel HES CD-DI")));
+
+      IF NOT PurchaseLineL.FINDSET THEN
+        EXIT;
+
+      IF HermesTrackingGroupL.FINDLAST THEN
+        EntryNoL := HermesTrackingGroupL."Entry No.";
+
+      REPEAT
+        PrepCDLabelGeneration4Line(PurchaseLineL,EntryNoL,StatusCodeV);
+      UNTIL PurchaseLineL.NEXT = 0;
+      //H1698 09.02.15 tec-ar --------------------
+    END;
+
+    PROCEDURE PrepCDLabelGeneration4Line@1000000015(PurchaseLineV@1000000000 : Record 39;VAR EntryNoR@1000000002 : Integer;StatusCodeV@1000000003 : Code[20]);
+    VAR
+      SalesLineL@1000000001 : Record 37;
+    BEGIN
+      //H1698 09.02.15 tec-ar ++++++++++++++++++++
+      HermesSetup.GET;
+      HermesSetup.TESTFIELD("Shipping Agent Hermes");
+
+      PurchaseLineV.GetLinkedSalesLine(SalesLineL,TRUE);
+      CreateHermesGroupingByDocLine(SalesLineL,EntryNoR);
+      CreateHermParcelStatHistor4EDI(SalesLineL,StatusCodeV);
+      //H1698 09.02.15 tec-ar --------------------
+    END;
+
+    PROCEDURE CreateHermesGroupingByDocLine@1000000019(SalesLineV@1000000000 : Record 37;VAR EntryNoR@1000000001 : Integer);
+    VAR
+      HermesTrackingGroupL@1000000002 : Record 50332;
+    BEGIN
+      //H1698 09.02.15 tec-ar ++++++++++++++++++++
+      EntryNoR += 1;
+      HermesTrackingGroupL.INIT;
+      HermesTrackingGroupL."Entry No." := EntryNoR;
+      HermesTrackingGroupL."Direction Type" := HermesTrackingGroupL."Direction Type"::Sales;
+      HermesTrackingGroupL."Source Document Type" := SalesLineV."Document Type";
+      HermesTrackingGroupL."Source Document No." := SalesLineV."Document No.";
+      HermesTrackingGroupL."Source Document Line No." := SalesLineV."Line No.";
+      HermesTrackingGroupL."Grouping No." := HermesTrackingGroupL.GetActGroupingNo(
+                                            HermesTrackingGroupL."Direction Type",
+                                            HermesTrackingGroupL."Source Document Type",
+                                            HermesTrackingGroupL."Source Document No.",
+                                            HermesTrackingGroupL."Source Document Line No.")
+                                            + 1;
+      HermesTrackingGroupL.INSERT(TRUE);
+      //H1698 09.02.15 tec-ar --------------------
+    END;
+
+    PROCEDURE CreateHermParcelStatHistor4EDI@1000000013(SalesLineV@1000000000 : Record 37;StatusCodeV@1000000003 : Code[20]);
+    VAR
+      ParcelStatusHistoryL@1000000004 : Record 80013;
+      ParcelStatusHistoryMgmtL@1000000002 : Codeunit 80011;
+      RecRefL@1000000001 : RecordRef;
+    BEGIN
+      //H1698 09.02.15 tec-ar ++++++++++++++++++++
+      HermesSetup.GET;
+
+      ParcelStatusHistoryL.SETRANGE("Document Type", SalesLineV."Document Type");
+      ParcelStatusHistoryL.SETRANGE("Document No.", SalesLineV."Document No.");
+      ParcelStatusHistoryL.SETRANGE("Document Line No.", SalesLineV."Line No.");
+      ParcelStatusHistoryL.SETRANGE("Shipping Agent Code", HermesSetup."Shipping Agent Hermes");
+      ParcelStatusHistoryL.SETRANGE("Status Code", StatusCodeV);
+      IF NOT ParcelStatusHistoryL.FINDFIRST THEN BEGIN
+        RecRefL.GETTABLE(SalesLineV);
+        ParcelStatusHistoryMgmtL.SetSpecialOrder(SalesLineV."Special Order");
+        ParcelStatusHistoryMgmtL.FillHistoryByDocLine(
+          RecRefL,
+          1,
+          1,
+          10,
+          HermesSetup."Shipping Agent Hermes",
+          '',
+          '',
+          StatusCodeV,
+          '',
+          '',
+          0);
+      END;
+      //H1698 09.02.15 tec-ar --------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation Tectura & Home24 NAV Team  |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      H1695       18.11.14  tec-ar    Hermes 2MH: Tracking Status Interface:  object created
+      H1698       09.02.15  tec-ar    Hermes 2MH: Adjustments Cross-Dock LabelEDI ORDERSCSV
+      H3878       12.03.15  tec-are   Bugfix. CD-Order generation, no code changed, just compile because of changed ID of function
+
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation Tectura & Home24 NAV Team  |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      H3806       06.03.15  MKR       Hermes Fixes: CD-Order generation, no code changed, just compile because of changed ID of function
+    }
+    END.
+  }
+}
+

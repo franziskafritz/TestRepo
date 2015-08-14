@@ -1,0 +1,329 @@
+OBJECT Codeunit 50115 CalcDates
+{
+  OBJECT-PROPERTIES
+  {
+    Date=03.03.15;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=#HME1700;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      TAListTemp@1000000000 : TEMPORARY Record 50117;
+      Recursion@1000000001 : Boolean;
+
+    PROCEDURE CalcMaxOrderDateChangeOrder@1000000000(p_SalesHeader@1000000000 : Record 36);
+    VAR
+      SalesLine_l@1000000001 : Record 37;
+      NewDate_l@1000000002 : Date;
+      DaysAdded_l@1000000003 : Integer;
+      DeliveryDays_l@1000000004 : Integer;
+      CalendarManagement_l@1000000005 : Codeunit 7600;
+      Description_l@1000000006 : Text[50];
+      Date1_l@1000000007 : Date;
+      Date2_l@1000000008 : Date;
+      purchasing_l@1000000009 : Record 5721;
+      item_l@1000000010 : Record 27;
+    BEGIN
+      //H0584 10.03.14 HCN +++++++++++++++++++++++++++++
+      IF p_SalesHeader."Is Follow-up Sales Order" THEN BEGIN
+        EXIT;
+      END;
+      {
+      IF p_SalesHeader."Return Type" <> p_SalesHeader."Return Type"::"7" THEN // 7= Change Order
+        EXIT;
+      }
+      //H0584 10.03.14 HCN -----------------------------
+
+      SalesLine_l.RESET;
+      SalesLine_l.SETRANGE("Document Type",p_SalesHeader."Document Type");
+      SalesLine_l.SETRANGE("Document No.",p_SalesHeader."No.");
+      SalesLine_l.SETRANGE(Type,SalesLine_l.Type::Item);
+      IF SalesLine_l.FINDSET THEN BEGIN
+        REPEAT
+          CLEAR(DaysAdded_l);
+          CLEAR(Date1_l);
+          CLEAR(Date2_l);
+          CLEAR(DeliveryDays_l);
+
+          IF purchasing_l.GET(SalesLine_l."Purchasing Code") THEN
+            IF FORMAT(purchasing_l."Calc. Max Ord. Date Change") <> '' THEN BEGIN
+              Date1_l := WORKDATE;
+              Date2_l := CALCDATE(purchasing_l."Calc. Max Ord. Date Change", Date1_l);
+              DeliveryDays_l := Date2_l - Date1_l;
+            END ELSE BEGIN
+              item_l.GET(SalesLine_l."No.");
+              IF SalesLine_l."Transp. Type" = SalesLine_l."Transp. Type"::"Parcel Service" THEN BEGIN
+                Date1_l := WORKDATE;
+                Date2_l := CALCDATE(item_l."Lead Time Calculation (max.)", Date1_l);
+                Date2_l := CALCDATE('<+2D>', Date2_l);
+                DeliveryDays_l := Date2_l - Date1_l;
+              END ELSE BEGIN
+                Date1_l := WORKDATE;
+                Date2_l := CALCDATE(item_l."Lead Time Calculation (max.)", Date1_l);
+                Date2_l := CALCDATE('<+5D>', Date2_l);
+                DeliveryDays_l := Date2_l - Date1_l;
+            END;
+          END;
+
+          NewDate_l := p_SalesHeader."Order Date";
+          WHILE DaysAdded_l < DeliveryDays_l DO BEGIN
+            NewDate_l := CALCDATE('<1D>', NewDate_l);
+            IF NOT CalendarManagement_l.CheckDateStatus('BC', NewDate_l, Description_l) THEN // NOT NONWORKING
+              DaysAdded_l += 1;
+          END;
+          SalesLine_l.VALIDATE("Max. Order Date",NewDate_l);
+
+          SalesLine_l.MODIFY;
+
+        UNTIL SalesLine_l.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE CalcDeliveryDelay@1000000001(SalesLine_V@1000000004 : Record 37) DelayDays : Integer;
+    VAR
+      CalendarMgt_l@1000000003 : Codeunit 7600;
+      NewDate_l@1000000002 : Date;
+      DeliveryDelay_l@1000000001 : Integer;
+      Description_l@1000000000 : Text[50];
+    BEGIN
+      CLEAR(DeliveryDelay_l);
+
+      IF (SalesLine_V."Actual Delivery Date" <> 0DT) AND (SalesLine_V."Max. Order Date - Master" <> 0D) THEN BEGIN
+        IF DT2DATE(SalesLine_V."Actual Delivery Date") < SalesLine_V."Max. Order Date - Master" THEN BEGIN
+          NewDate_l := DT2DATE(SalesLine_V."Actual Delivery Date");
+          WHILE NewDate_l < SalesLine_V."Max. Order Date - Master" DO BEGIN
+            IF NOT CalendarMgt_l.CheckDateStatus('BC', NewDate_l, Description_l) THEN
+              DeliveryDelay_l += 1 *-1;
+            NewDate_l := CALCDATE('<1D>', NewDate_l);
+          END;
+        END ELSE BEGIN
+          NewDate_l := SalesLine_V."Max. Order Date - Master";
+          WHILE NewDate_l < DT2DATE(SalesLine_V."Actual Delivery Date") DO BEGIN
+            IF NOT CalendarMgt_l.CheckDateStatus('BC', NewDate_l, Description_l) THEN
+              DeliveryDelay_l += 1;
+            NewDate_l := CALCDATE('<1D>', NewDate_l);
+          END;
+        END;
+        EXIT(DeliveryDelay_l);
+      END ELSE BEGIN
+        //H1540 01.10.14 MSL ++++++++++++++++++++++++++++++++++++
+        IF (SalesLine_V."Expected Delivery Date" <> 0D) AND (SalesLine_V."Max. Order Date - Master" <> 0D) THEN BEGIN
+          IF SalesLine_V."Expected Delivery Date" < SalesLine_V."Max. Order Date - Master" THEN BEGIN
+            NewDate_l := SalesLine_V."Expected Delivery Date";
+        //H1540 01.10.14 MSL -----------------------------------
+            WHILE NewDate_l < SalesLine_V."Max. Order Date - Master" DO BEGIN
+              IF NOT CalendarMgt_l.CheckDateStatus('BC', NewDate_l, Description_l) THEN
+                DeliveryDelay_l += 1 *-1;
+              NewDate_l := CALCDATE('<1D>', NewDate_l);
+            END;
+          END ELSE BEGIN
+            NewDate_l := SalesLine_V."Max. Order Date - Master";
+            //H1540 01.10.14 MSL ++++++++++++++++++++++++++++++++++++
+            WHILE NewDate_l < SalesLine_V."Expected Delivery Date" DO BEGIN
+            //H1540 01.10.14 MSL -----------------------------------
+              IF NOT CalendarMgt_l.CheckDateStatus('BC', NewDate_l, Description_l) THEN
+                DeliveryDelay_l += 1;
+              NewDate_l := CALCDATE('<1D>', NewDate_l);
+            END;
+          END;
+        END;
+      END;
+
+      EXIT(DeliveryDelay_l);
+    END;
+
+    PROCEDURE CalcDeliveryDelayTA@1000000003(TAList_V@1000000000 : Record 50117) DelayDays : Integer;
+    VAR
+      CalendarMgt_l@1000000004 : Codeunit 7600;
+      NewDate_l@1000000003 : Date;
+      DeliveryDelay_l@1000000002 : Integer;
+      Description_l@1000000001 : Text[50];
+    BEGIN
+      CLEAR(DeliveryDelay_l);
+
+      IF (TAList_V."EDD-Master" <> 0D) AND (TAList_V."MOD-Master" <> 0D) THEN BEGIN
+        IF TAList_V."EDD-Master" < TAList_V."MOD-Master" THEN BEGIN
+          NewDate_l := TAList_V."EDD-Master";
+          WHILE NewDate_l < TAList_V."MOD-Master" DO BEGIN
+            IF NOT CalendarMgt_l.CheckDateStatus('BC', NewDate_l, Description_l) THEN
+              DeliveryDelay_l += 1 *-1;
+            NewDate_l := CALCDATE('<1D>', NewDate_l);
+          END;
+        END ELSE BEGIN
+          NewDate_l := TAList_V."MOD-Master";
+          WHILE NewDate_l < TAList_V."EDD-Master" DO BEGIN
+            IF NOT CalendarMgt_l.CheckDateStatus('BC', NewDate_l, Description_l) THEN
+              DeliveryDelay_l += 1;
+            NewDate_l := CALCDATE('<1D>', NewDate_l);
+          END;
+        END;
+      END;
+
+      EXIT(DeliveryDelay_l);
+    END;
+
+    PROCEDURE InsertTAListEntry@1000000006(SalesLine@1000000000 : Record 37;EDDMaster@1000000002 : Date;InterfaceCode@1000000003 : Code[10]);
+    BEGIN
+      TAListTemp.INIT;
+      TAListTemp."OrderNo."         := SalesLine."Document No.";
+      TAListTemp."OrderLineNo."     := SalesLine."Line No.";
+      TAListTemp."EDD-Master"       := EDDMaster;
+      TAListTemp."Vendor No."       := SalesLine."Vendor No.";
+      TAListTemp."Delivery Channel" := SalesLine."Purchasing Code";
+      TAListTemp."Shipping Type"    := InterfaceCode;
+      TAListTemp.INSERT;
+    END;
+
+    PROCEDURE GetDate@1000000005(BasedDate@1000000000 : Date;DeliveryDays@1000000001 : Integer) Date : Date;
+    VAR
+      Dateformula@1000000002 : DateFormula;
+      DateText@1000000003 : Text[30];
+    BEGIN
+      //H0600 17.10.13 ARI +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF DeliveryDays < 0 THEN
+        DeliveryDays := 0;
+
+      DateText := '<+' + FORMAT(DeliveryDays) + 'D>';
+      EVALUATE(Dateformula,DateText);
+      Date := CALCDATE(Dateformula, BasedDate);
+      //H0600 17.10.13 ARI -----------------------------------------------------------------------------------------------
+    END;
+
+    PROCEDURE GetNetDeliveryDate@1000000004(DateV@1000000000 : Date;DeliveryDaysV@1000000001 : Integer;BaseCalendarCodeV@1000000006 : Code[10]) : Date;
+    VAR
+      BaseCalendarChangeL@1000000003 : Record 7601;
+      DateL@1000000005 : Record 2000000007;
+      ActualDateL@1000000002 : Date;
+      DeliveryDatewithoutNonworkingL@1000000007 : Date;
+      DDwithHolidaysL@1000000009 : Date;
+      DeliveryDateL@1000000012 : Date;
+      HolidaysL@1000000008 : Integer;
+      DeliveryDaysL@1000000004 : Integer;
+      AddedDaysL@1000000010 : Integer;
+      WeekendsL@1000000011 : Integer;
+    BEGIN
+      //H0600 17.10.13 ARI +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF Recursion THEN BEGIN
+        ActualDateL := DateV;
+        DeliveryDaysL := DeliveryDaysV;
+      END ELSE BEGIN
+        IF DeliveryDaysV > 0 THEN BEGIN
+          ActualDateL := DateV + 1;
+          DeliveryDaysL := DeliveryDaysV - 1;
+        END ELSE
+          EXIT(DateV);
+      END;
+
+      DeliveryDatewithoutNonworkingL := GetDate(ActualDateL,DeliveryDaysL);
+      BaseCalendarChangeL.SETRANGE("Base Calendar Code",BaseCalendarCodeV);
+      BaseCalendarChangeL.SETRANGE(Date,ActualDateL,DeliveryDatewithoutNonworkingL);
+      BaseCalendarChangeL.SETRANGE("Recurring System",BaseCalendarChangeL."Recurring System"::" "); //"Annual Recurring" is NOT handled
+
+      BaseCalendarChangeL.SETRANGE(Nonworking,TRUE);
+
+      HolidaysL := 0;
+      IF BaseCalendarChangeL.FINDSET(FALSE,FALSE) THEN BEGIN
+        REPEAT
+          IF DATE2DWY(BaseCalendarChangeL.Date,1) < 6 THEN
+            HolidaysL += 1;
+        UNTIL BaseCalendarChangeL.NEXT = 0;
+        DDwithHolidaysL := GetDate(DeliveryDatewithoutNonworkingL,HolidaysL);
+      END ELSE BEGIN
+        HolidaysL := 0;
+        DDwithHolidaysL := DeliveryDatewithoutNonworkingL;
+      END;
+
+      AddedDaysL := DeliveryDaysL + HolidaysL;
+
+      WeekendsL := 0;                                                                               //"Weekly Recurring" is handled here
+      DateL.RESET;
+      DateL.SETRANGE("Period Type",DateL."Period Type"::Date);
+      DateL.SETRANGE("Period Start",ActualDateL,DeliveryDatewithoutNonworkingL);
+      IF DateL.FIND('-') THEN
+        REPEAT
+          IF DateL."Period No." IN [6,7] THEN
+            WeekendsL += 1;
+        UNTIL DateL.NEXT = 0;
+
+      AddedDaysL += WeekendsL;
+      DeliveryDateL := GetDate(ActualDateL,AddedDaysL);
+
+      //Recursion
+      IF (HolidaysL + WeekendsL > 0) THEN BEGIN
+        Recursion := TRUE;
+        DeliveryDatewithoutNonworkingL :=  CALCDATE('<+1D>', DeliveryDatewithoutNonworkingL);
+        DeliveryDateL := GetNetDeliveryDate(DeliveryDatewithoutNonworkingL, HolidaysL + WeekendsL - 1, BaseCalendarCodeV);
+      END;
+
+      CLEAR(Recursion);
+      EXIT(DeliveryDateL);
+      //H0600 17.10.13 ARI -----------------------------------------------------------------------------------------------
+    END;
+
+    PROCEDURE CalcWorkingDaysFromDate@1000000002(DateV@1000000000 : Date;CalcDaysV@1000000001 : Integer) : Date;
+    VAR
+      BaseCalendarChangeL@1000000003 : Record 7601;
+      DateL@1000000006 : Record 2000000007;
+      CurrentDateL@1000000004 : Date;
+      DaysCountL@1000000002 : Integer;
+    BEGIN
+      // H1700  02.03.15  MKR +++++++++++++++++++++++++++++++++++++++++++++++
+      // adds or substracts CalcDaysV (+/-) from DateV considering only working days
+      DaysCountL := 0;
+      CurrentDateL := DateV;
+
+      REPEAT
+        // Add or subtract 1 day
+        CurrentDateL := CALCDATE('<' + FORMAT(CalcDaysV/ABS(CalcDaysV)) + 'D>', CurrentDateL);
+        BaseCalendarChangeL.SETRANGE("Base Calendar Code", 'BC');
+        BaseCalendarChangeL.SETRANGE(Date, CurrentDateL);
+        BaseCalendarChangeL.SETRANGE("Recurring System", BaseCalendarChangeL."Recurring System"::" ");
+        BaseCalendarChangeL.SETRANGE(Nonworking, TRUE);
+        IF NOT BaseCalendarChangeL.FINDFIRST THEN BEGIN
+          DateL.RESET;
+          DateL.SETRANGE("Period Type", DateL."Period Type"::Date);
+          DateL.SETRANGE("Period Start", CurrentDateL);
+          IF DateL.FINDFIRST THEN BEGIN
+            IF DateL."Period No." < 6 THEN BEGIN
+              DaysCountL += 1;
+            END;
+          END;
+        END;
+      UNTIL DaysCountL = ABS(CalcDaysV);
+
+      EXIT(CurrentDateL);
+      // H1700  02.03.15  MKR -----------------------------------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+
+      H0562       03.07.13 ARI       Redesign Date Caluclation by Trigger and not by JobQueue
+                                     Original Codeunit 50086
+
+      H0600       17.10.13 ARI       New Functions: "GetDate" and "GetNetDeliveryDate"
+      H0584       10.03.14 HCN       Adjustments due to optionvalue changes
+      H1540       01.10.14 MSL       EDDM Redesign Activation: Removed functions "CalcExpectedDeliveryDate","GenGlobalEDDMaster"
+      H1700       03.03.15 MKR       Hermes 2MH: Generation and transmission of IFTMIN: New func CalcWorkingdaysFromDate
+    }
+    END.
+  }
+}
+

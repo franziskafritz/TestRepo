@@ -1,0 +1,274 @@
+OBJECT Codeunit 50272 Import Post Codes
+{
+  OBJECT-PROPERTIES
+  {
+    Date=07.03.14;
+    Time=12:00:00;
+    Version List=HME0896;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+            ImportFilePath := DialogMgt.OpenFile(PleaseChooseFile, ImportFilePath, 4, Text004, 0);
+
+            IF ImportFilePath = '' THEN
+              ERROR(FileNotSelected);
+
+            Window.OPEN(Progress1 + Progress2 + Progress3);
+
+            FileToImport.TEXTMODE := TRUE;
+            FileToImport.OPEN(ImportFilePath);
+
+            Window.UPDATE(1, FORMAT(FileToImport.LEN) + ' ' + TotalRecords);
+
+            ImportFileName := SplitFilename(ImportFilePath);
+
+            LogFile.TEXTMODE(TRUE);
+            IF LogFile.CREATE(GetPath(ImportFilePath) + ImportFileName + Text008) THEN BEGIN
+              LogFile.WRITE(Text005 + ImportFileName);
+              LogFile.WRITE(Text006 + FORMAT(TODAY));
+              LogFile.WRITE(Text007 + FORMAT(TIME));
+            END;
+
+            IF ImportFileName = 'PACKSTAT.DAT' THEN
+              ImportPackStations
+            ELSE
+              ImportPostCodes;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      DialogMgt@1000000001 : Codeunit 412;
+      DHLStreetcodes@1000000009 : Record 50047;
+      PostCode@1000000014 : Record 225;
+      Window@1000000004 : Dialog;
+      FileToImport@1000000010 : File;
+      LogFile@1000000015 : File;
+      ImportFilePath@1000000000 : Text[1024];
+      FileNotSelected@1000000002 : TextConst 'ENU=In order to proceed you need to choose a file.';
+      PleaseChooseFile@1000000003 : TextConst 'ENU=Please choose a file for import.';
+      TotalRecords@1000000011 : TextConst 'ENU=Total records in file';
+      Progress1@1000000005 : TextConst 'ENU=#1############################\';
+      Progress2@1000000006 : TextConst 'ENU=#2############################\';
+      Progress3@1000000008 : TextConst 'ENU=@4@@@@@@@@@@@@@@@@@@@@@@@@@@@@\';
+      ImportFileName@1000000016 : Text[250];
+      Line@1000000012 : Text[1024];
+      ReadLine@1000000013 : Integer;
+      FileType@1000000007 : Text[20];
+      Text001@1000000017 : TextConst 'ENU=A problem occured while inserting street code %1.';
+      Text002@1000000018 : TextConst 'ENU=ASD';
+      Text003@1000000019 : TextConst 'ENU=A problem occured while modifying street code %1.';
+      Text004@1000000020 : TextConst 'ENU=DAT File type (*.DAT)|*.DAT';
+      Text005@1000000021 : TextConst 'ENU="Import of: "';
+      Text006@1000000022 : TextConst 'ENU="Import date: "';
+      Text007@1000000023 : TextConst 'ENU="Import started at: "';
+      Text008@1000000024 : TextConst 'ENU=_LOG.txt';
+      Text009@1000000025 : TextConst 'ENU=Oopsie... There was a slight problem when trying to import the combination %1 + %2';
+      Text010@1000000026 : TextConst 'ENU=You are trying to import a wrong type of file. This is not a PACKSTATION list!';
+      Text011@1000000027 : TextConst 'ENU=Post Code %1 doesn''t exist. Please import first the Post Codes!';
+      Text012@1000000028 : TextConst 'ENU=Imported successfully Line %1.';
+      Text013@1000000029 : TextConst 'ENU=Modified successfully Line %1.';
+      Text014@1000000030 : TextConst 'ENU="Import ended at: "';
+
+    PROCEDURE ImportPostCodes@1000000004();
+    VAR
+      DummyVar1L@1000000001 : Text[50];
+      DummyVar2L@1000000000 : Text[50];
+    BEGIN
+      WHILE FileToImport.POS < FileToImport.LEN DO BEGIN
+
+        FileToImport.READ(Line);
+        ReadLine += 1;
+        Window.UPDATE(4, ROUND(FileToImport.POS / FileToImport.LEN * 10000,1) );
+        Window.UPDATE(2, FORMAT(FileToImport.POS) + ' / ' + FORMAT(FileToImport.LEN));
+
+        FileType := COPYSTR(Line, 1, 2);
+        CASE FileType OF
+          'PL':
+            BEGIN
+              DummyVar1L := COPYSTR(Line, 18, 5);
+              DummyVar2L := COPYSTR(Line, 35, 40);
+              ReplaceUnknownCharsInText(DummyVar2L);
+              DummyVar1L := DELCHR(DummyVar1L ,'<>');
+              DummyVar2L := DELCHR(DummyVar2L ,'<>');
+
+              PostCode.RESET;
+              PostCode.SETRANGE(PostCode.Code, DummyVar1L);
+              PostCode.SETRANGE(PostCode."Search City", UPPERCASE(COPYSTR(DummyVar2L, 1, MAXSTRLEN(PostCode.City))));
+              IF NOT PostCode.FINDFIRST THEN BEGIN
+                PostCode.INIT;
+                PostCode.VALIDATE(Code, DummyVar1L);
+                PostCode.VALIDATE(City, UPPERCASE(COPYSTR(DummyVar2L, 1, MAXSTRLEN(PostCode.City))));
+                IF NOT PostCode.INSERT(TRUE) THEN
+                  LogFile.WRITE(STRSUBSTNO(Text009, DummyVar1L, DummyVar2L));
+              END;
+            END;
+
+          'SB':
+            BEGIN
+              IF NOT DHLStreetcodes.GET(COPYSTR(Line, 172, 5), COPYSTR(Line, 177, 3)) THEN BEGIN
+                DHLStreetcodes.INIT;
+                DHLStreetcodes.VALIDATE(plz, COPYSTR(Line, 172, 5));
+                DHLStreetcodes.VALIDATE(str_code, COPYSTR(Line, 177, 3));
+                DHLStreetcodes.VALIDATE(str_name_sort, COPYSTR(Line, 56, 46));
+                PostCode.SETRANGE(Code, COPYSTR(Line, 172, 5));
+                IF PostCode.FINDFIRST THEN
+                  DHLStreetcodes.VALIDATE(city, PostCode.City);
+                ReplaceUnknownCharsInCode(DHLStreetcodes.str_name_sort);
+                IF NOT DHLStreetcodes.INSERT THEN
+                  LogFile.WRITE(STRSUBSTNO(Text001, COPYSTR(Line, 177, 3)))
+                ELSE
+                  LogFile.WRITE(STRSUBSTNO(Text012, FORMAT(ReadLine)));
+
+              END ELSE BEGIN
+                DHLStreetcodes.VALIDATE(plz, COPYSTR(Line, 172, 5));
+                DHLStreetcodes.VALIDATE(str_name_sort, COPYSTR(Line, 56, 46));
+                IF PostCode.GET(COPYSTR(Line, 172, 5)) THEN
+                  DHLStreetcodes.VALIDATE(city, PostCode.City);
+
+                IF NOT DHLStreetcodes.MODIFY THEN
+                  LogFile.WRITE(STRSUBSTNO(Text003, COPYSTR(Line, 177, 3)))
+                ELSE
+                  LogFile.WRITE(STRSUBSTNO(Text012, FORMAT(ReadLine)));
+
+              END;
+            END;
+        END;
+      END;
+
+      LogFile.WRITE(Text014 + FORMAT(TIME));
+      LogFile.CLOSE;
+    END;
+
+    PROCEDURE ImportPackStations@1000000018();
+    BEGIN
+      WHILE FileToImport.POS < FileToImport.LEN DO BEGIN
+
+        FileToImport.READ(Line);
+        ReadLine += 1;
+        Window.UPDATE(4, ROUND(FileToImport.POS / FileToImport.LEN * 10000,1));
+        Window.UPDATE(2, FORMAT(FileToImport.POS) + ' / ' + FORMAT(FileToImport.LEN));
+        FileType := COPYSTR(Line, 1, 2);
+        IF FileType <> 'SB' THEN
+          ERROR(Text010);
+
+        DHLStreetcodes.SETRANGE(plz, COPYSTR(Line, 172, 5));
+        IF NOT DHLStreetcodes.FINDFIRST THEN
+          ERROR(STRSUBSTNO(Text011, COPYSTR(Line, 172, 5) + '-' + COPYSTR(Line, 177, 3)));
+        DHLStreetcodes.VALIDATE(packstation, COPYSTR(Line, 38, 3));
+        IF NOT DHLStreetcodes.MODIFY THEN
+          LogFile.WRITE(STRSUBSTNO(Text003, COPYSTR(Line, 177, 3)))
+        ELSE
+          LogFile.WRITE(STRSUBSTNO(Text012, FORMAT(ReadLine)));
+
+      END;
+
+      LogFile.WRITE(Text014 + FORMAT(TIME));
+      LogFile.CLOSE;
+    END;
+
+    PROCEDURE ReplaceString@1000000002(String@1000000000 : Text[1000];FindWhat@1000000002 : Text[1000];ReplaceWith@1000000001 : Text[1000]) NewString : Text[1024];
+    BEGIN
+      WHILE STRPOS(String,FindWhat) > 0 DO
+
+        String :=
+          DELSTR(String, STRPOS(String, FindWhat)) +
+          ReplaceWith +
+          COPYSTR(String, STRPOS(String, FindWhat) +
+          STRLEN(FindWhat));
+
+      NewString := String;
+      EXIT(NewString);
+    END;
+
+    PROCEDURE SplitFilename@1000000000(Path@1000000001 : Text[1024]) FileName : Text[250];
+    VAR
+      Pos@1000000000 : Integer;
+      Found@1000000002 : Boolean;
+    BEGIN
+      Path := DELCHR(Path,'<>');
+      IF (Path = '') THEN
+        EXIT;
+
+      Pos := STRLEN(Path);
+      REPEAT
+        Found := (COPYSTR(Path, Pos, 1) = '\');
+        IF NOT Found THEN
+          Pos -= 1;
+      UNTIL (Pos = 0) OR Found;
+
+      IF Found THEN
+        FileName := COPYSTR(Path, Pos+1);
+    END;
+
+    PROCEDURE GetPath@1000000001(Path@1000000000 : Text[1024]) GetPath : Text[1024];
+    VAR
+      Pos@1000000001 : Integer;
+      Found@1000000002 : Boolean;
+    BEGIN
+      Path := DELCHR(Path,'<>');
+      IF (Path = '') THEN
+        EXIT;
+
+      Pos := STRLEN(Path);
+      REPEAT
+        Found := (COPYSTR(Path, Pos, 1) = '\');
+        IF NOT Found THEN
+          Pos -= 1;
+      UNTIL (Pos = 0) OR Found;
+
+      IF Found THEN
+        GetPath := COPYSTR(Path,1,Pos);
+    END;
+
+    PROCEDURE ReplaceUnknownCharsInText@1000000003(VAR String@1000000000 : Text[50]) : Text[50];
+    BEGIN
+      IF STRPOS(String,'√º') <> 0 THEN // Å
+        ReplaceString(String,'√º','Å');
+
+      IF STRPOS(String,'√ú') <> 0 THEN // ö
+        ReplaceString(String,'√ú','ö');
+
+      IF STRPOS(String,'√∂') <> 0 THEN // î
+        ReplaceString(String,'√∂','î');
+
+      IF STRPOS(String,'√§') <> 0 THEN // Ñ
+        ReplaceString(String,'√§','Ñ');
+    END;
+
+    PROCEDURE ReplaceUnknownCharsInCode@1000000006(VAR CodeString@1000000000 : Code[50]) : Code[50];
+    BEGIN
+      IF STRPOS(CodeString,'√º') <> 0 THEN // Å
+        ReplaceString(CodeString,'√º','Å');
+
+      IF STRPOS(CodeString,'√ú') <> 0 THEN // ö
+        ReplaceString(CodeString,'√ú','ö');
+
+      IF STRPOS(CodeString,'√∂') <> 0 THEN // î
+        ReplaceString(CodeString,'√∂','î');
+
+      IF STRPOS(CodeString,'√§') <> 0 THEN // Ñ
+        ReplaceString(CodeString,'√§','Ñ');
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date        Shortcut  Description
+      _____________________________________________
+
+      *** Module: Post Codes ***
+      H0896       26.02.14    FX        DHL Street Codes Import
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,477 @@
+OBJECT Codeunit 50173 YEC PO Cleanup
+{
+  OBJECT-PROPERTIES
+  {
+    Date=06.01.14;
+    Time=16:40:19;
+    Modified=Yes;
+    Version List=H0792;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    SingleInstance=Yes;
+    OnRun=VAR
+            WasReleased@1000000000 : Boolean;
+          BEGIN
+            CleanupLogistics.RESET;
+            CleanupLogistics.SETFILTER("Purchase Order No.", '<>%1', '');
+
+
+            ReleasePurchDoc.SetSkipMailSending(TRUE);
+
+            CASE "Parameter String" OF
+              'Old Shipped':
+              BEGIN
+                CleanupLogistics.SETRANGE("Issue Type", CleanupLogistics."Issue Type"::"Old shipped SO");
+              END;
+              'Shiped 2013':
+              BEGIN
+                CleanupLogistics.SETRANGE("Issue Type", CleanupLogistics."Issue Type"::"Shiped SO 2013");
+              END;
+              'Canceled':
+              BEGIN
+                CleanupLogistics.SETRANGE("Issue Type", CleanupLogistics."Issue Type"::"Cancelled SO");
+              END;
+              'Open Old':
+              BEGIN
+                CleanupLogistics.SETRANGE("Issue Type", CleanupLogistics."Issue Type"::"Open Old(until 30.06.2013)");
+              END;
+              'Open':
+              BEGIN
+                CleanupLogistics.SETRANGE("Issue Type", CleanupLogistics."Issue Type"::Open);
+              END;
+              'Broken Link':
+              BEGIN
+                CleanupLogistics.SETRANGE("Issue Type", CleanupLogistics."Issue Type"::"Broken Link");
+              END;
+              'Rest':
+              BEGIN
+                CleanupLogistics.SETRANGE("Issue Type", CleanupLogistics."Issue Type"::Rest);
+              END;
+
+            END;
+
+
+
+            IF CleanupLogistics.FINDFIRST THEN
+            BEGIN
+              REPEAT
+                IF PurchaseHeader.GET(PurchaseHeader."Document Type"::Order, CleanupLogistics."Purchase Order No.") THEN
+                BEGIN
+                  CASE CleanupLogistics."Issue Type" OF
+                    CleanupLogistics."Issue Type"::"Old shipped SO":
+                    BEGIN
+                      ArchiveOrder(PurchaseHeader);
+                    END;
+                    CleanupLogistics."Issue Type"::"Shiped SO 2013":
+                    BEGIN
+                      //NOTHING FOR NOW
+                    END;
+                    CleanupLogistics."Issue Type"::"Cancelled SO":
+                    BEGIN
+                      WasReleased := FALSE;
+                      IF PurchaseHeader.Status = PurchaseHeader.Status::Released THEN
+                      BEGIN
+                        WasReleased := TRUE;
+                        ReleasePurchDoc.PerformManualReopen(PurchaseHeader);
+                      END;
+
+                      CancelPurchaseLine(PurchaseHeader, TRUE);
+
+                      IF WasReleased AND CanBeReleased THEN
+                      BEGIN
+                        PerformManualRelease(PurchaseHeader);
+                      END;
+
+                      ArchiveOrder(PurchaseHeader);
+                    END;
+                    CleanupLogistics."Issue Type"::"Open Old(until 30.06.2013)":
+                    BEGIN
+                      IF PurchaseHeader."Order Date" <= 300613D THEN
+                      BEGIN
+                        WasReleased := FALSE;
+                        IF PurchaseHeader.Status = PurchaseHeader.Status::Released THEN
+                        BEGIN
+                          WasReleased := TRUE;
+                          ReleasePurchDoc.PerformManualReopen(PurchaseHeader);
+                        END;
+
+                        CancelPurchaseLine(PurchaseHeader, FALSE);
+
+                        IF WasReleased AND CanBeReleased THEN
+                        BEGIN
+                          PerformManualRelease(PurchaseHeader);
+                        END;
+
+                        ArchiveOrder(PurchaseHeader);
+                      END;
+                    END;
+                    CleanupLogistics."Issue Type"::Open:
+                    BEGIN
+                      //ArchiveOrder(PurchaseHeader);
+                    END;
+                    CleanupLogistics."Issue Type"::"Broken Link":
+                    BEGIN
+                      WasReleased := FALSE;
+                      IF PurchaseHeader.Status = PurchaseHeader.Status::Released THEN
+                      BEGIN
+                        WasReleased := TRUE;
+                        ReleasePurchDoc.SetSkipMailSending(TRUE);
+                        ReleasePurchDoc.PerformManualReopen(PurchaseHeader);
+                      END;
+
+                      CancelPurchaseLine(PurchaseHeader, TRUE);
+
+                      IF WasReleased AND CanBeReleased THEN
+                      BEGIN
+                        PerformManualRelease(PurchaseHeader);
+                      END;
+
+                      ArchiveOrder(PurchaseHeader);
+                    END;
+                    CleanupLogistics."Issue Type"::Rest:
+                    BEGIN
+                      //MANUAL CHECK
+                    END;
+                  END;
+                END;
+              UNTIL CleanupLogistics.NEXT = 0;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      PurchaseHeader@1000000000 : Record 38;
+      PurchaseLine@1000000001 : Record 39;
+      SalesLine@1000000003 : Record 37;
+      SalesArchiveLine@1000000005 : Record 5108;
+      CleanupLogistics@1000000002 : Record 50193;
+      ReleasePurchDoc@1000000006 : Codeunit 415;
+      CanBeReleased@1000000008 : Boolean;
+      Text001@1000000009 : TextConst 'DEU=Fr %1 %2 gibt es nichts freizugeben.;ENU=There is nothing to release for %1 %2.';
+      Text002@1000000007 : TextConst 'DEU=Dieses Dokument kann nur freigegeben werden, wenn der Genehmigungsprozess abgeschlossen ist.;ENU=This document can only be released when the approval process is complete.';
+      Text003@1000000004 : TextConst 'DEU=Zum erneuten ™ffnen dieses Dokuments muss der Genehmigungsprozess abgebrochen oder abgeschlossen werden.;ENU=The approval process must be cancelled or completed to reopen this document.';
+
+    PROCEDURE BackupLinks@1000000000(VAR PurchaseLineP@1000000000 : Record 39;ClearOriginalLinksP@1000000001 : Boolean);
+    BEGIN
+      //MAKE BACKUPS OF LINKS
+      IF ClearOriginalLinksP THEN
+      BEGIN
+        IF PurchaseLine."Special Order" THEN
+        BEGIN
+          PurchaseLineP."Org Special Order Sales No." := PurchaseLineP."Special Order Sales No.";
+          PurchaseLineP."Org Special Order Sales LineNo" := PurchaseLineP."Special Order Sales Line No.";
+        END
+        ELSE
+        BEGIN
+          PurchaseLineP."Org Sales Order No." := PurchaseLineP."Sales Order No.";
+          PurchaseLineP."Org Sales Order LineNo." := PurchaseLineP."Sales Order Line No.";
+        END;
+
+        //CLEAR LINKS
+        PurchaseLineP."Special Order Sales No." := '';
+        PurchaseLineP."Special Order Sales Line No." := 0;
+        PurchaseLineP."Sales Order No." := '';
+        PurchaseLineP."Sales Order Line No." := 0;
+      END
+      ELSE
+      BEGIN
+        PurchaseLineP."Org Sales Order No." := PurchaseLineP."Order No.";
+        PurchaseLineP."Org Sales Order LineNo." := PurchaseLineP."Order Line No.";
+        PurchaseLineP."Org Special Order Sales No." := PurchaseLineP."Special Order Sales No.";
+        PurchaseLineP."Org Special Order Sales LineNo" := PurchaseLineP."Special Order Sales Line No.";
+      END;
+
+      PurchaseLineP.MODIFY;
+    END;
+
+    PROCEDURE ArchiveOrder@1000000001(VAR PurchaseHeaderP@1000000001 : Record 38);
+    VAR
+      ArchiveManagementL@1000000000 : Codeunit 5063;
+      DoArchive@1000000002 : Boolean;
+      ReceivingNoBackupL@1000000003 : Code[20];
+      ArchivedPurchaseHeaderL@1000000004 : Record 5109;
+      PurchaseHeaderNoL@1000000005 : Code[20];
+    BEGIN
+      DoArchive := TRUE;
+      PurchaseLine.RESET;
+      PurchaseLine.SETRANGE("Document Type", PurchaseHeader."Document Type");
+      PurchaseLine.SETRANGE("Document No.", PurchaseHeader."No.");
+      IF PurchaseLine.FINDFIRST THEN
+      BEGIN
+        REPEAT
+
+          CASE CleanupLogistics."Issue Type" OF
+            CleanupLogistics."Issue Type"::"Old shipped SO",
+            CleanupLogistics."Issue Type"::"Open Old(until 30.06.2013)",
+            CleanupLogistics."Issue Type"::"Broken Link":
+            BEGIN
+              DoArchive := DoArchive AND TRUE; //ARCHIVE ALWAYS
+            END;
+            CleanupLogistics."Issue Type"::"Cancelled SO":
+            BEGIN
+              //ARCHIVE IF ALL LINES ARE CANCELED AND DONT HAVE UNINVOICED RECEIVED QTY
+              IF PurchaseLine."Order Status Code" = '60' THEN DoArchive := DoArchive AND TRUE;
+              IF PurchaseLine.Quantity <> 0 THEN DoArchive := DoArchive AND FALSE;
+            END;
+          END;
+
+          //Order can not be archived if received not invoiced quantity is not equal to 0
+          IF PurchaseLine."Qty. Rcd. Not Invoiced" <> 0 THEN DoArchive := FALSE;
+
+        UNTIL PurchaseLine.NEXT = 0;
+
+        //IF IT'S SAFE TO ARCHIVE WHOLE ORDER, ARCHIVE IT
+        IF DoArchive THEN
+        BEGIN
+          IF PurchaseLine.FINDFIRST THEN
+          BEGIN
+            REPEAT
+              BackupLinks(PurchaseLine, TRUE);
+            UNTIL PurchaseLine.NEXT = 0;
+          END;
+
+          //ARCHIVE PURCHASE DOCUMENT WITHO NO LOG
+          ReceivingNoBackupL := PurchaseHeaderP."Receiving No.";
+          PurchaseHeaderNoL := PurchaseHeader."No.";
+          PurchaseHeaderP."Receiving No." := '';
+          PurchaseHeaderP.DELETE(TRUE);
+          ArchivedPurchaseHeaderL.RESET;
+          ArchivedPurchaseHeaderL.SETRANGE("Document Type", ArchivedPurchaseHeaderL."Document Type"::Order);
+          ArchivedPurchaseHeaderL.SETRANGE("No.", PurchaseHeaderNoL);
+          IF ArchivedPurchaseHeaderL.FINDFIRST THEN
+          BEGIN
+            ArchivedPurchaseHeaderL."Receiving No." := ReceivingNoBackupL;
+            ArchivedPurchaseHeaderL.MODIFY;
+          END;
+        END;
+
+      END;
+    END;
+
+    PROCEDURE CancelPurchaseLine@1000000003(VAR PurchaseHeaderP@1000000000 : Record 38;DontCheckSOStatusP@1000000012 : Boolean);
+    VAR
+      DocumentNo@1000000001 : Code[20];
+      LineNo@1000000002 : Integer;
+      OrderNo@1000000010 : Code[20];
+      OrderLineNo@1000000009 : Integer;
+      OrgSpecialOrderSalesNo@1000000008 : Code[20];
+      OrgSpecialOrderSalesLineNo@1000000007 : Integer;
+      OrgSalesOrderNo@1000000006 : Code[20];
+      OrgSalesOrderLineNo@1000000005 : Integer;
+      SalesOrderNo@1000000004 : Code[20];
+      SalesOrderLineNo@1000000003 : Integer;
+      DropShipment@1000000011 : Boolean;
+    BEGIN
+      CanBeReleased := FALSE;
+
+      PurchaseLine.RESET;
+      PurchaseLine.SETRANGE("Document Type", PurchaseHeaderP."Document Type");
+      PurchaseLine.SETRANGE("Document No.", PurchaseHeaderP."No.");
+      IF PurchaseLine.FINDFIRST THEN
+      BEGIN
+        REPEAT
+
+          //BACKUP LINKS
+          OrderNo := PurchaseLine."Order No.";
+          OrderLineNo := PurchaseLine."Order Line No.";
+          OrgSpecialOrderSalesNo := PurchaseLine."Org Special Order Sales No.";
+          OrgSpecialOrderSalesLineNo := PurchaseLine."Org Special Order Sales LineNo";
+          OrgSalesOrderNo := PurchaseLine."Org Sales Order No.";
+          OrgSalesOrderLineNo := PurchaseLine."Org Sales Order LineNo.";
+          SalesOrderNo := PurchaseLine."Sales Order No.";
+          SalesOrderLineNo := PurchaseLine."Sales Order Line No.";
+
+          //CHECK IF SALES LINE EXISTS IN UNARCHIVED AND IS IT SAVE TO ARCHIVE WHOLE ORDER
+          IF PurchaseLine."Org Sales Order No." <> '' THEN DocumentNo := PurchaseLine."Org Sales Order No.";
+          IF PurchaseLine."Org Special Order Sales No." <> '' THEN DocumentNo := PurchaseLine."Org Special Order Sales No.";
+
+          IF PurchaseLine."Org Special Order Sales LineNo" <> 0 THEN LineNo := PurchaseLine."Org Special Order Sales LineNo";
+          IF PurchaseLine."Org Sales Order LineNo." <> 0 THEN LineNo := PurchaseLine."Org Sales Order LineNo.";
+
+          PurchaseLine."Order No." := '';
+          PurchaseLine."Order Line No." := 0;
+          PurchaseLine."Org Special Order Sales No." := '';
+          PurchaseLine."Org Special Order Sales LineNo"  := 0;
+          PurchaseLine."Org Sales Order No." := '';
+          PurchaseLine."Org Sales Order LineNo." := 0;
+          PurchaseLine."Sales Order No." := '';
+          PurchaseLine."Sales Order Line No."  := 0;
+
+          DropShipment := PurchaseLine."Drop Shipment";
+          PurchaseLine."Drop Shipment" := FALSE;
+
+          SalesLine.RESET;
+          SalesLine.SETRANGE("Document Type", SalesLine."Document Type"::Order);
+          SalesLine.SETRANGE("Document No.", DocumentNo);
+          SalesLine.SETRANGE("Line No.", LineNo);
+          IF SalesLine.FINDFIRST THEN
+          BEGIN
+            //H0792++++++++++++++++++++++++++
+            IF DontCheckSOStatusP OR ((SalesLine."Line Status" = 'CANCELED') AND (PurchaseLine."Qty. Rcd. Not Invoiced" = 0))
+            THEN BEGIN
+            //H0792--------------------------
+              //HARDCODED BECAUSE WE DONT WANT TO SOIL SOME SETUP TABLE
+              PurchaseLine.VALIDATE("Order Status Code", '60');
+              PurchaseLine.VALIDATE(Quantity, PurchaseLine."Quantity Received");
+              PurchaseLine.MODIFY;
+            //H0792++++++++++++++++++++++++++
+            END;
+            //H0792--------------------------
+          END
+          ELSE
+          BEGIN
+
+            SalesArchiveLine.RESET;
+            SalesArchiveLine.SETRANGE("Document Type", SalesArchiveLine."Document Type"::Order);
+            SalesArchiveLine.SETRANGE("Document No.", DocumentNo);
+            SalesArchiveLine.SETRANGE("Line No.", LineNo);
+            IF SalesArchiveLine.FINDLAST THEN
+            BEGIN
+              IF DontCheckSOStatusP OR
+              ((SalesArchiveLine."Line Status" = 'CANCELED') AND (PurchaseLine."Qty. Rcd. Not Invoiced" = 0)) THEN
+              BEGIN
+                //HARDCODED BECAUSE WE DONT WANT TO SOIL SOME SETUP TABLE
+                PurchaseLine.VALIDATE("Order Status Code", '60');
+                PurchaseLine.VALIDATE(Quantity, PurchaseLine."Quantity Received");
+                PurchaseLine.MODIFY;
+              END;
+            END
+          END;
+          PurchaseLine."Drop Shipment" := DropShipment;
+          //RESTORE LINKS
+          PurchaseLine."Order No." := OrderNo;
+          PurchaseLine."Order Line No." := OrderLineNo;
+          PurchaseLine."Org Special Order Sales No." := OrgSpecialOrderSalesNo;
+          PurchaseLine."Org Special Order Sales LineNo" := OrgSpecialOrderSalesLineNo;
+          PurchaseLine."Org Sales Order No." := OrgSalesOrderNo;
+          PurchaseLine."Org Sales Order LineNo." := OrgSalesOrderLineNo;
+          PurchaseLine."Sales Order No." := SalesOrderNo;
+          PurchaseLine."Sales Order Line No." := SalesOrderLineNo;
+          PurchaseLine.MODIFY;
+
+          IF PurchaseLine.Quantity > 0 THEN
+            CanBeReleased := TRUE;
+
+        UNTIL PurchaseLine.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE FixBrokenLinks@1000000004(VAR PurchaseHeaderP@1000000000 : Record 38);
+    BEGIN
+      //DISCARDED
+      PurchaseLine.RESET;
+      PurchaseLine.SETRANGE("Document Type", PurchaseHeaderP."Document Type");
+      PurchaseLine.SETRANGE("Document No.", PurchaseHeaderP."No.");
+      IF PurchaseLine.FINDFIRST THEN
+      BEGIN
+        REPEAT
+          IF (PurchaseLine."Org Sales Order No."  = '') AND
+          (PurchaseLine."Org Special Order Sales No." = '') THEN
+          BEGIN
+            BackupLinks(PurchaseLine, FALSE);
+          END;
+        UNTIL PurchaseLine.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE FixQuantity@1000000005(VAR PurchaseHeaderP@1000000000 : Record 38);
+    BEGIN
+      PurchaseLine.RESET;
+      PurchaseLine.SETRANGE("Document Type", PurchaseHeaderP."Document Type");
+      PurchaseLine.SETRANGE("Document No.", PurchaseHeaderP."No.");
+      IF PurchaseLine.FINDFIRST THEN
+      BEGIN
+        REPEAT
+          IF (PurchaseLine."Outstanding Quantity"  < 0) AND (PurchaseLine."Quantity Received" = 0)
+          AND (PurchaseLine."Quantity Invoiced" = 0) THEN
+          BEGIN
+            PurchaseLine."Outstanding Quantity" := PurchaseLine.Quantity;
+          END;
+        UNTIL PurchaseLine.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE PerformManualRelease@1000000002(PurchHeader@1000000000 : Record 38);
+    VAR
+      ApprovalEntry@1000000003 : Record 454;
+      ApprovalManagement@1000000002 : Codeunit 439;
+      ApprovedOnly@1000000001 : Boolean;
+    BEGIN
+      WITH PurchHeader DO BEGIN
+        IF ApprovalManagement.CheckApprPurchaseDocument(PurchHeader) THEN BEGIN
+          CASE Status OF
+            Status::"Pending Approval":
+              ERROR(Text002);
+            Status::Released,Status::"Pending Prepayment":
+              CODEUNIT.RUN(415,PurchHeader);
+            Status::Open:
+              BEGIN
+                ApprovedOnly := TRUE;
+                ApprovalEntry.SETCURRENTKEY("Table ID","Document Type","Document No.","Sequence No.");
+                ApprovalEntry.SETRANGE("Table ID",DATABASE::"Purchase Header");
+                ApprovalEntry.SETRANGE("Document Type","Document Type");
+                ApprovalEntry.SETRANGE("Document No.","No.");
+                ApprovalEntry.SETFILTER(Status,'<>%1&<>%2',ApprovalEntry.Status::Rejected,ApprovalEntry.Status::Canceled);
+                IF ApprovalEntry.FIND('-') THEN BEGIN
+                  REPEAT
+                    IF (ApprovedOnly = TRUE) AND (ApprovalEntry.Status <> ApprovalEntry.Status::Approved) THEN
+                      ApprovedOnly := FALSE;
+                  UNTIL ApprovalEntry.NEXT = 0;
+
+                  IF ApprovedOnly = TRUE AND TestApprovalLimit(PurchHeader) THEN
+                    CODEUNIT.RUN(415,PurchHeader)
+                  ELSE
+                    ERROR(Text002);
+                END ELSE
+                  ERROR(Text002);
+              END;
+          END;
+        END ELSE
+          ReleasePurchDoc.RUN(PurchHeader);
+      END;
+    END;
+
+    PROCEDURE TestApprovalLimit@4(PurchaseHeader@1000 : Record 38) : Boolean;
+    VAR
+      UserSetup@1004 : Record 91;
+      AppManagement@1001 : Codeunit 439;
+      AppAmount@1002 : Decimal;
+      AppAmountLCY@1003 : Decimal;
+    BEGIN
+      AppManagement.CalcPurchaseDocAmount(PurchaseHeader,AppAmount,AppAmountLCY);
+      UserSetup.GET(USERID);
+      IF UserSetup."Unlimited Purchase Approval" THEN
+        EXIT(TRUE)
+      ELSE BEGIN
+        IF AppAmountLCY > UserSetup."Purchase Amount Approval Limit" THEN
+          ERROR(Text002)
+        ELSE
+          EXIT(TRUE);
+      END;
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date       Shortcut   Description
+      _____________________________________________
+
+      *** Module: YEC PO CleanUp ***
+      H0696       28.11.13   DMA        Initial versoin of codeunit for DS purchase orders cleanup.
+      H0766       11.12.13   DMA        Skip mail sending on document release
+      H0792       06.01.14   DMA        Bugfix for Open Old orders
+    }
+    END.
+  }
+}
+

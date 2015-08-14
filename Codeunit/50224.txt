@@ -1,0 +1,865 @@
+OBJECT Codeunit 50224 Online Inventory Adjustment
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02.09.13;
+    Time=14:59:54;
+    Version List=HME0513;
+  }
+  PROPERTIES
+  {
+    Subtype=Test;
+    OnRun=BEGIN
+            IsInitialized := FALSE;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      GLSetup@1001 : Record 98;
+      InventorySetup@1013 : Record 313;
+      Assert@1011 : Codeunit 50200;
+      ErrorNoPurchLine@1002 : TextConst 'ENU=No purchase line has been found for item %1.';
+      ErrorNoEntryFound@1009 : TextConst 'ENU=No value entry found for item %1 of type %2.';
+      LibrarySCM@1007 : Codeunit 50210;
+      IsInitialized@1000 : Boolean;
+      ErrorValueEntries@1024 : TextConst 'ENU=Expected %1 entries of ILE Type: %2, Entry Type: %3, Document Type: %4 for item %5.';
+      ErrorValueEntry@1003 : TextConst 'ENU="Value mismatch in value entry %1, field %2. "';
+      ErrorZeroQty@1005 : TextConst 'ENU=Transfer Qty should not be 0.';
+
+    [Normal]
+    LOCAL PROCEDURE Initialize@1102601000();
+    VAR
+      BackupMgt@1102601000 : Codeunit 50201;
+      LibraryFinance@1102601001 : Codeunit 50207;
+    BEGIN
+      IF IsInitialized THEN
+        EXIT;
+
+      BackupMgt.DefaultFixture;
+
+      LibraryFinance.InitializeGeneralPostingSetup;
+      LibraryFinance.InitializeVATPostingSetup;
+
+      IsInitialized := TRUE;
+      COMMIT;
+    END;
+
+    [Test]
+    [HandlerFunctions(ConfirmHandler,MessageHandler)]
+    PROCEDURE OnlineAdjStandard@1102601005();
+    VAR
+      Item@1002 : Record 27;
+      PurchInvHeader@1001 : Record 122;
+      PurchaseHeader@1003 : Record 38;
+      TempItemJournalLine@1000 : TEMPORARY Record 83;
+      PurchCrMemoHdr@1005 : Record 124;
+      ValueEntry@1006 : Record 5802;
+      PurchaseLine@1007 : Record 39;
+    BEGIN
+      // 1. Setup demo data.
+      // 2. Setup app parameters.
+      // 3. Create item with costing method Standard.
+      // 4. Create purchase order.
+      // 5. Invoice purchase order.
+      // 6. Post revaluation journal for item.
+      // 7. Create purchase return order.
+      // 8. Post purchase return order as invoiced.
+      // 9. Validate value entries.
+
+      // Setup: Steps 1-7.
+      Initialize;
+
+      SetupParameters(InventorySetup."Automatic Cost Adjustment"::Week,InventorySetup."Average Cost Calc. Type"::Item);
+
+      CreateItem(Item,Item."Costing Method"::Standard,Item."Replenishment System"::Purchase);
+      CreateSingleLinePurchaseOrder(PurchaseHeader,PurchaseLine,Item."No.",PurchaseLine.Type::Item);
+
+      LibrarySCM.CreateInvtPostingSetup(PurchaseLine."Location Code",Item."No.");
+
+      PostPurchaseOrder(PurchInvHeader,PurchaseHeader);
+
+      PostItemRevaluationJournal(TempItemJournalLine,Item,1);
+
+      CreatePurchaseReturnOrder(PurchaseHeader,PurchInvHeader);
+
+      // Execute: Invoice purchase return order.
+      PostPurchaseReturnOrder(PurchCrMemoHdr,PurchaseHeader);
+
+      // Validate: Value entries.
+      CheckPurchInvEntries(Item."No.",PurchInvHeader."No.");
+      CheckRevalEntries(TempItemJournalLine,Item."No.");
+      CheckOutboundValueEntries(
+        TempItemJournalLine,
+        ValueEntry."Item Ledger Entry Type"::Purchase,
+        ValueEntry."Document Type"::"Purchase Credit Memo",
+        ValueEntry."Entry Type"::"Direct Cost",
+        PurchCrMemoHdr."No.",
+        Item."No.");
+
+      Assert.AreEqual(
+        GetNoOfEntries(
+          Item."No.",
+          ValueEntry."Item Ledger Entry Type"::Purchase,
+          ValueEntry."Entry Type"::"Direct Cost",
+          ValueEntry."Document Type"::"Purchase Invoice"),
+        1,STRSUBSTNO(ErrorValueEntries,1,'Purchase','Direct Cost','Purchase Invoice',Item."No."));
+
+      Assert.AreEqual(
+        GetNoOfEntries(
+          Item."No.",
+          ValueEntry."Item Ledger Entry Type"::Purchase,
+          ValueEntry."Entry Type"::Revaluation,
+          ValueEntry."Document Type"::" "),
+        1,STRSUBSTNO(ErrorValueEntries,1,'Purchase','Revaluation','',Item."No."));
+
+      Assert.AreEqual(
+        GetNoOfEntries(
+          Item."No.",
+          ValueEntry."Item Ledger Entry Type"::Purchase,
+          ValueEntry."Entry Type"::"Direct Cost",
+          ValueEntry."Document Type"::"Purchase Credit Memo"),
+        2,STRSUBSTNO(ErrorValueEntries,2,'Purchase','Direct Cost','Purchase Credit Memo',Item."No."));
+    END;
+
+    [Test]
+    [HandlerFunctions(ConfirmHandler,MessageHandler)]
+    PROCEDURE OnlineAdjAverage@1();
+    VAR
+      Item@1002 : Record 27;
+      TempPurchInvHeader@1001 : TEMPORARY Record 122;
+      PurchaseHeader@1003 : Record 38;
+      TempItemJournalLine@1000 : TEMPORARY Record 83;
+      SalesHeader@1004 : Record 36;
+      PurchaseLine@1006 : Record 39;
+      PurchInvHeader@1007 : Record 122;
+      SalesInvoiceHeader@1008 : Record 112;
+      ValueEntry@1009 : Record 5802;
+    BEGIN
+      // 1. Setup demo data.
+      // 2. Setup app parameters.
+      // 3. Create item with costing method Average.
+      // 4. Create 2 purchase orders with 1 line for item.
+      // 5. Invoice purchase orders.
+      // 6. Create sales order for item.
+      // 7. Invoice sales order.
+      // 8. Revaluate item.
+      // 9. Verify value entries.
+
+      // Setup: Steps 1-7.
+      Initialize;
+
+      SetupParameters(InventorySetup."Automatic Cost Adjustment"::Week,
+        InventorySetup."Average Cost Calc. Type"::"Item & Location & Variant");
+
+      CreateItem(Item,Item."Costing Method"::Average,Item."Replenishment System"::Purchase);
+
+      CreateSingleLinePurchaseOrder(PurchaseHeader,PurchaseLine,Item."No.",PurchaseLine.Type::Item);
+      PostPurchaseOrder(PurchInvHeader,PurchaseHeader);
+      TempPurchInvHeader := PurchInvHeader;
+      TempPurchInvHeader.INSERT;
+
+      CreateSingleLinePurchaseOrder(PurchaseHeader,PurchaseLine,Item."No.",PurchaseLine.Type::Item);
+      PurchaseLine.SETRANGE("Document Type",PurchaseHeader."Document Type"::Order);
+      PurchaseLine.SETRANGE("Document No.",PurchaseHeader."No.");
+      PurchaseLine.SETRANGE("No.",Item."No.");
+      PurchaseLine.FINDFIRST;
+
+      PurchaseLine.VALIDATE("Direct Unit Cost",0);
+      PurchaseLine.MODIFY(TRUE);
+      PostPurchaseOrder(PurchInvHeader,PurchaseHeader);
+      TempPurchInvHeader := PurchInvHeader;
+      TempPurchInvHeader.INSERT;
+
+      CreateSingleLineSalesOrder(SalesHeader,Item);
+      PostSalesOrder(SalesInvoiceHeader,SalesHeader);
+
+      // Execute: Revaluate item.
+      PostItemRevaluationJournal(TempItemJournalLine,Item,1);
+
+      // Validate: Value entries.
+      TempPurchInvHeader.FINDSET;
+      REPEAT
+        CheckPurchInvEntries(Item."No.",TempPurchInvHeader."No.");
+      UNTIL TempPurchInvHeader.NEXT = 0;
+
+      CheckRevalEntries(TempItemJournalLine,Item."No.");
+      CheckOutboundValueEntries(
+        TempItemJournalLine,
+        ValueEntry."Item Ledger Entry Type"::Sale,
+        ValueEntry."Document Type"::"Sales Invoice",
+        ValueEntry."Entry Type"::"Direct Cost",
+        SalesInvoiceHeader."No.",
+        Item."No.");
+
+      Assert.AreEqual(
+        GetNoOfEntries(
+          Item."No.",
+          ValueEntry."Item Ledger Entry Type"::Purchase,
+          ValueEntry."Entry Type"::"Direct Cost",
+          ValueEntry."Document Type"::"Purchase Invoice"),
+        2,STRSUBSTNO(ErrorValueEntries,2,'Purchase','Direct Cost','Purchase Invoice',Item."No."));
+
+      Assert.AreEqual(
+        GetNoOfEntries(
+          Item."No.",
+          ValueEntry."Item Ledger Entry Type"::Purchase,
+          ValueEntry."Entry Type"::Revaluation,
+          ValueEntry."Document Type"::" "),
+        1,STRSUBSTNO(ErrorValueEntries,2,'Purchase','Revaluation','',Item."No."));
+
+      Assert.AreEqual(
+        GetNoOfEntries(
+          Item."No.",
+          ValueEntry."Item Ledger Entry Type"::Purchase,
+          ValueEntry."Entry Type"::"Direct Cost",
+          ValueEntry."Document Type"::"Purchase Credit Memo"),
+        0,STRSUBSTNO(ErrorValueEntries,2,'Purchase','Direct Cost','Purchase Credit Memo',Item."No."));
+
+      Assert.AreEqual(
+        GetNoOfEntries(
+          Item."No.",
+          ValueEntry."Item Ledger Entry Type"::Sale,
+          ValueEntry."Entry Type"::"Direct Cost",
+          ValueEntry."Document Type"::"Sales Invoice"),
+        1,STRSUBSTNO(ErrorValueEntries,2,'Sale','Direct Cost','Sales Invoice',Item."No."));
+    END;
+
+    [Test]
+    [HandlerFunctions(ConfirmHandler,MessageHandler)]
+    PROCEDURE OnlineAdjTransfers@15();
+    VAR
+      Item@1000 : Record 27;
+      PurchaseHeader@1003 : Record 38;
+      PurchInvHeader@1004 : Record 122;
+      PurchaseLine@1012 : Record 39;
+      ItemCharge@1008 : Record 5800;
+      ValueEntry@1010 : Record 5802;
+      PurchInvHeader1@1011 : Record 122;
+      TransferHeader@1001 : Record 5740;
+      Location@1002 : Record 14;
+      Location1@1005 : Record 14;
+      Location2@1006 : Record 14;
+      TransferLine@1009 : Record 5741;
+    BEGIN
+      // 1. Setup demo data. Add 2 simple locations.
+      // 2. Setup app parameters.
+      // 3. Create item with costing method FIFO.
+      // 4. Create and post purchase order for FIFO item, for location A.
+      // 5. Create and post a transfer order from location A to location B.
+      // 6. Add an item charge to the purchase order and invoice it.
+      // 7. Adjust cost-item entries.
+      // 8. Validate unit cost and value entries for item.
+      // 9. Validate item ledger entries for item.
+
+      // Setup: Steps 1-5.
+      Initialize;
+
+      SetupParameters(InventorySetup."Automatic Cost Adjustment"::Never,InventorySetup."Average Cost Calc. Type"::Item);
+
+      LibrarySCM.CreateLocation(Location);
+      LibrarySCM.CreateLocation(Location1);
+      LibrarySCM.CreateLocation(Location2);
+      Location2.VALIDATE("Use As In-Transit",TRUE);
+      Location2.MODIFY(TRUE);
+
+      CreateItem(Item,Item."Costing Method"::FIFO,Item."Replenishment System"::Purchase);
+      CreateSingleLinePurchaseOrder(PurchaseHeader,PurchaseLine,Item."No.",PurchaseLine.Type::Item);
+      LibrarySCM.CreateInvtPostingSetup(Location.Code,PurchaseLine."No.");
+      LibrarySCM.CreateInvtPostingSetup(Location1.Code,PurchaseLine."No.");
+      LibrarySCM.CreateInvtPostingSetup(Location2.Code,PurchaseLine."No.");
+
+      PurchaseLine.VALIDATE("Location Code",Location.Code);
+      PurchaseLine.MODIFY(TRUE);
+
+      PostPurchaseOrder(PurchInvHeader,PurchaseHeader);
+
+      CreateSingleLineTransferOrder(TransferHeader,TransferLine,Location,Location1,Location2,Item);
+
+      LibrarySCM.PostTransferHeader(TransferHeader,TRUE,TRUE);
+
+      // Execute: Invoice item charge and adjust cost item entries.
+      ItemCharge.FINDFIRST;
+      CreateSingleLinePurchaseOrder(PurchaseHeader,PurchaseLine,ItemCharge."No.",PurchaseLine.Type::"Charge (Item)");
+      AssignItemCharges(PurchaseHeader,Item."No.");
+      PostPurchaseOrder(PurchInvHeader1,PurchaseHeader);
+      LibrarySCM.AdjustCostItemEntries(Item."No.",'');
+
+      // Validate: Value entries and item unit cost.
+      CheckTransferValueEntries(
+        PurchInvHeader,
+        PurchInvHeader1,
+        ValueEntry."Document Type"::"Transfer Shipment",
+        Item."No.",
+        Location.Code,
+        TransferLine.Quantity,
+        -1);
+      CheckTransferValueEntries(
+        PurchInvHeader,PurchInvHeader1,ValueEntry."Document Type"::"Transfer Shipment",
+        Item."No.",Location2.Code,TransferLine.Quantity,1);
+      CheckTransferValueEntries(
+        PurchInvHeader,
+        PurchInvHeader1,
+        ValueEntry."Document Type"::"Transfer Receipt",
+        Item."No.",
+        Location2.Code,
+        TransferLine.Quantity,
+        -1);
+      CheckTransferValueEntries(
+        PurchInvHeader,
+        PurchInvHeader1,
+        ValueEntry."Document Type"::"Transfer Receipt",
+        Item."No.",
+        Location1.Code,
+        TransferLine.Quantity,
+        1);
+
+      // Validate: Number of entries.
+      Assert.AreEqual(
+        GetNoOfEntries(
+          Item."No.",
+          ValueEntry."Item Ledger Entry Type"::Transfer,
+          ValueEntry."Entry Type"::"Direct Cost",
+          ValueEntry."Document Type"::"Transfer Shipment"),4,
+        STRSUBSTNO(ErrorValueEntries,4,'Transfer','Direct Cost','Transfer Shipment',Item."No."));
+      Assert.AreEqual(
+        GetNoOfEntries(
+          Item."No.",
+          ValueEntry."Item Ledger Entry Type"::Transfer,
+          ValueEntry."Entry Type"::"Direct Cost",
+          ValueEntry."Document Type"::"Transfer Receipt"),4,
+        STRSUBSTNO(ErrorValueEntries,4,'Transfer','Direct Cost','Transfer Receipt',Item."No."));
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE SetupParameters@1102(AutCostAdjustment@1001 : Option;CalcType@1002 : Option);
+    VAR
+      PurchasesPayablesSetup@1003 : Record 312;
+      SalesReceivablesSetup@1004 : Record 311;
+      InventorySetup@1005 : Record 313;
+    BEGIN
+      ExecuteUIHandlers;
+
+      // Setup Sales and Purchases.
+      LibrarySCM.UpdateSalesSetup(SalesReceivablesSetup,SalesReceivablesSetup."Credit Warnings"::"No Warning");
+      LibrarySCM.UpdatePurchaseSetup(PurchasesPayablesSetup,FALSE);
+
+      // Setup Inventory.
+      LibrarySCM.UpdateInventorySetup(
+        InventorySetup,TRUE,TRUE,AutCostAdjustment,CalcType,InventorySetup."Average Cost Period"::Day)
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateItem@1102601007(VAR Item@1001 : Record 27;CostingMethod@1000 : Option;ReplenishmentMethod@1002 : Option) : Code[20];
+    VAR
+      UnitCost@1003 : Decimal;
+    BEGIN
+      // Create item.
+      LibrarySCM.CreateItem(Item);
+
+      // Set desired costing method and unit cost.
+      UnitCost := RANDOM(100);
+      Item.VALIDATE("Costing Method",CostingMethod);
+      Item.VALIDATE("Replenishment System",ReplenishmentMethod);
+      Item.VALIDATE("Unit Cost",UnitCost);
+      Item.VALIDATE("Last Direct Cost",Item."Unit Cost");
+
+      IF CostingMethod = Item."Costing Method"::Standard THEN
+        Item.VALIDATE("Standard Cost",UnitCost);
+
+      Item.MODIFY(TRUE);
+
+      EXIT(Item."No.");
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateSingleLinePurchaseOrder@1102601008(VAR PurchaseHeader@1000 : Record 38;VAR PurchaseLine@1102601000 : Record 39;ItemNo@1003 : Code[20];LineType@1002 : Option) : Code[20];
+    VAR
+      Vendor@1001 : Record 23;
+    BEGIN
+      Vendor.FINDFIRST;
+      Vendor.VALIDATE("Purchaser Code",'');
+      Vendor.MODIFY(TRUE);
+
+      // Create Purchase Header with blank currency and location.
+      CLEAR(PurchaseHeader);
+      LibrarySCM.CreatePurchaseHeader(PurchaseHeader,PurchaseHeader."Document Type"::Order,Vendor."No.");
+      PurchaseHeader.VALIDATE("Order Date",WORKDATE);
+      PurchaseHeader.VALIDATE("Location Code",'');
+      PurchaseHeader.VALIDATE("Currency Code",'');
+      PurchaseHeader.MODIFY(TRUE);
+
+      CreatePurchaseLine(PurchaseLine,PurchaseHeader,ItemNo,LineType);
+
+      EXIT(PurchaseHeader."No.");
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreatePurchaseLine@1102601019(VAR PurchaseLine@1102601000 : Record 39;PurchaseHeader@1004 : Record 38;ItemNo@1000 : Code[20];LineType@1002 : Option);
+    VAR
+      Item@1003 : Record 27;
+    BEGIN
+      LibrarySCM.CreatePurchaseLine(PurchaseHeader,PurchaseLine,LineType,ItemNo,RANDOM(10));
+
+      // Use random direct unit cost for non-standard costed items
+      IF LineType = PurchaseLine.Type::Item THEN BEGIN
+        Item.GET(ItemNo);
+        IF  Item."Costing Method" <> Item."Costing Method"::Standard THEN
+          PurchaseLine.VALIDATE("Direct Unit Cost",RANDOM(100));
+      END
+      ELSE
+        PurchaseLine.VALIDATE("Direct Unit Cost",RANDOM(100));
+
+      PurchaseLine.MODIFY(TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreatePurchaseReturnOrder@1102601010(VAR PurchaseHeader@1002 : Record 38;PurchInvHeader@1000 : Record 122) : Code[20];
+    VAR
+      PurchInvLine@1001 : Record 123;
+      PurchaseLine@1003 : Record 39;
+    BEGIN
+      LibrarySCM.CreatePurchaseHeader(PurchaseHeader,PurchaseHeader."Document Type"::"Return Order",
+        PurchInvHeader."Buy-from Vendor No.");
+
+      PurchaseHeader.VALIDATE("Buy-from Vendor No.",PurchInvHeader."Buy-from Vendor No.");
+      PurchaseHeader.VALIDATE("Location Code",PurchInvHeader."Location Code");
+      PurchaseHeader.VALIDATE("Currency Code",PurchInvHeader."Currency Code");
+      PurchaseHeader.MODIFY(TRUE);
+
+      PurchInvLine.SETRANGE("Document No.",PurchInvHeader."No.");
+      IF PurchInvLine.FINDSET THEN
+        REPEAT
+          PurchaseLine.INIT;
+          PurchaseLine.VALIDATE("Document Type",PurchaseHeader."Document Type");
+          PurchaseLine.VALIDATE("Document No.",PurchaseHeader."No.");
+          PurchaseLine.VALIDATE("Line No.",PurchInvLine."Line No.");
+          PurchaseLine.INSERT(TRUE);
+
+          PurchaseLine.VALIDATE(Type,PurchaseLine.Type::Item);
+          PurchaseLine.VALIDATE("No.",PurchInvLine."No.");
+          PurchaseLine.VALIDATE(Quantity,PurchInvLine.Quantity);
+          PurchaseLine.VALIDATE("Location Code",PurchInvLine."Location Code");
+          PurchaseLine.MODIFY(TRUE);
+          PurchInvLine.NEXT;
+        UNTIL PurchInvLine.NEXT = 0;
+
+      EXIT(PurchaseHeader."No.");
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateSingleLineSalesOrder@9(VAR SalesHeader@1001 : Record 36;Item@1000 : Record 27) : Code[20];
+    VAR
+      Customer@1002 : Record 18;
+      SalesLine@1003 : Record 37;
+    BEGIN
+      Customer.FINDFIRST;
+      Customer.VALIDATE("Salesperson Code",'');
+      Customer.MODIFY(TRUE);
+
+      // Create Sales Header with blank currency and location.
+      LibrarySCM.CreateSalesHeader(SalesHeader,SalesHeader."Document Type"::Order,Customer."No.");
+      SalesHeader.VALIDATE("Order Date",WORKDATE + RANDOM(30));
+      SalesHeader.VALIDATE("Location Code",'');
+      SalesHeader.VALIDATE("Currency Code",'');
+      SalesHeader.MODIFY(TRUE);
+
+      Item.CALCFIELDS(Inventory);
+      LibrarySCM.CreateSalesLine(SalesHeader,SalesLine,SalesLine.Type::Item,Item."No.",RANDOM(ROUND(Item.Inventory)));
+
+      EXIT(SalesHeader."No.");
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateSingleLineTransferOrder@20(VAR TransferHeader@1000 : Record 5740;VAR TransferLine@1006 : Record 5741;Location@1001 : Record 14;Location1@1002 : Record 14;Location2@1005 : Record 14;Item@1003 : Record 27);
+    BEGIN
+      LibrarySCM.CreateTransferHeader(TransferHeader,Location.Code,Location1.Code,Location2.Code);
+
+      Item.CALCFIELDS(Inventory);
+      LibrarySCM.CreateTransferLine(TransferHeader,TransferLine,Item."No.",RANDOM(Item.Inventory));
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE PostPurchaseOrder@1102601009(VAR PurchInvHeader@1002 : Record 122;PurchaseHeader@1000 : Record 38) : Code[20];
+    BEGIN
+      PurchaseHeader.VALIDATE("Vendor Invoice No.",PurchaseHeader."No.");
+      PurchaseHeader.MODIFY(TRUE);
+
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,TRUE,TRUE);
+
+      // Return Invoice.
+      PurchInvHeader.SETRANGE("Order No.",PurchaseHeader."No.");
+      PurchInvHeader.FINDFIRST;
+
+      EXIT(PurchInvHeader."No.");
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE PostPurchaseReturnOrder@1102601011(VAR PurchCrMemoHdr@1002 : Record 124;PurchaseHeader@1000 : Record 38) : Code[20];
+    BEGIN
+      PurchaseHeader.VALIDATE("Vendor Cr. Memo No.",PurchaseHeader."No.");
+
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,TRUE,TRUE);
+
+      // Return Credit Memo number.
+      PurchCrMemoHdr.SETRANGE("Return Order No.",PurchaseHeader."No.");
+      PurchCrMemoHdr.FINDFIRST;
+
+      EXIT(PurchCrMemoHdr."No.");
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE PostSalesOrder@13(VAR SalesInvoiceHeader@1005 : Record 112;SalesHeader@1000 : Record 36) : Code[20];
+    BEGIN
+      LibrarySCM.PostSalesHeader(SalesHeader,TRUE,TRUE);
+
+      // Return Invoice Number.
+      SalesInvoiceHeader.SETRANGE("Order No.",SalesHeader."No.");
+      SalesInvoiceHeader.FINDFIRST;
+
+      EXIT(SalesInvoiceHeader."No.");
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE PostItemRevaluationJournal@1102601020(VAR TempItemJournalLine@1000 : Record 83;Item@1003 : Record 27;RevalDirection@1006 : Integer);
+    VAR
+      ItemJournalTemplate@1102601000 : Record 82;
+      ItemJournalBatch@1005 : Record 233;
+      ItemJournalLine@1004 : Record 83;
+      CalculatedValue@1002 : Decimal;
+    BEGIN
+      LibrarySCM.CreateItemJournalLine(ItemJournalLine,
+        LibrarySCM.SelectItemJournalTemplate(ItemJournalTemplate.Type::Revaluation),FORMAT(RANDOM(10000)),
+        ItemJournalBatch."Template Type"::Revaluation,Item."No.",0);
+
+      ItemJournalBatch.GET(ItemJournalLine."Journal Template Name",ItemJournalLine."Journal Batch Name");
+      ItemJournalBatch.VALIDATE("No. Series",'');
+      ItemJournalBatch.MODIFY(TRUE);
+
+      // Calculate inventory value for selected item.
+      Item.SETRANGE("No.",Item."No.");
+      LibrarySCM.CreateRevaluationJnlLines(Item,ItemJournalLine,COPYSTR(Item."No.",1,5),1,0,TRUE,TRUE,FALSE,WORKDATE);
+
+      // Collect and post the resulted Item Journal Line.
+      ItemJournalLine.SETRANGE("Journal Template Name",ItemJournalBatch."Journal Template Name");
+      ItemJournalLine.SETRANGE("Journal Batch Name",ItemJournalBatch.Name);
+      ItemJournalLine.SETRANGE("Item No.",Item."No.");
+      ItemJournalLine.FINDFIRST;
+
+      // Revalue item cost.
+      CalculatedValue := ItemJournalLine."Unit Cost (Calculated)";
+      ItemJournalLine.VALIDATE("Unit Cost (Revalued)",CalculatedValue + RevalDirection * RANDOM(10));
+      ItemJournalLine.VALIDATE("Inventory Value (Revalued)",
+        ItemJournalLine."Unit Cost (Revalued)" * ItemJournalLine."Invoiced Quantity");
+      ItemJournalLine.MODIFY(TRUE);
+
+      // Save in temporary table.
+      TempItemJournalLine := ItemJournalLine;
+      TempItemJournalLine.INSERT;
+
+      // Post revaluation.
+      LibrarySCM.PostItemJournalLine(ItemJournalBatch."Journal Template Name",ItemJournalBatch.Name);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE AssignItemCharges@16(PurchaseHeader@1000 : Record 38;ItemNo@1001 : Code[20]);
+    VAR
+      ItemChargeAssignmentPurch@1003 : Record 5805;
+      PurchRcptLine@1004 : Record 121;
+      PurchaseLine@1005 : Record 39;
+    BEGIN
+      PurchaseLine.SETRANGE("Document Type",PurchaseHeader."Document Type"::Order);
+      PurchaseLine.SETRANGE("Document No.",PurchaseHeader."No.");
+      PurchaseLine.SETRANGE(Type,PurchaseLine.Type::"Charge (Item)");
+      PurchaseLine.FINDFIRST;
+
+      PurchRcptLine.SETRANGE(Type,PurchRcptLine.Type::Item);
+      PurchRcptLine.SETRANGE("No.",ItemNo);
+      PurchRcptLine.FINDFIRST;
+
+      // Insert charge for selected purchase receipt and purchase order line.
+      ItemChargeAssignmentPurch.INIT;
+      ItemChargeAssignmentPurch.VALIDATE("Document Type",PurchaseLine."Document Type");
+      ItemChargeAssignmentPurch.VALIDATE("Document No.",PurchaseLine."Document No.");
+      ItemChargeAssignmentPurch.VALIDATE("Document Line No.",PurchaseLine."Line No.");
+      ItemChargeAssignmentPurch.VALIDATE("Item Charge No.",PurchaseLine."No.");
+      ItemChargeAssignmentPurch.VALIDATE("Applies-to Doc. Type",ItemChargeAssignmentPurch."Applies-to Doc. Type"::Receipt);
+      ItemChargeAssignmentPurch.VALIDATE("Applies-to Doc. No.",PurchRcptLine."Document No.");
+      ItemChargeAssignmentPurch.VALIDATE("Applies-to Doc. Line No.",PurchRcptLine."Line No.");
+      ItemChargeAssignmentPurch.VALIDATE("Unit Cost",PurchaseLine."Unit Cost");
+      ItemChargeAssignmentPurch.VALIDATE("Item No.",ItemNo);
+      ItemChargeAssignmentPurch.VALIDATE("Qty. to Assign",PurchaseLine.Quantity);
+      ItemChargeAssignmentPurch.INSERT;
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE GetNoOfEntries@1102601013(ItemNo@1000 : Code[20];ItemLedgerEntryType@1001 : Option;EntryType@1002 : Option;DocumentType@1003 : Option) : Integer;
+    VAR
+      ValueEntry@1004 : Record 5802;
+    BEGIN
+      ValueEntry.RESET;
+      ValueEntry.SETRANGE("Item No.",ItemNo);
+      ValueEntry.SETRANGE("Item Ledger Entry Type",ItemLedgerEntryType);
+      ValueEntry.SETRANGE("Document Type",DocumentType);
+      ValueEntry.SETRANGE("Entry Type",EntryType);
+
+      EXIT(ValueEntry.COUNT);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CalcUnitCost@4(ItemNo@1000 : Code[20]) : Decimal;
+    VAR
+      ValueEntry@1002 : Record 5802;
+      SumValue@1003 : Decimal;
+      SumQty@1004 : Decimal;
+    BEGIN
+      // Get value entries to calculate the average cost on.
+      ValueEntry.SETFILTER("Item No.",ItemNo);
+      ValueEntry.SETFILTER("Item Ledger Entry Type",'%1|%2',ValueEntry."Item Ledger Entry Type"::Purchase,
+        ValueEntry."Item Ledger Entry Type"::Output);
+      ValueEntry.SETFILTER("Document Type",'%1|%2',ValueEntry."Document Type"::"Purchase Invoice",ValueEntry."Document Type"::" ");
+      ValueEntry.SETRANGE("Entry Type",ValueEntry."Entry Type"::"Direct Cost");
+      SumValue := 0;
+      SumQty := 0;
+
+      // Calculate weighted average cost for item.
+      IF ValueEntry.FINDSET THEN
+        REPEAT
+          SumValue := SumValue + ValueEntry."Cost Amount (Actual)";
+          SumQty := SumQty + ValueEntry."Invoiced Quantity";
+        UNTIL ValueEntry.NEXT = 0;
+
+      IF SumQty <> 0 THEN
+        EXIT(ROUND(SumValue / SumQty,GLSetup."Unit-Amount Rounding Precision"));
+
+      EXIT(0);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CheckPurchInvEntries@2(ItemNo@1003 : Code[20];PurchaseInvoiceHeaderNo@1004 : Code[20]);
+    VAR
+      PurchInvLine@1000 : Record 123;
+      PurchInvHeader@1001 : Record 122;
+      ValueEntry@1002 : Record 5802;
+    BEGIN
+      // Filter for purchase invoice no.
+      PurchInvHeader.GET(PurchaseInvoiceHeaderNo);
+      PurchInvLine.SETRANGE("Document No.",PurchInvHeader."No.");
+      PurchInvLine.SETRANGE("No.",ItemNo);
+      Assert.IsFalse(PurchInvLine.ISEMPTY,STRSUBSTNO(ErrorNoPurchLine,ItemNo));
+      PurchInvLine.FINDFIRST;
+
+      // Filter purchase invoice - direct cost entries for item.
+      ValueEntry.SETRANGE("Item No.",ItemNo);
+      ValueEntry.SETRANGE("Item Ledger Entry Type",ValueEntry."Item Ledger Entry Type"::Purchase);
+      ValueEntry.SETRANGE("Document Type",ValueEntry."Document Type"::"Purchase Invoice");
+      ValueEntry.SETRANGE("Entry Type",ValueEntry."Entry Type"::"Direct Cost");
+      ValueEntry.SETRANGE("Document No.",PurchaseInvoiceHeaderNo);
+      Assert.IsFalse(ValueEntry.ISEMPTY,STRSUBSTNO(ErrorNoEntryFound,ItemNo,'Direct cost'));
+      ValueEntry.FINDFIRST;
+
+      // Test value entry fields.
+      ValueEntry.TESTFIELD("Cost Amount (Actual)",ROUND(PurchInvLine.Quantity *
+          PurchInvLine."Direct Unit Cost",GLSetup."Amount Rounding Precision"));
+      ValueEntry.TESTFIELD("Cost Posted to G/L",ValueEntry."Cost Amount (Actual)");
+      ValueEntry.TESTFIELD("Valued Quantity",PurchInvLine.Quantity);
+      ValueEntry.TESTFIELD("Invoiced Quantity",PurchInvLine.Quantity);
+      ValueEntry.TESTFIELD("Cost per Unit",PurchInvLine."Direct Unit Cost");
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CheckRevalEntries@1102601006(TempItemJournalLine@1003 : TEMPORARY Record 83;ItemNo@1000 : Code[20]);
+    VAR
+      ValueEntry@1001 : Record 5802;
+      Item@1002 : Record 27;
+      RevalCostDiff@1004 : Decimal;
+    BEGIN
+      Item.GET(ItemNo);
+
+      // Filter purchase invoice - direct cost entries for item.
+      ValueEntry.SETRANGE("Item No.",ItemNo);
+      ValueEntry.SETRANGE("Entry Type",ValueEntry."Entry Type"::Revaluation);
+      Assert.IsFalse(ValueEntry.ISEMPTY,STRSUBSTNO(ErrorNoEntryFound,ItemNo,'Revaluation'));
+      ValueEntry.FINDFIRST;
+
+      // Test value entry fields.
+      Assert.AreEqual(
+        ValueEntry."Cost Posted to G/L",
+        ValueEntry."Cost Amount (Actual)",
+        STRSUBSTNO(ErrorValueEntry,ValueEntry."Entry No.",'Cost Amount (Actual)'));
+
+      CASE Item."Costing Method" OF
+        Item."Costing Method"::Standard:
+          BEGIN
+            RevalCostDiff := TempItemJournalLine."Unit Cost (Revalued)" - TempItemJournalLine."Unit Cost (Calculated)";
+            Assert.AreNearlyEqual(
+              RevalCostDiff,
+              ValueEntry."Cost per Unit",
+              0.01,
+              STRSUBSTNO(ErrorValueEntry,ValueEntry."Entry No.",'Cost per Unit'));
+
+            Assert.AreEqual(
+              TempItemJournalLine.Quantity,
+              ValueEntry."Valued Quantity",
+              STRSUBSTNO(ErrorValueEntry,ValueEntry."Entry No.",'Valued Quantity'));
+
+            Assert.AreNearlyEqual(
+              ROUND(RevalCostDiff * TempItemJournalLine.Quantity,GLSetup."Amount Rounding Precision"),
+              ValueEntry."Cost Amount (Actual)",
+              0.01,
+              STRSUBSTNO(ErrorValueEntry,ValueEntry."Entry No.",'Cost Amount (Actual)'));
+          END;
+        Item."Costing Method"::Average:
+          BEGIN
+            RevalCostDiff := TempItemJournalLine."Inventory Value (Revalued)" - TempItemJournalLine."Inventory Value (Calculated)";
+            Assert.AreNearlyEqual(
+              RevalCostDiff,
+              ValueEntry."Cost Amount (Actual)",
+              0.01,
+              STRSUBSTNO(ErrorValueEntry,ValueEntry."Entry No.",'Cost Amount (Actual)'));
+
+            Assert.AreNearlyEqual(
+              ROUND(RevalCostDiff / ValueEntry."Valued Quantity",GLSetup."Amount Rounding Precision"),
+              ValueEntry."Cost per Unit",
+              0.01,
+              STRSUBSTNO(ErrorValueEntry,ValueEntry."Entry No.",'Cost per unit'));
+          END;
+      END;
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CheckOutboundValueEntries@3(ItemJournalLine@1000 : Record 83;ItemLedgerEntryType@1007 : Option;DocumentType@1002 : Option;EntryType@1003 : Option;DocumentNo@1005 : Code[20];ItemNo@1006 : Code[20]);
+    VAR
+      ValueEntry@1001 : Record 5802;
+      RevalCostDiff@1004 : Decimal;
+    BEGIN
+      // Filter for value entry.
+      ValueEntry.SETRANGE("Item No.",ItemNo);
+      ValueEntry.SETRANGE("Item Ledger Entry Type",ItemLedgerEntryType);
+      ValueEntry.SETRANGE("Document Type",DocumentType);
+      ValueEntry.SETRANGE("Entry Type",EntryType);
+      ValueEntry.SETRANGE("Document No.",DocumentNo);
+      Assert.IsFalse(ValueEntry.ISEMPTY,STRSUBSTNO(ErrorNoEntryFound,ItemNo,FORMAT(DocumentType)));
+      ValueEntry.FINDSET;
+
+      // Test value entry fields.
+      REPEAT
+        IF ValueEntry.Adjustment THEN BEGIN
+          RevalCostDiff := ItemJournalLine."Unit Cost (Revalued)" - ItemJournalLine."Unit Cost (Calculated)";
+          Assert.AreNearlyEqual(
+            RevalCostDiff,
+            ValueEntry."Cost per Unit",
+            0.01,
+            STRSUBSTNO(ErrorValueEntry,ValueEntry."Entry No.",'Cost per Unit'));
+        END
+        ELSE BEGIN
+          Assert.AreNearlyEqual(
+            ValueEntry."Cost per Unit",
+            CalcUnitCost(ItemNo),
+            0.01,
+            STRSUBSTNO(ErrorValueEntry,ValueEntry."Entry No.",'Cost per Unit'));
+        END;
+
+        Assert.AreEqual(
+          ValueEntry."Cost Posted to G/L",
+          ValueEntry."Cost Amount (Actual)",
+          STRSUBSTNO(ErrorValueEntry,ValueEntry."Entry No.",'Cost posted to GL'));
+
+        Assert.AreNearlyEqual(
+          ROUND(ValueEntry."Cost per Unit" * ValueEntry."Valued Quantity",GLSetup."Amount Rounding Precision"),
+          ValueEntry."Cost Amount (Actual)",
+          0.01,
+          STRSUBSTNO(ErrorValueEntry,ValueEntry."Entry No.",'Cost Amount (Actual)'));
+      UNTIL ValueEntry.NEXT = 0;
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CheckTransferValueEntries@17(PurchInvHeader@1007 : Record 122;PurchInvHeader1@1006 : Record 122;DocumentType@1004 : Option;ItemNo@1001 : Code[20];LocationCode@1005 : Code[20];TransferQty@1010 : Decimal;TransferSign@1002 : Integer);
+    VAR
+      ValueEntry@1000 : Record 5802;
+      PurchInvLine@1003 : Record 123;
+      UnitCost@1008 : Decimal;
+      ChargeLineAmount@1009 : Decimal;
+    BEGIN
+      // Get item costs.
+      PurchInvLine.SETRANGE("Document No.",PurchInvHeader."No.");
+      PurchInvLine.SETRANGE(Type,PurchInvLine.Type::Item);
+      PurchInvLine.FINDFIRST;
+      UnitCost := PurchInvLine."Unit Cost (LCY)";
+
+      PurchInvLine.RESET;
+      PurchInvLine.SETRANGE("Document No.",PurchInvHeader1."No.");
+      PurchInvLine.SETRANGE(Type,PurchInvLine.Type::"Charge (Item)");
+      PurchInvLine.FINDFIRST;
+      ChargeLineAmount := PurchInvLine."Line Amount";
+
+      // Filter for value entry.
+      ValueEntry.SETRANGE("Item No.",ItemNo);
+      ValueEntry.SETRANGE("Item Ledger Entry Type",ValueEntry."Item Ledger Entry Type"::Transfer);
+      ValueEntry.SETRANGE("Document Type",DocumentType);
+      ValueEntry.SETRANGE("Entry Type",ValueEntry."Entry Type"::"Direct Cost");
+      ValueEntry.SETRANGE("Location Code",LocationCode);
+      ValueEntry.FINDFIRST;
+      Assert.AreEqual(ValueEntry.COUNT,2,STRSUBSTNO(ErrorNoEntryFound,ItemNo,FORMAT(DocumentType)));
+      Assert.AreNotEqual(TransferQty,0,ErrorZeroQty);
+
+      // Validate fields.
+      IF ValueEntry.Adjustment THEN BEGIN
+        Assert.AreNearlyEqual(
+          ChargeLineAmount / TransferQty,ValueEntry."Cost per Unit",0.01,
+          STRSUBSTNO(ErrorValueEntry,ValueEntry."Entry No.",'Cost per Unit'));
+        Assert.AreEqual(ValueEntry."Invoiced Quantity",0,STRSUBSTNO(ErrorValueEntry,ValueEntry."Entry No.",'Invoiced Quantity'));
+        Assert.AreEqual(
+          ValueEntry."Item Ledger Entry Quantity",0,STRSUBSTNO(ErrorValueEntry,ValueEntry."Entry No.",'Item Ledger Entry Quantity'));
+        Assert.AreEqual(ValueEntry."Cost Posted to G/L",0,STRSUBSTNO(ErrorValueEntry,ValueEntry."Entry No.",'Cost posted to GL'));
+      END
+      ELSE BEGIN
+        Assert.AreNearlyEqual(
+          UnitCost,ValueEntry."Cost per Unit",0.01,STRSUBSTNO(ErrorValueEntry,ValueEntry."Entry No.",'Cost per Unit'));
+        Assert.AreEqual(ValueEntry."Item Ledger Entry Quantity",TransferQty * TransferSign,
+          STRSUBSTNO(ErrorValueEntry,ValueEntry."Entry No.",'Item Ledger Entry Quantity'));
+        Assert.AreEqual(ValueEntry."Invoiced Quantity",TransferQty * TransferSign,
+          STRSUBSTNO(ErrorValueEntry,ValueEntry."Entry No.",'Invoiced Quantity'));
+        Assert.AreEqual(ValueEntry."Cost Posted to G/L",ValueEntry."Cost Amount (Actual)",
+          STRSUBSTNO(ErrorValueEntry,ValueEntry."Entry No.",'Cost posted to GL'));
+      END;
+
+      Assert.AreEqual(ValueEntry."Valued Quantity",TransferQty * TransferSign,
+        STRSUBSTNO(ErrorValueEntry,ValueEntry."Entry No.",'Valued Quantity'));
+      Assert.AreNearlyEqual(
+        ROUND(ValueEntry."Cost per Unit" * ValueEntry."Valued Quantity",GLSetup."Amount Rounding Precision"),
+        ValueEntry."Cost Amount (Actual)",
+        0.01,STRSUBSTNO(ErrorValueEntry,ValueEntry."Entry No.",'Cost Amount (Actual)'));
+    END;
+
+    [ConfirmHandler]
+    PROCEDURE ConfirmHandler@19(Question@1000 : Text[1024];VAR Reply@1001 : Boolean);
+    BEGIN
+      Reply := TRUE;
+    END;
+
+    [MessageHandler]
+    PROCEDURE MessageHandler@10(Message@1000 : Text[1024]);
+    BEGIN
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE ExecuteUIHandlers@14();
+    BEGIN
+      MESSAGE('');
+      IF CONFIRM('') THEN ;
+    END;
+
+    BEGIN
+    {
+
+      1. Online Adjustment for items with Standard cost method
+      2. - Online Adjustment for item with Average cost method
+      3. - Online Adjustment for produced item
+      4. - Online Adjustment for Transfers
+    }
+    END.
+  }
+}
+

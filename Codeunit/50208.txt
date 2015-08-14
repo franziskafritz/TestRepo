@@ -1,0 +1,767 @@
+OBJECT Codeunit 50208 Library - Jobs
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02.09.13;
+    Time=14:59:54;
+    Version List=HME0513;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Prefix@1000 : TextConst 'ENU=ZZZ';
+      TemplateName@1001 : TextConst 'ENU=T';
+      Assert@1002 : Codeunit 50200;
+      JobConsumableType@1003 : 'Resource,Item,G/L Account,Text';
+      JobTestNoSeriesCode@1102601001 : TextConst 'ENU=JOBTEST';
+      ErrorMsg@1004 : TextConst 'ENU=Unsupported type.';
+      PurchaseConsumableType@1006 : ' ,G/L Account,Item,,Fixed Asset,Charge (Item)';
+      JobNoError@1007 : TextConst 'ENU=GLEntry."Job No."';
+
+    [Normal]
+    PROCEDURE CreateJob@4(VAR Job@1002 : Record 167);
+    VAR
+      Customer@1001 : Record 18;
+      JobPostingGroup@1003 : Record 208;
+      JobNo@1000 : Code[20];
+    BEGIN
+      // Create a job (in LCY) for random customer
+
+      Customer.SETRANGE("Currency Code",'');
+      Customer.SETRANGE("Bill-to Customer No.",'');
+      Customer.NEXT(RANDOM(Customer.COUNT));
+
+      // A job posting group is needed to post contract lines
+      JobPostingGroup.FINDFIRST;
+
+      // Find the next available job no.
+      JobNo := Prefix + 'J000';
+      REPEAT
+        JobNo := INCSTR(JobNo);
+      UNTIL NOT Job.GET(JobNo);
+
+      Job.INIT;
+      Job.VALIDATE("No.",JobNo);
+      Job.INSERT(TRUE);
+      Job.VALIDATE("Bill-to Customer No.",Customer."No.");
+      Job.VALIDATE("Job Posting Group",JobPostingGroup.Code);
+      Job.MODIFY(TRUE)
+    END;
+
+    [Normal]
+    PROCEDURE CreateJobTask@5(Job@1000 : Record 167;VAR JobTask@1001 : Record 1001);
+    VAR
+      JobTaskLocal@1002 : Record 1001;
+      JobTaskNo@1003 : Code[20];
+    BEGIN
+      // Create a (posting) task for a job
+
+      JobTaskNo := Prefix + 'JT001';
+
+      // Find the last task no. (as an integer)
+      JobTaskLocal.SETRANGE("Job No.",Job."No.");
+      IF JobTaskLocal.FINDLAST THEN
+        JobTaskNo := INCSTR(JobTaskLocal."Job Task No.");
+
+      JobTask.INIT;
+      JobTask.VALIDATE("Job No.",Job."No.");
+      JobTask.VALIDATE("Job Task No.",JobTaskNo);
+      JobTask.INSERT(TRUE);
+
+      JobTask.VALIDATE("Job Task Type",JobTask."Job Task Type"::Posting);
+      JobTask.MODIFY(TRUE)
+    END;
+
+    [Normal]
+    PROCEDURE CreateJobJournalLine@6(LineType@1005 : Option;JobTask@1001 : Record 1001;VAR JobJournalLine@1000 : Record 210);
+    VAR
+      JobJournalTemplate@1002 : Record 209;
+      JobJournalBatch@1003 : Record 237;
+      NoSeriesMgt@1102601000 : Codeunit 396;
+    BEGIN
+      // Create a job journal line for a job task.
+      // This helper function allows to easily create multiple journal lines in a single batch.
+
+      WITH JobJournalLine DO BEGIN
+        SETRANGE("Job No.",JobTask."Job No.");
+        // Setup primary keys and filters.
+        IF FINDLAST THEN
+          // A job journal line for this task already exists: increase line and document nos.
+          VALIDATE("Line No.","Line No." + 1)
+        ELSE BEGIN
+          // No job journal lines exist for this task: setup the first one.
+          CreateJobJournalBatch(GetJobJournalTemplate(JobJournalTemplate),JobJournalBatch);
+          VALIDATE("Journal Template Name",JobJournalTemplate.Name);
+          VALIDATE("Journal Batch Name",JobJournalBatch.Name);
+          VALIDATE("Line No.",1);
+          // Only use these template and batch.
+          SETRANGE("Journal Template Name","Journal Template Name");
+          SETRANGE("Journal Batch Name","Journal Batch Name");
+        END;
+
+        INIT;
+        INSERT(TRUE);
+
+        VALIDATE("Line Type",LineType);
+        VALIDATE("Posting Date",WORKDATE);
+        VALIDATE("Job No.",JobTask."Job No.");
+        VALIDATE("Job Task No.",JobTask."Job Task No.");
+        JobJournalBatch.GET(GetJobJournalTemplate(JobJournalTemplate),"Journal Batch Name");
+        VALIDATE("Document No.",NoSeriesMgt.GetNextNo(JobJournalBatch."No. Series","Posting Date",FALSE));
+        MODIFY(TRUE)
+      END
+    END;
+
+    PROCEDURE CreateJobJournalLineForType@22(LineType@1003 : Option;ConsumableType@1002 : Option;JobTask@1001 : Record 1001;VAR JobJournalLine@1000 : Record 210);
+    BEGIN
+      CreateJobJournalLine(LineType,JobTask,JobJournalLine);
+
+      // Attach requested consumable type to the created job journal line
+      Attach2JobJournalLine(ConsumableType,JobJournalLine);
+      JobJournalLine.VALIDATE(Description,FORMAT(CREATEGUID));
+      JobJournalLine.MODIFY(TRUE)
+    END;
+
+    PROCEDURE GetJobJournalTemplate@1(VAR JobJournalTemplate@1000 : Record 209) : Code[10];
+    BEGIN
+      CLEAR(JobJournalTemplate);
+      IF NOT JobJournalTemplate.GET(Prefix + TemplateName) THEN BEGIN
+        JobJournalTemplate.VALIDATE(Name,Prefix + TemplateName);
+        JobJournalTemplate.INSERT(TRUE)
+      END;
+
+      JobJournalTemplate.VALIDATE("No. Series",GetJobTestNoSeries);
+      JobJournalTemplate.MODIFY(TRUE);
+      EXIT(JobJournalTemplate.Name)
+    END;
+
+    [Normal]
+    PROCEDURE CreateJobJournalBatch@12(JobJournalTemplateName@1002 : Code[10];VAR JobJournalBatch@1000 : Record 237) BatchName : Code[10];
+    BEGIN
+      CLEAR(JobJournalBatch);
+
+      // Find a unique batch name (wrt existing and previously posted batches)
+      BatchName := Prefix + 'B000';
+      REPEAT
+        BatchName := INCSTR(BatchName);
+      UNTIL NOT JobJournalBatch.GET(JobJournalTemplateName,BatchName);
+
+      JobJournalBatch.VALIDATE("Journal Template Name",JobJournalTemplateName);
+      JobJournalBatch.VALIDATE(Name,BatchName);
+      JobJournalBatch.SetupNewBatch;
+      JobJournalBatch.INSERT(TRUE)
+    END;
+
+    [Normal]
+    PROCEDURE CreateJobGLJournalLine@1102601000(JobTask@1000 : Record 1001;VAR GenJournalLine@1001 : Record 81);
+    VAR
+      GenJournalTemplate@1004 : Record 80;
+      GenJournalBatch@1005 : Record 232;
+      NoSeriesMgt@1102601000 : Codeunit 396;
+    BEGIN
+      // Create a general journal line for a job task.
+      // This helper function allows to easily create multiple journal lines in a single batch.
+      // These journal lines can be traced using their document number and batch.
+
+      WITH GenJournalLine DO BEGIN
+        SETRANGE("Job No.",JobTask."Job No.");
+        IF FINDLAST THEN
+          VALIDATE("Line No.","Line No." + 1)
+        ELSE BEGIN
+          CLEAR(GenJournalLine);
+          CreateGenJournalBatch(GetGenJournalTemplate(GenJournalTemplate),GenJournalBatch);
+          VALIDATE("Journal Template Name",GenJournalTemplate.Name);
+          VALIDATE("Journal Batch Name",GenJournalBatch.Name);
+          VALIDATE("Line No.",1);
+          SETRANGE("Journal Template Name","Journal Template Name");
+          SETRANGE("Journal Batch Name","Journal Batch Name");
+        END;
+
+        INIT;
+        INSERT(TRUE);
+
+        VALIDATE("Posting Date",WORKDATE);
+        VALIDATE("Account Type","Account Type"::"G/L Account");
+        VALIDATE("Account No.",FindGLAccount);
+        VALIDATE(Description,FORMAT(CREATEGUID));
+        VALIDATE("Bal. Account No.",FindGLAccount);
+        VALIDATE(Amount,RANDOM(1000) / 10);
+        VALIDATE("Job No.",JobTask."Job No.");
+        VALIDATE("Job Task No.",JobTask."Job Task No.");
+        VALIDATE("Job Quantity",RANDOM(10));
+        GenJournalBatch.GET(GetGenJournalTemplate(GenJournalTemplate),"Journal Batch Name");
+        VALIDATE("Document No.",NoSeriesMgt.GetNextNo(GenJournalBatch."No. Series","Posting Date",FALSE));
+        MODIFY(TRUE)
+      END
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE GetGenJournalTemplate@61(VAR GenJournalTemplate@1000 : Record 80) : Code[10];
+    BEGIN
+      // In this test codeunit we always use the same gen. journal template
+
+      CLEAR(GenJournalTemplate);
+      IF NOT GenJournalTemplate.GET(Prefix + TemplateName) THEN BEGIN
+        GenJournalTemplate.VALIDATE(Name,Prefix + TemplateName);
+        GenJournalTemplate.INSERT(TRUE)
+      END;
+
+      GenJournalTemplate.VALIDATE("No. Series",GetJobTestNoSeries);
+      GenJournalTemplate.MODIFY(TRUE);
+
+      EXIT(GenJournalTemplate.Name)
+    END;
+
+    LOCAL PROCEDURE GetJobTestNoSeries@1102601001() : Code[10];
+    VAR
+      NoSeries@1102601000 : Record 308;
+      NoSeriesLine@1102601002 : Record 309;
+      LibraryUtility@1102601001 : Codeunit 50206;
+    BEGIN
+      IF NOT NoSeries.GET(JobTestNoSeriesCode) THEN BEGIN
+        LibraryUtility.CreateNoSeries(NoSeries,TRUE,FALSE,FALSE);
+        NoSeries.RENAME(JobTestNoSeriesCode);
+        LibraryUtility.CreateNoSeriesLine(NoSeriesLine,NoSeries.Code,'','')
+      END;
+
+      EXIT(NoSeries.Code)
+    END;
+
+    [Normal]
+    PROCEDURE CreateGenJournalBatch@62(GenJournalTemplateName@1002 : Code[10];VAR GenJournalBatch@1000 : Record 232) BatchName : Code[10];
+    VAR
+      GLEntry@1003 : Record 17;
+      JobLedgerEntry@1004 : Record 169;
+    BEGIN
+      CLEAR(GenJournalBatch);
+
+      // Find a unique name (wrt existing and previously posted batches)
+      BatchName := Prefix + 'B000';
+      REPEAT
+        BatchName := INCSTR(BatchName);
+        GLEntry.SETRANGE("Journal Batch Name",BatchName);
+        JobLedgerEntry.SETRANGE("Journal Batch Name",BatchName);
+      UNTIL GLEntry.ISEMPTY AND JobLedgerEntry.ISEMPTY AND NOT GenJournalBatch.GET(GenJournalTemplateName,BatchName);
+
+      GenJournalBatch.VALIDATE("Journal Template Name",GenJournalTemplateName);
+      GenJournalBatch.VALIDATE(Name,BatchName);
+      GenJournalBatch.SetupNewBatch;
+      GenJournalBatch.INSERT(TRUE)
+    END;
+
+    [Normal]
+    PROCEDURE Attach2PurchaseLine@44(ConsumableType@1001 : Option;VAR PurchaseLine@1000 : Record 39);
+    VAR
+      GeneralPostingSetup@1102601000 : Record 252;
+      LibraryFinance@1102601001 : Codeunit 50207;
+    BEGIN
+      // Attach a random number of random consumables to the purchase line.
+
+      WITH PurchaseLine DO BEGIN
+        VALIDATE(Type,ConsumableType);
+        VALIDATE("No.",FindConsumable(Purchase2JobConsumableType(ConsumableType)));
+        VALIDATE(Quantity,RANDOM(100));
+        IF Type = Type::"G/L Account" THEN
+          VALIDATE("Direct Unit Cost",RANDOM(100));
+        VALIDATE("Location Code",'');
+
+        LibraryFinance.FindGeneralPostingSetup(GeneralPostingSetup);
+        VALIDATE("Gen. Prod. Posting Group",GeneralPostingSetup."Gen. Prod. Posting Group");
+
+        MODIFY(TRUE)
+      END
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE Attach2JobJournalLine@26(ConsumableType@1002 : Option;VAR JobJournalLine@1000 : Record 210);
+    BEGIN
+      // Attach a random number of random consumables to the job journal line.
+
+      WITH JobJournalLine DO BEGIN
+        VALIDATE(Type,ConsumableType);
+        VALIDATE("No.",FindConsumable(ConsumableType));
+        VALIDATE(Quantity,RANDOM(100));
+        IF Type = Type::"G/L Account" THEN
+          VALIDATE("Unit Price",RANDOM(100));
+        MODIFY(TRUE)
+      END
+    END;
+
+    [Normal]
+    PROCEDURE AttachJobTask2PurchaseLine@35(JobTask@1000 : Record 1001;VAR PurchaseLine@1001 : Record 39);
+    BEGIN
+      // Attach the job task to the purchase line.
+
+      WITH PurchaseLine DO BEGIN
+        VALIDATE("Job No.",JobTask."Job No.");
+        VALIDATE("Job Task No.",JobTask."Job Task No.");
+        MODIFY(TRUE)
+      END
+    END;
+
+    PROCEDURE FindConsumable@3(Type@1000 : Integer) : Code[20];
+    BEGIN
+      CASE Type OF
+        JobConsumableType::Resource:
+          EXIT(FindResource);
+        JobConsumableType::Item:
+          EXIT(FindItem);
+        JobConsumableType::"G/L Account":
+          EXIT(FindGLAccount);
+        ELSE
+          ERROR(ErrorMsg);
+      END
+    END;
+
+    PROCEDURE FindResource@8() : Code[20];
+    VAR
+      Resource@1000 : Record 156;
+    BEGIN
+      Resource.NEXT(RANDOM(Resource.COUNT));
+      EXIT(Resource."No.")
+    END;
+
+    PROCEDURE FindItem@9() : Code[20];
+    VAR
+      Item@1000 : Record 27;
+    BEGIN
+      Item.SETFILTER("Unit Price",'>0');
+      Item.SETFILTER("Unit Cost",'>0');
+      Item.SETRANGE("Item Tracking Code",'');
+      Item.NEXT(RANDOM(Item.COUNT));
+      EXIT(Item."No.")
+    END;
+
+    [Normal]
+    PROCEDURE FindGLAccount@16() : Code[20];
+    VAR
+      GLAccount@1000 : Record 15;
+    BEGIN
+      // Find a g/l account that allows direct posting and is setup correctly for posting.
+
+      GLAccount.SETRANGE("Direct Posting",TRUE);
+      GLAccount.SETRANGE(Blocked,FALSE);
+      GLAccount.NEXT(RANDOM(GLAccount.COUNT));
+      EXIT(GLAccount."No.")
+    END;
+
+    [Normal]
+    PROCEDURE PostJobJournal@7(VAR JobJournalLine@1000 : Record 210);
+    VAR
+      JobJournalLine2@1001 : Record 210;
+    BEGIN
+      // Post a job journal.
+      JobJournalLine2 := JobJournalLine;
+      CODEUNIT.RUN(CODEUNIT::"Job Jnl.-Post",JobJournalLine2)
+    END;
+
+    [Normal]
+    PROCEDURE PostGenJournal@59(VAR GenJournalLine@1000 : Record 81);
+    VAR
+      GenJournalLineTemp@1001 : TEMPORARY Record 81;
+    BEGIN
+      // Post a general journal line and return the posted line.
+
+      GenJournalLineTemp := GenJournalLine;
+      CODEUNIT.RUN(CODEUNIT::"Gen. Jnl.-Post",GenJournalLine);
+      GenJournalLine := GenJournalLineTemp
+    END;
+
+    LOCAL PROCEDURE GetGLEntry@40(VAR JobLedgerEntry@1000 : Record 169;VAR GLEntry@1001 : Record 17);
+    VAR
+      GeneralPostingSetup@1005 : Record 252;
+    BEGIN
+      // get GL entry corresponding to a job ledger entry
+      GLEntry.RESET;
+      GLEntry.SETRANGE("Posting Date",JobLedgerEntry."Posting Date");
+      GLEntry.SETRANGE("Document No.",JobLedgerEntry."Document No.");
+
+      CASE JobLedgerEntry.Type OF
+        JobLedgerEntry.Type::"G/L Account":
+          GLEntry.SETRANGE("G/L Account No.",JobLedgerEntry."No.");
+        JobLedgerEntry.Type::Item:
+          BEGIN
+            GeneralPostingSetup.GET(JobLedgerEntry."Gen. Bus. Posting Group",JobLedgerEntry."Gen. Prod. Posting Group");
+            GLEntry.SETRANGE("G/L Account No.",GeneralPostingSetup."Purch. Account");
+          END;
+        ELSE
+          Assert.Fail(STRSUBSTNO('Unsupported entry type: %1',JobLedgerEntry."Ledger Entry Type"));
+      END;
+
+      Assert.AreEqual(1,GLEntry.COUNT,'# gl entries');
+      GLEntry.FINDFIRST
+    END;
+
+    [Normal]
+    PROCEDURE VerifyGLEntries@42(VAR JobLedgerEntry@1000 : Record 169);
+    VAR
+      GLEntry@1002 : Record 17;
+    BEGIN
+      // Verify that each job entry has corresponding g/l entry with a job no.
+      JobLedgerEntry.FINDSET;
+      REPEAT
+        GetGLEntry(JobLedgerEntry,GLEntry);
+        Assert.AreEqual(JobLedgerEntry."Job No.",GLEntry."Job No.",JobNoError)
+      UNTIL JobLedgerEntry.NEXT = 0
+    END;
+
+    PROCEDURE VerifyPurchaseDocPostingForJob@28(VAR PurchaseLine@1000 : Record 39);
+    VAR
+      TempJobJournalLine@1001 : TEMPORARY Record 210;
+    BEGIN
+      // Verify posting of a purchase line for a job.
+      PurchaseLine.SETFILTER("Job No.",'<>''''');
+      PurchaseLine.FINDSET;
+
+      REPEAT
+        WITH TempJobJournalLine DO BEGIN
+          "Line No." := PurchaseLine."Line No.";
+          "Job No." := PurchaseLine."Job No.";
+          "Job Task No." := PurchaseLine."Job Task No.";
+          Description := PurchaseLine.Description;
+          "Line Type" := PurchaseLine."Job Line Type";
+          Quantity := PurchaseLine.Quantity;
+          "Unit Cost (LCY)" := PurchaseLine."Unit Cost (LCY)";
+          "Unit Price (LCY)" := PurchaseLine."Unit Price (LCY)";
+          INSERT
+        END
+      UNTIL PurchaseLine.NEXT = 0;
+
+      VerifyJobJournalPosting(TempJobJournalLine)
+    END;
+
+    [Normal]
+    PROCEDURE VerifyJobJournalPosting@67(VAR JobJournalLine@1000 : Record 210);
+    BEGIN
+      // Verify that the journal lines were posted correctly.
+
+      Assert.IsFalse(JobJournalLine.ISEMPTY,'Not verifying any Job Journal Lines!');
+      JobJournalLine.FINDSET;
+      REPEAT
+        VerifyJobLedger(JobJournalLine);
+        VerifyPlanningLines(JobJournalLine)
+      UNTIL JobJournalLine.NEXT = 0
+    END;
+
+    [Normal]
+    PROCEDURE VerifyJobLedger@57(JobJournalLine@1000 : Record 210);
+    VAR
+      JobLedgerEntry@1001 : Record 169;
+      GeneralLedgerSetup@1003 : Record 98;
+      Precision@1002 : Decimal;
+    BEGIN
+      // A posted job journal line gives one corresponding entry in the job ledger.
+
+      WITH JobLedgerEntry DO BEGIN
+        SETRANGE(Description,JobJournalLine.Description);
+
+        Assert.AreEqual(
+          1,COUNT,
+          STRSUBSTNO(
+            'Invalid Job Ledger Entry for Batch %1 Document %2',JobJournalLine."Journal Batch Name",
+            JobJournalLine."Document No."));
+
+        FINDFIRST;
+        GeneralLedgerSetup.GET;
+        Precision := GeneralLedgerSetup."Unit-Amount Rounding Precision";
+        Assert.AreEqual(JobJournalLine."Job No.","Job No.",FIELDCAPTION("Job No."));
+        Assert.AreEqual(JobJournalLine."Job Task No.","Job Task No.",FIELDCAPTION("Job Task No."));
+        Assert.AreNearlyEqual(JobJournalLine."Unit Cost (LCY)","Unit Cost (LCY)",Precision,FIELDCAPTION("Unit Cost (LCY)"));
+        Assert.AreNearlyEqual(JobJournalLine."Unit Price (LCY)","Unit Price (LCY)",Precision,FIELDCAPTION("Unit Price (LCY)"));
+        Assert.AreEqual(JobJournalLine.Quantity,Quantity,FIELDCAPTION(Quantity));
+      END
+    END;
+
+    [Normal]
+    PROCEDURE VerifyPlanningLines@46(JobJournalLine@1000 : Record 210);
+    VAR
+      JobPlanningLine@1001 : Record 1003;
+      Precision@1003 : Decimal;
+    BEGIN
+      // A posted job journal line gives
+      // 0 (Blank),
+      // 1 (Contract or Schedule), or
+      // 2 (Both)
+      // corresponding planning lines.
+
+      WITH JobPlanningLine DO BEGIN
+        SETRANGE(Description,JobJournalLine.Description);
+
+        // Verify line count and type
+        CASE JobJournalLine."Line Type" OF
+          UsageLineTypeBlank:
+            VerifyPlanningLineCountBlank(JobJournalLine);
+          UsageLineTypeSchedule:
+            VerifyPlanningLineCountSchedul(JobJournalLine);
+          UsageLineTypeContract:
+            VerifyPlanningLineCountContrac(JobJournalLine);
+          UsageLineTypeBoth:
+            VerifyPlanningLineCountBoth(JobJournalLine);
+          ELSE
+            Assert.Fail('Invalid line type.');
+        END;
+
+        // Verify Unit Cost, Price.
+        Precision := GetUnitAmountRoundingPrecision(JobJournalLine."Currency Code");
+        IF FINDSET THEN
+          REPEAT
+            Assert.AreEqual(JobJournalLine.Quantity,Quantity,FIELDCAPTION(Quantity));
+            Assert.AreEqual(JobJournalLine."Job No.","Job No.",FIELDCAPTION("Job No."));
+            Assert.AreEqual(JobJournalLine."Job Task No.","Job Task No.",FIELDCAPTION("Job Task No."));
+            Assert.AreNearlyEqual(JobJournalLine."Unit Cost (LCY)","Unit Cost (LCY)",Precision,FIELDCAPTION("Unit Cost (LCY)"));
+            Assert.AreNearlyEqual(JobJournalLine."Unit Price (LCY)","Unit Price (LCY)",Precision,FIELDCAPTION("Unit Price (LCY)"))
+          UNTIL NEXT = 0
+      END
+    END;
+
+    LOCAL PROCEDURE VerifyPlanningLineCountBlank@24(JobJournalLine@1000 : Record 210);
+    VAR
+      JobPlanningLine@1001 : Record 1003;
+      Job@1002 : Record 167;
+    BEGIN
+      WITH JobPlanningLine DO BEGIN
+        SETRANGE(Description,JobJournalLine.Description);
+        Job.GET(JobJournalLine."Job No.");
+        Assert.IsTrue(ISEMPTY,STRSUBSTNO('No planning lines should be created for %1.',JobJournalLine."Line Type"));
+      END
+    END;
+
+    LOCAL PROCEDURE VerifyPlanningLineCountSchedul@45(JobJournalLine@1000 : Record 210);
+    VAR
+      JobPlanningLine@1001 : Record 1003;
+    BEGIN
+      WITH JobPlanningLine DO BEGIN
+        SETRANGE(Description,JobJournalLine.Description);
+        Assert.AreEqual(1,COUNT,STRSUBSTNO('# planning lines for Line Type %1.',JobJournalLine."Line Type"));
+        FINDFIRST;
+        Assert.AreEqual(PlanningLineTypeSchedule,"Line Type",FIELDCAPTION("Line Type"))
+      END
+    END;
+
+    LOCAL PROCEDURE VerifyPlanningLineCountContrac@48(JobJournalLine@1000 : Record 210);
+    VAR
+      Job@1002 : Record 167;
+      JobPlanningLine@1001 : Record 1003;
+    BEGIN
+      WITH JobPlanningLine DO BEGIN
+        SETRANGE(Description,JobJournalLine.Description);
+        Assert.AreEqual(1,COUNT,STRSUBSTNO('# planning lines for Line Type %1.',JobJournalLine."Line Type"));
+        FINDFIRST;
+        Assert.AreEqual(PlanningLineTypeContract,"Line Type",FIELDCAPTION("Line Type"))
+      END
+    END;
+
+    LOCAL PROCEDURE VerifyPlanningLineCountBoth@29(JobJournalLine@1000 : Record 210);
+    VAR
+      Job@1002 : Record 167;
+      JobPlanningLine@1001 : Record 1003;
+    BEGIN
+      WITH JobPlanningLine DO BEGIN
+        SETRANGE(Description,JobJournalLine.Description);
+        Job.GET(JobJournalLine."Job No.");
+        IF Job."Allow Schedule/Contract Lines" THEN BEGIN
+          Assert.AreEqual(1,COUNT,STRSUBSTNO('# planning lines for Line Type %1.',JobJournalLine."Line Type"));
+          FINDFIRST;
+          Assert.AreEqual(PlanningLineTypeBoth,"Line Type",FIELDCAPTION("Line Type"))
+        END ELSE BEGIN
+          Assert.AreEqual(2,COUNT,STRSUBSTNO('# planning lines for Line Type %1.',JobJournalLine."Line Type"));
+          SETRANGE("Line Type",PlanningLineTypeSchedule);
+          Assert.AreEqual(1,COUNT,STRSUBSTNO('# schedule planning line for Line Type %1.',JobJournalLine."Line Type"));
+          SETRANGE("Line Type",PlanningLineTypeContract);
+          Assert.AreEqual(1,COUNT,STRSUBSTNO('# contract planning lines for Line Type %1.',JobJournalLine."Line Type"))
+        END
+      END
+    END;
+
+    [Normal]
+    PROCEDURE VerifyJobGenJournalPosting@60(GenJournalLine@1000 : Record 81);
+    VAR
+      TempJobJournalLine@1001 : TEMPORARY Record 210;
+    BEGIN
+      // Use a job journal line to verify a posted general journal line.
+
+      WITH TempJobJournalLine DO BEGIN
+        "Job No." := GenJournalLine."Job No.";
+        "Job Task No." := GenJournalLine."Job Task No.";
+        "Document No." := GenJournalLine."Document No.";
+        Description := GenJournalLine.Description;
+        "Line Type" := GenJournalLine."Job Line Type";
+        Quantity := GenJournalLine."Job Quantity";
+        "Unit Cost (LCY)" := GenJournalLine."Job Unit Cost (LCY)";
+        "Unit Price (LCY)" := GenJournalLine."Job Unit Price (LCY)";
+        INSERT
+      END;
+
+      VerifyJobJournalPosting(TempJobJournalLine)
+    END;
+
+    [Normal]
+    PROCEDURE VerifyJobJournalLineCostPrice@11(JobJournalLine@1000 : Record 210);
+    VAR
+      Resource@1004 : Record 156;
+      Item@1003 : Record 27;
+      UnitCost@1001 : Decimal;
+      UnitPrice@1002 : Decimal;
+    BEGIN
+      WITH JobJournalLine DO BEGIN
+        CASE Type OF
+          Type::Resource:
+            BEGIN
+              Resource.GET("No.");
+              UnitCost := Resource."Unit Cost";
+              UnitPrice := Resource."Unit Price"
+            END;
+          Type::Item:
+            BEGIN
+              Item.GET("No.");
+              UnitCost := Item."Unit Cost";
+              UnitPrice := Item."Unit Price"
+            END;
+          Type::"G/L Account":
+            BEGIN
+              UnitCost := "Unit Cost (LCY)";
+              UnitPrice := "Unit Price (LCY)"
+            END;
+          ELSE
+            Assert.Fail(STRSUBSTNO('Job journal line account type %1 not supported.',FORMAT(Type)))
+        END;
+        Assert.AreEqual(UnitCost,"Unit Cost (LCY)",STRSUBSTNO('JobJournalLine."Unit Cost (LCY)", %1',"No."));
+        Assert.AreEqual(UnitPrice,"Unit Price (LCY)",STRSUBSTNO('JobJournalLine."Unit Price (LCY)", %1',"No."))
+      END
+    END;
+
+    PROCEDURE Purchase2JobConsumableType@15(Type@1000 : ' ,Item,Resource,Cost,G/L Account') : Integer;
+    BEGIN
+      CASE Type OF
+        PurchaseConsumableType::Item:
+          EXIT(JobConsumableType::Item);
+        PurchaseConsumableType::"G/L Account":
+          EXIT(JobConsumableType::"G/L Account");
+        ELSE
+          Assert.Fail('Unsupported consumable type');
+      END
+    END;
+
+    PROCEDURE Job2PurchaseConsumableType@55(Type@1000 : 'Resource,Item,G/L Account,Text') : Integer;
+    VAR
+      PurchaseLine@1001 : Record 39;
+    BEGIN
+      CASE Type OF
+        JobConsumableType::Item:
+          EXIT(PurchaseLine.Type::Item);
+        JobConsumableType::"G/L Account":
+          EXIT(PurchaseLine.Type::"G/L Account");
+        ELSE
+          Assert.Fail('Unsupported consumable type');
+      END
+    END;
+
+    PROCEDURE GetUnitAmountRoundingPrecision@10(CurrencyCode@1000 : Code[10]) : Decimal;
+    VAR
+      GLSetup@1001 : Record 98;
+      Currency@1002 : Record 4;
+    BEGIN
+      IF CurrencyCode = '' THEN BEGIN
+        GLSetup.GET;
+        EXIT(GLSetup."Unit-Amount Rounding Precision")
+      END ELSE BEGIN
+        Currency.GET(CurrencyCode);
+        EXIT(Currency."Unit-Amount Rounding Precision")
+      END
+    END;
+
+    PROCEDURE CopyPurchaseLines@41(VAR FromPurchaseLine@1000 : Record 39;VAR ToPurchaseLine@1001 : Record 39);
+    BEGIN
+      FromPurchaseLine.FINDSET;
+      REPEAT
+        ToPurchaseLine := FromPurchaseLine;
+        ToPurchaseLine.INSERT;
+      UNTIL FromPurchaseLine.NEXT = 0
+    END;
+
+    [Normal]
+    PROCEDURE CopyJobJournalLines@69(VAR FromJobJournalLine@1000 : Record 210;VAR ToJobJournalLine@1001 : Record 210);
+    BEGIN
+      FromJobJournalLine.FINDSET;
+      REPEAT
+        ToJobJournalLine := FromJobJournalLine;
+        ToJobJournalLine.INSERT(TRUE);
+      UNTIL FromJobJournalLine.NEXT = 0;
+      ToJobJournalLine.COPYFILTERS(FromJobJournalLine)
+    END;
+
+    PROCEDURE UsageLineTypeBlank@21() : Integer;
+    VAR
+      JobJournalLine@1000 : Record 210;
+    BEGIN
+      EXIT(JobJournalLine."Line Type"::" ")
+    END;
+
+    PROCEDURE UsageLineTypeSchedule@31() : Integer;
+    VAR
+      JobJournalLine@1000 : Record 210;
+    BEGIN
+      EXIT(JobJournalLine."Line Type"::Schedule)
+    END;
+
+    PROCEDURE UsageLineTypeContract@32() : Integer;
+    VAR
+      JobJournalLine@1000 : Record 210;
+    BEGIN
+      EXIT(JobJournalLine."Line Type"::Contract)
+    END;
+
+    PROCEDURE UsageLineTypeBoth@33() : Integer;
+    VAR
+      JobJournalLine@1000 : Record 210;
+    BEGIN
+      EXIT(JobJournalLine."Line Type"::"Both Schedule and Contract")
+    END;
+
+    PROCEDURE PlanningLineTypeSchedule@30() : Integer;
+    VAR
+      JobPlanningLine@1000 : Record 1003;
+    BEGIN
+      EXIT(JobPlanningLine."Line Type"::Schedule)
+    END;
+
+    PROCEDURE PlanningLineTypeContract@34() : Integer;
+    VAR
+      JobPlanningLine@1000 : Record 1003;
+    BEGIN
+      EXIT(JobPlanningLine."Line Type"::Contract)
+    END;
+
+    PROCEDURE PlanningLineTypeBoth@36() : Integer;
+    VAR
+      JobPlanningLine@1000 : Record 1003;
+    BEGIN
+      EXIT(JobPlanningLine."Line Type"::"Both Schedule and Contract")
+    END;
+
+    PROCEDURE ItemType@18() : Integer;
+    BEGIN
+      EXIT(JobConsumableType::Item)
+    END;
+
+    PROCEDURE ResourceType@13() : Integer;
+    BEGIN
+      EXIT(JobConsumableType::Resource)
+    END;
+
+    PROCEDURE GLAccountType@14() : Integer;
+    BEGIN
+      EXIT(JobConsumableType::"G/L Account")
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

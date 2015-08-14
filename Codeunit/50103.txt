@@ -1,0 +1,194 @@
+OBJECT Codeunit 50103 Fix Return DocDim
+{
+  OBJECT-PROPERTIES
+  {
+    Date=03.01.13;
+    Time=14:43:20;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+            window.OPEN('@1@@@@@@@@@@@@@@@@@@@@@@@\\'+
+                        '#2##########');
+            RecNo := 1;
+
+            SR.RESET;
+            SR.SETRANGE("Document Type",SR."Document Type"::"Return Order");
+            //SR.SETRANGE("No.",'SR12037285');
+            IF SR.FIND('-') THEN BEGIN
+              TotalRecNo := SR.COUNT;
+              REPEAT
+                RecNo := RecNo + 1;
+                window.UPDATE(1,ROUND(RecNo/TotalRecNo*10000,1));
+                window.UPDATE(2,TotalRecNo-RecNo);
+
+                // Auftrag zur Rekla. ist noch vorhanden
+                IF SH.GET(SH."Document Type"::Order,SR."External Document No.") THEN BEGIN
+                  CopyFromSalesDocDimToHeader(SR,SH);
+
+                  SRL.RESET;
+                  SRL.SETRANGE(SRL."Document Type",SR."Document Type");
+                  SRL.SETRANGE(SRL."Document No.",SR."No.");
+                  SRL.SETFILTER(Type,'%1|%2',SRL.Type::Item,SRL.Type::"Charge (Item)");
+                  IF SRL.FINDSET THEN BEGIN
+                    IF SL.GET(SRL."Document Type"::Order,SRL."Linked to Sales Order No.",SRL."Linked to Sales Order Line No.") THEN
+                      CopyFromSalesDocDimToLine(SRL,SL);
+                  END;
+                END;
+
+                // Auftrag ist bereits archiviert
+                // Dim. Auftrag
+
+                SHArch.RESET;
+                SHArch.SETRANGE("Document Type",SHArch."Document Type"::Order);
+                SHArch.SETRANGE("No.",SR."External Document No.");
+                IF SHArch.FINDFIRST THEN BEGIN
+
+                  DimensionValue.INIT;
+                  DimensionValue."Dimension Code" := 'AUFTRAG';
+                  DimensionValue.Code := SR."External Document No.";
+                  DimensionValue.Name := STRSUBSTNO('Order %1',SR."External Document No.");
+                  DimensionValue."Dimension Value Type" := DimensionValue."Dimension Value Type"::Standard;
+                  IF NOT DimensionValue.INSERT THEN;
+
+                  DocumentDim.INIT;
+                  DocumentDim."Table ID" := DATABASE::"Sales Header";
+                  DocumentDim."Document Type" := SR."Document Type";
+                  DocumentDim."Document No." := SR."No.";
+                  DocumentDim."Line No." := 0;
+                  DocumentDim."Dimension Code" := 'AUFTRAG';
+                  DocumentDim."Dimension Value Code" := SR."External Document No.";
+                  IF NOT DocumentDim.INSERT THEN;
+
+                  //Dim. Auftragszeilen
+                  SRL.RESET;
+                  SRL.SETRANGE(SRL."Document Type",SR."Document Type");
+                  SRL.SETRANGE(SRL."Document No.",SR."No.");
+                  SRL.SETFILTER(Type,'%1|%2',SRL.Type::Item,SRL.Type::"Charge (Item)");
+                  IF SRL.FINDSET THEN BEGIN
+
+                    REPEAT
+
+                      // Dim. Auftrag
+                      DocumentDim.INIT;
+                      DocumentDim."Table ID" := DATABASE::"Sales Line";
+                      DocumentDim."Document Type" := SRL."Document Type";
+                      DocumentDim."Document No." := SRL."Document No.";
+                      DocumentDim."Line No." := SRL."Line No.";
+                      DocumentDim."Dimension Code" := 'AUFTRAG';
+                      DocumentDim."Dimension Value Code" := SR."External Document No.";
+                      IF NOT DocumentDim.INSERT THEN;
+
+                      // Dim. Kanal
+                      SLArch.RESET;
+                      SLArch.SETRANGE("Document Type",SLArch."Document Type"::Order);
+                      SLArch.SETRANGE("Document No.",SRL."Linked to Sales Order No.");
+                      SLArch.SETRANGE("Line No.",SRL."Linked to Sales Order Line No.");
+                      IF SLArch.FINDFIRST THEN BEGIN
+                        DocumentDim.INIT;
+                        DocumentDim."Table ID" := DATABASE::"Sales Line";
+                        DocumentDim."Document Type" := SRL."Document Type";
+                        DocumentDim."Document No." := SRL."Document No.";
+                        DocumentDim."Line No." := SRL."Line No.";
+                        DocumentDim."Dimension Code" := 'KANAL';
+                        DocumentDim."Dimension Value Code" := SLArch."Purchasing Code";
+                        IF NOT DocumentDim.INSERT THEN;
+                      END;
+
+                    UNTIL SRL.NEXT = 0;
+                  END;
+                END;
+
+
+              UNTIL SR.NEXT = 0;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      CMH@1000000000 : Record 114;
+      CML@1000000001 : Record 115;
+      SS@1000000002 : Record 311;
+      window@1000000005 : Dialog;
+      RecNo@1000000004 : Integer;
+      TotalRecNo@1000000003 : Integer;
+      Excelausgabe@1000000006 : Codeunit 50060;
+      excel@1000000007 : Boolean;
+      SR@1000000008 : Record 36;
+      SH@1000000009 : Record 36;
+      CopyMgt@1000000010 : Codeunit 6620;
+      SL@1000000011 : Record 37;
+      SRL@1000000012 : Record 37;
+      DimensionValue@1000000013 : Record 349;
+      SLArch@1000000014 : Record 5108;
+      DocumentDim@1000000015 : Record 357;
+      SHArch@1000000016 : Record 5107;
+
+    LOCAL PROCEDURE CopyFromSalesDocDimToHeader@9(VAR ToSalesHeader@1002 : Record 36;VAR FromSalesHeader@1003 : Record 36);
+    VAR
+      DocDim@1001 : Record 357;
+      FromDocDim@1000 : Record 357;
+    BEGIN
+      DocDim.SETRANGE("Table ID",DATABASE::"Sales Header");
+      DocDim.SETRANGE("Document Type",ToSalesHeader."Document Type");
+      DocDim.SETRANGE("Document No.",ToSalesHeader."No.");
+      DocDim.SETRANGE("Line No.",0);
+      DocDim.DELETEALL;
+      ToSalesHeader."Shortcut Dimension 1 Code" := FromSalesHeader."Shortcut Dimension 1 Code";
+      ToSalesHeader."Shortcut Dimension 2 Code" := FromSalesHeader."Shortcut Dimension 2 Code";
+      FromDocDim.SETRANGE("Table ID",DATABASE::"Sales Header");
+      FromDocDim.SETRANGE("Document Type",FromSalesHeader."Document Type");
+      FromDocDim.SETRANGE("Document No.",FromSalesHeader."No.");
+      IF FromDocDim.FIND('-') THEN BEGIN
+        REPEAT
+          DocDim.INIT;
+          DocDim."Table ID" := DATABASE::"Sales Header";
+          DocDim."Document Type" := ToSalesHeader."Document Type";
+          DocDim."Document No." := ToSalesHeader."No.";
+          DocDim."Line No." := 0;
+          DocDim."Dimension Code" := FromDocDim."Dimension Code";
+          DocDim."Dimension Value Code" := FromDocDim."Dimension Value Code";
+          DocDim.INSERT;
+        UNTIL FromDocDim.NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE CopyFromSalesDocDimToLine@6(VAR ToSalesLine@1002 : Record 37;VAR FromSalesLine@1003 : Record 37);
+    VAR
+      DocDim@1001 : Record 357;
+      FromDocDim@1000 : Record 357;
+    BEGIN
+        DocDim.SETRANGE("Table ID",DATABASE::"Sales Line");
+        DocDim.SETRANGE("Document Type",ToSalesLine."Document Type");
+        DocDim.SETRANGE("Document No.",ToSalesLine."Document No.");
+        DocDim.SETRANGE("Line No.",ToSalesLine."Line No.");
+        DocDim.DELETEALL;
+        ToSalesLine."Shortcut Dimension 1 Code" := FromSalesLine."Shortcut Dimension 1 Code";
+        ToSalesLine."Shortcut Dimension 2 Code" := FromSalesLine."Shortcut Dimension 2 Code";
+        FromDocDim.SETRANGE("Table ID",DATABASE::"Sales Line");
+        FromDocDim.SETRANGE("Document Type",FromSalesLine."Document Type");
+        FromDocDim.SETRANGE("Document No.",FromSalesLine."Document No.");
+        FromDocDim.SETRANGE("Line No.",FromSalesLine."Line No.");
+        IF FromDocDim.FIND('-') THEN BEGIN
+          REPEAT
+            DocDim.INIT;
+            DocDim."Table ID" := DATABASE::"Sales Line";
+            DocDim."Document Type" := ToSalesLine."Document Type";
+            DocDim."Document No." := ToSalesLine."Document No.";
+            DocDim."Line No." := ToSalesLine."Line No.";
+            DocDim."Dimension Code" := FromDocDim."Dimension Code";
+            DocDim."Dimension Value Code" := FromDocDim."Dimension Value Code";
+            DocDim.INSERT;
+          UNTIL FromDocDim.NEXT = 0;
+        END;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

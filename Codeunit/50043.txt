@@ -1,0 +1,767 @@
+OBJECT Codeunit 50043 Import Return Orders
+{
+  OBJECT-PROPERTIES
+  {
+    Date=03.06.15;
+    Time=14:29:05;
+    Modified=Yes;
+    Version List=GOB1.00,HME4306;
+  }
+  PROPERTIES
+  {
+    TableNo=50009;
+    OnRun=VAR
+            TextLoc001@1108200004 : TextConst 'DEU=Auftrag wurde bereits storniert.;ENU=Order is already canceled.';
+            TextLoc002@1108200003 : TextConst 'DEU=Auftrag nicht gefunden.;ENU=Order not found.';
+            TextLoc003@1108200002 : TextConst 'DEU=Kulanzzeile existiert bereits;ENU=Goodwill Line already exists';
+            TextLoc004@1108200001 : TextConst 'DEU=Rabattzeile existiert bereits.;ENU=Discount Line already exists.';
+            TextLoc005@1108200000 : TextConst 'DEU=Reklamation R-%1-2 existiert bereits.;ENU=Return Order R-%-2 already exists.';
+            SalesHeaderLoc@1108200014 : Record 36;
+            SalesHeaderLoc2@1108200013 : Record 36;
+            SalesLineLoc@1108200012 : Record 37;
+            SalesLineLoc2@1108200011 : Record 37;
+            SalesLineLoc3@1108200010 : Record 37;
+            ReleaseSalesDoc@1108200009 : Codeunit 414;
+            InsertLine@1108200008 : Boolean;
+            GeneralPaymentSetupLoc@1108200007 : Record 50000;
+            ResourceLoc@1108200006 : Record 156;
+            CopyDocumentMgt@1108200005 : Codeunit 6620;
+            TextLoc006@1108200016 : TextConst 'DEU=Die Auftragszeile wurde erfolgreich storniert.';
+            TextLoc007@1108200015 : TextConst 'DEU=Auftragszeile nicht gefunden.';
+          BEGIN
+            WITH Rec DO BEGIN
+              SalesHeaderLoc.RESET;
+              CASE Type OF  //***CASE***
+                //Prozess aus Excelsheet
+                //1. Bestellnummer suchen (sales_order_number)
+                //2. Status zurÅcksetzen
+                //3. Stornogrundcode auswÑhlen: TEST (fÅr alle Artikel in der entsprechenden Bestellung)
+                //4. Funktion -> Storno -> Auftrag stornieren
+                'TEST_ORDER': BEGIN //***TEST ORDER***
+                  IF SalesHeaderLoc.GET(SalesHeaderLoc."Document Type"::Order,sales_order_number) THEN BEGIN
+                    IF SalesHeaderLoc.Status = SalesHeaderLoc.Status::Canceled THEN BEGIN
+                      Processed := TRUE;
+                      "Processed By" := "Processed By"::Batch;
+                      "Processed By User" := USERID;
+                      "Processing Text" := TextLoc001;
+                      Status := Status::Success;
+                      MODIFY;
+                    END ELSE BEGIN
+                      ReleaseSalesDoc.Reopen(SalesHeaderLoc);
+                      SalesLineLoc.RESET;
+                      SalesLineLoc.SETRANGE("Document Type",SalesHeaderLoc."Document Type");
+                      SalesLineLoc.SETRANGE("Document No.",SalesHeaderLoc."No.");
+                      IF SalesLineLoc.FIND('-') THEN
+                        REPEAT
+                          SalesLineLoc."Cancellation Reason Code" := 'TEST';
+                          SalesLineLoc.MODIFY;
+                        UNTIL SalesLineLoc.NEXT = 0;
+                      SalesHeaderLoc.MagentoCancel;
+                      Processed := TRUE;
+                      "Processed By" := "Processed By"::Batch;
+                      "Processed By User" := USERID;
+                      "Processing Text" := '';
+                      Status := Status::Success;
+                      MODIFY;
+                    END;
+                  END ELSE BEGIN
+                    Processed := TRUE;
+                    "Processed By" := "Processed By"::Batch;
+                    "Processed By User" := USERID;
+                    "Processing Text" := TextLoc002;
+                    Status := Status::Error;
+                    MODIFY;
+                  END;
+                END;  //***TEST ORDER***
+
+                //Prozess aus Excelsheet
+                //1. Bestellnummer suchen (sales_order_number)
+                //2. Status zurÅcksetzen
+                //3. Stornogrundcode auswÑhlen: DOUBLETTE (fÅr alle Artikel in der entsprechenden Bestellung)
+                //4. Funktion -> Storno -> Auftrag stornieren
+                'DOUBLETTEN': BEGIN //***DOUBLETTEN***
+                  IF SalesHeaderLoc.GET(SalesHeaderLoc."Document Type"::Order,sales_order_number) THEN BEGIN
+                    IF SalesHeaderLoc.Status = SalesHeaderLoc.Status::Canceled THEN BEGIN
+                      Processed := TRUE;
+                      "Processed By" := "Processed By"::Batch;
+                      "Processed By User" := USERID;
+                      "Processing Text" := TextLoc001;
+                      Status := Status::Success;
+                      MODIFY;
+                    END ELSE BEGIN
+                      ReleaseSalesDoc.Reopen(SalesHeaderLoc);
+                      SalesLineLoc.RESET;
+                      SalesLineLoc.SETRANGE("Document Type",SalesHeaderLoc."Document Type");
+                      SalesLineLoc.SETRANGE("Document No.",SalesHeaderLoc."No.");
+                      IF SalesLineLoc.FIND('-') THEN
+                        REPEAT
+                          SalesLineLoc."Cancellation Reason Code" := 'DOUBLETTE';
+                          SalesLineLoc.MODIFY;
+                        UNTIL SalesLineLoc.NEXT = 0;
+                      SalesHeaderLoc.MagentoCancel;
+                      Processed := TRUE;
+                      "Processed By" := "Processed By"::Batch;
+                      "Processed By User" := USERID;
+                      "Processing Text" := '';
+                      Status := Status::Success;
+                      MODIFY;
+                    END;
+                  END ELSE BEGIN
+                    Processed := TRUE;
+                    "Processed By" := "Processed By"::Batch;
+                    "Processed By User" := USERID;
+                    "Processing Text" := TextLoc002;
+                    Status := Status::Error;
+                    MODIFY;
+                  END;
+                END;  //***DOUBLETTEN***
+
+                //Prozess aus Excelsheet
+                //1. Bestellnummer suchen (sales_order_number)
+                //2. Status zurÅcksetzen
+                //3. unterhalb des betroffenen Artikels (s. sales_item_sku) eine neue Zeile einfÅgen
+                //4. Zeile ausfÅllen mit: Art=Ressource, Nr.=KULANZ01,VK-Preis inkl. MwSt=negativer "AZ RÅckerstattungsbetrag",
+                   //Menge = 1, Rabattgrundcode = "Grund"
+                //5. Freigeben
+                'KULANZ': BEGIN  //***KULANZ***
+                  IF SalesHeaderLoc.GET(SalesHeaderLoc."Document Type"::Order,sales_order_number) THEN BEGIN
+                    ReleaseSalesDoc.Reopen(SalesHeaderLoc);
+                    SalesLineLoc.RESET;
+                    SalesLineLoc.SETRANGE("Document Type",SalesHeaderLoc."Document Type");
+                    SalesLineLoc.SETRANGE("Document No.",SalesHeaderLoc."No.");
+                    SalesLineLoc.SETRANGE("Dropship No.",dropship_number);
+                    IF SalesLineLoc.FINDFIRST THEN BEGIN
+                      SalesLineLoc2.RESET;
+                      SalesLineLoc2.SETRANGE("Document Type",SalesLineLoc2."Document Type");
+                      SalesLineLoc2.SETRANGE("Document No.",SalesLineLoc2."Document No.");
+                      SalesLineLoc2.SETFILTER("Line No.",'>%1',SalesLineLoc."Line No.");
+                      SalesLineLoc2.SETRANGE(Type,SalesLineLoc2.Type::Resource);
+                      SalesLineLoc2.SETRANGE("No.",'KULANZ01');
+                      IF SalesLineLoc2.FINDFIRST THEN BEGIN
+                        SalesLineLoc3.RESET;
+                        SalesLineLoc3.SETRANGE("Document Type",SalesLineLoc3."Document Type");
+                        SalesLineLoc3.SETRANGE("Document No.",SalesLineLoc3."Document No.");
+                        SalesLineLoc3.SETRANGE("Line No.",SalesLineLoc."Line No.",SalesLineLoc2."Line No.");
+                        SalesLineLoc3.SETRANGE(Type,SalesLineLoc2.Type::Item);
+                        IF SalesLineLoc3.FINDFIRST THEN BEGIN
+                          SalesLineLoc2.RESET;
+                          SalesLineLoc2.INIT;
+                          SalesLineLoc2."Document Type" := SalesLineLoc."Document Type";
+                          SalesLineLoc2."Document No." := SalesLineLoc."Document No.";
+                          SalesLineLoc2."Line No." := SalesLineLoc."Line No." + 50;
+                          SalesLineLoc2.VALIDATE("Sell-to Customer No.",SalesLineLoc."Sell-to Customer No.");
+                          SalesLineLoc2.VALIDATE(Type,SalesLineLoc2.Type::Resource);
+                          SalesLineLoc2.VALIDATE("No.",'KULANZ01');
+                          SalesLineLoc2.VALIDATE(Quantity,1);
+                          SalesLineLoc2.VALIDATE("Unit Price","AZ RÅckerstattungsbetrag" * -1);
+                          //H4306  01.06.15  MBY  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+                          //SalesLineLoc2."Discount Reason Code" := '';  //TODO Grund fÅllen
+                          //H4306  01.06.15  MBY  -------------------------------------------------------------------------
+                          SalesLineLoc2.INSERT;
+                          Processed := TRUE;
+                          "Processed By" := "Processed By"::Batch;
+                          "Processed By User" := USERID;
+                          "Processing Text" := '';
+                          Status := Status::Success;
+                          MODIFY;
+                        END ELSE BEGIN
+                          Processed := TRUE;
+                          "Processed By" := "Processed By"::Batch;
+                          "Processed By User" := USERID;
+                          "Processing Text" := TextLoc003;
+                          Status := Status::Success;
+                          MODIFY;
+                        END;
+                      END ELSE BEGIN
+                        SalesLineLoc2.RESET;
+                        SalesLineLoc2.INIT;
+                        SalesLineLoc2."Document Type" := SalesLineLoc."Document Type";
+                        SalesLineLoc2."Document No." := SalesLineLoc."Document No.";
+                        SalesLineLoc2."Line No." := SalesLineLoc."Line No." + 100;
+                        SalesLineLoc2.VALIDATE("Sell-to Customer No.",SalesLineLoc."Sell-to Customer No.");
+                        SalesLineLoc2.VALIDATE(Type,SalesLineLoc2.Type::Resource);
+                        SalesLineLoc2.VALIDATE("No.",'KULANZ01');
+                        SalesLineLoc2.VALIDATE(Quantity,1);
+                        SalesLineLoc2.VALIDATE("Unit Price","AZ RÅckerstattungsbetrag" * -1);
+                        //H4306  01.06.15  MBY  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+                        //SalesLineLoc2."Discount Reason Code" := '';  //TODO Grund fÅllen
+                        //H4306  01.06.15  MBY  -------------------------------------------------------------------------
+                        SalesLineLoc2.INSERT;
+                        Processed := TRUE;
+                        "Processed By" := "Processed By"::Batch;
+                        "Processed By User" := USERID;
+                        "Processing Text" := '';
+                        Status := Status::Success;
+                        MODIFY;
+                      END;
+                    END;
+                    ReleaseSalesDoc.RUN(SalesHeaderLoc);
+                    IF GeneralPaymentSetupLoc.GET THEN BEGIN
+                      SalesHeaderLoc2.RESET;
+                      SalesHeaderLoc2.SETRANGE("Document Type",SalesHeaderLoc."Document Type");
+                      SalesHeaderLoc2.SETRANGE("No.",SalesHeaderLoc."No.");
+                      SalesHeaderLoc2.SETFILTER("Payment Method Code",GeneralPaymentSetupLoc."BillPay Payment Method Filter");
+                      IF SalesHeaderLoc2.FINDFIRST THEN BEGIN
+                        IF ((SalesHeaderLoc."BillPay Last Status" <> SalesHeaderLoc."BillPay Last Status"::" ") AND
+                          (SalesHeaderLoc."BillPay Last Status" <> SalesHeaderLoc."BillPay Last Status"::"Preauth. Error") AND
+                          (SalesHeaderLoc."BillPay Last Status" <> SalesHeaderLoc."BillPay Last Status"::Canceled)) THEN
+                          SalesHeaderLoc.PartialCancelBillPaySO(SalesHeaderLoc);
+                      END;
+                    END;
+                  END ELSE BEGIN
+                    Processed := TRUE;
+                    "Processed By" := "Processed By"::Batch;
+                    "Processed By User" := USERID;
+                    "Processing Text" := TextLoc002;
+                    Status := Status::Error;
+                    MODIFY;
+                  END;
+                END;  //***KULANZ***
+
+                //Prozess aus Excelsheet
+                //1. Bestellnummer suchen (sales_order_number)
+                //2. Status zurÅcksetzen
+                //3. unterhalb des betroffenen Artikels (s. sales_item_sku) eine neue Zeile einfÅgen
+                //4. Zeile ausfÅllen mit: Art = Ressource, Nr. = wenn vorhanden, dann "sales_coupon_code",
+                //   sonst "ZKAUFGUT"; VK-Preis inkl. MwSt = neg
+                //5. Freigeben
+                'RABATT': BEGIN //***RABATT***
+                  IF SalesHeaderLoc.GET(SalesHeaderLoc."Document Type"::Order,sales_order_number) THEN BEGIN
+                    ReleaseSalesDoc.Reopen(SalesHeaderLoc);
+                    SalesLineLoc.RESET;
+                    SalesLineLoc.SETRANGE("Document Type",SalesHeaderLoc."Document Type");
+                    SalesLineLoc.SETRANGE("Document No.",SalesHeaderLoc."No.");
+                    SalesLineLoc.SETRANGE("Dropship No.",dropship_number);
+                    IF SalesLineLoc.FINDFIRST THEN BEGIN
+                      SalesLineLoc2.RESET;
+                      SalesLineLoc2.SETRANGE("Document Type",SalesLineLoc2."Document Type");
+                      SalesLineLoc2.SETRANGE("Document No.",SalesLineLoc2."Document No.");
+                      SalesLineLoc2.SETFILTER("Line No.",'>%1',SalesLineLoc."Line No.");
+                      SalesLineLoc2.SETRANGE(Type,SalesLineLoc2.Type::Resource);
+                      IF SalesLineLoc2.FINDFIRST THEN BEGIN
+                        SalesLineLoc3.RESET;
+                        SalesLineLoc3.SETRANGE("Document Type",SalesLineLoc3."Document Type");
+                        SalesLineLoc3.SETRANGE("Document No.",SalesLineLoc3."Document No.");
+                        SalesLineLoc3.SETRANGE("Line No.",SalesLineLoc."Line No.",SalesLineLoc2."Line No.");
+                        SalesLineLoc3.SETRANGE(Type,SalesLineLoc2.Type::Item);
+                        IF SalesLineLoc3.FINDFIRST THEN BEGIN
+                          SalesLineLoc2.RESET;
+                          SalesLineLoc2.INIT;
+                          SalesLineLoc2."Document Type" := SalesLineLoc."Document Type";
+                          SalesLineLoc2."Document No." := SalesLineLoc."Document No.";
+                          SalesLineLoc2."Line No." := SalesLineLoc."Line No." + 50;
+                          SalesLineLoc2.VALIDATE("Sell-to Customer No.",SalesLineLoc."Sell-to Customer No.");
+                          SalesLineLoc2.VALIDATE(Type,SalesLineLoc2.Type::Resource);
+                          IF (sales_coupon_code <> '') AND ResourceLoc.GET(sales_coupon_code) THEN
+                            SalesLineLoc2.VALIDATE("No.",sales_coupon_code)
+                          ELSE
+                            SalesLineLoc2.VALIDATE("No.",'ZKAUFGUT');
+                          SalesLineLoc2.VALIDATE(Quantity,1);
+                          SalesLineLoc2.VALIDATE("Unit Price","AZ RÅckerstattungsbetrag" * -1);
+                          //H4306  01.06.15  MBY  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+                          //SalesLineLoc2."Discount Reason Code" := '';  //TODO Grund fÅllen
+                          //H4306  01.06.15  MBY  -------------------------------------------------------------------------
+                          SalesLineLoc2.INSERT;
+                          Processed := TRUE;
+                          "Processed By" := "Processed By"::Batch;
+                          "Processed By User" := USERID;
+                          "Processing Text" := '';
+                          Status := Status::Success;
+                          MODIFY;
+                        END ELSE BEGIN
+                          Processed := TRUE;
+                          "Processed By" := "Processed By"::Batch;
+                          "Processed By User" := USERID;
+                          "Processing Text" := TextLoc004;
+                          Status := Status::Success;
+                          MODIFY;
+                        END;
+                      END ELSE BEGIN
+                        SalesLineLoc2.RESET;
+                        SalesLineLoc2.INIT;
+                        SalesLineLoc2."Document Type" := SalesLineLoc."Document Type";
+                        SalesLineLoc2."Document No." := SalesLineLoc."Document No.";
+                        SalesLineLoc2."Line No." := SalesLineLoc."Line No." + 100;
+                        SalesLineLoc2.VALIDATE("Sell-to Customer No.",SalesLineLoc."Sell-to Customer No.");
+                        SalesLineLoc2.VALIDATE(Type,SalesLineLoc2.Type::Resource);
+                        IF (sales_coupon_code <> '') AND ResourceLoc.GET(sales_coupon_code) THEN
+                          SalesLineLoc2.VALIDATE("No.",sales_coupon_code)
+                        ELSE
+                          SalesLineLoc2.VALIDATE("No.",'ZKAUFGUT');
+                        SalesLineLoc2.VALIDATE(Quantity,1);
+                        SalesLineLoc2.VALIDATE("Unit Price","AZ RÅckerstattungsbetrag" * -1);
+                        //H4306  01.06.15  MBY  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+                        //SalesLineLoc2."Discount Reason Code" := '';  //TODO Grund fÅllen
+                        //H4306  01.06.15  MBY  -------------------------------------------------------------------------
+                        SalesLineLoc2.INSERT;
+                        Processed := TRUE;
+                        "Processed By" := "Processed By"::Batch;
+                        "Processed By User" := USERID;
+                        "Processing Text" := '';
+                        Status := Status::Success;
+                        MODIFY;
+                      END;
+                    END;
+                    ReleaseSalesDoc.RUN(SalesHeaderLoc);
+                    IF GeneralPaymentSetupLoc.GET THEN BEGIN
+                      SalesHeaderLoc2.RESET;
+                      SalesHeaderLoc2.SETRANGE("Document Type",SalesHeaderLoc."Document Type");
+                      SalesHeaderLoc2.SETRANGE("No.",SalesHeaderLoc."No.");
+                      SalesHeaderLoc2.SETFILTER("Payment Method Code",GeneralPaymentSetupLoc."BillPay Payment Method Filter");
+                      IF SalesHeaderLoc2.FINDFIRST THEN BEGIN
+                        IF ((SalesHeaderLoc."BillPay Last Status" <> SalesHeaderLoc."BillPay Last Status"::" ") AND
+                          (SalesHeaderLoc."BillPay Last Status" <> SalesHeaderLoc."BillPay Last Status"::"Preauth. Error") AND
+                          (SalesHeaderLoc."BillPay Last Status" <> SalesHeaderLoc."BillPay Last Status"::Canceled)) THEN
+                          SalesHeaderLoc.PartialCancelBillPaySO(SalesHeaderLoc);
+                      END;
+                    END;
+                  END ELSE BEGIN
+                    Processed := TRUE;
+                    "Processed By" := "Processed By"::Batch;
+                    "Processed By User" := USERID;
+                    "Processing Text" := TextLoc002;
+                    Status := Status::Error;
+                    MODIFY;
+                  END;
+                END;  //***RABATT***
+
+                //Prozess aus Excelsheet
+                //1. neuen Auftrag in Reklamationen anlegen mit Nr. = R-Bestellnummer-1 (Bestellnummer entspricht sales_order_number)
+                //2. Funktionen -> Beleg kopieren: Belegart = Auftrag, HÑkchen "inklusive Kopf" ist gesetzt
+                //3. fÅr den betroffenen Artikel: Reklamationsgrundcode = "Grund".
+                //   Die nicht betroffenen Artikelzeilen werden gelîscht.
+                'RETOURE': BEGIN //***RETOURE***
+                  IF SalesHeaderLoc.GET(SalesHeaderLoc."Document Type"::Order,sales_order_number) THEN BEGIN
+                    IF NOT SalesHeaderLoc2.GET(SalesHeaderLoc2."Document Type"::"Return Order",
+                                              'R-' + sales_order_number +'-2') THEN BEGIN
+                      SalesHeaderLoc2.RESET;
+                      SalesHeaderLoc2.INIT;
+                      SalesHeaderLoc2."Document Type" := SalesHeaderLoc2."Document Type"::"Return Order";
+                      IF NOT SalesHeaderLoc.GET(SalesHeaderLoc."Document Type"::"Return Order",
+                                                'R-' + sales_order_number +'-1') THEN
+                        SalesHeaderLoc2."No." := 'R-' + sales_order_number + '-1'
+                      ELSE
+                        SalesHeaderLoc2."No." := 'R-' + sales_order_number + '-2';
+                      SalesHeaderLoc2.INSERT;
+
+                      CopyDocumentMgt.SetProperties(TRUE,FALSE,FALSE,FALSE,TRUE,FALSE,FALSE);
+                      CopyDocumentMgt.CopySalesDoc(2,sales_order_number,SalesHeaderLoc2);
+
+                      SalesLineLoc.RESET;
+                      SalesLineLoc.SETRANGE("Document Type",SalesHeaderLoc2."Document Type");
+                      SalesLineLoc.SETRANGE("Document No.",SalesHeaderLoc2."No.");
+                      SalesLineLoc.SETFILTER("No.",'<>%1',sales_item_sku);
+                      SalesLineLoc.DELETEALL;
+                      SalesLineLoc.RESET;
+                      SalesLineLoc.SETRANGE("Document Type",SalesHeaderLoc2."Document Type");
+                      SalesLineLoc.SETRANGE("Document No.",SalesHeaderLoc2."No.");
+                      SalesLineLoc.SETRANGE("No.",sales_item_sku);
+                      IF SalesLineLoc.FIND('-') THEN BEGIN
+                        SalesLineLoc."Cancellation Reason Code" := Grund;
+                        SalesLineLoc.MODIFY;
+                      END;
+                      Processed := TRUE;
+                      "Processed By" := "Processed By"::Batch;
+                      "Processed By User" := USERID;
+                      "Processing Text" := '';
+                      Status := Status::Success;
+                      MODIFY;
+                    END ELSE BEGIN
+                      Processed := TRUE;
+                      "Processed By" := "Processed By"::Batch;
+                      "Processed By User" := USERID;
+                      "Processing Text" := TextLoc005;
+                      Status := Status::Success;
+                      MODIFY;
+                    END;
+                  END ELSE BEGIN
+                    Processed := TRUE;
+                    "Processed By" := "Processed By"::Batch;
+                    "Processed By User" := USERID;
+                    "Processing Text" := TextLoc002;
+                    Status := Status::Error;
+                    MODIFY;
+                  END;
+                END; //***RETOURE***
+
+                //Prozess aus Excelsheet
+                //wie Retoure; die Menge des betroffenen Artikels wird entsprechend dem Feld "Anzahl_Return" angepasst
+                'TEILRETOURE': BEGIN
+                  IF SalesHeaderLoc.GET(SalesHeaderLoc."Document Type"::Order,sales_order_number) THEN BEGIN
+                    IF NOT SalesHeaderLoc2.GET(SalesHeaderLoc2."Document Type"::"Return Order",
+                                              'R-' + sales_order_number +'-2') THEN BEGIN
+                      SalesHeaderLoc2.RESET;
+                      SalesHeaderLoc2.INIT;
+                      SalesHeaderLoc2."Document Type" := SalesHeaderLoc2."Document Type"::"Return Order";
+                      IF NOT SalesHeaderLoc.GET(SalesHeaderLoc."Document Type"::"Return Order",
+                                                'R-' + sales_order_number +'-1') THEN
+                        SalesHeaderLoc2."No." := 'R-' + sales_order_number + '-1'
+                      ELSE
+                        SalesHeaderLoc2."No." := 'R-' + sales_order_number + '-2';
+                      SalesHeaderLoc2.INSERT;
+
+                      CopyDocumentMgt.SetProperties(TRUE,FALSE,FALSE,FALSE,TRUE,FALSE,FALSE);
+                      CopyDocumentMgt.CopySalesDoc(2,sales_order_number,SalesHeaderLoc2);
+
+                      SalesLineLoc.RESET;
+                      SalesLineLoc.SETRANGE("Document Type",SalesHeaderLoc2."Document Type");
+                      SalesLineLoc.SETRANGE("Document No.",SalesHeaderLoc2."No.");
+                      SalesLineLoc.SETFILTER("No.",'<>%1',sales_item_sku);
+                      SalesLineLoc.DELETEALL;
+                      SalesLineLoc.RESET;
+                      SalesLineLoc.SETRANGE("Document Type",SalesHeaderLoc2."Document Type");
+                      SalesLineLoc.SETRANGE("Document No.",SalesHeaderLoc2."No.");
+                      SalesLineLoc.SETRANGE("No.",sales_item_sku);
+                      IF SalesLineLoc.FIND('-') THEN BEGIN
+                        SalesLineLoc."Cancellation Reason Code" := Grund;
+                        SalesLineLoc.VALIDATE(Quantity,Anzahl_Return);
+                        SalesLineLoc.MODIFY;
+                      END;
+                      Processed := TRUE;
+                      "Processed By" := "Processed By"::Batch;
+                      "Processed By User" := USERID;
+                      "Processing Text" := '';
+                      Status := Status::Success;
+                      MODIFY;
+                    END ELSE BEGIN
+                      Processed := TRUE;
+                      "Processed By" := "Processed By"::Batch;
+                      "Processed By User" := USERID;
+                      "Processing Text" := TextLoc005;
+                      Status := Status::Error;
+                      MODIFY;
+                    END;
+                  END ELSE BEGIN
+                    Processed := TRUE;
+                    "Processed By" := "Processed By"::Batch;
+                    "Processed By User" := USERID;
+                    "Processing Text" := TextLoc002;
+                    Status := Status::Error;
+                    MODIFY;
+                  END;
+
+                END; //***TEILRETOURE***
+
+                //Prozess aus Excelsheet
+                //1. neuen Auftrag in Reklamationen anlegen mit Nr. = R-Bestellnummer-1 (Bestellnummer entspricht sales_order_number)
+                //2. Funktionen -> Beleg kopieren: Belegart = Auftrag, HÑkchen "inklusive Kopf" ist gesetzt
+                //3. Reiter Fakturierung: Zahlungsformcode: free
+                //4. fÅr den betroffenen Artikel: Reklamationsgrundcode = "Grund".
+                //   Die nicht betroffenen Artikelzeilen werden gelîscht.
+                'UMTAUSCH': BEGIN
+                  IF SalesHeaderLoc.GET(SalesHeaderLoc."Document Type"::Order,sales_order_number) THEN BEGIN
+                    IF NOT SalesHeaderLoc2.GET(SalesHeaderLoc2."Document Type"::"Return Order",
+                                              'R-' + sales_order_number +'-2') THEN BEGIN
+                      SalesHeaderLoc2.RESET;
+                      SalesHeaderLoc2.INIT;
+                      SalesHeaderLoc2."Document Type" := SalesHeaderLoc2."Document Type"::"Return Order";
+                      IF NOT SalesHeaderLoc.GET(SalesHeaderLoc."Document Type"::"Return Order",
+                                                'R-' + sales_order_number +'-1') THEN
+                        SalesHeaderLoc2."No." := 'R-' + sales_order_number + '-1'
+                      ELSE
+                        SalesHeaderLoc2."No." := 'R-' + sales_order_number + '-2';
+                      SalesHeaderLoc2.INSERT;
+
+                      CopyDocumentMgt.SetProperties(TRUE,FALSE,FALSE,FALSE,TRUE,FALSE,FALSE);
+                      CopyDocumentMgt.CopySalesDoc(2,sales_order_number,SalesHeaderLoc2);
+
+                      SalesHeaderLoc2.VALIDATE("Payment Method Code",'FREE');
+                      SalesHeaderLoc2.MODIFY;
+
+                      SalesLineLoc.RESET;
+                      SalesLineLoc.SETRANGE("Document Type",SalesHeaderLoc2."Document Type");
+                      SalesLineLoc.SETRANGE("Document No.",SalesHeaderLoc2."No.");
+                      SalesLineLoc.SETFILTER("No.",'<>%1',sales_item_sku);
+                      SalesLineLoc.DELETEALL;
+                      SalesLineLoc.RESET;
+                      SalesLineLoc.SETRANGE("Document Type",SalesHeaderLoc2."Document Type");
+                      SalesLineLoc.SETRANGE("Document No.",SalesHeaderLoc2."No.");
+                      SalesLineLoc.SETRANGE("No.",sales_item_sku);
+                      IF SalesLineLoc.FIND('-') THEN BEGIN
+                        SalesLineLoc."Cancellation Reason Code" := Grund;
+                        SalesLineLoc.MODIFY;
+                      END;
+                      Processed := TRUE;
+                      "Processed By" := "Processed By"::Batch;
+                      "Processed By User" := USERID;
+                      "Processing Text" := '';
+                      Status := Status::Success;
+                      MODIFY;
+                    END ELSE BEGIN
+                      Processed := TRUE;
+                      "Processed By" := "Processed By"::Batch;
+                      "Processed By User" := USERID;
+                      "Processing Text" := TextLoc005;
+                      Status := Status::Success;
+                      MODIFY;
+                    END;
+                  END ELSE BEGIN
+                    Processed := TRUE;
+                    "Processed By" := "Processed By"::Batch;
+                    "Processed By User" := USERID;
+                    "Processing Text" := TextLoc002;
+                    Status := Status::Error;
+                    MODIFY;
+                  END;
+                END; //***UMTAUSCH***
+
+                //Prozess aus Excelsheet
+                //wie Umtausch; die Menge des betroffenen Artikels wird entsprechend dem Feld "Anzahl_Return" angepasst
+                'TEILUMTAUSCH': BEGIN
+                  IF SalesHeaderLoc.GET(SalesHeaderLoc."Document Type"::Order,sales_order_number) THEN BEGIN
+                    IF NOT SalesHeaderLoc2.GET(SalesHeaderLoc2."Document Type"::"Return Order",
+                                              'R-' + sales_order_number +'-2') THEN BEGIN
+                      SalesHeaderLoc2.RESET;
+                      SalesHeaderLoc2.INIT;
+                      SalesHeaderLoc2."Document Type" := SalesHeaderLoc2."Document Type"::"Return Order";
+                      IF NOT SalesHeaderLoc.GET(SalesHeaderLoc."Document Type"::"Return Order",
+                                                'R-' + sales_order_number +'-1') THEN
+                        SalesHeaderLoc2."No." := 'R-' + sales_order_number + '-1'
+                      ELSE
+                        SalesHeaderLoc2."No." := 'R-' + sales_order_number + '-2';
+                      SalesHeaderLoc2.INSERT;
+
+                      CopyDocumentMgt.SetProperties(TRUE,FALSE,FALSE,FALSE,TRUE,FALSE,FALSE);
+                      CopyDocumentMgt.CopySalesDoc(2,sales_order_number,SalesHeaderLoc2);
+
+                      SalesHeaderLoc2.VALIDATE("Payment Method Code",'FREE');
+                      SalesHeaderLoc2.MODIFY;
+
+                      SalesLineLoc.RESET;
+                      SalesLineLoc.SETRANGE("Document Type",SalesHeaderLoc2."Document Type");
+                      SalesLineLoc.SETRANGE("Document No.",SalesHeaderLoc2."No.");
+                      SalesLineLoc.SETFILTER("No.",'<>%1',sales_item_sku);
+                      SalesLineLoc.DELETEALL;
+                      SalesLineLoc.RESET;
+                      SalesLineLoc.SETRANGE("Document Type",SalesHeaderLoc2."Document Type");
+                      SalesLineLoc.SETRANGE("Document No.",SalesHeaderLoc2."No.");
+                      SalesLineLoc.SETRANGE("No.",sales_item_sku);
+                      IF SalesLineLoc.FIND('-') THEN BEGIN
+                        SalesLineLoc."Cancellation Reason Code" := Grund;
+                        SalesLineLoc.VALIDATE(Quantity,Anzahl_Return);
+                        SalesLineLoc.MODIFY;
+                      END;
+                      Processed := TRUE;
+                      "Processed By" := "Processed By"::Batch;
+                      "Processed By User" := USERID;
+                      "Processing Text" := '';
+                      Status := Status::Success;
+                      MODIFY;
+                    END ELSE BEGIN
+                      Processed := TRUE;
+                      "Processed By" := "Processed By"::Batch;
+                      "Processed By User" := USERID;
+                      "Processing Text" := TextLoc005;
+                      Status := Status::Success;
+                      MODIFY;
+                    END;
+                  END ELSE BEGIN
+                    Processed := TRUE;
+                    "Processed By" := "Processed By"::Batch;
+                    "Processed By User" := USERID;
+                    "Processing Text" := TextLoc002;
+                    Status := Status::Error;
+                    MODIFY;
+                  END;
+                END;  //***TEILUMTAUSCH
+
+                //Prozess aus Excelsheet
+                //1. Bestellnummer suchen (sales_order_number)
+                //2. Status zurÅcksetzen
+                //3. Stornogrundcode = "Grund" fÅr die betroffenen Artikel eintragen
+                //4. Funktion -> Storno -> Zeile stornieren (fÅr die betroffenen Artikel)
+                'STORNO': BEGIN
+                  IF SalesHeaderLoc.GET(SalesHeaderLoc."Document Type"::Order,sales_order_number) THEN BEGIN
+                      SalesLineLoc.RESET;
+                      SalesLineLoc.SETRANGE("Document Type",SalesHeaderLoc."Document Type");
+                      SalesLineLoc.SETRANGE("Document No.",SalesHeaderLoc."No.");
+                      SalesLineLoc.SETRANGE(Type,SalesLineLoc.Type::Item);
+                      SalesLineLoc.SETRANGE("No.",sales_item_sku);
+                      SalesLineLoc.SETRANGE("Dropship No.",dropship_number);
+                      SalesLineLoc.SETRANGE(Quantity,sales_item_qty_ordered);
+                      IF SalesLineLoc.FIND('-') THEN BEGIN
+                        SalesLineLoc."Cancellation Reason Code" := Grund;//muss zukÅnftig in neuer Excel anders gepflegt werden
+                        ///SalesLineLoc."Cancellation Date" := currentdatetime;
+                        SalesLineLoc.MODIFY;
+                        SalesLineLoc.MagentoCancel(FALSE,FALSE);   //ist noch zu testen!!!
+                        Processed := TRUE;
+                        "Processed By" := "Processed By"::Batch;
+                        "Processed By User" := USERID;
+                        "Processing Text" := TextLoc006;
+                        Status := Status::Success;
+                        MODIFY;
+                      END ELSE BEGIN
+                        //Mengenfilter lîsen
+                        SalesLineLoc.SETRANGE(Quantity);
+                        IF SalesLineLoc.FIND('-') THEN BEGIN
+                          SalesLineLoc."Cancellation Reason Code" := Grund;
+                          //SalesLineLoc."Cancellation Date" := currentdatetime;
+                          SalesLineLoc.MODIFY;
+                          SalesLineLoc.MagentoCancel(FALSE,FALSE);
+                          Processed := TRUE;
+                          "Processed By" := "Processed By"::Batch;
+                          "Processed By User" := USERID;
+                          "Processing Text" := TextLoc006;
+                          Status := Status::Success;
+                          MODIFY;
+                        END ELSE BEGIN
+                          //Dropshipmentfilter lîsen
+                          SalesLineLoc.SETRANGE("Dropship No.");
+                          IF SalesLineLoc.FIND('-') THEN BEGIN
+                            SalesLineLoc."Cancellation Reason Code" := Grund;
+                            //SalesLineLoc."Cancellation Date" := currentdatetime;
+                            SalesLineLoc.MODIFY;
+                            SalesLineLoc.MagentoCancel(FALSE,FALSE);
+                            Processed := TRUE;
+                            "Processed By" := "Processed By"::Batch;
+                            "Processed By User" := USERID;
+                            "Processing Text" := TextLoc006;
+                            Status := Status::Success;
+                            MODIFY;
+                          END ELSE BEGIN
+                            Processed := TRUE;
+                            "Processed By" := "Processed By"::Batch;
+                            "Processed By User" := USERID;
+                            "Processing Text" := TextLoc007;
+                            Status := Status::Error;
+                            MODIFY;
+                          END;
+                        END;
+                      END;
+                  END ELSE BEGIN
+                    Processed := TRUE;
+                    "Processed By" := "Processed By"::Batch;
+                    "Processed By User" := USERID;
+                    "Processing Text" := TextLoc002;
+                    Status := Status::Error;
+                    MODIFY;
+                  END;
+                END;
+
+                //Prozess aus Excelsheet
+                //1. Bestellnummer suchen (sales_order_number)
+                //2. Status zurÅcksetzen
+                //3. Stornogrundcode = "Grund" fÅr die betroffenen Artikel eintragen
+                //4. Funktion -> Storno -> komplette Zeile stornieren (des betroffenen Artikels)
+                //5. unter der stornierten Zeile eine neue Zeile anlegen mit den selben Daten; nur Menge = "Differenz Bestell_Storno"
+                'TEILSTORNO': BEGIN
+                  IF SalesHeaderLoc.GET(SalesHeaderLoc."Document Type"::Order,sales_order_number) THEN BEGIN
+                     SalesLineLoc.RESET;
+                     SalesLineLoc.SETRANGE("Document Type",SalesHeaderLoc."Document Type");
+                     SalesLineLoc.SETRANGE("Document No.",SalesHeaderLoc."No.");
+                     SalesLineLoc.SETRANGE(Type,SalesLineLoc.Type::Item);
+                     SalesLineLoc.SETRANGE("No.",sales_item_sku);
+                     SalesLineLoc.SETRANGE("Dropship No.",dropship_number);
+                     SalesLineLoc.SETRANGE(Quantity,sales_item_qty_ordered);
+                     IF SalesLineLoc.FIND('-') THEN BEGIN
+                       SalesLineLoc2.RESET;
+                       SalesLineLoc2 := SalesLineLoc;
+                       SalesLineLoc."Cancellation Reason Code" := Grund;//muss zukÅnftig in neuer Excel anders gepflegt werden
+                       ///SalesLineLoc."Cancellation Date" := currentdatetime;
+                       SalesLineLoc.MODIFY;
+                       SalesLineLoc.MagentoCancel(FALSE,FALSE);   //ist noch zu testen!!!
+                       SalesLineLoc3.RESET;
+                       SalesLineLoc3.INIT;
+                       SalesLineLoc3 := SalesLineLoc2;
+                       SalesLineLoc3."Line No." := SalesLineLoc3."Line No." + 50;
+                       SalesLineLoc3.VALIDATE(Quantity,SalesLineLoc2.Quantity - Teilstorno_menge);
+                       SalesLineLoc3.INSERT;
+                       Processed := TRUE;
+                       "Processed By" := "Processed By"::Batch;
+                       "Processed By User" := USERID;
+                       "Processing Text" := TextLoc006;
+                       Status := Status::Success;
+                       MODIFY;
+                     END ELSE BEGIN
+                       //Dropshipmentfilter lîsen
+                       SalesLineLoc.SETRANGE("Dropship No.");
+                       IF SalesLineLoc.FIND('-') THEN BEGIN
+                         SalesLineLoc2.RESET;
+                         SalesLineLoc2 := SalesLineLoc;
+                         SalesLineLoc."Cancellation Reason Code" := Grund;
+                         //SalesLineLoc."Cancellation Date" := currentdatetime;
+                         SalesLineLoc.MODIFY;
+                         SalesLineLoc.MagentoCancel(FALSE,FALSE);
+                         SalesLineLoc3.RESET;
+                         SalesLineLoc3.INIT;
+                         SalesLineLoc3 := SalesLineLoc2;
+                         SalesLineLoc3."Line No." := SalesLineLoc3."Line No." + 50;
+                         SalesLineLoc3.VALIDATE(Quantity,SalesLineLoc2.Quantity - Teilstorno_menge);
+                         SalesLineLoc3.INSERT;
+                         Processed := TRUE;
+                         "Processed By" := "Processed By"::Batch;
+                         "Processed By User" := USERID;
+                         "Processing Text" := TextLoc006;
+                         Status := Status::Success;
+                         MODIFY;
+                       END ELSE BEGIN
+                         Processed := TRUE;
+                         "Processed By" := "Processed By"::Batch;
+                         "Processed By User" := USERID;
+                         "Processing Text" := TextLoc007;
+                         Status := Status::Error;
+                         MODIFY;
+                       END;
+                     END;
+                  END ELSE BEGIN
+                    Processed := TRUE;
+                    "Processed By" := "Processed By"::Batch;
+                    "Processed By User" := USERID;
+                    "Processing Text" := TextLoc002;
+                    Status := Status::Error;
+                    MODIFY;
+                  END;
+                END;
+              END; //***CASE***
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text001@1108200001 : TextConst 'DEU=Kein manueller Aufruf.;ENU=No manual call up.';
+
+    PROCEDURE BatchSalesReturnOrders@1108200008(p_ImportOrders@1108200000 : Record 50009);
+    BEGIN
+      IF NOT p_ImportOrders.ISEMPTY THEN BEGIN
+        REPEAT
+          IF NOT CODEUNIT.RUN(CODEUNIT::"Import Return Orders",p_ImportOrders) THEN BEGIN
+            p_ImportOrders."Processed By" := p_ImportOrders."Processed By"::Batch;
+            p_ImportOrders."Processed By User" := USERID;
+            p_ImportOrders."Processing Text" := GETLASTERRORTEXT;
+            p_ImportOrders.Status := p_ImportOrders.Status::Error;
+            p_ImportOrders.MODIFY;
+          END;
+        UNTIL p_ImportOrders.NEXT = 0;
+      END;
+    END;
+
+    BEGIN
+    {
+      +-----------------------------------------------------+
+      |               GOB Software & Systeme                |
+      +-----------------------------------------------------+
+      |                      FC Commerce                    |
+      +-----------------------------------------------------+
+
+      Version   Date      Consultant  Comment
+      -------------------------------------------------------
+      GOB1.00   23.03.12  gob-rste    Object created
+
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+      H4306       01.06.15 MBY       Solve all compilation errors in NAV2009
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,384 @@
+OBJECT Codeunit 50125 SII Testing Services
+{
+  OBJECT-PROPERTIES
+  {
+    Date=28.06.13;
+    Time=14:47:03;
+    Modified=Yes;
+    Version List=SII;
+  }
+  PROPERTIES
+  {
+    OnRun=VAR
+            RecRef@1000000000 : RecordRef;
+            FieldRef@1000000001 : FieldRef;
+          BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      SIISetup@1000000000 : Record 50140;
+      Text001@1000000002 : TextConst 'ENU=Test aborted.';
+      SIIFillLog@1000000006 : Codeunit 50123;
+      SIIProcessLog@1000000001 : Codeunit 50124;
+      Text002@1000000003 : TextConst 'ENU=Error on Order "%1"\\%2';
+      Text003@1000000004 : TextConst 'ENU=There''re no entries within the filter.';
+      Text004@1000000005 : TextConst 'ENU=There''re no active actions and/or channels for any messages.';
+      Text005@1000000007 : TextConst 'ENU=There''re no active actions and/or channels for the message "%1".';
+
+    PROCEDURE InitiateFromOrder@1000000004(p_RecRef@1000000001 : RecordRef);
+    VAR
+      SIIMessage@1000000000 : Record 50141;
+      SIIMessage_Temp@1000000004 : TEMPORARY Record 50141;
+      SIIMessageList@1000000003 : Form 50211;
+      TestingMode@1000000005 : Integer;
+      CreatedSIILogEntryNo@1000000002 : Integer;
+      SuccesMessageArray@1000000006 : ARRAY [50] OF Text[1024];
+      i@1000000007 : Integer;
+      j@1000000009 : Integer;
+      BigTextMessage@1000000008 : BigText;
+    BEGIN
+      SIISetup.GET;
+
+      CLEAR(SIIFillLog);
+      CLEAR(SIIProcessLog);
+      CLEAR(CreatedSIILogEntryNo);
+      CLEAR(SIIMessageList);
+      CLEAR(SIIMessage);
+      SIIMessage_Temp.DELETEALL;
+
+      SIIMessage.FIND('-');
+      REPEAT
+        SIIMessage_Temp.TRANSFERFIELDS(SIIMessage);
+        SIIMessage_Temp.INSERT;
+      UNTIL SIIMessage.NEXT = 0;
+
+      // Choose Message for Testing
+      SIIMessageList.SETTABLEVIEW(SIIMessage_Temp);
+      SIIMessageList.LOOKUPMODE(TRUE);
+      IF SIIMessageList.RUNMODAL = ACTION::LookupOK THEN BEGIN
+        SIIMessageList.GetSelection(SIIMessage_Temp);
+        SIIMessage_Temp.MARKEDONLY := TRUE;
+        IF SIIMessage_Temp.FIND('-') THEN BEGIN
+          TestingMode := ChooseTestMode;
+          //S/P0947
+          CLEAR(SuccesMessageArray);
+          //E/P0947
+          REPEAT
+            //S/P0923
+            CLEARLASTERROR;
+            //E/P0923
+            //S/P0947
+            i +=1;
+            //E/P0947
+            // Choose Testing Mode and Manipulate Message for Testing
+            SIIMessage_Temp.Mode := TestingMode;
+            SIIMessage_Temp."Order No. Filter" := FORMAT(p_RecRef.FIELD(3));
+            SIIMessage_Temp."Check Archive while Process" := FALSE;
+            // Fill Log
+            SIIFillLog.SetTestingParameters(TRUE,p_RecRef.NUMBER);
+            SIIFillLog.InitOnRunTrigger(SIIMessage_Temp);
+            //S/P0947
+            CreatedSIILogEntryNo := 0;
+            IF SIIFillLog.RUN THEN BEGIN
+              CreatedSIILogEntryNo := SIIFillLog.GetGlobalSIILogEntryNo;
+              IF CreatedSIILogEntryNo <> 0 THEN BEGIN
+                SuccesMessageArray[i] := 'Order: ' + FORMAT(p_RecRef.FIELD(3)) +
+                                         ' Message: ' + SIIMessage_Temp."Message Code NAV" + '|' + SIIMessage_Temp."Message Code Shop" +
+                                         ' LogEntry No: ' + FORMAT(CreatedSIILogEntryNo);
+              END ELSE BEGIN
+                SuccesMessageArray[i] := 'Failed Fill Log Order: ' + FORMAT(p_RecRef.FIELD(3)) +
+                                         ' Message: ' + SIIMessage_Temp."Message Code NAV" + '|' + SIIMessage_Temp."Message Code Shop" +
+                                         'Errortext: Order does not meet the criteria of the message/actions';
+              END;
+            END ELSE BEGIN
+              SuccesMessageArray[i] := 'Failed Fill Log Order: ' + FORMAT(p_RecRef.FIELD(3)) +
+                                       ' Message: ' + SIIMessage_Temp."Message Code NAV" + '|' + SIIMessage_Temp."Message Code Shop" +
+                                       'Errortext: ' + GETLASTERRORTEXT;
+            END;
+            IF CreatedSIILogEntryNo <> 0 THEN BEGIN
+              CLEAR(SIIProcessLog);
+              SIIProcessLog.InitProcessLog(CreatedSIILogEntryNo);
+              IF SIIProcessLog.RUN THEN BEGIN
+                SuccesMessageArray[i] := 'Success ' + SuccesMessageArray[i];
+              END ELSE BEGIN
+                SuccesMessageArray[i] := 'Failed Process Log ' + SuccesMessageArray[i];
+              END;
+            END;
+            //IF SIIFillLog.RUN THEN
+              //CreatedSIILogEntryNo := SIIFillLog.GetGlobalSIILogEntryNo
+            //S/P0923
+            //ELSE
+              //MESSAGE(Text002,FORMAT(p_RecRef.FIELD(3)),GETLASTERRORTEXT);
+            //E/P0923
+            // Create XML and Send to WebShop
+            //IF CreatedSIILogEntryNo <> 0 THEN BEGIN
+              //SIIProcessLog.InitProcessLog(CreatedSIILogEntryNo);
+              //IF SIIProcessLog.RUN THEN;
+            //END;
+            //E/P0947
+          UNTIL SIIMessage_Temp.NEXT = 0;
+          FOR j := 1 TO i DO BEGIN
+            BigTextMessage.ADDTEXT(SuccesMessageArray[j] + '\');
+          END;
+          MESSAGE(FORMAT(BigTextMessage));
+        END;
+      END ELSE
+        ERROR(Text001);
+      //S/P0947
+      CLEAR(SuccesMessageArray);
+      //E/P0947
+    END;
+
+    PROCEDURE InitiateFromMessage@1000000001(p_SIIMessage@1000000000 : Record 50141;p_Command@1000000004 : Integer);
+    VAR
+      SIIMessage_Temp@1000000003 : TEMPORARY Record 50141;
+      SalesHeader@1000000007 : Record 36;
+      SalesHeaderArchive@1000000008 : Record 5107;
+      FormSalesList@1000000009 : Form 45;
+      FormSalesListArchive@1000000010 : Form 5161;
+      RecRef@1000000005 : RecordRef;
+      VarRecRef@1000000006 : Variant;
+      TestingMode@1000000002 : Integer;
+      CreatedSIILogEntryNo@1000000001 : Integer;
+      SuccesMessageArray@1000000015 : ARRAY [50] OF Text[1024];
+      i@1000000014 : Integer;
+      j@1000000013 : Integer;
+      BigTextMessage@1000000012 : BigText;
+    BEGIN
+      //S/P0923
+      SIISetup.GET;
+
+      CLEAR(CreatedSIILogEntryNo);
+      CLEAR(RecRef);
+      CLEAR(VarRecRef);
+      CLEAR(SIIFillLog);
+      CLEAR(SalesHeader);
+      CLEAR(SalesHeaderArchive);
+      CLEAR(FormSalesList);
+      CLEAR(FormSalesListArchive);
+      SIIMessage_Temp.DELETEALL;
+
+      //S/P0969
+      i := 0;
+      //E/P0969
+
+      SIIMessage_Temp.TRANSFERFIELDS(p_SIIMessage);
+      SIIMessage_Temp.INSERT;
+
+      // Choose Archived Order for Testing
+      CASE p_Command OF
+        1:  RecRef.OPEN(36);    // Sales Order
+        2:  RecRef.OPEN(5107);  // Archived Order
+      END;
+
+      SIIFillLog.GetMsgTypeGlob(p_SIIMessage);
+      SIIFillLog.SetKeyForMessage(RecRef,p_SIIMessage);
+      SIIFillLog.FilterSalesHeaderWithMessage(RecRef,p_SIIMessage);
+      SIIFillLog.AdditionalFilter(RecRef,p_SIIMessage);
+      IF RecRef.FIND('-') THEN BEGIN
+        CASE p_Command OF
+          1:  // Sales Order
+            BEGIN
+              SalesHeader.SETVIEW(RecRef.GETVIEW);
+              FormSalesList.SETTABLEVIEW(SalesHeader);
+              FormSalesList.LOOKUPMODE(TRUE);
+              IF FormSalesList.RUNMODAL = ACTION::LookupOK THEN BEGIN
+                FormSalesList.GetSelection(SalesHeader);
+                SalesHeader.MARKEDONLY := TRUE;
+                IF SalesHeader.FIND('-') THEN BEGIN
+                  TestingMode := ChooseTestMode;
+                  REPEAT
+                    //S/P0969
+                    CreatedSIILogEntryNo := 0;
+                    i += 1;
+                    //E/P0969
+                    CLEARLASTERROR;
+                    // Choose Testing Mode and Manipulate Message for Testing
+                    SIIMessage_Temp.Mode := TestingMode;
+                    SIIMessage_Temp."Order No. Filter" := SalesHeader."No.";
+                    SIIMessage_Temp."Check Archive while Process" := FALSE;
+                    // Fill Log
+                    SIIFillLog.SetTestingParameters(TRUE,36);
+                    SIIFillLog.InitOnRunTrigger(SIIMessage_Temp);
+                    //S/P0969
+                    //IF SIIFillLog.RUN THEN
+                    //  CreatedSIILogEntryNo := SIIFillLog.GetGlobalSIILogEntryNo;
+                    //ELSE
+                    //  MESSAGE(
+                    //    Text002,SalesHeader."No.",GETLASTERRORTEXT);
+                    IF SIIFillLog.RUN THEN BEGIN
+                      CreatedSIILogEntryNo := SIIFillLog.GetGlobalSIILogEntryNo;
+                      IF CreatedSIILogEntryNo <> 0 THEN BEGIN
+                        SuccesMessageArray[i] := 'SO: ' + FORMAT(SalesHeader."No.") +
+                                                 ' Message: ' + SIIMessage_Temp."Message Code NAV" + '|' +
+                                                 SIIMessage_Temp."Message Code Shop" +
+                                                 ' LogEntry No: ' + FORMAT(CreatedSIILogEntryNo);
+                      END ELSE BEGIN
+                        SuccesMessageArray[i] := 'Failed Fill Log SO: ' + FORMAT(SalesHeader."No.") +
+                                                 ' Message: ' + SIIMessage_Temp."Message Code NAV" + '|' +
+                                                 SIIMessage_Temp."Message Code Shop" +
+                                                 'Errortext: Order does not meet the criteria of the message/actions';
+                      END;
+                    END ELSE BEGIN
+                      SuccesMessageArray[i] := 'Failed Fill Log SO: ' + FORMAT(SalesHeader."No.") +
+                                               ' Message: ' + SIIMessage_Temp."Message Code NAV" + '|' +
+                                               SIIMessage_Temp."Message Code Shop" +
+                                               'Errortext: ' + GETLASTERRORTEXT;
+                    END;
+                    //E/P0969
+                    // Create XML and Send to WebShop
+                    IF CreatedSIILogEntryNo <> 0 THEN BEGIN
+                      SIIProcessLog.InitProcessLog(CreatedSIILogEntryNo);
+                      //S/P0969
+                      //IF SIIProcessLog.RUN THEN;
+                      IF SIIProcessLog.RUN THEN
+                        SuccesMessageArray[i] := 'Success ' + SuccesMessageArray[i]
+                      ELSE
+                        SuccesMessageArray[i] := 'Failed Process Log ' + SuccesMessageArray[i];
+                      //E/P0969
+                    END;
+                  UNTIL SalesHeader.NEXT = 0;
+                  //S/P0969
+                  FOR j := 1 TO i DO BEGIN
+                    BigTextMessage.ADDTEXT(SuccesMessageArray[j] + '\');
+                  END;
+                  MESSAGE(FORMAT(BigTextMessage));
+                  //E/P0969
+                END;
+              END;
+            END;
+          2:  // Sales Order Archived
+            BEGIN
+              SalesHeaderArchive.SETVIEW(RecRef.GETVIEW);
+              FormSalesListArchive.SETTABLEVIEW(SalesHeaderArchive);
+              FormSalesListArchive.LOOKUPMODE(TRUE);
+              IF FormSalesListArchive.RUNMODAL = ACTION::LookupOK THEN BEGIN
+                FormSalesListArchive.GetSelection(SalesHeaderArchive);
+                SalesHeaderArchive.MARKEDONLY := TRUE;
+                IF SalesHeaderArchive.FIND('-') THEN BEGIN
+                  TestingMode := ChooseTestMode;
+                  REPEAT
+                    //S/P0969
+                    CreatedSIILogEntryNo := 0;
+                    i += 1;
+                    //E/P0969
+                    CLEARLASTERROR;
+                    // Choose Testing Mode and Manipulate Message for Testing
+                    SIIMessage_Temp.Mode := TestingMode;
+                    SIIMessage_Temp."Order No. Filter" := SalesHeaderArchive."No.";
+                    SIIMessage_Temp."Check Archive while Process" := FALSE;
+                    // Fill Log
+                    SIIFillLog.SetTestingParameters(TRUE,5107);
+                    SIIFillLog.InitOnRunTrigger(SIIMessage_Temp);
+                    //S/P0969
+                    //IF SIIFillLog.RUN THEN
+                    //  CreatedSIILogEntryNo := SIIFillLog.GetGlobalSIILogEntryNo
+                    //ELSE
+                    //  MESSAGE(Text002,SalesHeaderArchive."No.",GETLASTERRORTEXT);
+                    IF SIIFillLog.RUN THEN BEGIN
+                      CreatedSIILogEntryNo := SIIFillLog.GetGlobalSIILogEntryNo;
+                      IF CreatedSIILogEntryNo <> 0 THEN BEGIN
+                        SuccesMessageArray[i] := 'SO (Arch.): ' + FORMAT(SalesHeaderArchive."No.") +
+                                                 ' Message: ' + SIIMessage_Temp."Message Code NAV" + '|' +
+                                                 SIIMessage_Temp."Message Code Shop" +
+                                                 ' LogEntry No: ' + FORMAT(CreatedSIILogEntryNo);
+                      END ELSE BEGIN
+                        SuccesMessageArray[i] := 'Failed Fill Log SO (Arch.): ' + FORMAT(SalesHeaderArchive."No.") +
+                                                 ' Message: ' + SIIMessage_Temp."Message Code NAV" + '|' +
+                                                 SIIMessage_Temp."Message Code Shop" +
+                                                 'Errortext: Order does not meet the criteria of the message/actions';
+                      END;
+                    END ELSE BEGIN
+                      SuccesMessageArray[i] := 'Failed Fill Log SO (Arch.): ' + FORMAT(SalesHeaderArchive."No.") +
+                                               ' Message: ' + SIIMessage_Temp."Message Code NAV" + '|' +
+                                               SIIMessage_Temp."Message Code Shop" +
+                                               'Errortext: ' + GETLASTERRORTEXT;
+                    END;
+                    //E/P0969
+                    // Create XML and Send to WebShop
+                    IF CreatedSIILogEntryNo <> 0 THEN BEGIN
+                      SIIProcessLog.InitProcessLog(CreatedSIILogEntryNo);
+                      //S/P0969
+                      //IF SIIProcessLog.RUN THEN;
+                      IF SIIProcessLog.RUN THEN
+                        SuccesMessageArray[i] := 'Success ' + SuccesMessageArray[i]
+                      ELSE
+                        SuccesMessageArray[i] := 'Failed Process Log' + SuccesMessageArray[i];
+                      //E/P0969
+                    END;
+                  UNTIL SalesHeaderArchive.NEXT = 0;
+                  //S/P0969
+                  FOR j := 1 TO i DO BEGIN
+                    BigTextMessage.ADDTEXT(SuccesMessageArray[j] + '\');
+                  END;
+                  MESSAGE(FORMAT(BigTextMessage));
+                  //E/P0969
+                END;
+              END;
+            END;
+        END;
+      //S/P0969
+      //END;
+      END ELSE
+        MESSAGE(Text003);
+      //E/P0969
+
+      RecRef.CLOSE;
+      //E/P0923
+
+      //S/P0969
+      CLEAR(SuccesMessageArray);
+      //E/P0969
+    END;
+
+    PROCEDURE ChooseTestMode@1000000000() : Integer;
+    VAR
+      OptionString@1000000000 : Text[100];
+      OptionNo@1000000003 : Integer;
+      RecRef@1000000001 : RecordRef;
+      FieldRef@1000000002 : FieldRef;
+    BEGIN
+      CLEAR(RecRef);
+      CLEAR(FieldRef);
+
+      RecRef.OPEN(50141);                               // Table "SII Message"
+      FieldRef := RecRef.FIELD(6);                      // Field "Mode"
+
+      OptionString :=                                   // Without Modes "Inactive" & "Active"
+        SELECTSTR(2,FieldRef.OPTIONCAPTION) + ',' +
+        SELECTSTR(3,FieldRef.OPTIONCAPTION);
+      OptionNo := STRMENU(OptionString);
+
+      IF OptionNo = 0 THEN
+        ERROR(Text001)
+      ELSE
+        EXIT(OptionNo);
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation GOB & Home24 NAV Team      |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+
+      *** Module: SII Shop Interaction Interface ***
+      P0879       08.04.13  gob-mlan  Object Created
+
+      *** Module: FTTC Face to the Customer ***
+      P0923       21.05.13  gob-mlan
+      P0947       06.06.13  gob-rste  Acknowledgement for Test Orders
+      P0969       18.06.16  gob-mlan  Acknowledgement for Test Orders / Test Messages in InitiateFromMessage()
+    }
+    END.
+  }
+}
+

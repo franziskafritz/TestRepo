@@ -1,0 +1,494 @@
+OBJECT Codeunit 5096052 eBayNavCUtil
+{
+  OBJECT-PROPERTIES
+  {
+    Date=15.06.11;
+    Time=06:00:00;
+    Version List=eBay1.07.02;
+  }
+  PROPERTIES
+  {
+    OnRun=VAR
+            eBayCodesForm@1000000000 : Form 5095843;
+            eBayCode@1000000001 : Record 5095817;
+          BEGIN
+            eBayCode.SETRANGE(Type, eBayCode.Type::"XSelling Group Code");
+
+            eBayCodesForm.SETTABLEVIEW(eBayCode);
+            eBayCodesForm.RUN;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      ERROR003@1000000000 : TextConst 'DEU=003, BezÅgliches Element fÅr Detaillevel "%1" nicht vorhanden.;ENU=003, Related element for detail level "%1" not found.';
+      ERROR002@1000000001 : TextConst 'DEU=002, Falscher Syntax "%1" fÅr Filter "%2";ENU=002, Wrong syntax "%1" for filter "%2"';
+      ERROR004@1000000002 : TextConst 'DEU=Die Verarbeitung wurde unterbrochen, um die Warnung zu berÅcksichtigen.;ENU=The update has been interrupted to respect the warning.';
+      CONFIRM001@1000000003 : TextConst 'DEU=Der Server lieferte folgende Ausgabe:\\%1\\Mîchten Sie den Vorgang abbrechen?;ENU=The server sent the following message:\\%1\\Do you want to cancel the process?';
+      Bemerkung@1000000004 : Text[250];
+
+    PROCEDURE LeseDetailLevels@1000000003(VAR requestXML@1000000000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{88D96A05-F192-11D4-A65F-0040963251E5}:'Microsoft XML, v6.0'.DOMDocument60";VAR detailLevels@1000000003 : TEMPORARY Record 5096099) : Boolean;
+    VAR
+      node@1000000001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";
+      nodeList@1000000002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF82-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNodeList";
+      i@1000000004 : Integer;
+    BEGIN
+      IF ISCLEAR(requestXML) THEN
+        EXIT(FALSE);
+
+      nodeList := requestXML.selectNodes('Transfer/Header/DetailArray/Detail');
+
+      IF ISCLEAR(nodeList) THEN
+        EXIT(FALSE)
+      ELSE BEGIN
+        FOR i:=0 TO nodeList.length()-1 DO BEGIN
+          node                 := nodeList.item(i);
+          detailLevels.PKCode1 := FORMAT(i+1);
+          detailLevels.Text1   := node.text;
+          detailLevels.INSERT();
+        END;
+      END;
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE PrÅfeDetailLevels@1000000008(shopID@1000000002 : Code[10];VAR requestXML@1000000000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{88D96A05-F192-11D4-A65F-0040963251E5}:'Microsoft XML, v6.0'.DOMDocument60";VAR detailLevels@1000000003 : TEMPORARY Record 5096099;VAR responseXML@1000000001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{88D96A05-F192-11D4-A65F-0040963251E5}:'Microsoft XML, v6.0'.DOMDocument60") : Boolean;
+    VAR
+      tempElement@1000000005 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+    BEGIN
+      IF ISCLEAR(requestXML) THEN
+        EXIT(FALSE);
+
+      // PrÅfen, ob wirklich alle im Header angegebenen Detaillevel auch im Body stehen
+      IF detailLevels.FIND('-') THEN BEGIN
+        REPEAT
+          tempElement := requestXML.selectSingleNode('Transfer/Body/' + detailLevels.Text1);
+
+          IF ISCLEAR(tempElement) THEN BEGIN
+            SetzeAntwortFehler(responseXML, STRSUBSTNO(ERROR003, detailLevels.Text1));
+            SchreibeInProtokoll(TRUE, 'Request', STRSUBSTNO(ERROR003, detailLevels.Text1), shopID, -1);
+            EXIT(FALSE);
+          END;
+        UNTIL detailLevels.NEXT=0;
+      END;
+
+      // Wenn wir keine Detaillevels haben oder alle gefunden wurden:
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE DetailLevelVorhanden@1000000005(name@1000000000 : Text[30];VAR detailLevels@1000000002 : TEMPORARY Record 5096099) : Boolean;
+    BEGIN
+
+      IF detailLevels.FIND('-') THEN BEGIN
+        REPEAT
+          IF detailLevels.Text1 = name THEN
+            EXIT(TRUE);
+        UNTIL detailLevels.NEXT = 0;
+      END;
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE SchreibeInProtokoll@1000000001(error@1000000000 : Boolean;action@1000000001 : Text[100];comment@1000000002 : Text[250];shopID@1000000006 : Code[10];xmlLogLineNo@1000000005 : Integer);
+    VAR
+      eBayNavCLog@1000000003 : Record 5096052;
+      applicationServer@1119455000 : Record 5251552;
+    BEGIN
+
+      IF applicationServer.FINDFIRST() THEN BEGIN
+        IF (NOT error) AND applicationServer."Log Only Errors" THEN BEGIN
+          EXIT;
+        END;
+      END;
+
+      eBayNavCLog.INIT;
+      eBayNavCLog."Conducted at"     := CURRENTDATETIME();
+      eBayNavCLog.Error              := error;
+      eBayNavCLog.Action             := action;
+      eBayNavCLog.Comment            := comment;
+      eBayNavCLog."Webshop Code"        := shopID;
+      eBayNavCLog."XML Log Line No." := xmlLogLineNo;
+
+      WHILE NOT eBayNavCLog.INSERT DO BEGIN
+        eBayNavCLog."Conducted at" := CURRENTDATETIME();
+      END;
+    END;
+
+    PROCEDURE SendeAnShop@1000000000(shopID@1000000012 : Code[10];object@1000000004 : Text[30];action@1000000003 : Text[30];fieldArray@1000000002 : ARRAY [4] OF Text[30];conditionArray@1000000001 : ARRAY [4] OF Text[30];detailArray@1000000000 : ARRAY [100] OF Text[30]) : Boolean;
+    VAR
+      parameters@1000000011 : Text[1024];
+      i@1000000006 : Integer;
+      webshop@1000000005 : Record 5251553;
+      buffer@1000000009 : Text[250];
+      httpClient@1000000007 : Automation "{C9E179C7-299E-4213-AAC2-6ED0911BB56A} 1.0:{366E2942-A4E7-334F-8329-A889FFE6C401}:'NAVutil'.HttpClient";
+      httpResponse@1000000008 : Automation "{C9E179C7-299E-4213-AAC2-6ED0911BB56A} 1.0:{34CA79C4-F56D-3AC6-B827-AFC6E036AD57}:'NAVutil'.LongText";
+      success@1000000010 : Boolean;
+      url@1000000013 : Text[1024];
+    BEGIN
+      webshop.GET(shopID);
+
+      parameters := webshop."Transmission URL" + '?object='+ object +'&action='+ action
+                    + '&uid=' + FORMAT(CURRENTDATETIME, 0, '<Year4><Month,2><Day,2><Hours24><Minutes,2><Seconds,2>');
+
+      // BS100115
+      parameters += '&shopID=' + shopID;
+
+      FOR i := 1 TO 4 DO
+        IF (fieldArray[i] <> '') AND (conditionArray[i] <> '') THEN
+          parameters += STRSUBSTNO('&field[%1]=%2&condition[%1]=%3', i, fieldArray[i], conditionArray[i]);
+
+      FOR i := 1 TO 20 DO
+        IF (detailArray[i] <> '') THEN
+          parameters += STRSUBSTNO('&detail[%1]=%2', i, detailArray[i]);
+
+      CREATE(httpClient);
+
+      url := parameters;
+
+      IF webshop."Use HTTPS" THEN BEGIN
+        IF COPYSTR(url, 1, STRLEN('https://')) <> 'https://' THEN
+          url := 'https://' + url;
+      END ELSE BEGIN
+        IF COPYSTR(url, 1, STRLEN('http://')) <> 'http://' THEN
+          url := 'http://' + url;
+      END;
+
+      httpResponse := httpClient.Get(url, success);
+
+      IF (NOT success) AND GUIALLOWED THEN BEGIN
+        ERROR(httpClient.LastException);
+      END ELSE BEGIN
+        IF ((STRPOS(httpResponse.ShortText, 'OK') = 0) OR (STRPOS(httpResponse.ShortText, 'OK') > 5)) THEN BEGIN
+          success := FALSE;
+
+          IF GUIALLOWED AND webshop."Show HTTP Error Messages" THEN BEGIN
+            httpResponse.StartReading();
+
+            REPEAT
+              buffer := httpResponse.ReadText(MAXSTRLEN(buffer));
+
+              IF buffer <> '' THEN
+                IF CONFIRM(CONFIRM001, TRUE, buffer) THEN
+                  ERROR(ERROR004);
+            UNTIL buffer = '';
+          END;
+        END;
+      END;
+
+      EXIT(success);
+    END;
+
+    PROCEDURE SetzeAntwortFehler@1000000002(VAR responseXML@1000000001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{88D96A05-F192-11D4-A65F-0040963251E5}:'Microsoft XML, v6.0'.DOMDocument60";error@1000000000 : Text[200]);
+    VAR
+      errorNode@1000000002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";
+    BEGIN
+
+      SchreibeInProtokoll(TRUE, '', error, '', -1);
+
+      IF ISCLEAR(responseXML) THEN
+        EXIT;
+
+      errorNode := responseXML.selectSingleNode('Transfer/Header/Error');
+
+      IF NOT ISCLEAR(errorNode) THEN
+        errorNode.text := error;
+    END;
+
+    PROCEDURE HoleNodeText@1000000004(node@1000000000 : Text[250];VAR xml@1000000001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{88D96A05-F192-11D4-A65F-0040963251E5}:'Microsoft XML, v6.0'.DOMDocument60") : Text[250];
+    VAR
+      tempElement@1000000002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+    BEGIN
+      IF ISCLEAR(xml) THEN
+        EXIT('');
+
+      tempElement := xml.selectSingleNode(node);
+
+      IF ISCLEAR(tempElement) THEN
+        EXIT('')
+      ELSE
+        EXIT(tempElement.text);
+    END;
+
+    PROCEDURE SchreibeNodeMitText@1000000007(name@1000000001 : Text[250];text@1000000004 : Text[250];VAR parent@1000000002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";VAR return@1000000003 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";VAR xml@1000000000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{88D96A05-F192-11D4-A65F-0040963251E5}:'Microsoft XML, v6.0'.DOMDocument60");
+    BEGIN
+      IF ISCLEAR(xml) THEN
+        EXIT;
+
+      return      := xml.createElement(name);
+      return.text := text;
+
+      IF NOT ISCLEAR(parent) THEN
+        parent.appendChild(return);
+    END;
+
+    PROCEDURE ErstelleAntwortXMLRumpf@1000000006(shopID@1000000002 : Code[10];object@1000000001 : Text[50];VAR header@1000000012 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";VAR body@1000000011 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";VAR root@1000000010 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";VAR xml@1000000000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{88D96A05-F192-11D4-A65F-0040963251E5}:'Microsoft XML, v6.0'.DOMDocument60");
+    VAR
+      processingInstruction@1000000009 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF89-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMProcessingInstruction";
+      tempElement@1000000008 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+    BEGIN
+      IF ISCLEAR(xml) THEN
+        EXIT;
+
+      processingInstruction := xml.createProcessingInstruction('xml', 'version="1.0" encoding="utf-8"');
+      xml.appendChild(processingInstruction);
+
+      root := xml.createElement('Transfer');
+      xml.appendChild(root);
+
+      header := xml.createElement('Header');
+      root.appendChild(header);
+      header.setAttribute('shopID', shopID);
+      header.setAttribute('object', object);
+      header.setAttribute('action', 'Response');
+
+      tempElement := xml.createElement('Error');
+      tempElement.text := 'OK';
+      header.appendChild(tempElement);
+
+      body := xml.createElement('Body');
+      root.appendChild(body);
+    END;
+
+    PROCEDURE VerarbeiteSiteFilter@1000000009(field@1000000000 : Text[60];condition@1000000001 : Text[60];VAR minSite@1000000002 : Integer;VAR maxSite@1000000003 : Integer) : Text[250];
+    VAR
+      dotage@1000000006 : Integer;
+      minString@1000000005 : Text[60];
+      maxString@1000000004 : Text[60];
+    BEGIN
+
+      dotage := STRPOS(condition, '..');
+
+      IF (dotage>0) AND (DELCHR(condition, '=', '0123456789.') = '') THEN BEGIN
+        minString := COPYSTR(condition, 1, dotage-1);
+        maxString := COPYSTR(condition, dotage+2, STRLEN(condition)-dotage-1);
+
+        IF (DELCHR(minString, '=', '0123456789') = '') AND (DELCHR(maxString, '=', '0123456789') = '') THEN BEGIN
+          EVALUATE(minSite, minString);
+          EVALUATE(maxSite, maxString);
+
+          IF minSite < 0 THEN
+            EXIT(ERROR002);
+
+          IF (maxSite >= minSite) THEN
+            EXIT('')
+          ELSE
+            EXIT(ERROR002);
+        END;
+      END;
+
+      EXIT(ERROR002);
+    END;
+
+    PROCEDURE SpeichereXMLFehlerLog@1000000011(dateiName@1000000000 : Text[250];xml@1000000006 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{88D96A05-F192-11D4-A65F-0040963251E5}:'Microsoft XML, v6.0'.DOMDocument60");
+    VAR
+      file@1000000005 : File;
+      parseError@1000000002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{3EFAA426-272F-11D2-836F-0000F87A7782}:'Microsoft XML, v6.0'.IXMLDOMParseError";
+    BEGIN
+      parseError := xml.parseError();
+
+      IF dateiName = '' THEN
+        dateiName := STRSUBSTNO('C:\Temp\%1.txt', FORMAT(CURRENTDATETIME, 0, '<Year4>-<Month,2>-<Day,2> <Hour,2>:<Minute,2>:<Second,2>')
+      );
+
+      file.CREATE(dateiName);
+      file.WRITE('\n\n----- Parse Error -----\n\n');
+      file.WRITE(STRSUBSTNO('Error code: %1\n', parseError.errorCode()));
+      file.WRITE(STRSUBSTNO('Reason: %1\n', parseError.reason()));
+      file.WRITE(STRSUBSTNO('Line: %1\n', parseError.line()));
+      file.WRITE(STRSUBSTNO('Line position: %1\n', parseError.linepos()));
+      file.WRITE(STRSUBSTNO('URL: %1\n', parseError.url()));
+      file.CLOSE;
+    END;
+
+    PROCEDURE VKAuftragGeliefertSetze@1000000014(SalesShipmentHeader@1000000000 : Record 110);
+    VAR
+      eBayNavCSalesHeader@1000000001 : Record 5251571;
+    BEGIN
+      IF SalesShipmentHeader."Order No."='' THEN
+        EXIT;
+
+      eBayNavCSalesHeader.SETRANGE("Document Type", eBayNavCSalesHeader."Document Type"::SalesOrder);
+      eBayNavCSalesHeader.SETRANGE("Sales Document No.", SalesShipmentHeader."Order No.");
+
+      IF eBayNavCSalesHeader.FIND('-') THEN REPEAT
+        eBayNavCSalesHeader.Delivered := TRUE;
+
+        eBayNavCSalesHeader."Delivered at" := CURRENTDATETIME();
+        eBayNavCSalesHeader."Delivered by" := COPYSTR(USERID(), 1, MAXSTRLEN(eBayNavCSalesHeader."Sales Document rendered by"));
+        eBayNavCSalesHeader."Shipment No." := SalesShipmentHeader."No.";
+        eBayNavCSalesHeader.MODIFY(TRUE);
+      UNTIL eBayNavCSalesHeader.NEXT=0;
+    END;
+
+    PROCEDURE GetBemerkung@1000000016() : Text[250];
+    BEGIN
+      EXIT(Bemerkung);
+    END;
+
+    PROCEDURE BlobShow@1000000015(VAR eBayNavCXMLLog@1000000000 : Record 5096060;type@1000000006 : 'requestXML,responseXML') : Boolean;
+    VAR
+      eBaySystem@1000000001 : Codeunit 5095800;
+      inStream@1000000003 : InStream;
+      outStream@1000000002 : OutStream;
+      tempFilename@1000000004 : Text[1024];
+      file@1000000005 : File;
+      tcError@1000000009 : TextConst 'DEU=Blob nicht vorhanden;ENU=Blobnot nonexistent';
+    BEGIN
+      // Zeigt wahlweise den Request- oder Response-Blob eines XML-Dokuments an
+
+      CASE type OF
+        type::requestXML:
+          BEGIN
+            eBayNavCXMLLog.CALCFIELDS("Request Document");
+
+            IF eBayNavCXMLLog."Request Document".HASVALUE THEN
+              eBayNavCXMLLog."Request Document".CREATEINSTREAM(inStream)
+            ELSE
+              EXIT(FALSE);
+          END;
+
+        type::responseXML:
+          BEGIN
+            eBayNavCXMLLog.CALCFIELDS("Response Document");
+
+            IF eBayNavCXMLLog."Response Document".HASVALUE THEN
+              eBayNavCXMLLog."Response Document".CREATEINSTREAM(inStream)
+            ELSE
+              EXIT(FALSE);
+          END;
+      ELSE
+        EXIT(FALSE);
+      END;
+
+      tempFilename := eBaySystem.TempFileName() + '.xml';
+      file.CREATE(tempFilename);
+      file.CREATEOUTSTREAM(outStream);
+      COPYSTREAM(outStream, inStream);
+      file.CLOSE();
+      HYPERLINK(tempFilename);
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE CreatePDFDocument@1000000026(VAR eBayNavCSalesHeader@1000000000 : Record 5251571;forceCreation@1000000002 : Boolean);
+    VAR
+      eBayNavCSalesHeaderModify@1000000001 : Record 5251571;
+      tempFileName@1000000003 : Text[1024];
+      salesHeader@1000000004 : Record 36;
+      salesShipmentHeader@1000000005 : Record 110;
+      eBayUtil@1000000006 : Codeunit 5095800;
+      eBayNavCPDF@1000000008 : Codeunit 5095847;
+      webshop@1119455000 : Record 5251553;
+    BEGIN
+      // Druckt das entsprechende PDF-Dokument abhÑngig davon, ob Auftrag besteht oder nicht
+
+      eBayNavCSalesHeaderModify.GET(eBayNavCSalesHeader."Webshop Code", eBayNavCSalesHeader."No.");
+      webshop.GET(eBayNavCSalesHeader."Webshop Code");
+
+      eBayNavCSalesHeaderModify.CALCFIELDS("Order PDF Document", "Shipment PDF Document");
+
+      IF forceCreation OR (NOT eBayNavCSalesHeaderModify."Order PDF Document".HASVALUE
+          AND eBayNavCSalesHeader."Sales Document rendered") THEN BEGIN
+        tempFileName := eBayUtil.TempFileName;
+        salesHeader.SETRANGE("Document Type", salesHeader."Document Type"::Order);
+        salesHeader.SETRANGE("No.", eBayNavCSalesHeader."Sales Document No.");
+        IF salesHeader.FIND('-') THEN BEGIN
+          IF eBayNavCPDF.PrintSalesHeader(salesHeader, webshop."Sales Order Report No.", tempFileName) THEN BEGIN
+            eBayNavCSalesHeaderModify."Order PDF Document".IMPORT(tempFileName);
+            eBayNavCSalesHeaderModify.MODIFY(TRUE);
+          END;
+        END;
+        IF EXISTS(tempFileName) THEN
+          ERASE(tempFileName);
+      END;
+
+      IF forceCreation OR (NOT eBayNavCSalesHeaderModify."Shipment PDF Document".HASVALUE AND eBayNavCSalesHeader.Delivered) THEN BEGIN
+        tempFileName := eBayUtil.TempFileName;
+        salesShipmentHeader.SETRANGE("No.", eBayNavCSalesHeader."Shipment No.");
+        IF salesShipmentHeader.FIND('-') THEN BEGIN
+          IF eBayNavCPDF.PrintSalesShipmentHeader(salesShipmentHeader, webshop."Sales Shipment Report No.", tempFileName) THEN
+          BEGIN
+            eBayNavCSalesHeaderModify."Shipment PDF Document".IMPORT(tempFileName);
+            eBayNavCSalesHeaderModify.MODIFY(TRUE);
+          END;
+        END;
+        IF EXISTS(tempFileName) THEN
+          ERASE(tempFileName);
+      END;
+    END;
+
+    PROCEDURE GenerateRandomPassword@1000000017(length@1000000002 : Integer) password : Text[30];
+    VAR
+      CHARACTERS@1000000001 : TextConst 'DEU=qwertzuiopasdfghjklyxcvbnmQWERTZUIOPASDFGHJKLYXCVBNM1234567890';
+      i@1000000003 : Integer;
+    BEGIN
+      // Erstellt ein length-langes Passwort aus a-z, A-Z und 0-1
+      RANDOMIZE();
+
+      FOR i := 1 TO length DO
+        password += COPYSTR(CHARACTERS, RANDOM(STRLEN(CHARACTERS)-1), 1);
+    END;
+
+    PROCEDURE KÅrzeText@1119423002(VAR UngekÅrzterText@1119423000 : Text[250];MaxLÑnge@1119423001 : Integer) : Text[250];
+    BEGIN
+
+      IF STRLEN(UngekÅrzterText)>(MaxLÑnge-2) THEN
+        EXIT(COPYSTR(UngekÅrzterText,1, MaxLÑnge-2)+'..');
+
+      EXIT(UngekÅrzterText);
+    END;
+
+    BEGIN
+    {
+      BS070302 - Ausgabe des RÅckgabepuffers vom Shop zu Debugzwecken
+      BS070330 - Funktion zum speichern der Ladefehler eines XML-Dokumentes implementiert
+                 Diese zeigt an, wo die fehlerhaften Stellen zu finden sind (analog zum IE)
+      BS080410 - HTTP Fehlermeldungen verschalterbar gemacht
+      BS080414 - Fehlermeldung und Confirm fÅr HTTP Fehlermeldungen hinzugefÅgt
+      BS080422 - Kleinen Bug behoben (Y/N vertauscht)
+      BS080508 - Anzahl Detaillevel von 10 auf 20 erhîht
+      BS080618 - Keine öbernahme Zusteller/Zustellerversandarten, wenn Shopversandart leer ist
+               - öbernahme "Bill-to County", "Ship-to County" in VK-Kopf
+               - Funktion "BlobShow" analog zu eBayItem Åbernommen
+      BS080619 - XMLLogLineNo hinzugefÅgt
+      BS080714 - Sollte ein Lastschriftverfahren im Auftrag enthalten sein, wird hierfÅr ggf.
+                 ein Bankkonto fÅr den Debitoren erstellt
+      BS081002 - Schreibfehler in ERROR004
+      BS081110 - GenerateRandomPassword() hinzugefÅgt
+               - StÅcklistenartikel werden bei Auftragserstellung entfaltet (wenn durch Setup gewollt)
+               - CreateMD5Hash() hinzugefÅgt
+               - Auf NAVutil.dll 1.0.0.21365 abgestimmt
+      BS081118 - Externe Belegnummer bei Auftragserstellung Åbernehmen
+      BS090506 - SendeAnShop() an neue Komponente angepasst. Liegt unter "eBay Components/"
+      BS090512 - "öberlauf bei der Kalkulation von 'url += parameters' in SendeAnShop()" behoben (?)
+      BS090520 - Feld "FTP Einstiegsverzeichnis" berÅcksichtigen
+      BS090616 - Neue Funktion "FTPKategorieBildUpload"
+      BS090622 - Neue Funktion "BlobEdit"
+      BS090630 - BlobEdit() um Option 3 erweitert
+      BS090701 - NachnahmegebÅhren richtig als VK-Zeile einfÅgen (addCODChargeLine)
+               - Lief./Rech. an Name/Adresse 2 in VK-Auftrag Åbernehmen
+      BS091007 - Textbausteine einfÅgen
+      BS091008 - Ggf. Artikel aus Katalogartikeln erstellen
+      BS091116 - Schreibfehler in Textkonstante FTPKategorieBildUpload
+      BS091125 - SetNoConfirm() auf SalesHeader
+      MN091216 - FTPBildUpload() und FTPKategorieBildUpload() an eBayHost angepasst. Sicherheitshalber sind noch die alten Funktion mit
+                  markiert vorhanden.
+      BS100115 - Parameter "shopID" an Shop senden
+               - Funktion BlobEdit() entfernt
+      BS100119 - Freizeichen in Bild URLs durch %20 ersetzen
+      BS100122 - Feld "Ignore Shop Sales Prices" berÅcksichtigen
+      BS100202 - Sales Comment Lines nach Leerzeilen umbrechen
+      MN100428 - Funktion SendeAnShop: Dimension von 'DetailLevel' von 20 auf 100 erhîht
+      BS100809 - Neue Funktionen ab -- 5.0
+      BS100930 - Neue Funktionen von BS100809 gelîscht
+               - Funktion AlleVerkaufskîpfeErstellen gelîscht
+               - Funktion VerkaufskopfErstellen gelîscht
+               - Funktion FTPKategorieBildUpload gelîscht
+      BSE110209 T00111 - Captions, Textkonstanten und Co. Åberarbeitet
+      BSE110530 T00130 - FTPBildUpload() gelîscht
+                       - Diverse Anpassungen fÅr Setup -> Webshop
+    }
+    END.
+  }
+}
+

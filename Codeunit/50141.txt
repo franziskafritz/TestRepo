@@ -1,0 +1,363 @@
+OBJECT Codeunit 50141 Autom. Return Process
+{
+  OBJECT-PROPERTIES
+  {
+    Date=17.02.15;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=HME1996,T0080;
+  }
+  PROPERTIES
+  {
+    OnRun=VAR
+            SalesHeaderL@1000000001 : Record 36;
+            ReleaseSalesDoc@1000000002 : Codeunit 414;
+            FPCManagement@1000000003 : Codeunit 50003;
+            NewReturnOrderNo@1000000000 : Code[20];
+            NAVconnectWebshop@1000000004 : Record 5251553;
+          BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text001@1000000003 : TextConst 'ENU=Return Order %1 successfully created and released.';
+      Text002@1106900000 : TextConst 'ENU=Couldn''t create "RHD return Order KAD".';
+      Text003@1000000004 : TextConst 'ENU=Couldn''t create new Return Order. Processing cancelled.';
+      Text004@1000000000 : TextConst 'ENU=Return Order %1 successfully created.';
+
+    PROCEDURE ProcessAutomReturnOrder@1000000009(salesHeaderNo@1000000000 : Code[20];withErrors@1000000004 : Boolean) : Boolean;
+    VAR
+      salesHeader@1000000001 : Record 36;
+      salesHeaderArchive@1000000002 : Record 5107;
+      newReturnHeaderL@1000000009 : Record 36;
+      ReleaseSalesDoc@1000000008 : Codeunit 414;
+      FPCManagement@1000000007 : Codeunit 50003;
+      NewReturnOrderNo@1000000006 : Code[20];
+      useArchive@1000000003 : Boolean;
+      NAVconnectWebshop@1000000005 : Record 5251553;
+    BEGIN
+      // T0079
+      IF salesHeaderNo = '' THEN EXIT(FALSE);
+
+      // check, wether _salesHeaderNo is stored in table "Sales Header" or in table "Sales Header Archive"
+      useArchive := FALSE;
+
+      salesHeader.RESET;
+      salesHeader.SETRANGE("No.", salesHeaderNo);
+      IF salesHeader.ISEMPTY THEN BEGIN
+        salesHeaderArchive.RESET;
+        salesHeaderArchive.SETRANGE("No.", salesHeaderNo);
+        IF salesHeaderArchive.ISEMPTY THEN BEGIN
+          IF withErrors THEN BEGIN
+            salesHeaderArchive.FINDFIRST;
+          END;
+          EXIT(FALSE);
+        END;
+        useArchive := TRUE;
+      END;
+
+
+      // Create new Return Order
+      FPCManagement.SetCalledRecursive(TRUE);
+
+      IF useArchive THEN BEGIN
+        IF NOT IsAutomReturnAllowedArch(salesHeaderNo, withErrors) THEN EXIT(FALSE);
+        // T0080 18.11.2014 tec-cs ++++++++++++++++++++++++++
+        // FPCManagement.CreateReturnOrder(_salesHeaderNo,1);  // 1 = use Sales Header Archive
+        IF NOT FPCManagement.CreateReturnOrder(salesHeaderNo,1) THEN // 1 = Sales Header Archive
+        BEGIN
+          EXIT(FALSE);
+        END;
+        // T0080 18.11.2014 tec-cs --------------------------
+      END ELSE BEGIN
+
+        IF NOT IsAutomReturnAllowed(salesHeaderNo, withErrors) THEN EXIT(FALSE);
+
+        // T0080 18.11.2014 tec-cs ++++++++++++++++++++++++++
+        // FPCManagement.CreateReturnOrder(_salesHeaderNo,0);  // 0 = use table 36: Sales Header
+        IF NOT FPCManagement.CreateReturnOrder(salesHeaderNo, 0) THEN  // 0 = use table 36: Sales Header
+        BEGIN
+          EXIT(FALSE);
+        END;
+        // T0080 18.11.2014 tec-cs --------------------------
+      END;
+
+      NewReturnOrderNo := FPCManagement.GetNewCreatedReturnOrderNo();
+
+      // Release the created Return Order
+      IF NOT newReturnHeaderL.GET(newReturnHeaderL."Document Type"::"Return Order", NewReturnOrderNo) THEN BEGIN
+        //H1471 08.01.2015 CC-RST +++++++++++++++++++++++++++++
+        IF NOT newReturnHeaderL.GET(newReturnHeaderL."Document Type"::Order, NewReturnOrderNo) THEN BEGIN
+        //H1471 08.01.2015 CC-RST -----------------------------
+          ERROR(Text003)
+        //H1471 09.01.2015 CC-RST +++++++++++++++++++++++++++++
+        END ELSE BEGIN
+          IF newReturnHeaderL."Return Type" = newReturnHeaderL."Return Type"::"Spare Part" THEN
+            EXIT(TRUE);
+        //H1471 09.01.2015 CC-RST -----------------------------
+        END;
+      END;
+
+      //T0012 09.09.14 tec-sf +++++++++++++++++++++++++++++
+      IF NAVconnectWebshop.GET(FORMAT(newReturnHeaderL."Website No.")) THEN BEGIN
+        //H1806 12.11.14 MIK +++++++++++++++++++++++++++++
+        IF NOT (newReturnHeaderL."Return Type" IN [newReturnHeaderL."Return Type"::Return]) THEN BEGIN
+          FPCManagement.DisplayMessage(Text004, 1, NewReturnOrderNo, '', '');
+          EXIT(TRUE);
+        END;
+        //H1806 12.11.14 MIK -----------------------------
+        IF NOT NAVconnectWebshop."Use Autom. Return" THEN BEGIN
+          FPCManagement.DisplayMessage(Text004, 1, NewReturnOrderNo, '', '');
+          EXIT(TRUE);
+        END;
+      END;
+      //T0012 09.09.14 tec-sf -----------------------------
+
+      ReleaseSalesDoc.PerformManualRelease(newReturnHeaderL);
+
+      FPCManagement.DisplayMessage(Text001, 1, NewReturnOrderNo, '', '');
+
+      // Call E-Mail for Return Label
+      FPCManagement.CreateReturnOrderMail(
+        newReturnHeaderL,
+        1,  // 1 == ReturnLabel & ReturnList
+        TRUE
+        );
+
+      IF NOT FPCManagement.CheckIsParcelServiceOnly(newReturnHeaderL."Document Type", newReturnHeaderL."No.", 0) THEN BEGIN
+        IF IsReturnKADAllowed(newReturnHeaderL) THEN BEGIN
+          IF NOT CreateRHDReturnOrderKAD(newReturnHeaderL) THEN BEGIN
+            FPCManagement.DisplayMessage(Text002, 0, '', '', '');
+          END;
+        END;
+      END;
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE IsAutomReturnAllowed@1000000007(_salesOrderNo@1000000005 : Code[20];_withErrors@1000000004 : Boolean) : Boolean;
+    VAR
+      SalesHeader@1000000000 : Record 36;
+      SalesLine@1000000001 : Record 37;
+    BEGIN
+      // T0079
+      // check, wether the return-lines are valid (for returning)
+      // if at least one return-line is invalid, the whole function will be canceled
+
+      SalesHeader.SETRANGE("No.", _salesOrderNo);
+      IF _withErrors THEN SalesHeader.FINDFIRST; // force error for user
+      IF NOT SalesHeader.FINDFIRST THEN EXIT(FALSE);
+
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type", SalesHeader."Document Type");
+      SalesLine.SETRANGE("Document No.", SalesHeader."No.");
+      SalesLine.SETRANGE(Type, SalesLine.Type::Item);
+      SalesLine.SETRANGE("Return Type", SalesLine."Return Type"::Return);
+
+      IF _withErrors THEN SalesLine.FINDFIRST; // force error for user
+
+      IF SalesLine.FINDSET THEN BEGIN
+        REPEAT
+
+          IF SalesLine."Quantity Shipped" <> SalesLine.Quantity THEN BEGIN
+            IF _withErrors THEN BEGIN
+              SalesLine.FIELDERROR("Quantity Shipped");
+            END;
+            EXIT(FALSE);
+          END;
+
+          IF SalesLine."Quantity Shipped" = 0 THEN BEGIN
+            IF _withErrors THEN BEGIN
+              SalesLine.FIELDERROR("Quantity Shipped");
+            END;
+            EXIT(FALSE);
+          END;
+
+          IF NOT (SalesLine."Customer Prevention" IN [SalesLine."Customer Prevention"::Declined,
+                                                      SalesLine."Customer Prevention"::"Not offered"]) THEN
+          BEGIN
+            IF _withErrors THEN BEGIN
+              SalesLine.FIELDERROR("Customer Prevention");
+            END;
+            EXIT(FALSE);
+          END;
+
+        UNTIL SalesLine.NEXT = 0;
+      END;
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE IsAutomReturnAllowedArch@1000000008(_salesOrderArchiveNo@1000000005 : Code[20];_withErrors@1000000004 : Boolean) : Boolean;
+    VAR
+      SalesHeaderArchive@1000000003 : Record 5107;
+      SalesLineArchive@1000000002 : Record 5108;
+    BEGIN
+      // T0079
+      // check, wether the return-lines are valid (for returning)
+      // if at least one return-line is invalid, the complete function will be canceled
+
+      SalesHeaderArchive.SETRANGE("No.", _salesOrderArchiveNo);
+
+      IF _withErrors THEN SalesHeaderArchive.FINDFIRST; // force error for user
+      IF NOT SalesHeaderArchive.FINDFIRST THEN EXIT(FALSE);
+
+      SalesLineArchive.RESET;
+      SalesLineArchive.SETRANGE("Document Type", SalesHeaderArchive."Document Type");
+      SalesLineArchive.SETRANGE("Document No.", SalesHeaderArchive."No.");
+      SalesLineArchive.SETRANGE(Type, SalesLineArchive.Type::Item);
+      SalesLineArchive.SETRANGE("Return Type", SalesLineArchive."Return Type"::Return);
+
+      IF _withErrors THEN SalesLineArchive.FINDFIRST; // force error for user
+
+      IF SalesLineArchive.FINDSET THEN BEGIN
+        REPEAT
+          IF SalesLineArchive."Quantity Shipped" <> SalesLineArchive.Quantity THEN BEGIN
+            IF _withErrors THEN BEGIN
+              SalesLineArchive.FIELDERROR("Quantity Shipped");
+            END;
+            EXIT(FALSE);
+          END;
+
+          IF SalesLineArchive."Quantity Shipped" = 0 THEN BEGIN
+            IF _withErrors THEN BEGIN
+              SalesLineArchive.FIELDERROR("Quantity Shipped");
+            END;
+            EXIT(FALSE);
+          END;
+
+          IF NOT (SalesLineArchive."Customer Prevention" IN [SalesLineArchive."Customer Prevention"::Declined,
+                                                             SalesLineArchive."Customer Prevention"::"Not offered"]) THEN
+          BEGIN
+            IF _withErrors THEN BEGIN
+              SalesLineArchive.FIELDERROR("Customer Prevention");
+            END;
+            EXIT(FALSE);
+          END;
+
+        UNTIL SalesLineArchive.NEXT = 0;
+      END;
+
+      EXIT(TRUE);
+    END;
+
+    LOCAL PROCEDURE CreateRHDReturnOrderKAD@1000000002(VAR SalesHeaderV@1000000009 : Record 36) : Boolean;
+    VAR
+      SalesLineL@1000000008 : Record 37;
+      RHDSalesExportHeaderL@1000000007 : Record 50181;
+      RHDSetupL@1000000006 : Record 50177;
+      PurchasingL@1000000005 : Record 5721;
+      RHDSalesInterfaceMgtL@1000000004 : Codeunit 50153;
+      ReleaseSalesDocumentL@1000000003 : Codeunit 414;
+      CountryRegionTable@1000000002 : Text[50];
+      CountryRegionCode@1000000001 : Code[10];
+      IsRhenusLocationL@1000000000 : Boolean;
+    BEGIN
+      // Copied from H1012 in Form 6630
+      IF NOT IsReturnKADAllowed(SalesHeaderV) THEN
+        EXIT(FALSE);
+
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type", SalesHeaderV."Document Type");
+      SalesLineL.SETRANGE("Document No.", SalesHeaderV."No.");
+      SalesLineL.SETRANGE(Type,SalesLineL.Type::Item);
+      SalesLineL.SETFILTER(Quantity,'<>0');
+      IF SalesLineL.FINDSET THEN BEGIN
+        PurchasingL.GET(SalesLineL."Purchasing Code");
+        IsRhenusLocationL := FALSE;
+        IsRhenusLocationL :=ReleaseSalesDocumentL.IsRhenusLocation(PurchasingL."Location Code");
+
+        REPEAT
+          //T0012 09.09.14 tec-sf +++++++++++++++++++++++++++++
+          PurchasingL.GET(SalesLineL."Purchasing Code");
+          // A RHD Order should be created even if only 1 line is a "RHENUS"-line
+          //IsRhenusLocationL := IsRhenusLocationL AND ReleaseSalesDocumentL.IsRhenusLocation(PurchasingL."Location Code");
+          IsRhenusLocationL := IsRhenusLocationL OR ReleaseSalesDocumentL.IsRhenusLocation(PurchasingL."Location Code");
+          //T0012 09.09.14 tec-sf -----------------------------
+        UNTIL SalesLineL.NEXT = 0;
+
+        IF IsRhenusLocationL THEN BEGIN
+          RHDSalesInterfaceMgtL.SetSalesReturnOrderValue(TRUE);
+          RHDSalesInterfaceMgtL.TriggerRhenusFromSalesHeader(SalesHeaderV);
+          RHDSalesInterfaceMgtL.SetSalesReturnOrderValue(FALSE);
+        END;
+
+        RHDSetupL.GET;
+        RHDSalesExportHeaderL.RESET;
+        RHDSalesExportHeaderL.SETRANGE("Document Type", RHDSalesExportHeaderL."Document Type"::"Return Order");
+        RHDSalesExportHeaderL.SETRANGE("Document No.", SalesHeaderV."No.");
+        IF RHDSalesExportHeaderL.FINDFIRST THEN
+          EXIT(TRUE)
+        ELSE
+          EXIT(FALSE);
+      END;
+    END;
+
+    LOCAL PROCEDURE IsReturnKADAllowed@1000000001(VAR SalesHeaderV@1000000003 : Record 36) : Boolean;
+    VAR
+      SalesHeaderL@1000000000 : Record 36;
+      SalesHeaderArchiveL@1000000002 : Record 5107;
+      CountryRegionL@1000000001 : Record 9;
+    BEGIN
+      // Copied from H1012 in Form 6630
+      SalesHeaderL.RESET;
+      SalesHeaderL.SETRANGE("Document Type", SalesHeaderL."Document Type"::Order);
+      SalesHeaderL.SETRANGE("No.",SalesHeaderV."External Document No.");
+      IF SalesHeaderL.FINDFIRST THEN BEGIN
+        IF NOT CountryRegionL.GET(SalesHeaderL."Sell-to Country/Region Code") THEN
+          EXIT(FALSE);
+        IF NOT CountryRegionL."Return KAD Creation Active" THEN
+          EXIT(FALSE);
+      END ELSE BEGIN
+        SalesHeaderArchiveL.RESET;
+        SalesHeaderArchiveL.SETRANGE("Document Type", SalesHeaderArchiveL."Document Type"::Order);
+        SalesHeaderArchiveL.SETRANGE("No.",SalesHeaderV."External Document No.");
+        IF SalesHeaderArchiveL.FINDFIRST THEN BEGIN
+          IF NOT CountryRegionL.GET(SalesHeaderArchiveL."Sell-to Country/Region Code") THEN
+            EXIT(FALSE);
+        IF NOT CountryRegionL."Return KAD Creation Active" THEN
+          EXIT(FALSE);
+        END ELSE
+          EXIT(FALSE);
+      END;
+
+      EXIT(TRUE);
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation Tectura & Home24 NAV Team  |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+
+      T0012       17.06.14  tec-sf    Object Created
+      T0012       02.09.14  tec-sf    Called CreateReturnOrderMail with triggered = true
+      T0012       09.09.14  tec-sf    Some more changes
+      T0079       16.10.14  tec-cs    some corrections: return should be allowed for some lines (not only for all lines)
+      T0080       18.11.14  tec-cs    return false, if no return order was created
+      H1472       09.01.15  CC_RST    BUG: FTTC3 - Add condition Also For Sales Orders
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      H1806      12.11.14  MIK       BUG: FTTC3 - Add condition - Automated Return Label only for Return Type "Return"
+      H1996      27.03.14  MIK       BUG: Hotfix for Deployed Projects T0051 and T0052. Redeploy of this codeunit.
+    }
+    END.
+  }
+}
+

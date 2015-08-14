@@ -1,0 +1,220 @@
+OBJECT Codeunit 50086 Order Date Calc. Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=01.10.14;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=GOB1.00,HME1540;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      TAListTemp@1000000000 : TEMPORARY Record 50117;
+
+    PROCEDURE CalcMaxOrderDateChangeOrder@1000000000(p_SalesHeader@1000000000 : Record 36);
+    VAR
+      SalesLine_l@1000000001 : Record 37;
+      NewDate_l@1000000002 : Date;
+      DaysAdded_l@1000000003 : Integer;
+      DeliveryDays_l@1000000004 : Integer;
+      CalendarManagement_l@1000000005 : Codeunit 7600;
+      Description_l@1000000006 : Text[50];
+      Date1_l@1000000007 : Date;
+      Date2_l@1000000008 : Date;
+      purchasing_l@1000000009 : Record 5721;
+      item_l@1000000010 : Record 27;
+    BEGIN
+      //H1239,H0584 10.06.14 ARI +++++++++++++++++++++++++++++++++++++++
+      IF NOT p_SalesHeader."Is Follow-up Sales Order" THEN BEGIN
+        EXIT;
+      END;
+      //H1239,H0584 10.06.14 ARI ---------------------------------------
+
+      SalesLine_l.RESET;
+      SalesLine_l.SETRANGE("Document Type",p_SalesHeader."Document Type");
+      SalesLine_l.SETRANGE("Document No.",p_SalesHeader."No.");
+      SalesLine_l.SETRANGE(Type,SalesLine_l.Type::Item);
+      IF SalesLine_l.FINDSET THEN BEGIN
+        REPEAT
+          CLEAR(DaysAdded_l);
+          CLEAR(Date1_l);
+          CLEAR(Date2_l);
+          CLEAR(DeliveryDays_l);
+
+          IF purchasing_l.GET(SalesLine_l."Purchasing Code") THEN
+            IF FORMAT(purchasing_l."Calc. Max Ord. Date Change") <> '' THEN BEGIN
+              Date1_l := TODAY;
+              Date2_l := CALCDATE(purchasing_l."Calc. Max Ord. Date Change", Date1_l);
+              DeliveryDays_l := Date2_l - Date1_l;
+            END ELSE BEGIN
+              IF SalesLine_l."Transp. Type" = SalesLine_l."Transp. Type"::"Parcel Service" THEN BEGIN
+                item_l.GET(SalesLine_l."No.");
+                Date1_l := TODAY;
+                Date2_l := CALCDATE(item_l."Lead Time Calculation (max.)", Date1_l);
+                Date2_l := CALCDATE('<+2D>', Date2_l);
+                DeliveryDays_l := Date2_l - Date1_l;
+              END ELSE BEGIN
+                item_l.GET(SalesLine_l."No.");
+                Date1_l := TODAY;
+                Date2_l := CALCDATE(item_l."Lead Time Calculation (max.)", Date1_l);
+                Date2_l := CALCDATE('<+5D>', Date2_l);
+                DeliveryDays_l := Date2_l - Date1_l;
+            END;
+          END;
+
+          NewDate_l := p_SalesHeader."Order Date";
+          WHILE DaysAdded_l < DeliveryDays_l DO BEGIN
+            NewDate_l := CALCDATE('<1D>', NewDate_l);
+            IF NOT CalendarManagement_l.CheckDateStatus('BC', NewDate_l, Description_l) THEN // NOT NONWORKING
+              DaysAdded_l += 1;
+          END;
+          //H0121 17.12.12 ARU +++++++++++++++++++++++++++++
+          //SalesLine_l."Max. Order Date", := NewDate_l;
+          SalesLine_l.VALIDATE("Max. Order Date",NewDate_l);
+          //H0121 17.12.12 ARU -----------------------------
+
+          SalesLine_l.MODIFY;
+
+        UNTIL SalesLine_l.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE CalcDeliveryDelay@1000000001(SalesLine_V@1000000004 : Record 37) DelayDays : Integer;
+    VAR
+      CalendarMgt_l@1000000003 : Codeunit 7600;
+      NewDate_l@1000000002 : Date;
+      DeliveryDelay_l@1000000001 : Integer;
+      Description_l@1000000000 : Text[50];
+    BEGIN
+      //H0499 12.08.13 ARU +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      CLEAR(DeliveryDelay_l);
+
+      IF (SalesLine_V."Actual Delivery Date" <> 0DT) AND (SalesLine_V."Max. Order Date - Master" <> 0D) THEN BEGIN
+        IF DT2DATE(SalesLine_V."Actual Delivery Date") < SalesLine_V."Max. Order Date - Master" THEN BEGIN
+          NewDate_l := DT2DATE(SalesLine_V."Actual Delivery Date");
+
+          WHILE NewDate_l < SalesLine_V."Max. Order Date - Master" DO BEGIN      //NOT NONWORKING
+            IF NOT CalendarMgt_l.CheckDateStatus('BC', NewDate_l, Description_l) THEN
+              DeliveryDelay_l += 1 *-1;
+
+            NewDate_l := CALCDATE('<1D>', NewDate_l);
+          END;
+
+        END ELSE BEGIN
+          NewDate_l := SalesLine_V."Max. Order Date - Master";
+          WHILE NewDate_l < DT2DATE(SalesLine_V."Actual Delivery Date") DO BEGIN //NOT NONWORKING
+            IF NOT CalendarMgt_l.CheckDateStatus('BC', NewDate_l, Description_l) THEN
+              DeliveryDelay_l += 1;
+
+            NewDate_l := CALCDATE('<1D>', NewDate_l);
+          END;
+        END;
+
+        EXIT(DeliveryDelay_l);
+      //H1540,H0161 01.10.14 MSL ++++++++++++++++++++++++++++++++++++
+      END ELSE IF (SalesLine_V."Expected Delivery Date" <> 0D) AND (SalesLine_V."Max. Order Date - Master" <> 0D) THEN BEGIN
+        IF SalesLine_V."Expected Delivery Date" < SalesLine_V."Max. Order Date - Master" THEN BEGIN
+          NewDate_l := SalesLine_V."Expected Delivery Date";
+      //H1540,H0161 01.10.14 MSLU -----------------------------------
+          WHILE NewDate_l < SalesLine_V."Max. Order Date - Master" DO BEGIN      //NOT NONWORKING
+            IF NOT CalendarMgt_l.CheckDateStatus('BC', NewDate_l, Description_l) THEN
+              DeliveryDelay_l += 1 *-1;
+
+            NewDate_l := CALCDATE('<1D>', NewDate_l);
+          END;
+
+        END ELSE BEGIN
+          NewDate_l := SalesLine_V."Max. Order Date - Master";
+          //H1540,H0161 01.10.14 MSL ++++++++++++++++++++++++++++++++++++
+          WHILE NewDate_l < SalesLine_V."Expected Delivery Date" DO BEGIN //NOT NONWORKING
+          //H1540,H0161 01.10.14 MSLU -----------------------------------
+            IF NOT CalendarMgt_l.CheckDateStatus('BC', NewDate_l, Description_l) THEN
+              DeliveryDelay_l += 1;
+
+            NewDate_l := CALCDATE('<1D>', NewDate_l);
+          END;
+        END;
+
+        EXIT(DeliveryDelay_l);
+      END ELSE
+        EXIT(DeliveryDelay_l);
+      //H0499 12.08.13 ARU ---------------------------------------------------------------------------------------
+    END;
+
+    PROCEDURE CalcDeliveryDelayTA@1000000003(TAList_V@1000000000 : Record 50117) DelayDays : Integer;
+    VAR
+      CalendarMgt_l@1000000004 : Codeunit 7600;
+      NewDate_l@1000000003 : Date;
+      DeliveryDelay_l@1000000002 : Integer;
+      Description_l@1000000001 : Text[50];
+    BEGIN
+      //H0499 12.08.13 ARU ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      CLEAR(DeliveryDelay_l);
+
+      IF (TAList_V."EDD-Master" <> 0D) AND (TAList_V."MOD-Master" <> 0D) THEN BEGIN
+        IF TAList_V."EDD-Master" < TAList_V."MOD-Master" THEN BEGIN
+          NewDate_l := TAList_V."EDD-Master";
+
+          WHILE NewDate_l < TAList_V."MOD-Master" DO BEGIN      //NOT NONWORKING
+            IF NOT CalendarMgt_l.CheckDateStatus('BC', NewDate_l, Description_l) THEN
+              DeliveryDelay_l += 1 *-1;
+
+            NewDate_l := CALCDATE('<1D>', NewDate_l);
+          END;
+
+        END ELSE BEGIN
+          NewDate_l := TAList_V."MOD-Master";
+
+          WHILE NewDate_l < TAList_V."EDD-Master" DO BEGIN //NOT NONWORKING
+            IF NOT CalendarMgt_l.CheckDateStatus('BC', NewDate_l, Description_l) THEN
+              DeliveryDelay_l += 1;
+
+            NewDate_l := CALCDATE('<1D>', NewDate_l);
+          END;
+        END;
+
+        EXIT(DeliveryDelay_l);
+      END ELSE
+        EXIT(DeliveryDelay_l);
+      //H0499 12.08.13 ARU ----------------------------------------------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+
+      H0161       18.01.13 ARU       Calc. "Expected Delivery Date" autom.
+      H0121       17.12.12 ARU       BugFix > Validate for "Max. Order Date"
+      H0240       08.03.13 ARU       T&A-List < small BugFixes
+      H0300       10.04.13 ARU       Delete all shippment posted lines from T&A-List
+      H0304       12.04.13 ARU       Warning during calling from JobQueue
+      H0314       23.04.13 ARU       Insert compl. SO if one SO-Line is inserted in T&A-List
+      H0326       30.04.13 ARU       BugFix > Insert compl. SO if one SO-Line is inserted in T&A-List
+      H0333       03.05.13 ARU       BugFix > not all Lines insert in T&A-List if one SalesOrderLine was delivered
+      H0362       26.06.13 ARU       cumulated "EDD Master for FTTC
+      H0363       29.05.13 ARU       Improvement > Deleting delivered SO-Lines form T&A-List
+      H0499       12.08.13 ARU       No calculation for Delivery Delay (expected) if ADD doesn't exsist
+      H0584       10.03.14 HCN       Adjustments due to optionvalue changes
+      H1239       10.06.14 ARI       Bugfix Calculation max Order Date: CalcMaxOrderDateChangeOrder only for change Orders
+      H1540       01.10.14 MSL       EDDM Redesign Activation - removed functions: "CalcExpectedDeliveryDate","GenGlobalEDDMaster"
+    }
+    END.
+  }
+}
+

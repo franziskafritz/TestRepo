@@ -1,0 +1,1444 @@
+OBJECT Codeunit 333 Req. Wksh.-Make Order
+{
+  OBJECT-PROPERTIES
+  {
+    Date=13.03.15;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=NAVW16.00.01,DN(1),V1.02,HME3878,T0094;
+  }
+  PROPERTIES
+  {
+    TableNo=246;
+    Permissions=TableData 37=m;
+    OnRun=BEGIN
+            IF RECORDLEVELLOCKING AND PlanningResiliency THEN
+              LOCKTABLE;
+            CarryOutReqLineAction(Rec);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst 'DEU=Buch.-Blattname                    #1##########\\;ENU=Worksheet Name                     #1##########\\';
+      Text001@1001 : TextConst 'DEU=Zeilen prÅfen                      #2######\;ENU=Checking worksheet lines           #2######\';
+      Text002@1002 : TextConst 'DEU=Bestellungen generieren            #3######\;ENU=Creating purchase orders           #3######\';
+      Text003@1003 : TextConst 'DEU=Bestellzeilen generieren           #4######\;ENU=Creating purchase lines            #4######\';
+      Text004@1004 : TextConst 'DEU=Vorschlagzeilen aktualisieren      #5######;ENU=Updating worksheet lines           #5######';
+      Text005@1005 : TextConst 'DEU=Vorschlagszeilen lîschen           #5######;ENU=Deleting worksheet lines           #5######';
+      Text006@1006 : TextConst 'DEU=%1 des Auftrags %2 ist bereits der Bestellung %3 zugeordnet.;ENU=%1 on sales order %2 is already associated with purchase order %3.';
+      Text007@1007 : TextConst 'DEU=<Month Text>;ENU=<Month Text>';
+      Text008@1008 : TextConst 'DEU=Die Kombination der im %1 %2, %3, %4 verwendeten Dimensionen ist gesperrt. %5;ENU=The combination of dimensions used in %1 %2, %3, %4 is blocked. %5';
+      Text009@1009 : TextConst 'DEU=Eine im %1 %2, %3, %4 verwendete Dimension hat einen Fehler hervorgerufen. %5;ENU=A dimension used in %1 %2, %3, %4 has caused an error. %5';
+      ReservEntry@1050 : Record 337;
+      PurchSetup@1010 : Record 312;
+      ReqTemplate@1011 : Record 244;
+      ReqWkshName@1012 : Record 245;
+      PurchOrderHeader@1016 : Record 38;
+      PurchOrderLine@1018 : Record 39;
+      SalesOrderHeader@1019 : Record 36;
+      SalesOrderLine@1020 : Record 37;
+      TransHeader@1028 : Record 5740;
+      ReportSelection@1021 : Record 77;
+      AccountingPeriod@1022 : Record 50;
+      TempJnlLineDim@1023 : TEMPORARY Record 356;
+      CompanyInfo@1024 : Record 79;
+      TempFailedReqLine@1054 : TEMPORARY Record 246;
+      PurchasingCode@1046 : Record 5721;
+      Location@1045 : Record 14;
+      ReqWkshMakeOrders@1053 : Codeunit 333;
+      TransferExtendedText@1027 : Codeunit 378;
+      ReserveReqLine@1025 : Codeunit 99000833;
+      DimMgt@1026 : Codeunit 408;
+      Window@1029 : Dialog;
+      OrderDateReq@1030 : Date;
+      PostingDateReq@1031 : Date;
+      ReceiveDateReq@1032 : Date;
+      EndOrderDate@1035 : Date;
+      PlanningResiliency@1055 : Boolean;
+      PrintPurchOrders@1034 : Boolean;
+      ReferenceReq@1033 : Text[30];
+      MonthText@1044 : Text[30];
+      OrderCounter@1036 : Integer;
+      LineCount@1037 : Integer;
+      OrderLineCounter@1038 : Integer;
+      StartLineNo@1039 : Integer;
+      NextLineNo@1040 : Integer;
+      Day@1041 : Integer;
+      Week@1042 : Integer;
+      Month@1043 : Integer;
+      CounterFailed@1052 : Integer;
+      PrevPurchCode@1047 : Code[10];
+      PrevShipToCode@1017 : Code[10];
+      "0DF"@1048 : DateFormula;
+      Text010@1049 : TextConst 'DEU=muss mit dem %1 aus Zeile %3 des Verkaufsauftrags %2 Åbereinstimmen;ENU=must match %1 on Sales Order %2, Line %3';
+      "----------------------------DN"@1000000001 : Integer;
+      AutomEMailProc@1000000002 : Codeunit 50030;
+      GeneralMgt2@1000000000 : Codeunit 50040;
+      salesrelation@1108200000 : Boolean;
+      noseriesmgt@1108200001 : Codeunit 396;
+      purchheaderno@1108200002 : Code[20];
+      "S***FOB1.01"@1000000054 : Integer;
+      TempPurchHeader@1000000055 : TEMPORARY Record 38;
+      "E***FOB1.01"@1000000056 : Integer;
+      "---HME"@1000000003 : Integer;
+      sparepart@1000000004 : Boolean;
+      purchheadernospare@1000000005 : Code[20];
+      TextHME001@1000000006 : TextConst 'ENU=Carrier via SMT doesn''t match with Vendor Channel.';
+      TextHME002@1000000007 : TextConst 'ENU=No Vendor entry in Hermes Depot Assignment (Vendor Card)';
+      TextHME003@1000000008 : TextConst 'ENU=No Hermes Depot for Vendor found! This is likely due to wrong Post Code of Vendor';
+
+    PROCEDURE CarryOutBatchAction@18(VAR ReqLine2@1000 : Record 246);
+    VAR
+      ReqLine@1001 : Record 246;
+      "S***FOB1.01"@1000000000 : Integer;
+      FOBPurchService@1000000001 : Codeunit 50092;
+      "E***FOB1.01"@1000000002 : Integer;
+    BEGIN
+      //S/FOB1.01
+      CLEAR(TempPurchHeader);
+      //E/FOB1.01
+
+      ReqLine.COPY(ReqLine2);
+      ReqLine.SETRANGE("Accept Action Message",TRUE);
+      Code(ReqLine);
+      ReqLine2 := ReqLine;
+
+      //S/FOB1.01
+      FOBPurchService.CreateTransOrderFromReqLine(TempPurchHeader);
+      //E/FOB1.01
+    END;
+
+    PROCEDURE Set@1(NewPurchOrderHeader@1000 : Record 38;NewEndingOrderDate@1001 : Date;NewPrintPurchOrder@1002 : Boolean);
+    BEGIN
+      PurchOrderHeader := NewPurchOrderHeader;
+      EndOrderDate := NewEndingOrderDate;
+      PrintPurchOrders := NewPrintPurchOrder;
+      OrderDateReq := PurchOrderHeader."Order Date";
+      PostingDateReq := PurchOrderHeader."Posting Date";
+      ReceiveDateReq := PurchOrderHeader."Expected Receipt Date";
+      ReferenceReq := PurchOrderHeader."Your Reference";
+    END;
+
+    LOCAL PROCEDURE Code@8(VAR ReqLine@1001 : Record 246);
+    VAR
+      JnlLineDim@1000 : Record 356;
+      ReqLine2@1002 : Record 246;
+      ReqLine3@1003 : Record 246;
+    BEGIN
+      WITH ReqLine DO BEGIN
+        CLEAR(PurchOrderHeader);
+
+        SETRANGE("Worksheet Template Name","Worksheet Template Name");
+        SETRANGE("Journal Batch Name","Journal Batch Name");
+        IF RECORDLEVELLOCKING AND NOT(PlanningResiliency) THEN
+          LOCKTABLE;
+
+        IF "Planning Line Origin" <> "Planning Line Origin"::"Order Planning" THEN
+          ReqTemplate.GET("Worksheet Template Name");
+
+        IF ReqTemplate.Recurring THEN BEGIN
+          SETRANGE("Order Date",0D,EndOrderDate);
+          SETFILTER("Expiration Date",'%1 | %2..',0D,WORKDATE);
+        END;
+
+        IF NOT FIND('=><') THEN BEGIN
+          "Line No." := 0;
+          COMMIT;
+          EXIT;
+        END;
+
+        IF ReqTemplate.Recurring THEN BEGIN
+          //A/gob-rste/21.06.12/GOB1.00
+          IF GUIALLOWED THEN
+          //E/gob-rste/21.06.12/GOB1.00
+          Window.OPEN(
+            Text000 +
+            Text001 +
+            Text002 +
+            Text003 +
+            Text004);
+          //A/gob-rste/21.06.12/GOB1.00
+          END ELSE BEGIN
+        //ELSE
+          //A/gob-rste/21.06.12/GOB1.00
+          IF GUIALLOWED THEN
+          //E/gob-rste/21.06.12/GOB1.00
+          Window.OPEN(
+            Text000 +
+            Text001 +
+            Text002 +
+            Text003 +
+            Text005);
+        END;
+        //A/gob-rste/21.06.12/GOB1.00
+        IF GUIALLOWED THEN
+        //E/gob-rste/21.06.12/GOB1.00
+        Window.UPDATE(1,"Journal Batch Name");
+
+        // Check lines
+        LineCount := 0;
+        StartLineNo := "Line No.";
+        REPEAT
+          LineCount := LineCount + 1;
+          //A/gob-rste/21.06.12/GOB1.00
+          IF GUIALLOWED THEN
+          //E/gob-rste/21.06.12/GOB1.00
+          Window.UPDATE(2,LineCount);
+          CheckRecurringLine(ReqLine);
+          JnlLineDim.SETRANGE("Table ID",DATABASE::"Requisition Line");
+          JnlLineDim.SETRANGE("Journal Template Name","Worksheet Template Name");
+          JnlLineDim.SETRANGE("Journal Batch Name","Journal Batch Name");
+          JnlLineDim.SETRANGE("Journal Line No.","Line No.");
+          JnlLineDim.SETRANGE("Allocation Line No.",0);
+          DimMgt.CopyJnlLineDimToJnlLineDim(JnlLineDim,TempJnlLineDim);
+          CheckReqWkshLine(ReqLine,TempJnlLineDim);
+          IF NEXT = 0 THEN
+            FIND('-');
+        UNTIL "Line No." = StartLineNo;
+
+        // Create lines
+        LineCount := 0;
+        OrderCounter := 0;
+        OrderLineCounter := 0;
+        CLEAR(PurchOrderHeader);
+        SetPurchOrderHeader;
+        SETCURRENTKEY(
+          "Worksheet Template Name","Journal Batch Name","Vendor No.",
+          "Sell-to Customer No.","Ship-to Code","Order Address Code","Currency Code",
+          "Location Code","Transfer-from Code");
+        IF FIND('-') THEN
+          REPEAT
+            IF PlanningResiliency THEN BEGIN
+              IF NOT TryCarryOutReqLineAction(ReqLine) THEN BEGIN
+                SetFailedReqLine(ReqLine);
+                CounterFailed := CounterFailed + 1;
+              END;
+            END ELSE
+              CarryOutReqLineAction(ReqLine);
+          UNTIL NEXT = 0;
+
+        IF PrintPurchOrders THEN
+          PrintTransOrder;
+
+        IF PurchOrderHeader."Buy-from Vendor No." <> '' THEN
+          FinalizeOrderHeader(PurchOrderHeader,ReqLine);
+
+        // Copy number of created orders and current journal batch name to requisition worksheet
+        INIT;
+        "Line No." := OrderCounter;
+
+        IF OrderCounter <> 0 THEN
+          IF NOT ReqTemplate.Recurring THEN BEGIN
+            // Not a recurring journal
+            ReqLine2.COPY(ReqLine);
+            ReqLine2.SETFILTER("Vendor No.",'<>%1','');
+            IF ReqLine2.FIND('-') THEN; // Remember the last line
+            IF FIND('-') THEN
+              REPEAT
+                TempFailedReqLine := ReqLine;
+                IF NOT TempFailedReqLine.FIND THEN
+                  DELETE(TRUE);
+              UNTIL NEXT = 0;
+            TempJnlLineDim.DELETEALL;
+
+            ReqLine3.SETRANGE("Worksheet Template Name","Worksheet Template Name");
+            ReqLine3.SETRANGE("Journal Batch Name","Journal Batch Name");
+            IF NOT ReqLine3.FIND('+') THEN
+              IF INCSTR("Journal Batch Name") <> '' THEN BEGIN
+                ReqWkshName.GET("Worksheet Template Name","Journal Batch Name");
+                ReqWkshName.DELETE;
+                ReqWkshName.Name := INCSTR("Journal Batch Name");
+                IF ReqWkshName.INSERT THEN;
+                "Journal Batch Name" := ReqWkshName.Name;
+              END;
+
+            ReqLine3.SETRANGE("Journal Batch Name","Journal Batch Name");
+            IF NOT ReqLine3.FIND('+') THEN BEGIN
+              ReqLine3.INIT;
+              ReqLine3."Worksheet Template Name" := "Worksheet Template Name";
+              ReqLine3."Journal Batch Name" := "Journal Batch Name";
+              ReqLine3."Line No." := 10000;
+              ReqLine3.Type := ReqLine2.Type;
+              ReqLine3."Order Date" := ReqLine2."Order Date";
+              ReqLine3.INSERT;
+            END;
+          END;
+      END;
+    END;
+
+    PROCEDURE CheckReqWkshLine@2(VAR ReqLine2@1000 : Record 246;VAR JnlLineDim@1001 : Record 356);
+    VAR
+      SalesLine@1004 : Record 37;
+      Purchasing@1005 : Record 5721;
+      TableID@1002 : ARRAY [10] OF Integer;
+      No@1003 : ARRAY [10] OF Code[20];
+      "S***FOB1.01"@1000000000 : Integer;
+      FOBPurchaseServ@1000000001 : Codeunit 50092;
+      "E***FOB1.01"@1000000002 : Integer;
+    BEGIN
+      WITH ReqLine2 DO BEGIN
+        IF ("No." <> '') OR ("Vendor No." <> '') OR (Quantity <> 0) THEN BEGIN
+          TESTFIELD("No.");
+          IF "Action Message" <> "Action Message"::Cancel THEN
+            TESTFIELD(Quantity);
+          IF ("Action Message" = "Action Message"::" ") OR
+             ("Action Message" = "Action Message"::New)
+          THEN
+            IF "Replenishment System" = "Replenishment System"::Purchase THEN BEGIN
+              IF "Planning Line Origin" = "Planning Line Origin"::"Order Planning" THEN
+                TESTFIELD("Supply From");
+              TESTFIELD("Vendor No.")
+            END ELSE
+              IF "Replenishment System" = "Replenishment System"::Transfer THEN BEGIN
+                TESTFIELD("Location Code");
+                IF "Planning Line Origin" = "Planning Line Origin"::"Order Planning" THEN
+                  TESTFIELD("Supply From");
+                TESTFIELD("Transfer-from Code");
+              END;
+        END;
+        //S/FOB1.01
+        IF ("Replenishment System" = "Replenishment System"::Purchase) AND ("Shipping Type" <> '') THEN
+          FOBPurchaseServ.CheckFOBSetup("Vendor No.","Shipping Type");
+        //E/FOB1.01
+
+        JnlLineDim.SETRANGE("Journal Line No.",ReqLine2."Line No.");
+        IF NOT DimMgt.CheckJnlLineDimComb(JnlLineDim) THEN
+          ERROR(
+            Text008,
+            TABLECAPTION,"Worksheet Template Name","Journal Batch Name","Line No.",
+            DimMgt.GetDimCombErr);
+
+        TableID[1] := DimMgt.TypeToTableID3(Type);
+        No[1] := "No.";
+        IF NOT DimMgt.CheckJnlLineDimValuePosting(JnlLineDim,TableID,No) THEN
+          IF "Line No." <> 0 THEN
+            ERROR(
+              Text009,
+              TABLECAPTION,"Worksheet Template Name","Journal Batch Name","Line No.",
+              DimMgt.GetDimValuePostingErr)
+          ELSE
+            ERROR(DimMgt.GetDimValuePostingErr);
+
+        IF SalesLine.GET(SalesLine."Document Type"::Order,"Sales Order No.","Sales Order Line No.") AND
+          (SalesLine."Unit of Measure Code" <> "Unit of Measure Code")
+        THEN
+          IF SalesLine."Drop Shipment"  OR
+            (PurchasingCode.GET("Purchasing Code") AND PurchasingCode."Drop Shipment")
+          THEN
+            FIELDERROR(
+              "Unit of Measure Code",
+              STRSUBSTNO(
+                Text010,
+                SalesLine.FIELDCAPTION("Unit of Measure Code"),
+                SalesLine."Document No.",
+                SalesLine."Line No."));
+
+        IF Purchasing.GET("Purchasing Code") THEN
+          IF Purchasing."Drop Shipment" OR Purchasing."Special Order" THEN BEGIN
+            SalesLine.GET(SalesLine."Document Type"::Order,"Sales Order No.","Sales Order Line No.");
+            IF (Purchasing."Drop Shipment" <> SalesLine."Drop Shipment") OR
+               (Purchasing."Special Order" <> SalesLine."Special Order")
+            THEN
+              FIELDERROR(
+                "Purchasing Code",
+                STRSUBSTNO(
+                  Text010,
+                  SalesLine.FIELDCAPTION("Purchasing Code"),
+                  SalesLine."Document No.",
+                  SalesLine."Line No."));
+          END;
+      END;
+    END;
+
+    PROCEDURE CarryOutReqLineAction@14(VAR ReqLine@1001 : Record 246);
+    VAR
+      CarryOutAction@1000 : Codeunit 99000813;
+    BEGIN
+      WITH ReqLine DO BEGIN
+        CASE "Replenishment System" OF
+          "Replenishment System"::Transfer:
+            CASE "Action Message" OF
+              "Action Message"::Cancel:
+                BEGIN
+                  CarryOutAction.DeleteOrderLines(ReqLine);
+                  OrderCounter := OrderCounter + 1;
+                END;
+              "Action Message"::"Change Qty.","Action Message"::Reschedule,"Action Message"::"Resched. & Chg. Qty." :
+                BEGIN
+                  CarryOutAction.SetPrintOrder(PrintPurchOrders);
+                  CarryOutAction.TransOrderChgAndReshedule(ReqLine);
+                  OrderCounter := OrderCounter + 1;
+                END;
+              "Action Message"::New,"Action Message"::" " :
+                BEGIN
+                  CarryOutAction.SetPrintOrder(PrintPurchOrders);
+                  CarryOutAction.InsertTransLine(ReqLine,TransHeader);
+                  OrderCounter := OrderCounter + 1;
+                END;
+            END;
+          "Replenishment System"::Purchase,"Replenishment System"::"Prod. Order":
+            CASE "Action Message" OF
+              "Action Message"::Cancel:
+                BEGIN
+                  CarryOutAction.DeleteOrderLines(ReqLine);
+                  OrderCounter := OrderCounter + 1;
+                END;
+              "Action Message"::"Change Qty.","Action Message"::Reschedule, "Action Message"::"Resched. & Chg. Qty." :
+                BEGIN
+                  CarryOutAction.SetPrintOrder(PrintPurchOrders);
+                  CarryOutAction.PurchOrderChgAndReshedule(ReqLine);
+                  OrderCounter := OrderCounter + 1;
+                END;
+              "Action Message"::New,"Action Message"::" ":
+                BEGIN
+                  IF ((PurchOrderHeader."Buy-from Vendor No." <> '') AND
+                      ((PurchOrderHeader."Buy-from Vendor No." <> "Vendor No.") OR
+                       (PurchOrderHeader."Currency Code" <> "Currency Code"))) OR
+                     (PurchOrderHeader."Sell-to Customer No." <> "Sell-to Customer No.") OR
+                     (PurchOrderHeader."Ship-to Code" <> "Ship-to Code") OR
+                     (PurchOrderHeader."Order Address Code" <> "Order Address Code")
+                  THEN BEGIN
+                    FinalizeOrderHeader(PurchOrderHeader,ReqLine);
+                    PurchOrderLine.RESET;
+                    PurchOrderLine.SETRANGE(PurchOrderLine."Document Type",PurchOrderHeader."Document Type");
+                    PurchOrderLine.SETRANGE(PurchOrderLine."Document No.",PurchOrderHeader."No.");
+                    PurchOrderLine.SETFILTER(PurchOrderLine."Special Order Sales Line No.",'<> 0');
+                    IF PurchOrderLine.FIND('-') THEN
+                      REPEAT
+                        SalesOrderLine.GET(SalesOrderLine."Document Type"::Order,PurchOrderLine."Special Order Sales No.",
+                          PurchOrderLine."Special Order Sales Line No.");
+                      UNTIL PurchOrderLine.NEXT = 0;
+                  END;
+                  // H1713  15.12.14  MKR ++++++++++++++++++++++++++++++
+                  CheckReasonsForPOAbortion(ReqLine);
+                  // H1713  15.12.14  MKR ------------------------------
+                  MakeRecurringTexts(ReqLine);
+                  InsertPurchOrderLine(ReqLine,PurchOrderHeader);
+                END;
+            END;
+        END;
+      END;
+    END;
+
+    PROCEDURE TryCarryOutReqLineAction@12(VAR ReqLine@1001 : Record 246) : Boolean;
+    BEGIN
+      WITH ReqLine DO BEGIN
+        ReqWkshMakeOrders.Set(PurchOrderHeader,EndOrderDate,PrintPurchOrders);
+        TempJnlLineDim.SETRANGE("Journal Line No.","Line No.");
+        ReqWkshMakeOrders.SetTryParam(
+          ReqTemplate,
+          LineCount,
+          NextLineNo,
+          PrevPurchCode,
+          PrevShipToCode,
+          OrderCounter,
+          OrderLineCounter,
+          TempFailedReqLine,
+          TempJnlLineDim);
+        IF ReqWkshMakeOrders.RUN(ReqLine) THEN BEGIN
+          ReqWkshMakeOrders.GetTryParam(
+            PurchOrderHeader,
+            LineCount,
+            NextLineNo,
+            PrevPurchCode,
+            PrevShipToCode,
+            OrderCounter,
+            OrderLineCounter);
+          //A/gob-rste/21.06.12/GOB1.00
+          IF GUIALLOWED THEN BEGIN
+          //E/gob-rste/21.06.12/GOB1.00
+          Window.UPDATE(3,OrderCounter);
+          Window.UPDATE(4,LineCount);
+          Window.UPDATE(5,OrderLineCounter);
+          //A/gob-rste/21.06.12/GOB1.00
+          END;
+          //E/gob-rste/21.06.12/GOB1.00
+          EXIT(TRUE);
+        END;
+        EXIT(FALSE)
+      END;
+    END;
+
+    LOCAL PROCEDURE InsertPurchOrderLine@3(VAR ReqLine2@1000 : Record 246;VAR PurchOrderHeader@1001 : Record 38);
+    VAR
+      DocDim@1004 : Record 357;
+      PurchOrderLine2@1003 : Record 39;
+      AddOnIntegrMgt@1002 : Codeunit 5403;
+      SalesLine@1108200000 : Record 37;
+      HermesSetupL@1000000008 : Record 50319;
+      ParcelStatusHistoryMgmtL@1000000007 : Codeunit 80011;
+      RecRefL@1000000009 : RecordRef;
+      "***gob***"@1000000000 : Integer;
+      Item@1000000001 : Record 27;
+      PurchasingLoc@1000000002 : Record 5721;
+      EPDSet@1000000003 : Boolean;
+      Vend@1000000004 : Record 23;
+      DSPostingSetup@1000000005 : Record 50233;
+      Country@1000000006 : Record 9;
+      "***TEC************************"@1000010007 : Integer;
+      MPDocMgtL@1000010008 : Codeunit 50500;
+      MPCommissionMgtL@1000010009 : Codeunit 50502;
+    BEGIN
+      WITH ReqLine2 DO BEGIN
+        IF ("No." = '') OR ("Vendor No." = '') OR (Quantity = 0) THEN
+          EXIT;
+
+        IF (PurchOrderHeader."Buy-from Vendor No." <> "Vendor No.") OR
+           (PurchOrderHeader."Sell-to Customer No." <> "Sell-to Customer No.") OR
+           (PrevShipToCode <> "Ship-to Code") OR
+           (PurchOrderHeader."Order Address Code" <> "Order Address Code") OR
+           (PurchOrderHeader."Currency Code" <> "Currency Code") OR
+           (PrevPurchCode <> "Purchasing Code")
+        THEN BEGIN
+          InsertHeader(ReqLine2);
+          LineCount := 0;
+          NextLineNo := 0;
+          PrevPurchCode := "Purchasing Code";
+          PrevShipToCode := "Ship-to Code";
+        END;
+
+        LineCount := LineCount + 1;
+        IF NOT PlanningResiliency THEN
+          //A/gob-rste/21.06.12/GOB1.00
+          IF GUIALLOWED THEN
+          //E/gob-rste/21.06.12/GOB1.00
+          Window.UPDATE(4,LineCount);
+
+        TESTFIELD("Currency Code",PurchOrderHeader."Currency Code");
+
+        PurchOrderLine.INIT;
+        PurchOrderLine.BlockDynamicTracking(TRUE);
+        PurchOrderLine."Document Type" := PurchOrderLine."Document Type"::Order;
+        PurchOrderLine."Buy-from Vendor No." := "Vendor No.";
+        PurchOrderLine."Document No." := PurchOrderHeader."No.";
+        NextLineNo := NextLineNo + 10000;
+        PurchOrderLine."Line No." := NextLineNo;
+        PurchOrderLine.VALIDATE(Type,Type);
+        PurchOrderLine.VALIDATE("No.","No.");
+        PurchOrderLine."Variant Code" := "Variant Code";
+
+        //S/FOB1.01
+        {
+        //S/FOB
+        IF PurchServices.CheckShip(PurchOrderHeader."Buy-from Vendor No.") THEN
+        PurchOrderLine.VALIDATE("Location Code",PurchOrderHeader."Location Code")
+        ELSE
+        //E/FOB
+        }
+        PurchOrderLine."Shipping Type" := "Shipping Type";
+        //H1371 29.09.14 DMA +++++++++++++++++++++++
+        IF PurchOrderHeader.Container THEN
+          PurchOrderLine.VALIDATE("New Location Code","Location Code")
+        ELSE
+        //H1371 29.09.14 DMA -----------------------
+          IF PurchOrderLine."Shipping Type" <> '' THEN
+             PurchOrderLine.VALIDATE("New Location Code","Location Code FOB");
+        //E/FOB1.01
+        PurchOrderLine.VALIDATE("Location Code","Location Code");
+        PurchOrderLine.VALIDATE("Unit of Measure Code","Unit of Measure Code");
+        PurchOrderLine."Qty. per Unit of Measure" := "Qty. per Unit of Measure";
+        PurchOrderLine."Prod. Order No." := "Prod. Order No.";
+        PurchOrderLine."Prod. Order Line No." := "Prod. Order Line No.";
+        PurchOrderLine.VALIDATE(Quantity,Quantity);
+        IF PurchOrderHeader."Prices Including VAT" THEN
+          PurchOrderLine.VALIDATE("Direct Unit Cost","Direct Unit Cost" * (1 + PurchOrderLine."VAT %" / 100))
+        ELSE
+          PurchOrderLine.VALIDATE("Direct Unit Cost","Direct Unit Cost");
+
+        PurchOrderLine.VALIDATE("Line Discount %","Line Discount %");
+        PurchOrderLine."Vendor Item No." := "Vendor Item No.";
+        PurchOrderLine."Shortcut Dimension 1 Code" := "Shortcut Dimension 1 Code";
+        PurchOrderLine."Shortcut Dimension 2 Code" := "Shortcut Dimension 2 Code";
+        PurchOrderLine.Description := Description;
+        PurchOrderLine."Description 2" := "Description 2";
+        PurchOrderLine."Sales Order No." := "Sales Order No.";
+        PurchOrderLine."Sales Order Line No." := "Sales Order Line No.";
+        PurchOrderLine."Prod. Order No." := "Prod. Order No.";
+        PurchOrderLine."Bin Code" := "Bin Code";
+        PurchOrderLine."Item Category Code" := "Item Category Code";
+        PurchOrderLine.Nonstock := Nonstock;
+        PurchOrderLine.VALIDATE("Planning Flexibility","Planning Flexibility");
+        PurchOrderLine.VALIDATE("Purchasing Code","Purchasing Code");
+        PurchOrderLine."Product Group Code" := "Product Group Code";
+
+      //H0477 01.08.13 ARI +++++++++++++++++++++++++++++
+        PurchOrderLine."Orig. Order Date" := WORKDATE;
+      //H0477 01.08.13 ARI -----------------------------
+
+      //H1371 28.07.14 DMA +++++++++++++++++++++++++++++
+        PurchOrderLine."Cont. Reference" := "Cont. Reference";
+      //H1371 28.07.14 DMA -----------------------------
+
+        IF "Due Date" <> 0D THEN BEGIN
+          //S/FOB1.01
+          IF  "Shipping Type" <> '' THEN
+            PurchOrderLine.VALIDATE("Expected Receipt Date","ETD Harbour")
+          ELSE
+            PurchOrderLine.VALIDATE("Expected Receipt Date","Due Date");
+          //E/FOB1.01
+          PurchOrderLine."Requested Receipt Date" := PurchOrderLine."Planned Receipt Date";
+        END;
+        MODIFY;
+
+        AddOnIntegrMgt.TransferFromReqLineToPurchLine(PurchOrderLine,ReqLine2);
+
+        PurchOrderLine."Drop Shipment" := "Sales Order Line No." <> 0;
+
+        // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        PurchOrderLine."Order No." := "Sales Order No.";
+        PurchOrderLine."Order Line No." := "Sales Order Line No.";
+        // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+        //S/P0011
+        //H1472 09.10.14  tec-rh +++++++++++
+        //IF SalesLine.GET(SalesLine."Document Type"::Order,"Sales Order No.","Sales Order Line No.") THEN
+        IF SalesLine.GET(SalesLine."Document Type"::Order,"Sales Order No.","Sales Order Line No.") THEN BEGIN
+          PurchOrderLine."Spare Part Reason" := SalesLine."Spare Part Reason";
+          PurchOrderLine.Description := SalesLine.Description;
+          PurchOrderLine."Description 2" := SalesLine."Description 2";
+          PurchOrderLine."Return Type" := SalesLine."Return Type";
+          PurchOrderLine."Return Reason Code" := SalesLine."Return Reason Code";
+        //H1472 09.10.14  tec-rh -----------
+          PurchOrderLine."Transp. Type" := SalesLine."Transp. Type";
+        //E/P0011
+        //H1472 09.10.14  tec-rh +++++++++++
+        END;
+        //H1472 09.10.14  tec-rh -----------
+
+        IF PurchasingCode.GET("Purchasing Code") THEN
+
+          // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+          //original IF PurchasingCode."Special Order" THEN BEGIN
+          //original   PurchOrderLine."Special Order Sales No." := "Sales Order No.";
+          //original   PurchOrderLine."Special Order Sales Line No." := "Sales Order Line No.";
+          //original   PurchOrderLine."Special Order" := TRUE;
+          IF PurchasingCode."Special Order" OR PurchasingCode."Create Purch. Order" THEN BEGIN
+            IF PurchasingCode."Special Order" THEN BEGIN
+              PurchOrderLine."Special Order Sales No." := "Sales Order No.";
+              PurchOrderLine."Special Order Sales Line No." := "Sales Order Line No.";
+      //H0471 22.08.13 ARI +++++++++++++++++++++++++++++++++++++++++++++++
+              PurchOrderLine."Org Special Order Sales No." := "Sales Order No.";
+              PurchOrderLine."Org Special Order Sales LineNo" := "Sales Order Line No.";
+      //H0471 22.08.13 ARI -----------------------------------------------
+              PurchOrderLine."Special Order" := TRUE;
+            END;
+          // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+            PurchOrderLine."Drop Shipment" := FALSE;
+            PurchOrderLine."Sales Order No." := '';
+            PurchOrderLine."Sales Order Line No." := 0;
+      //H0471 22.08.13 ARI +++++++++++++++++++++++++++++++++++++++++++++++
+            PurchOrderLine."Org Sales Order No." := '';
+            PurchOrderLine."Org Sales Order LineNo." := 0;
+      //H0471 22.08.13 ARI -----------------------------------------------
+            PurchOrderLine.UpdateUnitCost;
+          END;
+
+        // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        IF PurchOrderLine."Order Date" < WORKDATE THEN
+          PurchOrderLine."Order Date" := WORKDATE;
+        PurchOrderLine.VALIDATE("Order Date");
+        IF NOT (PurchOrderLine."Drop Shipment" OR PurchOrderLine."Special Order") THEN BEGIN
+          //a/gob-sfe/P0146/07.08.12
+          IF PurchOrderLine.Type=PurchOrderLine.Type::Item THEN BEGIN
+            Item.GET(PurchOrderLine."No.");
+            IF FORMAT(Item."Lead Time Calculation (max.)")<>'' THEN
+              PurchOrderLine."Expected Receipt Date" := CALCDATE(Item."Lead Time Calculation (max.)",WORKDATE);
+          END ELSE
+          //e/gob-sfe/P0146/07.08.12
+          //a/P0159/gob-sfe/08.08.12
+            PurchOrderLine."Expected Receipt Date" := 31122099D;
+          PurchOrderLine."Expected Receipt Date" := 31122099D;
+          //e/P0159/gob-sfe/08.08.12
+        //A,gob-dst,04.12.2012,EDIINT
+        END ELSE BEGIN
+          PurchOrderLine."Requested Receipt Date" := PurchOrderLine."Planned Receipt Date";
+        //E,gob-dst,04.12.2012,EDIINT
+        END;
+        // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+        //H0004 24.09.2012 rho ++++++++++++++++++++++++++++++++++++++++++++++++
+        //A/P0642
+        //IF "Purchasing Code" IN ['GER-99','NL-99','FRA-99'] THEN BEGIN
+        //H0004 12.11.2012 rho ++++++++++++++++++++++++++++++++++++++++++++++++
+            //PurchOrderLine."Expected Receipt Date" := 31122099D;
+        //H0004 12.11.2012 rho ------------------------------------------------
+        //END;
+        //H0004 24.09.2012 rho ------------------------------------------------
+        PurchasingLoc.RESET;
+        PurchasingLoc.SETRANGE("Crossdocking Channel",TRUE);
+        IF PurchasingLoc.FINDSET THEN BEGIN
+          REPEAT
+            EPDSet := FALSE;
+            IF (PurchasingLoc.Code = "Purchasing Code") AND (PurchasingLoc."Expected Receipt Date PO" <> 0D) THEN BEGIN
+              PurchOrderLine."Expected Receipt Date" := PurchasingLoc."Expected Receipt Date PO";
+              EPDSet := TRUE;
+            END;
+          UNTIL (EPDSet = TRUE) OR (PurchasingLoc.NEXT = 0);
+        END;
+        //E/P0642
+
+        //A/H0820/nst/09.05.14
+        IF SalesLine.GET(SalesLine."Document Type"::Order,ReqLine2."Sales Order No.",ReqLine2."Sales Order Line No.") THEN
+          IF SalesLine."Drop Shipment" THEN BEGIN
+            Vend.GET(PurchOrderHeader."Buy-from Vendor No.");
+            IF Vend."Crossborder VAT" THEN BEGIN
+              IF DSPostingSetup.GET(PurchOrderHeader."Buy-from Country/Region Code",PurchOrderHeader."Ship-to Country/Region Code",
+                PurchOrderHeader."Shipment Method Code") THEN BEGIN
+                  PurchOrderLine."Posting Code" := DSPostingSetup."Posting code";
+                  Country.GET(DSPostingSetup."Country H24 VAT Reg. No.");
+                  PurchOrderHeader."Our GLN-No." := Country."Our GLN-No.";
+                  // H1302 nst 23.07.14 +++++++++++++++++++++
+                  PurchOrderHeader."Our VAT-No." := Country."Our VAT Registration No.";
+                  // H1302 MDO 12.09.14 +++++++++++++++++++++
+                  PurchOrderHeader.MODIFY;
+                  // H1302 MDO 12.09.14 ---------------------
+                  // H1302 nst 23.07.14 ---------------------
+              END;
+            END;
+          END;
+        //E/H0820/nst/09.05.14
+
+        //H1371 28.07.14 DMA +++++++++++++++++++++++++++++
+        IF PurchOrderHeader.Container AND PurchOrderLine.Carrier THEN
+          PurchOrderLine.VALIDATE("Expected Receipt Date", ReqLine2."Due Date");
+        //H1371 28.07.14 DMA -----------------------------
+
+        ReserveReqLine.TransferReqLineToPurchLine(ReqLine2,PurchOrderLine,"Quantity (Base)",FALSE);
+
+        //H1310       03.09.14  JM +++++++++++++++++++++++
+        IF CheckMarketPlace(SalesLine,PurchOrderLine) THEN
+          PurchOrderLine."Market Place" := TRUE;
+        //H1310       03.09.14  JM -----------------------
+
+        //T0078 30.10.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+        IF PurchOrderLine."Market Place" THEN BEGIN
+          PurchOrderLine.VALIDATE("Direct Unit Cost",0);
+          PurchOrderLine.VALIDATE("Unit Cost (LCY)",0);
+        END;
+        //T0078 30.10.14 TEC-GH --------------------------------------------------
+
+        //H1371 29.09.14 DMA +++++++++++++++++++++++
+        IF PurchOrderHeader.Container THEN
+          PurchOrderLine.INSERT(TRUE)
+        ELSE
+          PurchOrderLine.INSERT;
+        //H1371 29.09.14 DMA -----------------------
+
+        // H0841 FX 13.03.14 +++++++++++++++++++++
+        PurchOrderLine.InsertBestGuess;
+        // H0841 FX 13.03.14 -----------------------
+
+        IF Reserve THEN
+          ReserveBindingOrderToPurch(PurchOrderLine,ReqLine2);
+
+        DocDim.SETRANGE("Table ID",DATABASE::"Purchase Line");
+        DocDim.SETRANGE("Document Type",PurchOrderLine."Document Type");
+        DocDim.SETRANGE("Document No.",PurchOrderLine."Document No.");
+        DocDim.SETRANGE("Line No.",PurchOrderLine."Line No.");
+
+        TempJnlLineDim.SETRANGE("Journal Line No.",ReqLine2."Line No.");
+        IF TempJnlLineDim.FIND('-') THEN BEGIN
+          REPEAT
+            IF DocDim.GET(
+               DATABASE::"Purchase Line",
+               PurchOrderLine."Document Type",
+               PurchOrderLine."Document No.",
+               PurchOrderLine."Line No.",
+               TempJnlLineDim."Dimension Code")
+             THEN
+              DocDim.DELETE;
+            DocDim.INIT;
+            DocDim."Table ID" := DATABASE::"Purchase Line";
+            DocDim."Document Type" := PurchOrderLine."Document Type";
+            DocDim."Document No." := PurchOrderLine."Document No.";
+            DocDim."Line No." := PurchOrderLine."Line No.";
+            DocDim."Dimension Code" := TempJnlLineDim."Dimension Code";
+            DocDim."Dimension Value Code" := TempJnlLineDim."Dimension Value Code";
+            DocDim.INSERT;
+          UNTIL TempJnlLineDim.NEXT = 0;
+        END;
+
+        IF (PurchOrderLine."Drop Shipment") OR (PurchOrderLine."Special Order") THEN BEGIN
+          SalesOrderLine.LOCKTABLE;
+          SalesOrderHeader.LOCKTABLE;
+          SalesOrderHeader.GET(SalesOrderHeader."Document Type"::Order,"Sales Order No.");
+          IF NOT PurchOrderLine."Special Order" THEN
+            TESTFIELD("Ship-to Code",SalesOrderHeader."Ship-to Code");
+          SalesOrderLine.GET(SalesOrderLine."Document Type"::Order,"Sales Order No.","Sales Order Line No.");
+          SalesOrderLine.TESTFIELD(Type,SalesOrderLine.Type::Item);
+          IF SalesOrderLine."Purch. Order Line No." <> 0 THEN
+            ERROR(Text006,SalesOrderLine."No.",SalesOrderLine."Document No.",SalesOrderLine."Purchase Order No.");
+          IF SalesOrderLine."Special Order Purchase No." <> '' THEN
+            ERROR(Text006,SalesOrderLine."No.",SalesOrderLine."Document No.",SalesOrderLine."Special Order Purchase No.");
+          IF NOT PurchOrderLine."Special Order" THEN
+            TESTFIELD("Sell-to Customer No.",SalesOrderLine."Sell-to Customer No.");
+          TESTFIELD(Type,SalesOrderLine.Type);
+          TESTFIELD(
+            Quantity,
+            ROUND(
+              SalesOrderLine."Outstanding Quantity" *
+              SalesOrderLine."Qty. per Unit of Measure" /
+              "Qty. per Unit of Measure",
+              0.00001));
+          TESTFIELD("No.",SalesOrderLine."No.");
+          TESTFIELD("Location Code",SalesOrderLine."Location Code");
+          TESTFIELD("Variant Code",SalesOrderLine."Variant Code");
+          TESTFIELD("Bin Code",SalesOrderLine."Bin Code");
+          TESTFIELD("Prod. Order No.",'');
+          TESTFIELD("Qty. per Unit of Measure","Qty. per Unit of Measure");
+          SalesOrderLine.VALIDATE("Unit Cost (LCY)");
+
+          IF SalesOrderLine."Special Order" THEN BEGIN
+            SalesOrderLine."Special Order Purchase No." := PurchOrderLine."Document No.";
+            SalesOrderLine."Special Order Purch. Line No." := PurchOrderLine."Line No.";
+      //H0471 22.08.13 ARI ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            SalesOrderLine."Org Special Order Purchase No." := PurchOrderLine."Document No.";
+            SalesOrderLine."Org Special Order Purch LineNo" := PurchOrderLine."Line No.";
+      //H0471 22.08.13 ARI ----------------------------------------------------------------
+          END ELSE BEGIN
+            SalesOrderLine."Purchase Order No." := PurchOrderLine."Document No.";
+            SalesOrderLine."Purch. Order Line No." := PurchOrderLine."Line No.";
+      //H0471 22.08.13 ARI ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            SalesOrderLine."Org Purchase Order No." := PurchOrderLine."Document No.";
+            SalesOrderLine."Org Purch. Order LineNo." := PurchOrderLine."Line No.";
+      //H0471 22.08.13 ARI ----------------------------------------------------------------
+          END;
+          //T0094 22.01.15 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+          // Code removed
+          //T0094 22.01.15 TEC-GH --------------------------------------------------
+          SalesOrderLine.MODIFY;
+        END;
+
+        IF TransferExtendedText.PurchCheckIfAnyExtText(PurchOrderLine,FALSE) THEN BEGIN
+          TransferExtendedText.InsertPurchExtText(PurchOrderLine);
+          PurchOrderLine2.SETRANGE("Document Type",PurchOrderHeader."Document Type");
+          PurchOrderLine2.SETRANGE("Document No.",PurchOrderHeader."No.");
+          IF PurchOrderLine2.FIND('+') THEN
+            NextLineNo := PurchOrderLine2."Line No.";
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE InsertHeader@4(VAR ReqLine2@1000 : Record 246);
+    VAR
+      SpecialOrder@1001 : Boolean;
+      LocationHH@1000000000 : Record 14;
+      Vend@1000000001 : Record 23;
+      DSPostingSetup@1000000002 : Record 50233;
+      SalesLine@1000000003 : Record 37;
+      SalesHeaderL@1000000004 : Record 36;
+      "***TEC************************"@1100409000 : Integer;
+      MarketPlacePartnerL@1100409001 : Record 50502;
+      MarketPlacePartnerExistL@1000010004 : Boolean;
+      MarketPlaceNoSeriesSetL@1000010005 : Boolean;
+    BEGIN
+      WITH ReqLine2 DO BEGIN
+        OrderCounter := OrderCounter + 1;
+        IF NOT PlanningResiliency THEN
+          //A/gob-rste/21.06.12/GOB1.00
+          IF GUIALLOWED THEN
+          //E/gob-rste/21.06.12/GOB1.00
+          Window.UPDATE(3,OrderCounter);
+
+        PurchSetup.GET;
+        PurchSetup.TESTFIELD("Order Nos.");
+
+        //H1472 09.10.14  tec-rh +++++++++++
+        sparepart := FALSE;
+        IF SalesHeaderL.GET(SalesHeaderL."Document Type"::Order,ReqLine2."Sales Order No.") THEN
+          IF SalesHeaderL."Return Type" = SalesHeaderL."Return Type"::"Spare Part" THEN
+            sparepart := TRUE;
+        IF sparepart THEN BEGIN
+          PurchSetup.TESTFIELD("Spare Part Order Nos.");
+          purchheadernospare := noseriesmgt.GetNextNo(PurchSetup."Spare Part Order Nos.",TODAY,TRUE);
+        END ELSE BEGIN
+        //H1472 09.10.14  tec-rh -----------
+
+        //A/gob-sfe/27.06.12/P0048
+        IF ReqLine2."Purchasing Code" <> '' THEN BEGIN
+           IF PurchasingCode.GET("Purchasing Code") THEN BEGIN
+             IF PurchasingCode."Drop Shipment" OR PurchasingCode."Special Order" THEN BEGIN
+               PurchSetup.TESTFIELD("Dropshipment Nos.");
+               salesrelation := TRUE;
+               //T0070 29.10.14 tec-sh +++++++++++++++++++++++++++++
+               MarketPlaceNoSeriesSetL := FALSE;
+               IF SalesLine.GET(SalesLine."Document Type"::Order,ReqLine2."Sales Order No.",ReqLine2."Sales Order Line No.") THEN BEGIN
+                 IF SalesLine."Market Place" THEN BEGIN
+                   //T0070 20.11.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+                   IF ReqLine2."Marketplace Partner Code" <> '' THEN BEGIN
+                     MarketPlacePartnerExistL := MarketPlacePartnerL.GET(ReqLine2."Marketplace Partner Code");
+                   END ELSE BEGIN
+                     MarketPlacePartnerExistL := MarketPlacePartnerL.GET(ReqLine2."Vendor No.");
+                   END;
+                   IF MarketPlacePartnerExistL THEN BEGIN
+                   //T0070 20.11.14 TEC-GH --------------------------------------------------
+                     IF PurchasingCode."Drop Shipment" THEN BEGIN
+                       MarketPlacePartnerL.TESTFIELD("Order Nos. Drop Shipment");
+                       purchheaderno := noseriesmgt.GetNextNo(MarketPlacePartnerL."Order Nos. Drop Shipment",TODAY,TRUE);
+                       MarketPlaceNoSeriesSetL := TRUE;
+                     END;
+                     IF PurchasingCode."Special Order" THEN BEGIN
+                       MarketPlacePartnerL.TESTFIELD("Order Nos. Cross Dock");
+                       purchheaderno := noseriesmgt.GetNextNo(MarketPlacePartnerL."Order Nos. Cross Dock",TODAY,TRUE);
+                       MarketPlaceNoSeriesSetL := TRUE;
+                     END;
+                   END;
+                 END;
+               END;
+               IF NOT MarketPlaceNoSeriesSetL THEN BEGIN
+               //T0070 29.10.14 tec-sh -----------------------------
+                  //A/gob-rste/24.09.12/P0371
+                  //A,gob-dst,28.08.2012,P0240
+                  //IF PurchasingCode.Code = 'GER-99' THEN
+                    //purchheaderno := noseriesmgt.GetNextNo('CH99',TODAY,TRUE)
+                  //ELSE
+                  //E,gob-dst,28.08.2012,P0240
+                  IF PurchasingCode."Dropship No. Series" <> '' THEN
+                    purchheaderno := noseriesmgt.GetNextNo(PurchasingCode."Dropship No. Series",TODAY,TRUE)
+                  ELSE
+                   purchheaderno := noseriesmgt.GetNextNo(PurchSetup."Dropshipment Nos.",TODAY,TRUE);
+                  //E/gob-rste/24.09.12/P0371
+               //T0070 29.10.14 tec-sh +++++++++++++++++++++++++++++
+               END;
+               //T0070 29.10.14 tec-sh -----------------------------
+             END;
+           END;
+        END;
+        //E/gob-sfe/27.06.12/P0048
+
+        //H1472 09.10.14  tec-rh +++++++++++
+        END;
+        //H1472 09.10.14  tec-rh -----------
+
+        PurchOrderHeader.INIT;
+        PurchOrderHeader."Document Type" := PurchOrderHeader."Document Type"::Order;
+
+        //H1472 09.10.14  tec-rh +++++++++++
+        IF sparepart THEN
+          PurchOrderHeader."No." := purchheadernospare
+        ELSE
+        //H1472 09.10.14  tec-rh -----------
+
+        //A/gob-sfe/27.06.12/P0048
+        IF salesrelation THEN
+          PurchOrderHeader."No." := purchheaderno
+        ELSE
+        //E/gob-sfe/27.06.12/P0048
+
+        PurchOrderHeader."No." := '';
+        PurchOrderHeader."Posting Date" := PostingDateReq;
+        PurchOrderHeader.INSERT(TRUE);
+        PurchOrderHeader."Your Reference" := ReferenceReq;
+        PurchOrderHeader."Order Date" := OrderDateReq;
+        PurchOrderHeader."Expected Receipt Date" := ReceiveDateReq;
+        PurchOrderHeader.VALIDATE("Buy-from Vendor No.","Vendor No.");
+        //T0070 20.11.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+        PurchOrderHeader."Marketplace Partner Code" := ReqLine2."Marketplace Partner Code";
+        //T0070 20.11.14 TEC-GH --------------------------------------------------
+        IF "Order Address Code" <> '' THEN
+          PurchOrderHeader.VALIDATE("Order Address Code","Order Address Code");
+
+        IF "Sell-to Customer No." <> '' THEN
+          PurchOrderHeader.VALIDATE("Sell-to Customer No.","Sell-to Customer No.");
+
+        PurchOrderHeader.VALIDATE("Currency Code","Currency Code");
+
+        // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        IF GeneralMgt2.CheckMP("No.",PurchOrderHeader."Buy-from Vendor No.") <> 0 THEN
+          PurchOrderHeader.VALIDATE("Prices Including VAT",TRUE);
+        // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+        IF PurchasingCode.GET("Purchasing Code") THEN
+          IF PurchasingCode."Special Order" THEN
+            SpecialOrder := TRUE;
+
+        // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        //original IF NOT SpecialOrder THEN BEGIN
+        IF (NOT SpecialOrder) AND (NOT PurchasingCode."Create Purch. Order") THEN BEGIN
+        // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+          IF "Ship-to Code" <> '' THEN
+            PurchOrderHeader.VALIDATE("Ship-to Code","Ship-to Code")
+          ELSE
+            PurchOrderHeader.VALIDATE("Location Code",ReqLine2."Location Code");
+        END ELSE BEGIN
+          PurchOrderHeader.VALIDATE("Location Code",ReqLine2."Location Code");
+          PurchOrderHeader.SetShipToForSpecOrder;
+        END;
+
+        //A/P0061
+        IF ReqLine2."HH Shipment Address" THEN BEGIN
+          LocationHH.GET('HAMBURG');
+          PurchOrderHeader."Ship-to Name" := LocationHH.Name;
+          PurchOrderHeader."Ship-to Name 2" := LocationHH."Name 2";
+          PurchOrderHeader."Ship-to Address" := LocationHH.Address;
+          PurchOrderHeader."Ship-to Address 2" := LocationHH."Address 2";
+          PurchOrderHeader."Ship-to City" := LocationHH.City;
+          PurchOrderHeader."Ship-to Post Code" := LocationHH."Post Code";
+          PurchOrderHeader."Ship-to County" := LocationHH.County;
+          PurchOrderHeader."Ship-to Country/Region Code" := LocationHH."Country/Region Code";
+          PurchOrderHeader."Ship-to Contact" := LocationHH.Contact;
+        END;
+        //E/P0061
+
+        //A/H0820/nst/09.05.14
+        IF SalesLine.GET(SalesLine."Document Type"::Order,ReqLine2."Sales Order No.",ReqLine2."Sales Order Line No.") THEN
+          IF SalesLine."Drop Shipment" THEN BEGIN
+            Vend.GET(PurchOrderHeader."Buy-from Vendor No.");
+            IF Vend."Crossborder VAT" THEN BEGIN
+              IF DSPostingSetup.GET(PurchOrderHeader."Buy-from Country/Region Code",PurchOrderHeader."Ship-to Country/Region Code",
+                PurchOrderHeader."Shipment Method Code") THEN BEGIN
+                  PurchOrderHeader.VALIDATE("VAT Bus. Posting Group",DSPostingSetup."VAT Bus. Posting Group");
+                  SalesLine."Posting Code" := DSPostingSetup."Posting code";
+                  SalesLine.MODIFY;
+              END;
+            END;
+          END;
+        //E/H0820/nst/09.05.14
+
+        //H1371 28.07.14 DMA +++++++++++++++++++++++++++++
+        IF ReqWkshName.GET(ReqLine2."Worksheet Template Name", ReqLine2."Journal Batch Name") THEN
+          PurchOrderHeader.VALIDATE(Container, ReqWkshName.Container);
+        IF PurchOrderHeader.Container THEN
+          PurchOrderHeader."Location Code" := '';
+        //H1371 28.07.14 DMA -----------------------------
+
+
+        PurchOrderHeader.MODIFY;
+        COMMIT;
+
+        //S/FOB1.01
+        TempPurchHeader.INIT;
+        TempPurchHeader := PurchOrderHeader;
+        TempPurchHeader.INSERT;
+        //E/FOB1.01
+
+        IF RECORDLEVELLOCKING THEN
+          LOCKTABLE;
+        PurchOrderHeader.MARK(TRUE);
+      END;
+    END;
+
+    LOCAL PROCEDURE FinalizeOrderHeader@5(PurchOrderHeader@1000 : Record 38;VAR ReqLine@1002 : Record 246);
+    VAR
+      ReqLine2@1003 : Record 246;
+      CarryOutAction@1001 : Codeunit 99000813;
+      "***TEC************************"@1000010001 : Integer;
+      MPPPostingMgtL@1000010000 : Codeunit 50501;
+    BEGIN
+      // Update/delete lines
+      IF NOT ReqLine.RECORDLEVELLOCKING THEN
+        ReqLine.LOCKTABLE(TRUE,TRUE);
+      IF ReqTemplate.Recurring THEN BEGIN
+        // Recurring journal
+        ReqLine2.COPY(ReqLine);
+        ReqLine2.SETRANGE("Vendor No.",PurchOrderHeader."Buy-from Vendor No.");
+        ReqLine2.SETRANGE("Sell-to Customer No.",PurchOrderHeader."Sell-to Customer No.");
+        ReqLine2.SETRANGE("Ship-to Code",PurchOrderHeader."Ship-to Code");
+        ReqLine2.SETRANGE("Order Address Code",PurchOrderHeader."Order Address Code");
+        ReqLine2.SETRANGE("Currency Code",PurchOrderHeader."Currency Code");
+        ReqLine2.FIND('-');
+        REPEAT
+          OrderLineCounter := OrderLineCounter + 1;
+          IF NOT PlanningResiliency THEN
+          //A/gob-rste/21.06.12/GOB1.00
+          IF GUIALLOWED THEN
+          //E/gob-rste/21.06.12/GOB1.00
+            Window.UPDATE(5,OrderLineCounter);
+          IF ReqLine2."Order Date" <> 0D THEN BEGIN
+            ReqLine2.VALIDATE(
+              "Order Date",
+              CALCDATE(ReqLine2."Recurring Frequency",ReqLine2."Order Date"));
+            ReqLine2.VALIDATE("Currency Code",PurchOrderHeader."Currency Code");
+          END;
+          IF (ReqLine2."Recurring Method" = ReqLine2."Recurring Method"::Variable) AND
+             (ReqLine2."No." <> '')
+          THEN BEGIN
+            ReqLine2.Quantity := 0;
+            ReqLine2."Line Discount %" := 0;
+          END;
+          ReqLine2.MODIFY;
+        UNTIL ReqLine2.NEXT = 0;
+      END ELSE BEGIN
+        // Not a recurring journal
+        OrderLineCounter := OrderLineCounter + LineCount;
+        IF NOT PlanningResiliency THEN
+          //A/gob-rste/21.06.12/GOB1.00
+          IF GUIALLOWED THEN
+          //E/gob-rste/21.06.12/GOB1.00
+          Window.UPDATE(5,OrderLineCounter);
+        ReqLine2.COPY(ReqLine);
+        ReqLine2.SETRANGE("Vendor No.",PurchOrderHeader."Buy-from Vendor No.");
+        ReqLine2.SETRANGE("Sell-to Customer No.",PurchOrderHeader."Sell-to Customer No.");
+        ReqLine2.SETRANGE("Ship-to Code",PurchOrderHeader."Ship-to Code");
+        ReqLine2.SETRANGE("Order Address Code",PurchOrderHeader."Order Address Code");
+        ReqLine2.SETRANGE("Currency Code",PurchOrderHeader."Currency Code");
+        IF ReqLine2.FIND('-') THEN BEGIN
+          ReqLine2.BlockDynamicTracking(TRUE);
+          ReservEntry.SETCURRENTKEY(
+             "Source ID","Source Ref. No.","Source Type","Source Subtype",
+             "Source Batch Name","Source Prod. Order Line");
+          REPEAT
+            TempFailedReqLine := ReqLine2;
+            IF NOT TempFailedReqLine.FIND THEN BEGIN
+              ReserveReqLine.FilterReservFor(ReservEntry,ReqLine2);
+              ReservEntry.DELETEALL(TRUE);
+              ReqLine2.DELETE(TRUE);
+            END;
+          UNTIL ReqLine2.NEXT = 0;
+        END;
+
+      END;
+
+      // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+      AutomEMailProc.RealizeOrderRequest(PurchOrderHeader);
+      CLEAR(AutomEMailProc);
+      // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+      COMMIT;
+
+      CarryOutAction.SetPrintOrder(PrintPurchOrders);
+      CarryOutAction.PrintPurchaseOrder(PurchOrderHeader);
+    END;
+
+    LOCAL PROCEDURE CheckRecurringLine@10(VAR ReqLine2@1000 : Record 246);
+    BEGIN
+      WITH ReqLine2 DO BEGIN
+        IF "No." <> '' THEN
+          IF ReqTemplate.Recurring THEN BEGIN
+            TESTFIELD("Recurring Method");
+            TESTFIELD("Recurring Frequency");
+            IF "Recurring Method" = "Recurring Method"::Variable THEN
+              TESTFIELD(Quantity);
+          END ELSE BEGIN
+            TESTFIELD("Recurring Method",0);
+            TESTFIELD("Recurring Frequency","0DF");
+          END;
+      END;
+    END;
+
+    LOCAL PROCEDURE MakeRecurringTexts@6(VAR ReqLine2@1000 : Record 246);
+    BEGIN
+      WITH ReqLine2 DO BEGIN
+        IF ("No." <> '') AND ("Recurring Method" <> 0) AND ("Order Date" <> 0D) THEN BEGIN
+          Day := DATE2DMY("Order Date",1);
+          Week := DATE2DWY("Order Date",2);
+          Month := DATE2DMY("Order Date",2);
+          MonthText := FORMAT("Order Date",0,Text007);
+          AccountingPeriod.SETRANGE("Starting Date",0D,"Order Date");
+          IF NOT AccountingPeriod.FIND('+') THEN
+            AccountingPeriod.Name := '';
+          Description :=
+            DELCHR(
+              PADSTR(
+                STRSUBSTNO(Description,Day,Week,Month,MonthText,AccountingPeriod.Name),
+                MAXSTRLEN(Description)),
+              '>');
+        END;
+      END;
+    END;
+
+    PROCEDURE ReserveBindingOrderToPurch@7(VAR PurchLine@1005 : Record 39;VAR ReqLine@1000 : Record 246);
+    VAR
+      ProdOrderComp@1004 : Record 5407;
+      SalesLine@1007 : Record 37;
+      ReservEntry@1003 : Record 337;
+      ReserveProdOrderComp@1002 : Codeunit 99000838;
+      ReserveSalesLine@1008 : Codeunit 99000832;
+      ReservMgt@1006 : Codeunit 99000845;
+      ReservQty@1001 : Decimal;
+    BEGIN
+      CLEAR(ReservMgt);
+
+      PurchLine.CALCFIELDS("Reserved Qty. (Base)");
+      IF (PurchLine."Quantity (Base)" - PurchLine."Reserved Qty. (Base)") > ReqLine."Demand Quantity (Base)" THEN
+        ReservQty := ReqLine."Demand Quantity (Base)"
+      ELSE
+        ReservQty := PurchLine."Quantity (Base)" - PurchLine."Reserved Qty. (Base)";
+      ReservMgt.SetPurchLine(PurchLine);
+
+      CASE ReqLine."Demand Type" OF
+        DATABASE::"Prod. Order Component":
+          BEGIN
+            ProdOrderComp.GET(
+              ReqLine."Demand Subtype",
+              ReqLine."Demand Order No.",
+              ReqLine."Demand Line No.",
+              ReqLine."Demand Ref. No.");
+            ReservEntry."Source Type" := DATABASE::"Prod. Order Component";
+            ReserveProdOrderComp.SetBinding(ReservEntry.Binding::"Order-to-Order");
+            ReserveProdOrderComp.CreateReservationSetFrom(
+              DATABASE::"Purchase Line",
+              PurchLine."Document Type",
+              PurchLine."Document No.",
+              '',
+              0,PurchLine."Line No.",
+              PurchLine."Variant Code",
+              PurchLine."Location Code",'','',
+              PurchLine."Qty. per Unit of Measure");
+            ReserveProdOrderComp.CreateReservation(
+              ProdOrderComp,
+              PurchLine.Description,
+              PurchLine."Expected Receipt Date",
+              ReservQty,
+              '','');
+            ProdOrderComp.MODIFY;
+         END;
+        DATABASE::"Sales Line":
+          BEGIN
+            SalesLine.GET(ReqLine."Demand Subtype",ReqLine."Demand Order No.",ReqLine."Demand Line No.");
+            ReservEntry."Source Type" := DATABASE::"Sales Line";
+            ReserveSalesLine.SetBinding(ReservEntry.Binding::"Order-to-Order");
+            ReserveSalesLine.CreateReservationSetFrom(
+              DATABASE::"Purchase Line",
+              PurchLine."Document Type",
+              PurchLine."Document No.",
+              '',
+              0,PurchLine."Line No.",
+              PurchLine."Variant Code",
+              PurchLine."Location Code",'','',
+              PurchLine."Qty. per Unit of Measure");
+            ReserveSalesLine.CreateReservation(
+              SalesLine,
+              PurchLine.Description,
+              PurchLine."Expected Receipt Date",
+              ReservQty,
+              '','');
+            IF SalesLine.Reserve = SalesLine.Reserve::Never THEN
+              SalesLine.Reserve := SalesLine.Reserve::Optional;
+            SalesLine.MODIFY;
+         END;
+      END;
+      PurchLine.MODIFY;
+    END;
+
+    PROCEDURE SetTryParam@11(TryReqTemplate@1006 : Record 244;VAR TryLineCount@1005 : Integer;VAR TryNextLineNo@1004 : Integer;VAR TryPrevPurchCode@1003 : Code[10];VAR TryPrevShipToCode@1000 : Code[10];VAR TryOrderCounter@1007 : Integer;VAR TryOrderLineCounter@1008 : Integer;VAR TryFailedReqLine@1001 : Record 246;VAR TryJnlLineDim@1009 : TEMPORARY Record 356);
+    BEGIN
+      SetPlanningResiliency;
+      ReqTemplate := TryReqTemplate;
+      LineCount := TryLineCount;
+      NextLineNo := TryNextLineNo;
+      PrevPurchCode := TryPrevPurchCode;
+      PrevShipToCode := TryPrevShipToCode;
+      OrderCounter := TryOrderCounter;
+      OrderLineCounter := TryOrderLineCounter;
+      IF TryFailedReqLine.FIND('-') THEN
+        REPEAT
+          TempFailedReqLine := TryFailedReqLine;
+          IF TempFailedReqLine.INSERT THEN;
+        UNTIL TryFailedReqLine.NEXT = 0;
+      DimMgt.CopyJnlLineDimToJnlLineDim(TryJnlLineDim,TempJnlLineDim);
+    END;
+
+    PROCEDURE GetTryParam@9(VAR TryPurchOrderHeader@1001 : Record 38;VAR TryLineCount@1005 : Integer;VAR TryNextLineNo@1004 : Integer;VAR TryPrevPurchCode@1003 : Code[10];VAR TryPrevShipToCode@1000 : Code[10];VAR TryOrderCounter@1007 : Integer;VAR TryOrderLineCounter@1008 : Integer);
+    BEGIN
+      TryPurchOrderHeader.COPY(PurchOrderHeader);
+      TryLineCount := LineCount;
+      TryNextLineNo := NextLineNo;
+      TryPrevPurchCode := PrevPurchCode;
+      TryPrevShipToCode := PrevShipToCode;
+      TryOrderCounter := OrderCounter;
+      TryOrderLineCounter := OrderLineCounter;
+    END;
+
+    PROCEDURE SetFailedReqLine@13(VAR TryFailedReqLine@1000 : Record 246);
+    BEGIN
+      TempFailedReqLine := TryFailedReqLine;
+      TempFailedReqLine.INSERT;
+    END;
+
+    PROCEDURE SetPlanningResiliency@17();
+    BEGIN
+      PlanningResiliency := TRUE;
+    END;
+
+    PROCEDURE GetFailedCounter@19() : Integer;
+    BEGIN
+      EXIT(CounterFailed);
+    END;
+
+    LOCAL PROCEDURE PrintTransOrder@15();
+    VAR
+      CarryOutAction@1000 : Codeunit 99000813;
+    BEGIN
+      IF TransHeader."No." <> '' THEN BEGIN
+        CarryOutAction.SetPrintOrder(PrintPurchOrders);
+        CarryOutAction.PrintTransferOrder(TransHeader);
+      END;
+    END;
+
+    LOCAL PROCEDURE SetPurchOrderHeader@16();
+    BEGIN
+      PurchOrderHeader."Order Date" := OrderDateReq;
+      PurchOrderHeader."Posting Date" := PostingDateReq;
+      PurchOrderHeader."Expected Receipt Date" := ReceiveDateReq;
+      PurchOrderHeader."Your Reference" := ReferenceReq;
+    END;
+
+    PROCEDURE CheckMarketPlace@1000000003(SalesLineV@1000000002 : Record 37;PurchaseLineV@1000000003 : Record 39) IsMarketPlace : Boolean;
+    VAR
+      PurchasingL@1000000000 : Record 5721;
+    BEGIN
+      //H1310       03.09.14  JM +++++++++++++++++++++++
+      IF NOT PurchasingL.GET(SalesLineV."Purchasing Code") THEN
+        EXIT;
+      IF NOT PurchasingL."Market Place" THEN
+        EXIT(FALSE);
+
+      IF (SalesLineV."Drop Shipment") AND (PurchaseLineV."Drop Shipment") AND (PurchasingL."Drop Shipment") THEN
+        EXIT(TRUE);  //Is DropShipment MarketPlace
+
+      IF (SalesLineV."Special Order") AND (PurchaseLineV."Special Order") AND (PurchasingL."Special Order") THEN
+        EXIT(TRUE);  //Is SpecialOrder CrossDocking MarketPlace
+      //H1310       03.09.14  JM -----------------------
+    END;
+
+    PROCEDURE CheckReasonsForPOAbortion@1000000000(ReqLineV@1000000000 : Record 246);
+    VAR
+      HermesSetupL@1000000001 : Record 50319;
+      SalesHeaderL@1000000004 : Record 36;
+      SalesLineL@1000000002 : Record 37;
+      eBayNavCSalesLineL@1000000003 : Record 5251572;
+      eBayNavCShippingModuleL@1000000006 : Record 5251557;
+      VendHermesLocAssignL@1000000005 : Record 50335;
+      HermesDepotAssignDIL@1000000007 : Record 50333;
+      LocationDummyL@1000000008 : Record 14;
+      VendChPerCountry@1000000009 : Record 50094;
+    BEGIN
+      // H1713  15.12.2014  MKR ++++++++++++++++++++++++++++++
+
+      // A. Hermes Checks
+      HermesSetupL.GET;
+
+      SalesHeaderL.SETRANGE("Document Type", SalesHeaderL."Document Type"::Order);
+      SalesHeaderL.SETRANGE("No.", ReqLineV."Sales Order No.");
+      // H3825  05.03.15  MKR ++++++++++++++++++++++++++++++++++++
+      IF SalesHeaderL.FINDFIRST THEN BEGIN
+      // H3825  05.03.15  MKR ------------------------------------
+        SalesLineL.SETRANGE("Document Type", SalesHeaderL."Document Type");
+        SalesLineL.SETRANGE("Document No.", SalesHeaderL."No.");
+        SalesLineL.SETRANGE(Type, SalesLineL.Type::Item);
+        IF SalesLineL.FINDSET THEN BEGIN
+          REPEAT
+            // Case 1: "Vendor Channel per Country" setting not correct
+
+            // H3806 06.03.15 MKR, H3878 12.03.15 cc-ar  +++++++++++++++++++++++++++++++++++++
+            // Code not deleted because it's still an running issue
+            //eBayNavCSalesLineL.SETRANGE("Document No.", SalesLineL."Document No.");
+            //eBayNavCSalesLineL.SETRANGE("Line No.", SalesLineL."Line No.");
+            //IF eBayNavCSalesLineL.FINDFIRST THEN BEGIN
+      //IF eBayNavCShippingModuleL.GET(eBayNavCSalesLineL."Webshop Code", eBayNavCSalesLineL."Webshop Shipping Module") THEN BEGIN
+                //IF eBayNavCShippingModuleL."Shipping Agent Code" = HermesSetupL."Shipping Agent Hermes" THEN BEGIN
+                  //VendChPerCountry.SETRANGE("Vendor No.", SalesLineL."Vendor No.");
+                  //VendChPerCountry.SETRANGE("Webshop Code", eBayNavCSalesLineL."Webshop Code");
+                  //IF VendChPerCountry.FINDFIRST THEN BEGIN
+                    //IF VendChPerCountry."Purchasing Code" <> HermesSetupL."Purchasing Code HES CD-DI GER" THEN BEGIN
+                      //ERROR(TextHME001);
+                    //END;
+                  //END;
+                //END;
+              //END;
+            //END;
+            // H3806 06.03.15 MKR, H3878 12.03.15 cc-ar  --------------------------------------
+
+            IF SalesLineL."Purchasing Code" = HermesSetupL."Purchasing Code HES CD-DI GER" THEN BEGIN
+              // Case 2: Missing Vendor App Domain (Hermes Depot Assingment)
+              VendHermesLocAssignL.SETRANGE("Vendor No.", SalesLineL."Vendor No.");
+              VendHermesLocAssignL.SETRANGE("Webshop Code", FORMAT(SalesHeaderL."Website No."));
+              IF VendHermesLocAssignL.COUNT = 0 THEN BEGIN
+                ERROR(TextHME002);
+              END ELSE BEGIN
+                // Case 3: No DI Depot could be found
+                IF VendHermesLocAssignL.FINDFIRST THEN BEGIN
+                  IF VendHermesLocAssignL."Location Code" = HermesSetupL."HES Substitute Location" THEN BEGIN
+                    IF NOT VendHermesLocAssignL.GetRealHermesLocationSO(SalesLineL."Vendor No.", SalesHeaderL, LocationDummyL) THEN
+      BEGIN
+                      ERROR(TextHME003);
+                    END;
+                  END;
+                END;
+              END;
+            END;
+          UNTIL SalesLineL.NEXT=0;
+        END;
+      // H3825  05.03.15  MKR ++++++++++++++++++++++++++++++++++++
+      END;
+      // H3825  05.03.15  MKR ------------------------------------
+
+      // B. Future Checks
+
+      // H1713  15.12.2014  MKR ------------------------------
+    END;
+
+    BEGIN
+    {
+      1.00  31.10.11  eich  -realize E-Mail export
+
+      +-----------------------------------------------------+
+      |               GOB Software & Systeme                |
+      +-----------------------------------------------------+
+      |                FP Commerce Anpassungen              |
+      -------------------------------------------------------
+
+      Version        Bemerkung
+      -------------------------------------------------------
+      P0011          GOB-MNO  30.05.2012  Neue Feldzuweisung
+      P0048          gob-sfe  27.06.12    andere Nummernserie bei EK Code nicht leer (Auftragsbezug)
+      P0061          gob-mab  09.07.12    Abw. Lieferadresse Hamburg
+      P0146          gob-sfe  07.08.12    Leadtime Calculation
+      V1.02  P0159   gob-sfe  08.08.12    New Avise Date 31.12.2099
+      P0240          gob-dst  28.08.2012  Eigene Nummernserie fÅr Kanal 99
+      p0282 gob-mab FOB           InsertPurchOrderLine
+
+      p0282 gob-mab Schwimmende Ware: InsertHeader
+
+      p0282 gob-mab FOB1.01       Function "InsertPurchOrderLine": Set "Location Code FOB" and "Expected Receipt Date"
+                    Function "Insert Header" :  Existing code commented out
+                                                Save newly created purchase orders
+                    Function "CarryOutBatchAction": Create transfer orders after creating purchase orders
+                    Function "CheckReqWkshLine": Check FOB-Setup for the ReqLine
+
+      P0371         gob-rste  24.09.12    New Code for Dropship No. for each Channel
+      EDIINT        gob-dst   04.12.12    PurchOrderLine."Requested Receipt Date" fÅllen
+      P0642         gob-rste  06.12.12    Internationales Dropshpping
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      | Cooperation Cosmo Consult & Home24 NAV Team|
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      H3878       11.03.15  cc-ar     Hermes Fixes: CD-Order generation "Carrier via SMT doesn't match with Vendor Channel"
+
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+
+      H0004       17.09.12 rho       Channel99 - Lines Empty "Expected Receipt Date" after creation
+      H0082       17.09.12 rho       Channel99 - PO-Lines: Fill "Expected Receipt Date" with fix value 31.12.2099
+      H0841       13.03.14  FX        New field Best guess in PO
+      H0477       01.08.13 ARI       Fill ODD in Purchase Lines
+      H0471       22.08.13 ARI       Write related Order Infos (CD/DS) into BackupFields
+      H1302       23.07.14 nst       Field Our Vat-No ist field with the country entries of h24 Vat no.
+      H1371       28.07.14 DMA       Creating Container POs by Req. Worksheet,CODECHANGE
+      H1310       03.09.14 JM        Market Place, Set UnitCost to zero in Purch.Orderlines for DropShipment
+      H1713       16.12.14 MKR       Hermes 2MH: Create Channel XX-15 : Check error cases which causes error in Batch-Post
+      H3825       05.03.15 MKR       PO Abortion Check function should be called only where applicable
+      H3806       06.03.15 MKR       Hermes Fixes: CD-Order generation
+    }
+    END.
+  }
+}
+

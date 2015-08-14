@@ -1,0 +1,805 @@
+OBJECT Codeunit 50227 Inventory Revaluation II
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02.09.13;
+    Time=14:59:54;
+    Version List=HME0513;
+  }
+  PROPERTIES
+  {
+    Subtype=Test;
+    OnRun=BEGIN
+            isInitialized := FALSE;
+            RANDOMIZE(1);  // Use Randomize to generate the seed for RANDOM function.
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Assert@1004 : Codeunit 50200;
+      LibrarySCM@1003 : Codeunit 50210;
+      LibraryFinance@1102601000 : Codeunit 50207;
+      LibraryUtility@1002 : Codeunit 50206;
+      isInitialized@1000 : Boolean;
+      ErrMessageQtyMustBeEqual@1005 : TextConst 'ENU=Item Quantity Must Be Equal.';
+      ErrMessageCostMustBeEqual@1006 : TextConst 'ENU=Costs must be Equal.';
+      ExpectedMsg@1008 : TextConst 'ENU=Expected Cost Posting to G/L has been changed.';
+      ExpectedCostPostingConfirm@1007 : TextConst 'ENU=Do you really want to change the Expected Cost Posting to G/L?';
+
+    LOCAL PROCEDURE Initialize@4();
+    VAR
+      BackupMgt@1001 : Codeunit 50201;
+    BEGIN
+      IF isInitialized THEN
+        EXIT;
+
+      // Setup Demonstration data.
+      BackupMgt.DefaultFixture;
+
+      LibraryFinance.InitializeGeneralPostingSetup;
+      LibraryFinance.InitializeVATPostingSetup;
+
+      isInitialized := TRUE;
+      COMMIT;
+    END;
+
+    [Test]
+    [HandlerFunctions(MessageHandler,ConfirmHandler)]
+    PROCEDURE StdPurchRevalSales@3();
+    VAR
+      Item@1012 : Record 27;
+      InventorySetup@1004 : Record 313;
+      ItemJournalLine@1003 : Record 83;
+      PurchaseHeader@1010 : Record 38;
+      SalesHeader@1001 : Record 36;
+      InventoryPostingGroup@1015 : Code[10];
+      ItemNo@1009 : Code[20];
+      LocationCode@1014 : Code[10];
+      AutomaticCostAdjustment@1007 : 'Never,Day,Week,Month,Quarter,Year,Always';
+      AverageCostCalcType@1006 : ' ,Item,Item & Location & Variant';
+      AverageCostPeriod@1005 : ' ,Day,Week,Month,Quarter,Year,Accounting Period';
+      DocumentType@1011 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order';
+      ItemCostingMethod@1002 : 'FIFO,LIFO,Specific,Average,Standard';
+      Qty@1000 : Decimal;
+      OldUnitCost@1008 : Decimal;
+      NewUnitCost@1013 : Decimal;
+      InitialInventory@1016 : Decimal;
+    BEGIN
+      // Setup: Update Inventory Setup, Create Item and Purchase Order and Post Purchase Order.
+      Initialize;
+      ExecuteUIHandlers;
+      LibrarySCM.UpdateInventorySetup(
+        InventorySetup,TRUE,FALSE,AutomaticCostAdjustment::Never,AverageCostCalcType::Item,AverageCostPeriod::Day);
+      LocationCode := CreateLocationCode(InventoryPostingGroup);
+      ItemNo := CreateItem(ItemCostingMethod::Standard,InventoryPostingGroup);
+      UpdateItemInventory(ItemNo,LocationCode);
+      Qty := RANDOM(10) + 50;
+      CreatePurchaseOrder(PurchaseHeader,ItemNo,'',Qty,LocationCode,FALSE);
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,TRUE,TRUE);
+
+      // Exercise: Run Adjust Cost Item Entries, Create Revaluation Journal, Calculate Inventory Value.
+      LibrarySCM.AdjustCostItemEntries(ItemNo,'');
+      CreateRevaluationJournal(ItemJournalLine);
+      Item.GET(ItemNo);
+      CalcInventoryValue(Item,ItemJournalLine);
+      Item.CALCFIELDS(Inventory);
+      InitialInventory := Item.Inventory;
+
+      // Verify: Verify that Revalued Inventory is equal to Calculated Inventory.
+      VerifyRevaluedInventory(Item."No.");
+
+      // Exercise: Update Revalued Unit Cost and Post Item Journal Line, Create and Post Sales Order, Run Adjust Cost Item Entries.
+      OldUnitCost := Item."Standard Cost";
+      NewUnitCost :=
+        UpdateRevaluedUnitCost(ItemJournalLine."Journal Template Name",ItemJournalLine."Journal Batch Name",Item."No.",OldUnitCost);
+      LibrarySCM.PostItemJournalLine(ItemJournalLine."Journal Template Name",ItemJournalLine."Journal Batch Name");
+      CreateSalesOrder(SalesHeader,Item."No.",Qty,LocationCode,FALSE,FALSE);
+      PostSalesOrder(DocumentType::Order,SalesHeader."No.",TRUE,TRUE,FALSE);
+      LibrarySCM.AdjustCostItemEntries(ItemNo,'');
+
+      // Verify: Verify Value Entries.
+      VerifyValueEntry(
+        PurchaseHeader."No.",SalesHeader."No.",Item."No.",OldUnitCost,
+        NewUnitCost,OldUnitCost - NewUnitCost,InitialInventory,TRUE,FALSE);
+    END;
+
+    [Test]
+    [HandlerFunctions(MessageHandler,ConfirmHandler)]
+    PROCEDURE StdPurchSalesLessInvoiceReval@5();
+    VAR
+      Item@1001 : Record 27;
+      InventorySetup@1000 : Record 313;
+      PurchaseHeader@1007 : Record 38;
+      SalesHeader@1009 : Record 36;
+      ItemJournalLine@1010 : Record 83;
+      ReleasePurchaseDocument@1013 : Codeunit 415;
+      AutomaticCostAdjustment@1004 : 'Never,Day,Week,Month,Quarter,Year,Always';
+      AverageCostCalcType@1003 : ' ,Item,Item & Location & Variant';
+      AverageCostPeriod@1002 : ' ,Day,Week,Month,Quarter,Year,Accounting Period';
+      DocumentType@1008 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order';
+      ItemCostingMethod@1014 : 'FIFO,LIFO,Specific,Average,Standard';
+      InventoryPostingGroup@1016 : Code[10];
+      ItemNo@1005 : Code[20];
+      LocationCode@1015 : Code[10];
+      Qty@1006 : Decimal;
+      InvQty@1018 : Decimal;
+      OldUnitCost@1012 : Decimal;
+      NewUnitCost@1011 : Decimal;
+      InitialInventory@1017 : Decimal;
+    BEGIN
+      // Setup: Update Inventory Setup, Create Item and Purchase Order and Post Purchase Order as Receive.
+      // Create and Post Sales Order, Reopen Purchase Order and Post Purchase Order with Less Qty to Invoice.
+      Initialize;
+      ExecuteUIHandlers;
+      LibrarySCM.UpdateInventorySetup(
+        InventorySetup,TRUE,FALSE,AutomaticCostAdjustment::Never,AverageCostCalcType::Item,AverageCostPeriod::Day);
+      LocationCode := CreateLocationCode(InventoryPostingGroup);
+      ItemNo := CreateItem(ItemCostingMethod::Standard,InventoryPostingGroup);
+      UpdateItemInventory(ItemNo,LocationCode);
+      Qty := RANDOM(10) + 50;
+      CreatePurchaseOrder(PurchaseHeader,ItemNo,'',Qty,LocationCode,FALSE);
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,TRUE,FALSE);
+
+      Item.GET(ItemNo);
+      Item.CALCFIELDS(Inventory);
+      InitialInventory := Item.Inventory;
+      CreateSalesOrder(SalesHeader,ItemNo,Qty,LocationCode,FALSE,FALSE);
+      PostSalesOrder(DocumentType::Order,SalesHeader."No.",TRUE,TRUE,FALSE);
+      ReleasePurchaseDocument.PerformManualReopen(PurchaseHeader);
+      InvQty := Qty - 10;
+      PurchaseOrderInvoiceLessQty(PurchaseHeader."No.",InvQty);
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,FALSE,TRUE);
+
+      // Exercise: Run Adjust Cost Item Entries, Create Revaluation Journal, Calculate Inventory Value.
+      LibrarySCM.AdjustCostItemEntries(ItemNo,'');
+      CreateRevaluationJournal(ItemJournalLine);
+      Item.GET(ItemNo);
+      CalcInventoryValue(Item,ItemJournalLine);
+
+      // Verify: Verify that Revalued Inventory is equal to Calculated Inventory.
+      VerifyRevaluedInventory(Item."No.");
+
+      // Exercise: Update Revalued Unit Cost and Post Item Journal Line, Run Adjust Cost Item Entries.
+      OldUnitCost := Item."Standard Cost";
+      NewUnitCost :=
+        UpdateRevaluedUnitCost(ItemJournalLine."Journal Template Name",ItemJournalLine."Journal Batch Name",Item."No.",OldUnitCost);
+      LibrarySCM.PostItemJournalLine(ItemJournalLine."Journal Template Name",ItemJournalLine."Journal Batch Name");
+      LibrarySCM.AdjustCostItemEntries(ItemNo,'');
+
+      // Verify: Verify Value Entries.
+      VerifyValueEntryLessInvoice(Item."No.",OldUnitCost,OldUnitCost - NewUnitCost,InitialInventory,Qty,InvQty);
+    END;
+
+    [Test]
+    [HandlerFunctions(MessageHandler,ConfirmHandler)]
+    PROCEDURE StdPurchTwiceRevalTwice@45();
+    VAR
+      Item@1012 : Record 27;
+      InventorySetup@1011 : Record 313;
+      ItemJournalLine@1010 : Record 83;
+      PurchaseHeader@1009 : Record 38;
+      PurchaseHeader2@1008 : Record 38;
+      ReleasePurchaseDocument@1013 : Codeunit 415;
+      InventoryPostingGroup@1016 : Code[10];
+      ItemNo@1007 : Code[20];
+      LocationCode@1015 : Code[10];
+      AutomaticCostAdjustment@1006 : 'Never,Day,Week,Month,Quarter,Year,Always';
+      AverageCostCalcType@1005 : ' ,Item,Item & Location & Variant';
+      AverageCostPeriod@1004 : ' ,Day,Week,Month,Quarter,Year,Accounting Period';
+      ItemCostingMethod@1014 : 'FIFO,LIFO,Specific,Average,Standard';
+      Qty@1002 : Decimal;
+      InvQty@1019 : Decimal;
+      OldUnitCost@1001 : Decimal;
+      NewUnitCost@1000 : Decimal;
+      OldUnitCost2@1018 : Decimal;
+      NewUnitCost2@1017 : Decimal;
+    BEGIN
+      // Setup: Update Inventory Setup, Create Item and Purchase Order and Post Purchase Order as Receive.
+      Initialize;
+      ExecuteUIHandlers;
+      LibrarySCM.UpdateInventorySetup(
+        InventorySetup,TRUE,FALSE,AutomaticCostAdjustment::Never,AverageCostCalcType::Item,AverageCostPeriod::Day);
+      LocationCode := CreateLocationCode(InventoryPostingGroup);
+      ItemNo := CreateItem(ItemCostingMethod::Standard,InventoryPostingGroup);
+      Qty := RANDOM(10) + 50;
+      CreatePurchaseOrder(PurchaseHeader,ItemNo,'',Qty,LocationCode,FALSE);
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,TRUE,FALSE);
+
+      // Exercise: Run Adjust Cost Item Entries, Create Revaluation Journal, Calculate Inventory Value.
+      LibrarySCM.AdjustCostItemEntries(ItemNo,'');
+      CreateRevaluationJournal(ItemJournalLine);
+      Item.GET(ItemNo);
+      CalcInventoryValue(Item,ItemJournalLine);
+
+      // Verify: Verify that Revalued Inventory is equal to Calculated Inventory.
+      VerifyRevaluedInventory(Item."No.");
+
+      // Exercise: Update Revalued Unit Cost and Post Item Journal Line.
+      // Run Adjust Cost Item Entries, Create Revaluation Journal, Calculate Inventory Value.
+      OldUnitCost := Item."Standard Cost";
+      NewUnitCost :=
+        UpdateRevaluedUnitCost(ItemJournalLine."Journal Template Name",ItemJournalLine."Journal Batch Name",Item."No.",OldUnitCost);
+      LibrarySCM.PostItemJournalLine(ItemJournalLine."Journal Template Name",ItemJournalLine."Journal Batch Name");
+      CreatePurchaseOrder(PurchaseHeader2,ItemNo,'',RANDOM(10),LocationCode,FALSE);
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader2,TRUE,FALSE);
+      ReleasePurchaseDocument.PerformManualReopen(PurchaseHeader);
+      InvQty := Qty - 10;
+      PurchaseOrderInvoiceLessQty(PurchaseHeader."No.",InvQty);
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,FALSE,TRUE);
+      CreateRevaluationJournal(ItemJournalLine);
+      Item.GET(ItemNo);
+      CalcInventoryValue(Item,ItemJournalLine);
+
+      // Verify: Verify that Revalued Inventory is equal to Calculated Inventory.
+      VerifyRevaluedInventory(Item."No.");
+
+      // Exercise: Update Revalued Unit Cost and Post Item Journal Line.
+      OldUnitCost2 := Item."Standard Cost";
+      NewUnitCost2 :=
+        UpdateRevaluedUnitCost(ItemJournalLine."Journal Template Name",ItemJournalLine."Journal Batch Name",Item."No.",OldUnitCost);
+      LibrarySCM.PostItemJournalLine(ItemJournalLine."Journal Template Name",ItemJournalLine."Journal Batch Name");
+      LibrarySCM.AdjustCostItemEntries(ItemNo,'');
+
+      // Verify: Verify Value Entries. check that without Sales Order.
+      VerifyValueEntryRevalNoSales(Item."No.",OldUnitCost,NewUnitCost - OldUnitCost,NewUnitCost2 - OldUnitCost2,Qty,InvQty);
+    END;
+
+    [Test]
+    [HandlerFunctions(MessageHandler,ConfirmHandler)]
+    PROCEDURE StdPurchRevalTwiceSales@7();
+    VAR
+      Item@1013 : Record 27;
+      InventorySetup@1012 : Record 313;
+      PurchaseHeader@1011 : Record 38;
+      SalesHeader@1010 : Record 36;
+      ItemJournalLine@1009 : Record 83;
+      ReleasePurchaseDocument@1008 : Codeunit 415;
+      AutomaticCostAdjustment@1007 : 'Never,Day,Week,Month,Quarter,Year,Always';
+      AverageCostCalcType@1006 : ' ,Item,Item & Location & Variant';
+      AverageCostPeriod@1005 : ' ,Day,Week,Month,Quarter,Year,Accounting Period';
+      DocumentType@1004 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order';
+      ItemCostingMethod@1014 : 'FIFO,LIFO,Specific,Average,Standard';
+      InventoryPostingGroup@1016 : Code[10];
+      ItemNo@1003 : Code[20];
+      LocationCode@1015 : Code[10];
+      Qty@1002 : Decimal;
+      InvQty@1019 : Decimal;
+      OldUnitCost@1001 : Decimal;
+      NewUnitCost@1000 : Decimal;
+      OldUnitCost2@1018 : Decimal;
+      NewUnitCost2@1017 : Decimal;
+    BEGIN
+      // Setup: Update Inventory Setup, Create Item and Purchase Order and Post Purchase Order as Receive.
+      Initialize;
+      ExecuteUIHandlers;
+      LibrarySCM.UpdateInventorySetup(
+        InventorySetup,TRUE,FALSE,AutomaticCostAdjustment::Never,AverageCostCalcType::Item,AverageCostPeriod::Day);
+      LocationCode := CreateLocationCode(InventoryPostingGroup);
+      ItemNo := CreateItem(ItemCostingMethod::Standard,InventoryPostingGroup);
+      Qty := RANDOM(10) + 50;
+      CreatePurchaseOrder(PurchaseHeader,ItemNo,'',Qty,LocationCode,FALSE);
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,TRUE,FALSE);
+
+      // Exercise: Run Adjust Cost Item Entries, Create Revaluation Journal, Calculate Inventory Value.
+      LibrarySCM.AdjustCostItemEntries(ItemNo,'');
+      CreateRevaluationJournal(ItemJournalLine);
+      Item.GET(ItemNo);
+      CalcInventoryValue(Item,ItemJournalLine);
+
+      // Verify: Verify that Revalued Inventory is equal to Calculated Inventory.
+      VerifyRevaluedInventory(Item."No.");
+
+      // Exercise: Update Revalued Unit Cost and Post Item Journal Line.
+      OldUnitCost := Item."Standard Cost";
+      NewUnitCost :=
+        UpdateRevaluedUnitCost(ItemJournalLine."Journal Template Name",ItemJournalLine."Journal Batch Name",Item."No.",OldUnitCost);
+      LibrarySCM.PostItemJournalLine(ItemJournalLine."Journal Template Name",ItemJournalLine."Journal Batch Name");
+      ReleasePurchaseDocument.PerformManualReopen(PurchaseHeader);
+      InvQty := Qty - 10;
+      PurchaseOrderInvoiceLessQty(PurchaseHeader."No.",Qty - 10);
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,FALSE,TRUE);
+      CreateRevaluationJournal(ItemJournalLine);
+      Item.GET(ItemNo);
+      CalcInventoryValue(Item,ItemJournalLine);
+
+      // Verify: Verify that Revalued Inventory is equal to Calculated Inventory.
+      VerifyRevaluedInventory(Item."No.");
+
+      // Exercise: Update Revalued Unit Cost and Post Item Journal Line.
+      OldUnitCost2 := Item."Standard Cost";
+      NewUnitCost2 :=
+        UpdateRevaluedUnitCost(ItemJournalLine."Journal Template Name",ItemJournalLine."Journal Batch Name",Item."No.",OldUnitCost);
+      LibrarySCM.PostItemJournalLine(ItemJournalLine."Journal Template Name",ItemJournalLine."Journal Batch Name");
+      CreateSalesOrder(SalesHeader,Item."No.",Qty,LocationCode,FALSE,FALSE);
+      PostSalesOrder(DocumentType::Order,SalesHeader."No.",TRUE,TRUE,FALSE);
+      LibrarySCM.AdjustCostItemEntries(ItemNo,'');
+
+      // Verify: Verify Value Entries after twice revaluation.
+      VerifyValueEntryRevalTwice(
+        Item."No.",OldUnitCost,NewUnitCost - OldUnitCost,NewUnitCost2 - OldUnitCost2,NewUnitCost2,Qty,InvQty);
+    END;
+
+    [Test]
+    [HandlerFunctions(MessageHandler,ConfirmHandler)]
+    PROCEDURE AvgPurchRevalSales@9();
+    VAR
+      Item@1015 : Record 27;
+      InventorySetup@1014 : Record 313;
+      PurchaseHeader@1013 : Record 38;
+      SalesHeader@1012 : Record 36;
+      ItemJournalLine@1011 : Record 83;
+      AutomaticCostAdjustment@1009 : 'Never,Day,Week,Month,Quarter,Year,Always';
+      AverageCostCalcType@1008 : ' ,Item,Item & Location & Variant';
+      AverageCostPeriod@1007 : ' ,Day,Week,Month,Quarter,Year,Accounting Period';
+      DocumentType@1006 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order';
+      ItemCostingMethod@1005 : 'FIFO,LIFO,Specific,Average,Standard';
+      InventoryPostingGroup@1016 : Code[10];
+      ItemNo@1004 : Code[20];
+      LocationCode@1000 : Code[10];
+      Qty@1003 : Decimal;
+      OldUnitCost@1002 : Decimal;
+      NewUnitCost@1001 : Decimal;
+    BEGIN
+      // Setup: Update Inventory Setup, Create Item and Purchase Order and Post Purchase Order.
+      Initialize;
+      ExecuteUIHandlers;
+      LibrarySCM.UpdateInventorySetup(
+        InventorySetup,TRUE,FALSE,AutomaticCostAdjustment::Never,AverageCostCalcType::Item,AverageCostPeriod::Day);
+      LocationCode := CreateLocationCode(InventoryPostingGroup);
+      ItemNo := CreateItem(ItemCostingMethod::Average,InventoryPostingGroup);
+      Qty := RANDOM(10) + 50;
+      CreatePurchaseOrder(PurchaseHeader,ItemNo,'',Qty,LocationCode,FALSE);
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,TRUE,TRUE);
+
+      TransferQtyDiffLocation(ItemNo,LocationCode);
+
+      // Exercise: Run Adjust Cost Item Entries, Create Revaluation Journal, Calculate Inventory Value.
+      LibrarySCM.AdjustCostItemEntries(ItemNo,'');
+      CreateRevaluationJournal(ItemJournalLine);
+      Item.GET(ItemNo);
+      CalcInventoryValue(Item,ItemJournalLine);
+
+      // Verify: Verify that Revalued Inventory is equal to Calculated Inventory.
+      VerifyRevaluedInventory(Item."No.");
+
+      // Exercise: Update Revalued Unit Cost and Post Item Journal Line.
+      OldUnitCost := Item."Unit Cost";
+      NewUnitCost :=
+        UpdateRevaluedUnitCost(ItemJournalLine."Journal Template Name",ItemJournalLine."Journal Batch Name",Item."No.",OldUnitCost);
+      LibrarySCM.PostItemJournalLine(ItemJournalLine."Journal Template Name",ItemJournalLine."Journal Batch Name");
+      CreateSalesOrder(SalesHeader,Item."No.",Qty,LocationCode,FALSE,TRUE);
+      PostSalesOrder(DocumentType::Order,SalesHeader."No.",TRUE,TRUE,FALSE);
+      LibrarySCM.AdjustCostItemEntries(ItemNo,'');
+
+      // Verify: Verify Value Entries, GL entries for multiple locations.
+      VerifyValueEntry(
+        PurchaseHeader."No.",SalesHeader."No.",Item."No.",OldUnitCost,NewUnitCost,OldUnitCost - NewUnitCost,0,FALSE,TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateItem@29(ItemCostingMethod@1002 : 'FIFO,LIFO,Specific,Average,Standard';InventoryPostingGroup@1003 : Code[10]) : Code[20];
+    VAR
+      Item@1001 : Record 27;
+      GeneralPostingSetup@1102601000 : Record 252;
+    BEGIN
+      LibrarySCM.CreateItem(Item);
+
+      LibraryFinance.FindGeneralPostingSetup(GeneralPostingSetup);
+      Item.VALIDATE("Gen. Prod. Posting Group",GeneralPostingSetup."Gen. Prod. Posting Group");
+      Item.VALIDATE("Inventory Posting Group",InventoryPostingGroup);
+
+      IF ItemCostingMethod = ItemCostingMethod::Standard THEN BEGIN
+        Item.VALIDATE("Costing Method",Item."Costing Method"::Standard);
+        Item.VALIDATE("Standard Cost",RANDOM(50));
+        Item.VALIDATE("Last Direct Cost",Item."Standard Cost");
+      END ELSE BEGIN
+        Item.VALIDATE("Costing Method",ItemCostingMethod);
+        Item.VALIDATE("Unit Cost",RANDOM(50));
+        Item.VALIDATE("Last Direct Cost",Item."Unit Cost");
+      END;
+      Item.MODIFY(TRUE);
+
+      EXIT(Item."No.");
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE UpdateItemInventory@25(ItemNo@1004 : Code[20];LocationCode@1005 : Code[10]);
+    VAR
+      ItemJournalTemplate@1001 : Record 82;
+      ItemJournalBatch@1000 : Record 233;
+      ItemJournalLine@1003 : Record 83;
+      ItemJournalTemplateType@1002 : 'Item,Transfer,Phys. Inventory,Revaluation,Consumption,Output,Capacity,Prod.Order';
+    BEGIN
+      // Create Item Journal to populate Item Quantity.
+      ItemJournalTemplate.GET(LibrarySCM.SelectItemJournalTemplate(ItemJournalTemplateType::Item));
+      LibrarySCM.SelectItemJournalBatchName(ItemJournalBatch,ItemJournalTemplateType::Item,ItemJournalTemplate.Name);
+      LibrarySCM.CreateItemJournalLine(
+        ItemJournalLine,ItemJournalBatch."Journal Template Name",
+        ItemJournalBatch.Name,ItemJournalLine."Entry Type"::Purchase,ItemNo,RANDOM(10) + 10);
+      ItemJournalLine.VALIDATE("Location Code",LocationCode);
+      ItemJournalLine.MODIFY(TRUE);
+      LibrarySCM.PostItemJournalLine(ItemJournalBatch."Journal Template Name",ItemJournalBatch.Name);
+    END;
+
+    LOCAL PROCEDURE CreatePurchaseOrder@13(VAR PurchaseHeader@1001 : Record 38;ItemNo@1000 : Code[20];ItemNo2@1003 : Code[20];Qty@1002 : Decimal;LocationCode@1006 : Code[10];ProductionComponents@1004 : Boolean);
+    VAR
+      PurchaseLine@1007 : Record 39;
+      DocumentType@1005 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order';
+    BEGIN
+      LibrarySCM.CreatePurchaseHeader(PurchaseHeader,DocumentType::Order,LibrarySCM.SelectVendor);
+      PurchaseHeader.VALIDATE(
+        "Vendor Invoice No.",
+        LibraryUtility.GenerateRandomCode(PurchaseHeader.FIELDNO("Vendor Invoice No."),DATABASE::"Purchase Header"));
+      PurchaseHeader.VALIDATE("Location Code",LocationCode);
+      PurchaseHeader.MODIFY(TRUE);
+      LibrarySCM.CreatePurchaseLine(PurchaseHeader,PurchaseLine,PurchaseLine.Type::Item,ItemNo,Qty);
+      IF ProductionComponents THEN
+        LibrarySCM.CreatePurchaseLine(PurchaseHeader,PurchaseLine,PurchaseLine.Type::Item,ItemNo2,Qty);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateLocationCode@19(VAR InventoryPostingGroup@1001 : Code[10]) : Code[10];
+    VAR
+      Location@1000 : Record 14;
+    BEGIN
+      LibrarySCM.CreateLocation(Location);
+      InventoryPostingGroup := InventoryPostingSetup(Location.Code);
+      EXIT(Location.Code);
+    END;
+
+    PROCEDURE InventoryPostingSetup@10(LocationCode@1001 : Text[30]) : Code[10];
+    VAR
+      InventoryPostingSetup@1000 : Record 5813;
+      InventoryPostingGroup@1003 : Record 94;
+      InventoryPostingSetup2@1002 : Record 5813;
+    BEGIN
+      InventoryPostingSetup2.FINDFIRST;
+      InventoryPostingGroup.FINDFIRST;
+
+      InventoryPostingSetup.INIT;
+      InventoryPostingSetup.VALIDATE("Location Code",LocationCode);
+      InventoryPostingSetup.VALIDATE("Invt. Posting Group Code",InventoryPostingGroup.Code);
+      InventoryPostingSetup.INSERT(TRUE);
+      InventoryPostingSetup.VALIDATE("Inventory Account",SelectGLAccountNo);
+      InventoryPostingSetup.VALIDATE("Inventory Account (Interim)",SelectGLAccountNo);
+      InventoryPostingSetup.VALIDATE("WIP Account",SelectGLAccountNo);
+      InventoryPostingSetup.VALIDATE("Material Variance Account",SelectGLAccountNo);
+      InventoryPostingSetup.VALIDATE("Capacity Variance Account",SelectGLAccountNo);
+      InventoryPostingSetup.MODIFY(TRUE);
+      EXIT(InventoryPostingSetup."Invt. Posting Group Code");
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE SelectGLAccountNo@89() : Code[10];
+    VAR
+      GLAccount@1000 : Record 15;
+    BEGIN
+      // Select Account from General Ledger Account of type Posting.
+      GLAccount.SETRANGE("Direct Posting",TRUE);
+      GLAccount.SETRANGE(Blocked,FALSE);
+      GLAccount.FINDFIRST;
+      EXIT(GLAccount."No.");
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE PurchaseOrderInvoiceLessQty@14(PurchaseDocumentNo@1000 : Code[20];InvoiceQty@1002 : Decimal);
+    VAR
+      PurchaseLine@1001 : Record 39;
+    BEGIN
+      PurchaseLine.SETRANGE("Document Type",PurchaseLine."Document Type"::Order);
+      PurchaseLine.SETRANGE("Document No.",PurchaseDocumentNo);
+      PurchaseLine.FINDFIRST;
+      PurchaseLine.VALIDATE("Qty. to Invoice",InvoiceQty);
+      PurchaseLine.MODIFY(TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateRevaluationJournal@1(VAR ItemJournalLine@1000 : Record 83);
+    VAR
+      ItemJournalTemplate@1003 : Record 82;
+      ItemJournalBatch@1001 : Record 233;
+      NoSeriesManagement@1005 : Codeunit 396;
+      RecRef@1004 : RecordRef;
+      ItemJournalTemplateType@1002 : 'Item,Transfer,Phys. Inventory,Revaluation,Consumption,Output,Capacity,Prod.Order';
+    BEGIN
+      ItemJournalTemplate.GET(LibrarySCM.SelectItemJournalTemplate(ItemJournalTemplateType::Revaluation));
+      LibrarySCM.SelectItemJournalBatchName(ItemJournalBatch,ItemJournalTemplateType::Revaluation,ItemJournalTemplate.Name);
+      ItemJournalBatch.VALIDATE("No. Series",LibraryUtility.GetNoSeriesCode);
+      ItemJournalBatch.MODIFY(TRUE);
+
+      ItemJournalLine.INIT;
+      ItemJournalLine.VALIDATE("Journal Template Name",ItemJournalBatch."Journal Template Name");
+      ItemJournalLine.VALIDATE("Journal Batch Name",ItemJournalBatch.Name);
+      RecRef.GETTABLE(ItemJournalLine);
+      ItemJournalLine.VALIDATE("Line No.",LibraryUtility.GetNewLineNo(RecRef,ItemJournalLine.FIELDNO("Line No.")));
+      ItemJournalLine.INSERT(TRUE);
+      ItemJournalLine.VALIDATE(
+        "Document No.",NoSeriesManagement.GetNextNo(ItemJournalBatch."No. Series",ItemJournalLine."Posting Date",FALSE));
+      ItemJournalLine.MODIFY(TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CalcInventoryValue@15(VAR Item@1000 : Record 27;VAR ItemJournalLine@1001 : Record 83);
+    VAR
+      CalculateInventoryValue@1004 : Report 5899;
+      CalculatePer@1003 : 'Item Ledger Entry,Item';
+      CalculationBase@1002 : ' ,Last Direct Unit Cost,Standard Cost - Assembly List,Standard Cost - Manufacturing';
+    BEGIN
+      CalculateInventoryValue.InitializeRequest(WORKDATE,ItemJournalLine."Document No.",
+        CalculatePer::Item,FALSE,FALSE,TRUE,CalculationBase::" ",FALSE);
+      COMMIT;
+      CalculateInventoryValue.USEREQUESTFORM(FALSE);
+      CalculateInventoryValue.SetItemJnlLine(ItemJournalLine);
+      Item.SETRANGE("No.",Item."No.");
+      CalculateInventoryValue.SETTABLEVIEW(Item);
+      CalculateInventoryValue.RUNMODAL;
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE UpdateRevaluedUnitCost@24(JournalTemplateName@1002 : Text[10];JournalTemplateBatch@1003 : Text[10];ItemNo@1000 : Code[20];OldUnitCost@1004 : Decimal) : Decimal;
+    VAR
+      ItemJournalLine@1001 : Record 83;
+    BEGIN
+      ItemJournalLine.SETRANGE("Journal Template Name",JournalTemplateName);
+      ItemJournalLine.SETRANGE("Journal Batch Name",JournalTemplateBatch);
+      ItemJournalLine.SETRANGE("Item No.",ItemNo);
+      ItemJournalLine.FINDFIRST;
+      ItemJournalLine.VALIDATE("Unit Cost (Revalued)",OldUnitCost + RANDOM(50));
+      ItemJournalLine.MODIFY(TRUE);
+      EXIT(ItemJournalLine."Unit Cost (Revalued)");
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateSalesOrder@22(VAR SalesHeader@1001 : Record 36;ItemNo@1000 : Code[20];RevaluedQuantity@1004 : Decimal;LocationCode@1010 : Code[10];IsPartial@1006 : Boolean;ByLocation@1008 : Boolean) : Code[20];
+    VAR
+      SalesLine@1002 : Record 37;
+      SalesLine2@1012 : Record 37;
+      Customer@1003 : Record 18;
+      ItemLedgerEntry@1011 : Record 32;
+      DocumentType@1005 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order';
+    BEGIN
+      Customer.SETRANGE("Currency Code",'');
+      Customer.SETRANGE("Location Code",'');
+      Customer.FINDFIRST;
+      LibrarySCM.CreateSalesHeader(SalesHeader,DocumentType::Order,Customer."No.");
+
+      IF ByLocation THEN BEGIN
+        ItemLedgerEntry.SETRANGE("Item No.",ItemNo);
+        ItemLedgerEntry.SETRANGE("Document Type",ItemLedgerEntry."Document Type"::"Transfer Receipt");
+        ItemLedgerEntry.SETFILTER(Quantity,'>0');
+        ItemLedgerEntry.FINDFIRST;
+        LibrarySCM.CreateSalesLine(SalesHeader,SalesLine,SalesLine.Type::Item,ItemNo,RevaluedQuantity - ItemLedgerEntry.Quantity);
+        SalesLine.VALIDATE("Location Code",LocationCode);
+        LibrarySCM.CreateSalesLine(SalesHeader,SalesLine2,SalesLine2.Type::Item,ItemNo,ItemLedgerEntry.Quantity);
+        SalesLine.VALIDATE("Location Code",ItemLedgerEntry."Location Code");
+      END ELSE BEGIN
+        LibrarySCM.CreateSalesLine(SalesHeader,SalesLine,SalesLine.Type::Item,ItemNo,RevaluedQuantity);
+        SalesLine.VALIDATE("Location Code",LocationCode);
+      END;
+
+      IF IsPartial THEN
+        SalesLine.VALIDATE("Return Qty. to Receive",SalesLine.Quantity - 2);
+      SalesLine.MODIFY(TRUE);
+
+      EXIT(SalesHeader."No.")
+    END;
+
+    PROCEDURE PostSalesOrder@21(DocumentType@1006 : Option;SalesDocumentNo@1005 : Code[20];Ship@1001 : Boolean;Invoice@1002 : Boolean;Receive@1004 : Boolean);
+    VAR
+      SalesHeader@1000 : Record 36;
+      SalesPost@1003 : Codeunit 80;
+    BEGIN
+      SalesHeader.GET(DocumentType,SalesDocumentNo);
+      SalesHeader.VALIDATE(Ship,Ship);
+      SalesHeader.VALIDATE(Invoice,Invoice);
+      SalesHeader.VALIDATE(Receive,Receive);
+      SalesPost.RUN(SalesHeader);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE TransferQtyDiffLocation@32(ItemNo@1000 : Code[20];FromLocation@1001 : Code[10]);
+    VAR
+      TransferHeader@1002 : Record 5740;
+      TransferLine@1004 : Record 5741;
+      Location@1003 : Record 14;
+      InventoryPostingGroup@1005 : Code[10];
+    BEGIN
+      // Create a Transfer Order to Transfer a Random Quantity to a Different Location.
+      Location.SETRANGE("Use As In-Transit",TRUE);
+      Location.FINDFIRST;
+      LibrarySCM.CreateTransferHeader(TransferHeader,FromLocation,CreateLocationCode(InventoryPostingGroup),Location.Code);
+      LibrarySCM.CreateTransferLine(TransferHeader,TransferLine,ItemNo,RANDOM(5));
+      LibrarySCM.PostTransferHeader(TransferHeader,TRUE,TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE VerifyRevaluedInventory@16(ItemNo@1000 : Code[20]);
+    VAR
+      ItemLedgerEntry@1001 : Record 32;
+      ItemJournalLine@1003 : Record 83;
+      Inventory@1002 : Decimal;
+    BEGIN
+      ItemLedgerEntry.SETCURRENTKEY("Item No.");
+      ItemLedgerEntry.SETRANGE("Item No.",ItemNo);
+      ItemLedgerEntry.FINDSET;
+      REPEAT
+        Inventory += ItemLedgerEntry.Quantity
+      UNTIL ItemLedgerEntry.NEXT = 0;
+
+      ItemJournalLine.SETRANGE("Item No.",ItemNo);
+      ItemJournalLine.FINDFIRST;
+
+      Assert.AreEqual(Inventory,ItemJournalLine.Quantity,ErrMessageQtyMustBeEqual);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE VerifyValueEntry@20(PurchaseHeaderNo@1007 : Code[20];SalesHeaderNo@1008 : Code[20];ItemNo@1000 : Code[20];CostBeforeReval@1004 : Decimal;CostAfterReval@1005 : Decimal;AdjustedRevalCost@1006 : Decimal;InitialInvt@1011 : Decimal;InvtExistBeforePurchase@1001 : Boolean;IsTransfer@1009 : Boolean);
+    BEGIN
+      // Verify Cost for Revaluation Entries.
+      VerifyValueEntryRevaluation(PurchaseHeaderNo,ItemNo,AdjustedRevalCost,InitialInvt,InvtExistBeforePurchase);
+
+      // Verify Cost for all posted Entries.
+      IF NOT IsTransfer THEN
+        VerifyValueEntryTotal(
+          PurchaseHeaderNo,SalesHeaderNo,ItemNo,CostBeforeReval,CostAfterReval,AdjustedRevalCost,InitialInvt,InvtExistBeforePurchase);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE VerifyValueEntryRevaluation@23(PurchaseHeaderNo@1007 : Code[20];ItemNo@1000 : Code[20];AdjustedRevaluationCost@1006 : Decimal;InitialInventory@1002 : Decimal;InventoryExistBeforePurchase@1001 : Boolean);
+    VAR
+      CalculatedCostPostedGLRevalue@1010 : Decimal;
+    BEGIN
+      CalculatedCostPostedGLRevalue :=
+        CalcPurchaseInvoiceCost(PurchaseHeaderNo,ItemNo,AdjustedRevaluationCost,InitialInventory,InventoryExistBeforePurchase,FALSE);
+
+      Assert.AreEqual(
+        ABS(ActualValueEntriesCostPostedGL(ItemNo,TRUE,FALSE)),ABS(CalculatedCostPostedGLRevalue),ErrMessageCostMustBeEqual);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE VerifyValueEntryTotal@17(PurchaseHeaderNo@1000 : Code[20];SalesHeaderNo@1001 : Code[20];ItemNo@1002 : Code[20];CostBeforeReval@1003 : Decimal;CostAfterReval@1004 : Decimal;AdjustedRevalCost@1005 : Decimal;InitialInvt@1006 : Decimal;InvtExistBeforePurchase@1007 : Boolean);
+    VAR
+      CalculatedCostPostedGL@1008 : Decimal;
+    BEGIN
+      CalculatedCostPostedGL :=
+        CalcPurchaseInvoiceCost(PurchaseHeaderNo,ItemNo,CostBeforeReval,InitialInvt,InvtExistBeforePurchase,FALSE) -
+        CalcPurchaseInvoiceCost(PurchaseHeaderNo,ItemNo,AdjustedRevalCost,InitialInvt,InvtExistBeforePurchase,FALSE) -
+        CalcSalesInvoiceCost(SalesHeaderNo,ItemNo,CostAfterReval);
+
+      Assert.AreEqual(ABS(ActualValueEntriesCostPostedGL(ItemNo,FALSE,FALSE)),ABS(CalculatedCostPostedGL),ErrMessageCostMustBeEqual);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE VerifyValueEntryLessInvoice@6(ItemNo@1006 : Code[20];CostBeforeReval@1005 : Decimal;AdjustedRevalCost@1003 : Decimal;InitialInvt@1002 : Decimal;PurchaseQty@1000 : Decimal;InvoiceQty@1009 : Decimal);
+    VAR
+      CalculatedCostPostedGL@1010 : Decimal;
+    BEGIN
+      // Verify Cost for Revaluation Entries.
+      CalculatedCostPostedGL :=
+        (CostBeforeReval * InvoiceQty) / (CostBeforeReval * PurchaseQty) * (InitialInvt - PurchaseQty) * AdjustedRevalCost;
+      Assert.AreNearlyEqual(
+        ABS(ActualValueEntriesCostPostedGL(ItemNo,TRUE,FALSE)),ABS(CalculatedCostPostedGL),0.01,ErrMessageCostMustBeEqual);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE VerifyValueEntryRevalTwice@42(ItemNo@1000 : Code[20];CostBeforeReval@1004 : Decimal;AdjustedRevalCost@1002 : Decimal;AdjustedRevalCost2@1005 : Decimal;CostAfterReval@1003 : Decimal;PurchSalesQty@1006 : Decimal;InvoiceQty@1007 : Decimal);
+    VAR
+      CalculatedCostPostedGL@1008 : Decimal;
+    BEGIN
+      // Verify Cost for all posted Entries.
+      CalculatedCostPostedGL :=
+        InvoiceQty * CostBeforeReval +
+        InvoiceQty * AdjustedRevalCost +
+        (CostBeforeReval * InvoiceQty) / (CostBeforeReval * PurchSalesQty) * (PurchSalesQty * AdjustedRevalCost2) -
+        PurchSalesQty * CostAfterReval;
+      Assert.AreEqual(ABS(ActualValueEntriesCostPostedGL(ItemNo,FALSE,FALSE)),ABS(CalculatedCostPostedGL),ErrMessageCostMustBeEqual);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE VerifyValueEntryRevalNoSales@53(ItemNo@1006 : Code[20];CostBeforeReval@1005 : Decimal;AdjustedRevalCost@1004 : Decimal;AdjustedRevalCost2@1003 : Decimal;PurchQty@1001 : Decimal;InvoiceQty@1000 : Decimal);
+    VAR
+      CalculatedCostPostedGL@1007 : Decimal;
+    BEGIN
+      // Verify Cost for all posted Entries.
+      CalculatedCostPostedGL :=
+        InvoiceQty * CostBeforeReval +
+        InvoiceQty * AdjustedRevalCost +
+        ((CostBeforeReval * InvoiceQty) / (CostBeforeReval * PurchQty)) * (PurchQty * AdjustedRevalCost2);
+      Assert.AreEqual(ABS(ActualValueEntriesCostPostedGL(ItemNo,FALSE,FALSE)),ABS(CalculatedCostPostedGL),ErrMessageCostMustBeEqual);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE ActualValueEntriesCostPostedGL@85(ItemNo@1001 : Code[20];RevaluationFilter@1003 : Boolean;PositiveEntry@1004 : Boolean) : Decimal;
+    VAR
+      ValueEntry@1000 : Record 5802;
+      CostPostedGL@1002 : Decimal;
+    BEGIN
+      IF RevaluationFilter THEN
+        ValueEntry.SETRANGE("Entry Type",ValueEntry."Entry Type"::Revaluation);
+      ValueEntry.SETRANGE("Item No.",ItemNo);
+      IF PositiveEntry THEN
+        ValueEntry.SETFILTER("Cost Posted to G/L",'>0');
+      ValueEntry.FINDSET;
+
+      REPEAT
+        CostPostedGL += ValueEntry."Cost Posted to G/L";
+      UNTIL ValueEntry.NEXT = 0;
+      EXIT(CostPostedGL);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CalcPurchaseInvoiceCost@27(PurchaseOrderNo@1002 : Code[20];ItemNo@1003 : Code[20];UnitCost@1004 : Decimal;InitialInventory@1007 : Decimal;InventoryExistBeforePurchase@1008 : Boolean;IsRevalued@1005 : Boolean) : Decimal;
+    VAR
+      PurchInvHeader@1001 : Record 122;
+      PurchInvLine@1000 : Record 123;
+      QtyFromItemJournal@1009 : Decimal;
+    BEGIN
+      PurchInvHeader.SETRANGE("Order No.",PurchaseOrderNo);
+      IF NOT IsRevalued THEN
+        PurchInvHeader.FINDFIRST
+      ELSE
+        PurchInvHeader.FINDLAST;
+      PurchInvLine.SETRANGE("Document No.",PurchInvHeader."No.");
+      PurchInvLine.SETRANGE("No.",ItemNo);
+      PurchInvLine.FINDFIRST;
+
+      IF InventoryExistBeforePurchase THEN BEGIN
+        QtyFromItemJournal := InitialInventory - PurchInvLine.Quantity;
+        EXIT(PurchInvLine.Quantity * UnitCost + QtyFromItemJournal * UnitCost);
+      END ELSE
+        EXIT(PurchInvLine.Quantity * UnitCost);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CalcSalesInvoiceCost@31(SalesOrderNo@1002 : Code[20];ItemNo@1003 : Code[20];UnitCost@1004 : Decimal) : Decimal;
+    VAR
+      SalesInvoiceHeader@1001 : Record 112;
+      SalesInvoiceLine@1000 : Record 113;
+    BEGIN
+      SalesInvoiceHeader.SETRANGE("Order No.",SalesOrderNo);
+      SalesInvoiceHeader.FINDFIRST;
+      SalesInvoiceLine.SETRANGE("Document No.",SalesInvoiceHeader."No.");
+      SalesInvoiceLine.SETRANGE("No.",ItemNo);
+      SalesInvoiceLine.FINDLAST;
+      EXIT(SalesInvoiceLine.Quantity * UnitCost);
+    END;
+
+    [ConfirmHandler]
+    PROCEDURE ConfirmHandler@12(ConfirmText@1000 : Text[1024];VAR Confirm@1001 : Boolean);
+    BEGIN
+      Confirm := TRUE;
+    END;
+
+    [MessageHandler]
+    PROCEDURE MessageHandler@80(Message@1000 : Text[1024]);
+    BEGIN
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE ExecuteUIHandlers@78();
+    BEGIN
+      // Generate dummy messages.
+      MESSAGE(ExpectedMsg);
+      IF CONFIRM(ExpectedCostPostingConfirm) THEN ;
+    END;
+
+    BEGIN
+    {
+      Test for Inventory Revaluation:
+       1. Test Revaluation Standard Costing : Post full Purchase Order, Revaluation, and Post full Sales Order.
+       2. Test Revaluation Standard Costing : Post Purchase Order as Receive, Post full Sales Order,
+          Post Purchase Order with Less Quantity as Invoice, and Revaluation.
+       3. Test Revaluation Standard Costing : Post Purchase Order 1 as Receive, Revaluation, Post Purchase Order 2 as Receive,
+          Re-open and Post Purchase Order with Less Quantity as Invoice, and Revaluation.
+       4. Test Revaluation Standard Costing : Post Purchase Order as Receive, Revaluation,
+          Post Purchase Order with Less Quantity as Invoice, Revaluation, and Post full Sales Order.
+       5. Test Revaluation Average Costing  : Post full Purchase Order, Revaluation, and Post full Sales Order.
+       6. Test Revaluation Standard Costing : Post full Purchase Order, Revaluation of component items, Create Production Order,
+          Revaluation of finished item, and Finish Production Order.
+    }
+    END.
+  }
+}
+

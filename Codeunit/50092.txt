@@ -1,0 +1,1162 @@
+OBJECT Codeunit 50092 FOB Purchase Services
+{
+  OBJECT-PROPERTIES
+  {
+    Date=20.01.14;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=gob,HME0762;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      SavePurchLineXrec@1000000003 : Record 39;
+      SaveTransferLineXrec@1000000002 : Record 5741;
+      GOBText001@1000000004 : TextConst 'DEU="Das berechnete FÑlligkeitsdatum (%1) liegt nach dem vorgegeben FÑlligkeitsdatum (%2).\ Bestelldatum = %3\ ETD Datum = %4\ ETA Datum = %5!";ENU="The calculated due date (%1) exceeds the due date (%2).\ Order date = %3\ ETD date = %4\ ETA Date = %5!"';
+      GOBText002@1000000000 : TextConst 'DEU=Der Umlagerungsauftrag %1 muss erst ausgangsseitig gebucht sein.';
+      GOBText010@1000000001 : TextConst 'DEU=Der Wert darf nicht mehr geÑndert werden, wenn die Lieferung gebucht wurde.';
+
+    PROCEDURE StartProcess@1000000010(VAR PurchHeader@1000000000 : Record 38);
+    BEGIN
+      IF PurchHeader."Document Type" <> PurchHeader."Document Type"::Order THEN
+        EXIT;
+
+      CheckFOBSetup(PurchHeader."Buy-from Vendor No.",PurchHeader."Shipping Type");
+      CreateTransOrder(PurchHeader);
+    END;
+
+    PROCEDURE CheckFOBSetup@1000000012(VendorNo@1000000000 : Code[20];ShippingType@1000000001 : Code[10]);
+    VAR
+      VendShipType@1000000002 : Record 50090;
+    BEGIN
+      VendShipType.GET(VendorNo,ShippingType);
+      VendShipType.TESTFIELD("Location Code");
+    END;
+
+    PROCEDURE CreateTransOrder@1119443000(PurchHeader@1119443001 : Record 38);
+    VAR
+      PurchLine@1119443003 : Record 39;
+      PurchLine2@1000000004 : Record 39;
+      TransHeader@1119443006 : Record 5740;
+      Location@1000000002 : Record 14;
+      vContainerNo@1119443004 : Code[20];
+      vBLNo@1108200000 : Code[20];
+      LocationCode@1000000001 : Code[10];
+      FOBLocation@1000000003 : Code[10];
+      HMEtxt01L@1000000005 : TextConst 'ENU=Different Location Codes for the same ContainerNo. are not allowed!';
+      LineNoL@1000000000 : Integer;
+    BEGIN
+      //H0762 16.12.13 ARU ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      Location.SETRANGE("FOB Location", TRUE);
+      IF Location.FINDFIRST THEN
+        FOBLocation := Location.Code;
+
+      PurchLine.RESET;
+      PurchLine.SETCURRENTKEY("Document Type","Document No.","Location Code");
+      PurchLine.SETRANGE("Document Type",PurchHeader."Document Type");
+      PurchLine.SETRANGE("Document No.",PurchHeader."No.");
+      PurchLine.SETRANGE(Type,PurchLine.Type::Item);
+      PurchLine.SETFILTER(Quantity,'<>%1',0);
+      IF PurchLine.FIND('-') THEN
+        REPEAT
+          //PurchLine.CALCFIELDS("Transfer Order No.");
+          IF (PurchLine."Transfer Order No." = '') AND (PurchLine."Container No." <> '') THEN BEGIN
+            //Check equal FOB Location Codes
+            CLEAR(LocationCode);
+            PurchLine2.RESET;
+            PurchLine2.SETRANGE("Document Type",PurchHeader."Document Type");
+            PurchLine2.SETRANGE("Document No.",PurchHeader."No.");
+            PurchLine2.SETRANGE(Type,PurchLine.Type::Item);
+            PurchLine2.SETFILTER(Quantity,'<>%1',0);
+            PurchLine2.SETFILTER("Container No.", PurchLine."Container No.");
+            IF PurchLine2.FINDFIRST THEN
+            REPEAT
+              IF LocationCode <> '' THEN
+                IF LocationCode <> PurchLine2."New Location Code" THEN
+                  ERROR(HMEtxt01L);
+              LocationCode := PurchLine2."New Location Code";
+            UNTIL PurchLine2.NEXT = 0;
+
+            IF NOT TransferOrderExistsContainer(PurchHeader."No.", PurchLine."Container No.", TransHeader) THEN BEGIN
+              CreateTransHeadFromPurchHead(PurchHeader,PurchLine,TransHeader);
+            END;
+
+            IF NOT TranferLineExists(PurchLine) THEN
+              LineNoL := CreateTransLinePromPurchHead(PurchLine,TransHeader."No.");
+
+            PurchLine2.GET(PurchLine."Document Type",PurchLine."Document No.",PurchLine."Line No.");
+            PurchLine2."Transfer Order No."      := TransHeader."No.";
+            PurchLine2."Transfer Order Line No." := LineNoL;
+            PurchLine2."Planning Flexibility"    := PurchLine."Planning Flexibility"::None;
+            PurchLine2.MODIFY(TRUE);
+          END;
+
+          IF PurchLine."Location Code" = PurchLine."New Location Code" THEN BEGIN
+            PurchLine."Location Code" := FOBLocation;
+            PurchLine.MODIFY;
+          END;
+      //H0762 16.12.13 ARU ------------------------------------------------------------------------------------------
+
+          //H0762 16.12.13 ARU ++++
+          {
+          //H0762 16.12.13 ARU ----
+          IF Location.GET(PurchLine."Location Code") THEN
+            IF NOT Location."FOB Location" THEN BEGIN
+              IF LocationCode <> PurchLine."Location Code" THEN
+                IF NOT TransferOrderExists(PurchHeader."No.",PurchLine."Location Code",TransHeader) THEN
+                  CreateTransHeadFromPurchHead(PurchHeader,PurchLine,TransHeader);
+
+              IF NOT TranferLineExists(PurchLine) THEN
+                CreateTransLinePromPurchHead(PurchLine,TransHeader."No.");
+
+              LocationCode := PurchLine."Location Code";
+              FOBLocation := PurchLine."Location Code FOB";
+              PurchLine2.GET(PurchLine."Document Type",PurchLine."Document No.",PurchLine."Line No.");
+              PurchLine2."Location Code FOB" := PurchLine."Location Code";
+              PurchLine2.VALIDATE("Location Code",FOBLocation);
+              PurchLine2."Planning Flexibility" := PurchLine."Planning Flexibility"::None;
+              PurchLine2.MODIFY(TRUE);
+
+            END;
+          //H0762 16.12.13 ARU ++++
+          }
+          //H0762 16.12.13 ARU ----
+        UNTIL PurchLine.NEXT = 0;
+    END;
+
+    PROCEDURE CreateTransHeadFromPurchHead@1119443002(PurchHeader@1119443001 : Record 38;PurchLine@1000000001 : Record 39;VAR TransHeader@1000000002 : Record 5740);
+    BEGIN
+      CLEAR(TransHeader);
+      TransHeader.INSERT(TRUE);
+
+      //H0762 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      //TransHeader.VALIDATE("Transfer-from Code", PurchLine."Location Code FOB" );
+      //TransHeader.VALIDATE("Transfer-to Code", PurchLine."Location Code");
+      TransHeader.VALIDATE("Transfer-from Code", PurchLine."Location Code");
+      TransHeader.VALIDATE("Transfer-to Code", PurchLine."New Location Code");
+      //H0762 ---------------------------------------------------------------------
+
+      TransHeader.VALIDATE("Purchase Order No.",PurchHeader."No.");
+
+      //H0762 +++++++++++++++++++++++++++++++++++++++++++++++++
+      TransHeader."Container No." := PurchLine."Container No.";
+      //H0762 -------------------------------------------------
+      // H0338 >>
+      IF STRPOS(PurchHeader."No.", 'DS') = 1 THEN
+        TransHeader."In-Transit Code" := 'TRANSIT';
+      // H0338 <<
+      TransHeader."Buy-from Vendor No" := PurchHeader."Buy-from Vendor No.";
+      TransHeader."Pay-to Vendor No." := PurchHeader."Pay-to Vendor No.";
+      TransHeader."Order Date" := PurchHeader."Order Date";
+      TransHeader."Assigned User ID" := USERID;
+      TransHeader.MODIFY;
+    END;
+
+    PROCEDURE CreateTransLinePromPurchHead@1119443003(PurchLine@1119443000 : Record 39;TransOrderNo@1119443008 : Code[20]) TransferLineNo : Integer;
+    VAR
+      LineNo@1000000001 : Integer;
+      TransLine@1119443005 : Record 5741;
+      TransLine2@1119443004 : Record 5741;
+    BEGIN
+      TransLine2.RESET;
+      TransLine2.SETRANGE("Document No.",TransOrderNo);
+      IF TransLine2.FINDLAST THEN
+        LineNo := TransLine2."Line No." + 10000
+      ELSE
+        LineNo := 10000;
+
+      CLEAR(TransLine);
+      WITH TransLine DO BEGIN
+        "Document No." := TransOrderNo;
+        "Line No." := LineNo;
+        INSERT(TRUE);
+
+        VALIDATE("Item No.",PurchLine."No.");
+        VALIDATE("Unit of Measure Code",PurchLine."Unit of Measure Code");
+        VALIDATE(Quantity,PurchLine.Quantity);
+
+        VALIDATE("Transfer-To Bin Code",PurchLine."Bin Code");
+        "Container No." := PurchLine."Container No.";
+        "Bill of Lading No." := PurchLine."Bill of Lading No.";
+        VALIDATE("Variant Code",PurchLine."Variant Code");
+        "Safety Lead Time" := PurchLine."Safety Lead Time";
+
+        VALIDATE("Purchase Order No.",PurchLine."Document No.");
+        VALIDATE("Purchase Order Line No.",PurchLine."Line No.");
+
+        VALIDATE("Buy-from Vendor No",PurchLine."Buy-from Vendor No.");
+
+        VALIDATE("Shipment Date",PurchLine."ETA Harbour");
+
+        VALIDATE("Planning Flexibility","Planning Flexibility"::None);
+
+        MODIFY(TRUE);
+      END;
+
+      EXIT(LineNo);
+    END;
+
+    PROCEDURE ModifyTransLineFromPurchLine@1108200007(VAR PurchLine@1108200000 : Record 39);
+    VAR
+      TransLine@1108200001 : Record 5741;
+      ModifyLine@1108200002 : Boolean;
+      PurchLineReserve@1000000000 : Codeunit 99000834;
+    BEGIN
+      IF PurchLine."Document Type" <> PurchLine."Document Type"::Order THEN
+        EXIT;
+
+      IF PurchLine.Type <> PurchLine.Type::Item THEN
+        EXIT;
+
+      //H0762 16.12.13 ARU ++++++++++++++++++++++++++++++++++++++++++++++++++
+      //PurchLine.CALCFIELDS("Transfer Order No.","Transfer Order Line No.");
+      //H0762 16.12.13 ARU --------------------------------------------------
+      IF TransLine.GET(PurchLine."Transfer Order No.",PurchLine."Transfer Order Line No.") THEN
+        TransLine.TESTFIELD("Reserved Qty. Inbnd. (Base)",0)
+      ELSE
+        EXIT;
+      //A/p0282
+      //PurchLine.TESTFIELD("Quantity Received",0);
+      //E/p0282
+
+      //The synchronisation of the quantity must happened befor the synchronisation of the qty. to receive
+      IF PurchLine."Quantity (Base)" <> SavePurchLineXrec."Quantity (Base)" THEN BEGIN
+          //A/mab/keine Reservierung
+        //IF ReservToTransOrderExists(PurchLine) THEN BEGIN
+          //PurchLineReserve.DeleteLine(PurchLine);
+          //TransLine.VALIDATE("Quantity (Base)",PurchLine."Quantity (Base)");
+          //CreateReservToTransOrder(PurchLine)
+          //E/mab
+        //END ELSE
+          //E/mab
+        //A/p0282
+        PurchLine.TESTFIELD("Quantity Received",0);
+        //E/p0282
+        TransLine.VALIDATE("Quantity (Base)",PurchLine."Quantity (Base)");
+        ModifyLine := TRUE;
+      END;
+
+      IF PurchLine."Qty. to Receive (Base)" <> SavePurchLineXrec."Qty. to Receive (Base)" THEN BEGIN
+        //A/p0282
+        //FileNameExistInTransferLine(TransferLine);
+        //A/p0282
+        PurchLine.TESTFIELD("Quantity Received",0);
+        //E/p0282
+        QtyShippedinPurchOrder(PurchLine);
+        //Ep0282
+        TransLine.VALIDATE("Qty. to Ship (Base)",PurchLine."Qty. to Receive (Base)");
+        ModifyLine := TRUE;
+      END;
+
+      IF PurchLine."Expected Receipt Date" <> SavePurchLineXrec."Expected Receipt Date" THEN BEGIN
+        //A/p0282
+        PurchLine.TESTFIELD("Quantity Received",0);
+        //E/p0282
+
+        TransLine.VALIDATE("Shipment Date",CalcShipmentDateForward(TransLine."Transfer-from Code",
+                                                                   TransLine."Transfer-to Code",
+                                                                   PurchLine."ETA Harbour"));
+        ModifyLine := TRUE;
+      END;
+
+      IF PurchLine."Unit of Measure Code" <> SavePurchLineXrec."Unit of Measure Code" THEN BEGIN
+        //A/p0282
+        PurchLine.TESTFIELD("Quantity Received",0);
+        //E/p0282
+
+        TransLine.VALIDATE("Unit of Measure Code",PurchLine."Unit of Measure Code");
+        ModifyLine := TRUE;
+      END;
+
+      IF PurchLine."Bill of Lading No." <> SavePurchLineXrec."Bill of Lading No." THEN BEGIN
+        //A/p0282
+        PurchLine.TESTFIELD("Quantity Received",0);
+        //E/p0282
+
+        //A/p0282
+        //FileNameExistInTransferLine(TransferLine);
+        QtyShippedinPurchOrder(PurchLine);
+        //Ep0282
+        TransLine."Bill of Lading No." := PurchLine."Bill of Lading No.";
+        ModifyLine := TRUE;
+      END;
+
+      IF PurchLine."Container No." <>  SavePurchLineXrec."Container No." THEN BEGIN
+        //A/p0282
+        PurchLine.TESTFIELD("Quantity Received",0);
+        //E/p0282
+        //A/p0282
+        //FileNameExistInTransferLine(TransferLine);
+        QtyShippedinPurchOrder(PurchLine);
+        //Ep0282
+        TransLine."Container No." := PurchLine."Container No.";
+        ModifyLine := TRUE;
+      END;
+      //END;
+
+      IF ModifyLine THEN
+        TransLine.MODIFY(TRUE);
+    END;
+
+    PROCEDURE ModifyPurchLineFromTransLine@1108200014(TransLine@1108200000 : Record 5741);
+    VAR
+      PurchLine@1108200001 : Record 39;
+      ModifyLine@1108200002 : Boolean;
+      PurchLineReserve@1000000000 : Codeunit 99000834;
+    BEGIN
+      TransLine.TESTFIELD("Reserved Qty. Inbnd. (Base)",0);
+      IF NOT PurchLine.GET(PurchLine."Document Type"::Order,TransLine."Purchase Order No.",TransLine."Purchase Order Line No.") THEN
+        EXIT;
+
+      IF TransLine."Qty. to Ship (Base)" <> SaveTransferLineXrec."Qty. to Ship (Base)" THEN BEGIN
+            PurchLine.SuspendStatusCheck(TRUE);
+            PurchLine.VALIDATE("Qty. to Receive (Base)",TransLine."Qty. to Ship (Base)");
+            ModifyLine := TRUE;
+        END;
+
+
+      IF TransLine."Unit of Measure Code" <> SaveTransferLineXrec."Unit of Measure Code" THEN BEGIN
+        PurchLine.VALIDATE("Unit of Measure Code", TransLine."Unit of Measure Code");
+        ModifyLine := TRUE;
+      END;
+
+      IF TransLine."Bill of Lading No." <> SaveTransferLineXrec."Bill of Lading No." THEN BEGIN
+        PurchLine."Bill of Lading No." := TransLine."Bill of Lading No.";
+        ModifyLine := TRUE;
+      END;
+
+      IF TransLine."Quantity (Base)" <> SaveTransferLineXrec."Quantity (Base)" THEN BEGIN
+          //A/mab/keine Reservierung
+        //IF ReservToTransOrderExists(PurchLine) THEN BEGIN
+          //PurchLineReserve.DeleteLine(PurchLine);
+          //PurchLine.VALIDATE("Quantity (Base)",TransLine."Quantity (Base)");
+          //CreateReservToTransOrder(PurchLine)
+        //END ELSE
+          //E/keine Reservierung
+          PurchLine.VALIDATE("Quantity (Base)",TransLine."Quantity (Base)");
+
+        ModifyLine := TRUE;
+      END;
+
+      IF TransLine."Container No." <>  SaveTransferLineXrec."Container No." THEN BEGIN
+        PurchLine."Container No." :=TransLine."Container No.";
+        ModifyLine := TRUE;
+      END;
+
+      IF ModifyLine THEN
+        PurchLine.MODIFY(TRUE);
+    END;
+
+    PROCEDURE DeleteTransLineFromPurchLine@1106400015(PurchLine@1106400000 : Record 39);
+    VAR
+      TransHeader@1106400003 : Record 5740;
+      TransLine@1106400002 : Record 5741;
+      DocDim@1000000002 : Record 357;
+      WhseValidateSourceLine@1000000001 : Codeunit 5777;
+      ReserveTransferLine@1000000000 : Codeunit 99000836;
+      ItemChargeAssgntPurch@1000000003 : Record 5805;
+      DimMgt@1000000004 : Codeunit 408;
+    BEGIN
+      IF PurchLine."Document Type" <> PurchLine."Document Type"::Order THEN
+        EXIT;
+
+      IF NOT TranferLineExists(PurchLine) THEN
+        EXIT;
+
+      //A copy of the OnDelete trigger from transfer order line due to the synchronisation to the purchase line
+      WITH TransLine DO BEGIN
+        RESET;
+        SETCURRENTKEY("Purchase Order No.");
+        SETRANGE("Purchase Order No.", PurchLine."Document No.");
+        SETRANGE("Purchase Order Line No.", PurchLine."Line No.");
+        IF FINDFIRST THEN BEGIN
+          TESTFIELD("Document No.");
+          TransHeader.GET("Document No.");
+          TransHeader.TESTFIELD(Status,TransHeader.Status::Open);
+
+          TESTFIELD("Quantity Shipped","Quantity Received");
+          TESTFIELD("Qty. Shipped (Base)","Qty. Received (Base)");
+          CALCFIELDS("Reserved Qty. Inbnd. (Base)","Reserved Qty. Outbnd. (Base)");
+          TESTFIELD("Reserved Qty. Inbnd. (Base)",0);
+          TESTFIELD("Reserved Qty. Outbnd. (Base)",0);
+
+           DocDim.LOCKTABLE;
+
+           //ReserveTransferLine.DeleteLine(TransLine);
+           WhseValidateSourceLine.TransLineDelete(TransLine);
+
+           ItemChargeAssgntPurch.SETCURRENTKEY(
+             "Applies-to Doc. Type","Applies-to Doc. No.","Applies-to Doc. Line No.");
+           ItemChargeAssgntPurch.SETRANGE("Applies-to Doc. Type",ItemChargeAssgntPurch."Applies-to Doc. Type"::"Transfer Receipt");
+           ItemChargeAssgntPurch.SETRANGE("Applies-to Doc. No.","Document No.");
+           ItemChargeAssgntPurch.SETRANGE("Applies-to Doc. Line No.","Line No.");
+           ItemChargeAssgntPurch.DELETEALL(TRUE);
+
+           DimMgt.DeleteDocDim(DATABASE::"Transfer Line",DocDim."Document Type"::" ","Document No.","Line No.");
+
+           DELETE;
+           DeleteTransHeader(TransHeader);
+         END;
+      END;
+    END;
+
+    LOCAL PROCEDURE DeleteTransHeader@1108200004(VAR TransHeader@1108200000 : Record 5740);
+    VAR
+      TransLine@1000000000 : Record 5741;
+    BEGIN
+      TransLine.RESET;
+      TransLine.SETRANGE("Document No.",TransHeader."No.");
+      IF TransLine.ISEMPTY THEN
+        TransHeader.DELETE(TRUE);
+    END;
+
+    PROCEDURE CreateTransOrderFromReqLine@1000000004(VAR TempPurchHeader@1000000000 : TEMPORARY Record 38);
+    BEGIN
+      IF TempPurchHeader.FIND('-') THEN
+        REPEAT
+          IF TempPurchHeader."Shipping Type" <> '' THEN
+            StartProcess(TempPurchHeader);
+        UNTIL TempPurchHeader.NEXT = 0;
+    END;
+
+    PROCEDURE TransferOrderExistsLocation@1108200005(OrderNo@1108200000 : Code[20];LocationCode@1000000000 : Code[10];VAR TransHeader@1000000001 : Record 5740) : Boolean;
+    BEGIN
+      TransHeader.RESET;
+      TransHeader.SETCURRENTKEY("Purchase Order No.", "Transfer-to Code");
+      TransHeader.SETRANGE("Purchase Order No.", OrderNo);
+      TransHeader.SETRANGE("Transfer-to Code", LocationCode);
+      IF NOT TransHeader.ISEMPTY THEN BEGIN
+        TransHeader.FINDFIRST;
+        EXIT(TRUE);
+      END;
+    END;
+
+    PROCEDURE TransferOrderExistsContainer@1000000023(OrderNo@1108200000 : Code[20];ContainerNo@1000000000 : Code[20];VAR TransHeader@1000000001 : Record 5740) : Boolean;
+    BEGIN
+      TransHeader.RESET;
+      TransHeader.SETCURRENTKEY("Purchase Order No.", "Transfer-to Code");
+      TransHeader.SETRANGE("Purchase Order No.",OrderNo);
+      TransHeader.SETRANGE(TransHeader."Container No.", ContainerNo);
+      IF NOT TransHeader.ISEMPTY THEN BEGIN
+        TransHeader.FINDFIRST;
+        EXIT(TRUE);
+      END;
+    END;
+
+    PROCEDURE TranferLineExists@1108200006(PurchLine@1000000000 : Record 39) : Boolean;
+    VAR
+      LocTransferLine@1108200002 : Record 5741;
+    BEGIN
+      LocTransferLine.RESET;
+      LocTransferLine.SETCURRENTKEY("Purchase Order No.","Purchase Order Line No.");
+      LocTransferLine.SETRANGE("Purchase Order No.",PurchLine."Document No.");
+      LocTransferLine.SETRANGE("Purchase Order Line No.",PurchLine."Line No.");
+      IF NOT LocTransferLine.ISEMPTY THEN
+        EXIT(TRUE);
+    END;
+
+    PROCEDURE CalcNoTransferOrders@1000000000(PurchLine@1000000000 : Record 39;Type@1000000001 : 'TransferOrder,TransferOrderShip,TransferOrderReceipt') : Integer;
+    VAR
+      TransferHeader@1000000002 : Record 5740;
+      TransferShipHeader@1000000003 : Record 5744;
+      TransferReceiptHeader@1000000004 : Record 5746;
+    BEGIN
+      CASE Type OF
+        Type::TransferOrder:
+          BEGIN
+            TransferHeader.RESET;
+            TransferHeader.SETCURRENTKEY("Purchase Order No.");
+            TransferHeader.SETRANGE("Purchase Order No.",PurchLine."Document No.");
+            EXIT(TransferHeader.COUNT);
+          END;
+        Type::TransferOrderShip:
+          BEGIN
+            TransferShipHeader.RESET;
+            TransferShipHeader.SETCURRENTKEY("Purchase Order No.");
+            TransferShipHeader.SETRANGE("Purchase Order No.",PurchLine."Document No.");
+            EXIT(TransferShipHeader.COUNT);
+          END;
+        Type::TransferOrderReceipt:
+          BEGIN
+            TransferReceiptHeader.RESET;
+            TransferReceiptHeader.SETCURRENTKEY("Purchase Order No.");
+            TransferReceiptHeader.SETRANGE("Purchase Order No.",PurchLine."Document No.");
+            EXIT(TransferReceiptHeader.COUNT);
+          END;
+      END;
+    END;
+
+    PROCEDURE ShowTransferOrders@1000000017(Type@1000000001 : 'TransferOrder,TransferOrderShip,TransferOrderReceipt';PurchLine@1000000002 : Record 39);
+    VAR
+      TransHeader@1000000000 : Record 5740;
+      TransShipHeader@1000000003 : Record 5744;
+      TransReceiptOrder@1000000004 : Record 5746;
+    BEGIN
+      //A/p0282
+      CASE Type OF
+        Type::TransferOrder:
+          BEGIN
+            TransHeader.RESET;
+            TransHeader.SETRANGE("Purchase Order No.",PurchLine."Document No.");
+            IF TransHeader.FINDSET THEN
+              FORM.RUN(FORM::"Transfer List",TransHeader);
+          END;
+        Type::TransferOrderShip:
+          BEGIN
+            TransShipHeader.RESET;
+            TransShipHeader.SETRANGE("Purchase Order No.",PurchLine."Document No.");
+            IF TransShipHeader.FINDSET THEN
+              FORM.RUN(FORM::"Posted Transfer Shipments",TransShipHeader);
+          END;
+        Type::TransferOrderReceipt:
+          BEGIN
+            TransReceiptOrder.RESET;
+            TransReceiptOrder.SETRANGE("Purchase Order No.",PurchLine."Document No.");
+            IF TransReceiptOrder.FINDSET THEN
+              FORM.RUN(FORM::"Posted Transfer Receipts",TransReceiptOrder);
+          END;
+      END;
+      //E/p0282
+    END;
+
+    PROCEDURE GetTransferLineDates@1000000001(PurchLine@1000000000 : Record 39;Type@1000000002 : 'ShipmentDate,ReceiptDate') : Text[30];
+    VAR
+      TransferLine@1000000001 : Record 5741;
+    BEGIN
+      //H0762 16.12.13 ARU +++++++++++++++++++++++++++++++++++++++++++++++++++
+      //PurchLine.CALCFIELDS("Transfer Order No.", "Transfer Order Line No.");
+      //H0762 16.12.13 ARU ---------------------------------------------------
+      IF TransferLine.GET(PurchLine."Transfer Order No.", PurchLine."Transfer Order Line No.") THEN
+        CASE Type OF
+          Type::ShipmentDate:
+            EXIT(FORMAT(TransferLine."Shipment Date"));
+
+          Type::ReceiptDate:
+            EXIT(FORMAT(TransferLine."Receipt Date"));
+        END;
+    END;
+
+    PROCEDURE CalcShipmentDateForward@1000000006(TransferFromCode@1000000000 : Code[10];TransferToCode@1000000001 : Code[10];ETA@1000000008 : Date) : Date;
+    VAR
+      TransRoute@1000000007 : Record 5742;
+      InTransitCode@1000000006 : Code[10];
+      ShippingAgentCode@1000000005 : Code[10];
+      ShippingAgentServiceCode@1000000004 : Code[10];
+      ShipmentDate@1000000003 : Date;
+      Location@1000000002 : Record 14;
+    BEGIN
+      //Calculate planned shipment date of the transfer route forward from shipment date
+      TransRoute.GetTransferRoute(TransferFromCode,TransferToCode,InTransitCode,ShippingAgentCode,ShippingAgentServiceCode);
+      IF Location.GET(TransferFromCode) THEN;
+      TransRoute.CalcPlanShipmentDateForward(ETA,ShipmentDate,Location."Outbound Whse. Handling Time",TransferFromCode,
+                                             ShippingAgentCode,ShippingAgentServiceCode);
+      EXIT(ShipmentDate);
+    END;
+
+    PROCEDURE CalcReceiptDateInTransOrderLin@1000000015(VAR TransLine@1000000002 : Record 5741;Forward@1000000003 : Boolean);
+    VAR
+      CalChange@1000000001 : Record 7602;
+      CalendarMgmt@1000000000 : Codeunit 7600;
+    BEGIN
+      //Calculate receipt date of the tranfer order considering safety lead time
+      IF FORMAT(TransLine."Safety Lead Time") = '' THEN
+        EXIT;
+
+      IF Forward THEN
+        TransLine."Receipt Date" := CalendarMgmt.CalcDateBOC(FORMAT(TransLine."Safety Lead Time"),TransLine."Receipt Date",
+                                                              CalChange."Source Type"::Location,TransLine."Transfer-to Code",'',
+                                                              0,'','',FALSE)
+      ELSE
+        TransLine."Receipt Date" := CalendarMgmt.CalcDateBOC2(FORMAT(TransLine."Safety Lead Time"),TransLine."Receipt Date",
+                                                              CalChange."Source Type"::Location,TransLine."Transfer-to Code",'',
+                                                              0,'','',FALSE)
+    END;
+
+    PROCEDURE UpdateReqLines@1000000005(CurrTemplateName@1000000000 : Code[10];CurrWorksheetName@1000000001 : Code[10];ItemNoFilter@1000000002 : Code[1024];LocationFilter@1000000003 : Code[1024];VariantFilter@1000000004 : Code[1024]);
+    VAR
+      ReqLine@1000000005 : Record 246;
+    BEGIN
+      ReqLine.RESET;
+      ReqLine.SETCURRENTKEY(Type,"No.","Variant Code","Location Code","Sales Order No.","Planning Line Origin","Due Date");
+      ReqLine.SETRANGE("Worksheet Template Name",CurrTemplateName);
+      ReqLine.SETRANGE("Journal Batch Name",CurrWorksheetName);
+      ReqLine.SETRANGE(Type,ReqLine.Type::Item);
+      IF ItemNoFilter <> '' THEN
+        ReqLine.SETRANGE("No.",ItemNoFilter);
+      IF VariantFilter <> '' THEN
+        ReqLine.SETRANGE("Variant Code",VariantFilter);
+      IF LocationFilter <> '' THEN
+        ReqLine.SETRANGE("Location Code",LocationFilter);
+      IF ReqLine.FIND('-') THEN
+        REPEAT
+          UpdateReqLine(ReqLine);
+        UNTIL ReqLine.NEXT = 0;
+    END;
+
+    PROCEDURE UpdateReqLine@1000000007(VAR ReqLine@1000000000 : Record 246);
+    VAR
+      Vend@1000000002 : Record 23;
+      VendShipType@1000000003 : Record 50090;
+      MoveTime@1000000005 : DateFormula;
+      LeadTimeMgt@1000000006 : Codeunit 5404;
+      LocationFOB@1000000007 : Record 14;
+      CalChange@1000000009 : Record 7602;
+      CalendarMgmt@1000000008 : Codeunit 7600;
+      EmptyDateFormula@1000000010 : DateFormula;
+      DueDateLessSafetyTime@1000000001 : Date;
+      OutboundWhseTimeFOB@1000000015 : DateFormula;
+      InboundWhseTimeFOB@1000000017 : DateFormula;
+      ETDMinusInboundTimeFOB@1000000018 : Date;
+    BEGIN
+      //Backward calculation of the ETA, ETD and order dates in the req. line
+      WITH ReqLine DO BEGIN
+
+        IF "Replenishment System" <> "Replenishment System"::Purchase THEN
+          EXIT;
+
+        IF ("Vendor No." = '') OR ("Shipping Type" = '') THEN
+          EXIT;
+
+        IF VendShipType.GET("Vendor No.", "Shipping Type") THEN
+          IF VendShipType."Location Code" <> '' THEN BEGIN
+            "Location Code FOB" := VendShipType."Location Code";
+            LocationFOB.GET(VendShipType."Location Code");
+            "Move Time" := VendShipType."Move Time";
+
+            InboundWhseTimeFOB := LocationFOB."Inbound Whse. Handling Time";
+            IF FORMAT(InboundWhseTimeFOB) = '' THEN
+              EVALUATE(InboundWhseTimeFOB,'<0D>');
+
+            OutboundWhseTimeFOB := LocationFOB."Outbound Whse. Handling Time";
+            IF FORMAT(OutboundWhseTimeFOB) = '' THEN
+              EVALUATE(OutboundWhseTimeFOB,'<0D>');
+
+            //Safety Lead Time
+            EVALUATE("Safety Lead Time",LeadTimeMgt.SafetyLeadTime("No.","Location Code","Variant Code"));
+            IF FORMAT("Safety Lead Time") <> '' THEN
+              DueDateLessSafetyTime := CalendarMgmt.CalcDateBOC2(FORMAT("Safety Lead Time"),"Due Date",
+                CalChange."Source Type"::Location,"Location Code",'',
+                0,'','',FALSE);
+
+            //ETA backward calculation
+            "ETA Harbour" := CalcETADateBackward("Location Code FOB", "Location Code", DueDateLessSafetyTime);
+
+            //ETD backward calculation
+            EVALUATE(EmptyDateFormula,'<0D>');
+            IF EVALUATE(MoveTime,GetNegativMoveTime("Move Time")) THEN;
+            "ETD Harbour" := CalendarMgmt.CalcDateBOC2(FORMAT(EmptyDateFormula),CALCDATE(MoveTime,"ETA Harbour"),
+                             CalChange."Source Type"::"Shipping Type","Vendor No.",VendShipType."Shipping Type",
+                             0,'','',FALSE);
+
+            //Order Date backward calculation
+            ETDMinusInboundTimeFOB := CalendarMgmt.CalcDateBOC2(FORMAT(InboundWhseTimeFOB),"ETD Harbour",
+                                                                CalChange."Source Type"::Vendor,"Vendor No.",'',
+                                                                0,'','',FALSE);
+
+            //Lead Time
+            EVALUATE("Lead Time Calculation", LeadTimeMgt.PurchaseLeadTime(
+                                                      "No.","Location Code","Variant Code","Vendor No."));
+            IF FORMAT("Lead Time Calculation") = '' THEN
+              IF Vend.GET("Vendor No.") THEN
+                "Lead Time Calculation" := Vend."Lead Time Calculation";
+            IF FORMAT("Lead Time Calculation") = '' THEN
+              EVALUATE("Lead Time Calculation",'<0D>');
+
+            VALIDATE("Order Date",CalendarMgmt.CalcDateBOC2(FORMAT("Lead Time Calculation"),ETDMinusInboundTimeFOB,
+                                                            CalChange."Source Type"::Vendor,"Vendor No.",'',
+                                                            0,'','',FALSE));
+          END;
+                MODIFY;
+              END;
+    END;
+
+    PROCEDURE CalcETADateBackward@1000000014(TransferFromCode@1000000003 : Code[10];TransferToCode@1000000002 : Code[10];ReceiptDate@1000000001 : Date) : Date;
+    VAR
+      TransRoute@1000000000 : Record 5742;
+      InTransitCode@1000000008 : Code[10];
+      ShippingAgentCode@1000000007 : Code[10];
+      ShippingAgentServiceCode@1000000006 : Code[10];
+      Location@1000000004 : Record 14;
+      ShippingTime@1000000009 : DateFormula;
+      OutboundWhseTime@1000000011 : DateFormula;
+      InboundWhseTime@1000000010 : DateFormula;
+      ETA@1000000013 : Date;
+    BEGIN
+      //Calculate a shipment date of the transfer route (ETA Harbour) backward from receipt date
+      TransRoute.GetTransferRoute(TransferFromCode,TransferToCode,
+                                  InTransitCode,ShippingAgentCode,ShippingAgentServiceCode);
+      TransRoute.GetShippingTime(TransferFromCode,TransferToCode,ShippingAgentCode,ShippingAgentServiceCode,ShippingTime);
+
+      IF Location.GET(TransferFromCode) THEN
+        OutboundWhseTime := Location."Outbound Whse. Handling Time";
+      IF Location.GET(TransferToCode) THEN
+        InboundWhseTime := Location."Inbound Whse. Handling Time";
+
+      TransRoute.CalcShipmentDate(ETA,ReceiptDate,ShippingTime,OutboundWhseTime,InboundWhseTime,TransferFromCode,TransferToCode,
+                                  ShippingAgentCode,ShippingAgentServiceCode);
+      EXIT(ETA);
+    END;
+
+    PROCEDURE GetNegativMoveTime@1000000003(MoveTime@1000000000 : DateFormula) : Text[30];
+    VAR
+      DateFormulaExpr@1000000001 : Text[30];
+    BEGIN
+      IF FORMAT(MoveTime) <> '' THEN BEGIN
+        DateFormulaExpr := FORMAT(MoveTime);
+        IF NOT(DateFormulaExpr[1] IN ['+','-']) THEN
+          DateFormulaExpr := '-' + DateFormulaExpr
+        ELSE
+          DateFormulaExpr := CONVERTSTR(DateFormulaExpr,'+','-');
+        EXIT(DateFormulaExpr);
+      END;
+    END;
+
+    PROCEDURE CalcDueDateFromOrderDateReqLin@1000000009(VAR ReqLine@1000000000 : Record 246);
+    VAR
+      VendShipType@1000000002 : Record 50090;
+      Location@1000000020 : Record 14;
+      LocationFOB@1000000003 : Record 14;
+      OutboundWhseTimeFOB@1000000005 : DateFormula;
+      InboundWhseTimeFOB@1000000004 : DateFormula;
+      InboundWhseTime@1000000015 : DateFormula;
+      OrderDatePlusLeadTime@1000000006 : Date;
+      OrderDatePlusLeadTimPlusInboun@1000000018 : Date;
+      CalChange@1000000008 : Record 7602;
+      CalendarMgmt@1000000007 : Codeunit 7600;
+      CalculatedDueDate@1000000009 : Date;
+      TransRoute@1000000013 : Record 5742;
+      InTransitCode@1000000012 : Code[10];
+      ShippingAgentCode@1000000011 : Code[10];
+      ShippingAgentServiceCode@1000000010 : Code[10];
+      ShippingTime@1000000014 : DateFormula;
+      ReceiptDate@1000000016 : Date;
+      LeadTimeMgt@1000000017 : Codeunit 5404;
+      EmptyDateFormula@1000000019 : DateFormula;
+    BEGIN
+      //Forward calculation of the ETD, ETA and the due dates in the req. line
+      //Will be started every time the order date validation occurs
+      WITH ReqLine DO BEGIN
+
+        IF "Replenishment System" <> "Replenishment System"::Purchase THEN
+          EXIT;
+
+        IF ("Vendor No." = '') OR ("Shipping Type" = '') THEN
+          EXIT;
+
+        IF VendShipType.GET("Vendor No.", "Shipping Type") THEN
+          IF VendShipType."Location Code" <> '' THEN BEGIN
+            "Location Code FOB" := VendShipType."Location Code";
+
+            LocationFOB.GET(VendShipType."Location Code");
+            InboundWhseTimeFOB := LocationFOB."Inbound Whse. Handling Time";
+            IF FORMAT(InboundWhseTimeFOB) = '' THEN
+              EVALUATE(InboundWhseTimeFOB,'<0D>');
+
+            OutboundWhseTimeFOB := LocationFOB."Outbound Whse. Handling Time";
+            IF FORMAT(OutboundWhseTimeFOB) = '' THEN
+              EVALUATE(OutboundWhseTimeFOB,'<0D>');
+
+            IF Location.GET("Location Code") THEN
+              InboundWhseTime := Location."Inbound Whse. Handling Time";
+            IF FORMAT(InboundWhseTime) = '' THEN
+              EVALUATE(InboundWhseTime,'<0D>');
+
+            "Move Time" := VendShipType."Move Time";
+
+            //***ETD forward calculation***
+            //OrderDatePlusLeadTime = Order date plus lead time checked against vendor calendar
+            IF FORMAT("Lead Time Calculation") = '' THEN
+              EVALUATE("Lead Time Calculation",'<0D>');
+            OrderDatePlusLeadTime := CalendarMgmt.CalcDateBOC(FORMAT("Lead Time Calculation"),"Order Date",
+                                                              CalChange."Source Type"::Vendor,"Vendor No.",'',
+                                                              0,'','',FALSE);
+
+            //OrderDatePlusLeadTimPlusInboun = OrderDatePlusLeadTime plus inbound whse. time of the FOB-Location
+            //checked against vendor calendar
+            OrderDatePlusLeadTimPlusInboun := CalendarMgmt.CalcDateBOC(FORMAT(InboundWhseTimeFOB),OrderDatePlusLeadTime,
+                                                                       CalChange."Source Type"::Vendor,"Vendor No.",'',
+                                                                       0,'','',TRUE);
+
+            //ETD date = OrderDatePlusLeadTimPlusInboun checked against depature calendar
+            EVALUATE(EmptyDateFormula,'<0D>');
+            "ETD Harbour" := CalendarMgmt.CalcDateBOC(FORMAT(EmptyDateFormula),OrderDatePlusLeadTime,
+                                                     CalChange."Source Type"::"Shipping Type","Vendor No.",VendShipType."Shipping Type",
+                                                     0,'','',FALSE);
+
+
+            //***ETA forward calculation***
+            //ETA = ETD plus move time checked against FOB-Location calendar
+            "ETA Harbour" := CalendarMgmt.CalcDateBOC(FORMAT(EmptyDateFormula),CALCDATE("Move Time","ETD Harbour"),
+                                                      CalChange."Source Type"::Location,"Location Code FOB",'',
+                                                      0,'','',FALSE);
+
+            //***Due Date forward calculation***
+            //Receipt Date = ETA + shipping time to location dÅsseldorf
+            TransRoute.GetTransferRoute("Location Code FOB","Location Code",
+                                        InTransitCode,ShippingAgentCode,ShippingAgentServiceCode);
+            TransRoute.GetShippingTime("Location Code FOB","Location Code",ShippingAgentCode,ShippingAgentServiceCode,ShippingTime);
+            TransRoute.CalcReceiptDate("ETA Harbour",ReceiptDate,ShippingTime,OutboundWhseTimeFOB,InboundWhseTime,"Location Code FOB",
+                                       "Location Code",ShippingAgentCode,ShippingAgentServiceCode);
+            //Calculated due date = Receipt Date plus Safety Lead Time check against location code and company's calendars
+            EVALUATE("Safety Lead Time",LeadTimeMgt.SafetyLeadTime("No.","Location Code","Variant Code"));
+            IF FORMAT("Safety Lead Time") <> '' THEN
+              CalculatedDueDate := CalendarMgmt.CalcDateBOC(FORMAT("Safety Lead Time"),ReceiptDate,
+                                                            CalChange."Source Type"::Location,"Location Code",'',
+                                                            0,'','',TRUE)
+            ELSE
+              CalculatedDueDate := ReceiptDate;
+
+            IF CalculatedDueDate > "Due Date" THEN
+              ERROR(GOBText001,CalculatedDueDate,"Due Date","Order Date","ETD Harbour","ETA Harbour");
+          END;
+      END;
+    END;
+
+    PROCEDURE CalcOrderDateFromETDReqLine@1000000002(VAR ReqLine@1000000000 : Record 246);
+    VAR
+      VendShipType@1000000008 : Record 50090;
+      LocationFOB@1000000007 : Record 14;
+      InboundWhseTimeFOB@1000000006 : DateFormula;
+      CalChange@1000000003 : Record 7602;
+      CalendarMgmt@1000000002 : Codeunit 7600;
+      ETDMinusInboundTimeFOB@1000000004 : Date;
+    BEGIN
+      //Calculation of the order date backward from the ETD date
+      WITH ReqLine DO BEGIN
+
+        IF "Replenishment System" <> "Replenishment System"::Purchase THEN
+          EXIT;
+
+        IF ("Vendor No." = '') OR ("Shipping Type" = '') THEN
+          EXIT;
+
+        IF VendShipType.GET("Vendor No.", "Shipping Type") THEN
+          IF VendShipType."Location Code" <> '' THEN BEGIN
+            "Location Code FOB" := VendShipType."Location Code";
+            LocationFOB.GET(VendShipType."Location Code");
+
+            InboundWhseTimeFOB := LocationFOB."Inbound Whse. Handling Time";
+            IF FORMAT(InboundWhseTimeFOB) = '' THEN
+              EVALUATE(InboundWhseTimeFOB,'<0D>');
+
+            ETDMinusInboundTimeFOB := CalendarMgmt.CalcDateBOC2(FORMAT(InboundWhseTimeFOB),"ETD Harbour",
+                                                        CalChange."Source Type"::Vendor,"Vendor No.",'',
+                                                        0,'','',FALSE);
+
+            IF FORMAT("Lead Time Calculation") = '' THEN
+              EVALUATE("Lead Time Calculation",'<0D>');
+            VALIDATE("Order Date",CalendarMgmt.CalcDateBOC2(FORMAT("Lead Time Calculation"),ETDMinusInboundTimeFOB,
+                                                            CalChange."Source Type"::Vendor,"Vendor No.",'',
+                                                            0,'','',FALSE));
+          END;
+      END;
+    END;
+
+    PROCEDURE CalcOrderDateFromETAReqLine@1000000011(VAR ReqLine@1000000000 : Record 246);
+    VAR
+      VendShipType@1000000005 : Record 50090;
+      LocationFOB@1000000004 : Record 14;
+      InboundWhseTimeFOB@1000000003 : DateFormula;
+      CalChange@1000000002 : Record 7602;
+      CalendarMgmt@1000000001 : Codeunit 7600;
+      ETDMinusInboundTimeFOB@1000000007 : Date;
+      EmptyDateFormula@1000000008 : DateFormula;
+      MoveTime@1000000009 : DateFormula;
+    BEGIN
+      //Calculation of the order date backward from the ETA date
+      WITH ReqLine DO BEGIN
+
+        IF "Replenishment System" <> "Replenishment System"::Purchase THEN
+          EXIT;
+
+        IF ("Vendor No." = '') OR ("Shipping Type" = '') THEN
+          EXIT;
+
+        IF VendShipType.GET("Vendor No.", "Shipping Type") THEN
+          IF VendShipType."Location Code" <> '' THEN BEGIN
+            "Location Code FOB" := VendShipType."Location Code";
+            LocationFOB.GET(VendShipType."Location Code");
+
+            InboundWhseTimeFOB := LocationFOB."Inbound Whse. Handling Time";
+            IF FORMAT(InboundWhseTimeFOB) = '' THEN
+              EVALUATE(InboundWhseTimeFOB,'<0D>');
+
+            "Move Time" := VendShipType."Move Time";
+
+            //ETD backward calculation
+            EVALUATE(EmptyDateFormula ,'<0D>');
+            IF EVALUATE(MoveTime,GetNegativMoveTime("Move Time")) THEN;
+            "ETD Harbour" := CalendarMgmt.CalcDateBOC2(FORMAT(EmptyDateFormula),CALCDATE(MoveTime,"ETA Harbour"),
+                             CalChange."Source Type"::"Shipping Type","Vendor No.",VendShipType."Shipping Type",
+                             0,'','',FALSE);
+
+            //Order Date backward calculation
+            ETDMinusInboundTimeFOB := CalendarMgmt.CalcDateBOC2(FORMAT(InboundWhseTimeFOB),"ETD Harbour",
+                                                                CalChange."Source Type"::Vendor,"Vendor No.",'',
+                                                                0,'','',TRUE);
+
+            IF FORMAT("Lead Time Calculation") = '' THEN
+              EVALUATE("Lead Time Calculation",'<0D>');
+            VALIDATE("Order Date",CalendarMgmt.CalcDateBOC2(FORMAT("Lead Time Calculation"),ETDMinusInboundTimeFOB,
+                                                            CalChange."Source Type"::Vendor,"Vendor No.",'',
+                                                            0,'','',FALSE));
+          END;
+      END;
+    END;
+
+    PROCEDURE ReservationProcess@1000000008(VAR PurchHeader@1000000000 : Record 38);
+    VAR
+      PurchLine@1000000001 : Record 39;
+      TempReservEntry@1000000003 : TEMPORARY Record 337;
+      Location@1000000002 : Record 14;
+      FOBLocation@1000000004 : Code[10];
+    BEGIN
+      //A/p0282
+      {*** mab keine Reservierungen
+      PurchLine.RESET;
+      PurchLine.SETRANGE("Document Type",PurchHeader."Document Type");
+      PurchLine.SETRANGE("Document No.",PurchHeader."No.");
+      PurchLine.SETFILTER(Quantity,'<>%1',0);
+      IF PurchLine.FIND('-') THEN
+        REPEAT
+          //Don't reserve,if reservation already exists.Relevant in case of reopenning of the purchase order.
+          IF NOT ReservToTransOrderExists(PurchLine) THEN BEGIN
+            TempReservEntry.DELETEALL;
+            SaveDeleteExistingReservation(PurchLine,TempReservEntry);
+            IF Location.GET(PurchLine."Location Code") THEN
+              IF NOT Location."FOB Location" THEN BEGIN
+                FOBLocation := PurchLine."Location Code FOB";
+                PurchLine."Location Code FOB" := PurchLine."Location Code";
+                PurchLine."Location Code" := FOBLocation;
+                PurchLine."Planning Flexibility" := PurchLine."Planning Flexibility"::None;
+                PurchLine.MODIFY(TRUE);
+              END;
+            CreateReservToTransOrder(PurchLine);
+            EstablishOldReserv(PurchLine,TempReservEntry);
+          END;
+        UNTIL PurchLine.NEXT = 0;
+      mab keine Reservierungen**}
+    END;
+
+    PROCEDURE ReservToTransOrderExists@1000000018(VAR PurchLine@1000000000 : Record 39) : Boolean;
+    VAR
+      ReservEntry@1000000003 : Record 337;
+      ReservEntry2@1000000002 : Record 337;
+      PurchLineReserve@1000000001 : Codeunit 99000834;
+    BEGIN
+      //Check if reservation already exists between purchase order and trans. order lines
+      {*** mab keine Reservierungen
+
+      //H0762 16.12.13 ARU +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      //PurchLine.CALCFIELDS("Reserved Qty. (Base)","Transfer Order No.","Transfer Order Line No.");
+      PurchLine.CALCFIELDS("Reserved Qty. (Base)";
+      //H0762 16.12.13 ARU -------------------------------------------------------------------------
+
+      IF PurchLine."Reserved Qty. (Base)" = 0 THEN
+        EXIT(FALSE);
+
+      ReservEntry.RESET;
+      ReservEntry.SETCURRENTKEY("Source ID","Source Ref. No.","Source Type","Source Subtype",
+                                "Source Batch Name","Source Prod. Order Line","Reservation Status");
+      PurchLineReserve.FilterReservFor(ReservEntry,PurchLine);
+      ReservEntry.SETRANGE("Reservation Status",ReservEntry."Reservation Status"::Reservation);
+      IF NOT ReservEntry.ISEMPTY THEN BEGIN
+        ReservEntry.FIND('-');
+        REPEAT
+          IF ReservEntry2.GET(ReservEntry."Entry No.",NOT ReservEntry.Positive) THEN
+            IF (ReservEntry2."Source ID" = PurchLine."Transfer Order No.") AND
+               (ReservEntry2."Source Ref. No." = PurchLine."Transfer Order Line No.") THEN
+              EXIT(TRUE);
+        UNTIL ReservEntry.NEXT = 0;
+      END;
+      }
+    END;
+
+    PROCEDURE ReservToSalesOrderExists@1000000019(VAR TransLine@1000000000 : Record 5741) : Boolean;
+    VAR
+      ReservEntry@1000000001 : Record 337;
+      TransLineReserve@1000000003 : Codeunit 99000836;
+      Direction@1000000004 : 'Outbound,Inbound';
+    BEGIN
+      {*** mab keine Reservierungen
+
+      TransLine.CALCFIELDS("Reserved Qty. Inbnd. (Base)");
+      IF TransLine."Reserved Qty. Inbnd. (Base)" = 0 THEN
+        EXIT(FALSE);
+
+      ReservEntry.RESET;
+      ReservEntry.SETCURRENTKEY(
+        "Source ID","Source Ref. No.","Source Type","Source Subtype",
+        "Source Batch Name","Source Prod. Order Line","Reservation Status");
+      TransLineReserve.FilterReservFor(ReservEntry,TransLine,Direction::Inbound);
+      ReservEntry.SETRANGE("Reservation Status",ReservEntry."Reservation Status"::Reservation);
+      EXIT (NOT ReservEntry.ISEMPTY);
+      }
+    END;
+
+    PROCEDURE SaveDeleteExistingReservation@1000000025(VAR PurchLine@1000000000 : Record 39;VAR TempReservEntry@1000000001 : TEMPORARY Record 337);
+    VAR
+      ReservEntry@1000000006 : Record 337;
+      ReservEntry2@1000000005 : Record 337;
+      PurchLineReserve@1000000003 : Codeunit 99000834;
+    BEGIN
+      //Indicate existing reservation, store them in the temp. reserv. entries and then delete then
+      {*** mab keine Reservierungen
+
+      ReservEntry.RESET;
+      ReservEntry.SETCURRENTKEY("Source ID","Source Ref. No.","Source Type","Source Subtype",
+                                "Source Batch Name","Source Prod. Order Line","Reservation Status");
+      PurchLineReserve.FilterReservFor(ReservEntry,PurchLine);
+      ReservEntry.SETRANGE("Reservation Status",ReservEntry."Reservation Status"::Reservation);
+      IF NOT ReservEntry.ISEMPTY THEN BEGIN
+        IF ReservEntry.FIND('-') THEN
+          REPEAT
+            IF ReservEntry2.GET(ReservEntry."Entry No.",NOT ReservEntry.Positive) THEN BEGIN
+              TempReservEntry.INIT;
+              TempReservEntry := ReservEntry2;
+              TempReservEntry.INSERT;
+            END;
+          UNTIL ReservEntry.NEXT = 0;
+        PurchLineReserve.DeleteLine(PurchLine);
+      END;
+      }
+    END;
+
+    PROCEDURE CreateReservToTransOrder@1000000013(VAR PurchLine@1000000000 : Record 39);
+    VAR
+      TransLine@1000000001 : Record 5741;
+      PurchLineReserve@1000000002 : Codeunit 99000834;
+      ReservEntry@1000000003 : Record 337;
+    BEGIN
+      {*** mab keine Reservierungen
+
+      //Create reservation between purchase order line and transfer order line
+      //H0762 16.12.13 ARU ++++++++++++++++++++++++++++++++++++++++++++++++++
+      //PurchLine.CALCFIELDS("Transfer Order No.","Transfer Order Line No.");
+      //H0762 16.12.13 ARU --------------------------------------------------
+      IF TransLine.GET(PurchLine."Transfer Order No.",PurchLine."Transfer Order Line No.") THEN BEGIN
+        //PurchLineReserve.SetBinding(ReservEntry.Binding::"Order-to-Order");
+        PurchLineReserve.CreateReservationSetFrom(
+          DATABASE::"Transfer Line",
+          0,
+          TransLine."Document No.",
+          '',0,
+          TransLine."Line No.",
+          TransLine."Variant Code",
+          TransLine."Transfer-from Code",
+          '','',
+          TransLine."Qty. per Unit of Measure");
+        PurchLineReserve.CreateReservation(
+          PurchLine,
+          PurchLine.Description,
+          PurchLine."Expected Receipt Date",
+          PurchLine.Quantity,
+          '','');
+      END;
+      }
+    END;
+
+    PROCEDURE EstablishOldReserv@1000000021(VAR PurchLine@1000000000 : Record 39;VAR TempReservEntry@1000000001 : TEMPORARY Record 337);
+    VAR
+      TransLine@1000000004 : Record 5741;
+      SalesLine@1000000002 : Record 37;
+      SalesLineReserve@1000000003 : Codeunit 99000832;
+    BEGIN
+      {*** mab keine Reservierungen
+
+      //Establish old reservation
+      //H0762 16.12.13 ARU ++++++++++++++++++++++++++++++++++++++++++++++++++
+      //PurchLine.CALCFIELDS("Transfer Order No.","Transfer Order Line No.");
+      //H0762 16.12.13 ARU --------------------------------------------------
+      IF TransLine.GET(PurchLine."Transfer Order No.",PurchLine."Transfer Order Line No.") THEN
+        IF TempReservEntry.FIND('-') THEN
+          REPEAT
+            //Reservation against sales order
+            IF (TempReservEntry."Source Type" = 37) AND (TempReservEntry."Source Subtype" = 1) THEN
+              IF SalesLine.GET(SalesLine."Document Type"::Order,TempReservEntry."Source ID",TempReservEntry."Source Ref. No.") THEN
+      BEGIN
+                SalesLineReserve.SetBinding(TempReservEntry.Binding::"Order-to-Order");
+                SalesLineReserve.CreateReservationSetFrom(
+                  DATABASE::"Transfer Line",
+                  1,
+                  TransLine."Document No.",
+                  '',0,
+                  TransLine."Line No.",
+                  TransLine."Variant Code",
+                  TransLine."Transfer-to Code",
+                  '','',
+                  TransLine."Qty. per Unit of Measure");
+                SalesLineReserve.CreateReservation(
+                  SalesLine,
+                  SalesLine.Description,
+                  SalesLine."Shipment Date",
+                  ABS(TempReservEntry.Quantity),'','');
+              END;
+          UNTIL TempReservEntry.NEXT = 0;
+      }
+    END;
+
+    PROCEDURE FileNameExistInTransferLine@1108200009(pTransferLine@1108200000 : Record 5741);
+    BEGIN
+      IF pTransferLine."Container No." <> '' THEN BEGIN
+        ERROR(GOBText002,pTransferLine."Document No.");
+      END;
+    END;
+
+    PROCEDURE SaveXrecPurch@1108200015(PurchLineXrec@1108200000 : Record 39);
+    BEGIN
+      // Record wird vor jedem Modify bei Foreign Trage Transfer Orders gespeichert
+      SavePurchLineXrec := PurchLineXrec;
+    END;
+
+    PROCEDURE SaveXrecTransf@1108200003(TransferLineXrec@1108200000 : Record 5741);
+    BEGIN
+      // Record wird vor jedem Modify bei Foreign Trage Transfer Orders gespeichert
+      SaveTransferLineXrec := TransferLineXrec;
+    END;
+
+    PROCEDURE QtyShippedinPurchOrder@1000000016(ParPurchLine@1000000000 : Record 39);
+    BEGIN
+      //A/p0282
+      IF ParPurchLine."Quantity Received" <> 0 THEN
+        ERROR(GOBText010);
+      //E/p0282
+    END;
+
+    BEGIN
+    {
+      +-----------------------------------------------------+
+      |               GOB Software & Systeme                |
+      +-----------------------------------------------------+
+      |                FOB-Prozesse                       |
+      -------------------------------------------------------
+
+      Version       Comment
+      -------------------------------------------------------
+      FOB1.01       Object created
+      p0282  gob-mab  neue Funktion QtyShippedinPurchOrder, PrÅfung verÑndert auf Menge geliefert
+      p0613  gob-mab  28.11.12  validate location (fÅr reservierungs posten)
+
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+      *** Module: RD handling Transfer Order within Container Order ***
+      H0762       16.12.13 ARU       Changes in process to autom. create Transfer Orders
+    }
+    END.
+  }
+}
+

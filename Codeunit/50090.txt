@@ -1,0 +1,519 @@
+OBJECT Codeunit 50090 Purchase Services
+{
+  OBJECT-PROPERTIES
+  {
+    Date=12.09.12;
+    Time=11:34:40;
+    Version List=gob;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      SavePurchLineXrec@1108200001 : Record 39;
+      GOBText002@1108200004 : TextConst 'DEU=Der Umlagerungsauftrag %1 muss erst ausgangsseitig gebucht sein.';
+      GOBText003@1108200003 : TextConst 'DEU=Wollen Sie die UmlagerungsauftrÑge zu Container Nr. %1 buchen?';
+      GOBText004@1108200002 : TextConst 'DEU=Abbruch durch Benutzer';
+      GOBText005@1108200005 : TextConst 'DEU=Es gibt nichts zu buchen.';
+      Location@1108200007 : Record 14;
+      ProgressBar@1108200008 : Codeunit 50091;
+      GOBText008@1108200012 : TextConst 'DEU=Kein Lager ist als Hauplager gewÑhlt';
+      DialogText001@1108200010 : TextConst 'DEU=Bitte geben Sie die zu reservierende Menge ein.';
+      DialogText002@1108200009 : TextConst 'DEU=Anzahl zu stornierender geb. Einkaufslieferungen';
+      DialogText003@1108200011 : TextConst;
+      GOBText009@1108200013 : TextConst 'DEU=Es darf nur ein Hauptlager existieren';
+      SaveTransferLineXrec@1108200014 : Record 5741;
+      Item@1108200015 : Record 27;
+      GOBText010@1000000000 : TextConst 'DEU=Der Wert darf nicht mehr geÑndert werden, wenn die Lieferung gebucht wurde.';
+
+    PROCEDURE CheckShip@1108200001(VendorNo@1108200000 : Code[20]) : Boolean;
+    VAR
+      Vendor@1000000000 : Record 23;
+      ShipMet@1108200001 : Record 10;
+      EntyExitPoint@1108200003 : Record 282;
+    BEGIN
+      Vendor.GET(VendorNo);
+      ShipMet.GET(Vendor."Shipment Method Code");
+      IF (ShipMet."Shipping Type" = ShipMet."Shipping Type":: Ship) THEN
+        BEGIN
+          Vendor.TESTFIELD("Port of Lading");
+          EntyExitPoint.GET(Vendor."Port of Lading");
+          EntyExitPoint.TESTFIELD("Move Time");
+          EXIT(TRUE);
+        END
+      ELSE
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE TransferOrderExist@1108200005(OrderNo@1108200000 : Code[20]) OrderExist : Boolean;
+    VAR
+      LocTransferHeader@1108200001 : Record 5740;
+    BEGIN
+      OrderExist := FALSE;
+
+      LocTransferHeader.RESET;
+      LocTransferHeader.SETCURRENTKEY("Purchase Order No.");
+      LocTransferHeader.SETRANGE("Purchase Order No.",OrderNo);
+      IF LocTransferHeader.FIND('-') THEN
+        OrderExist := TRUE;
+      EXIT;
+    END;
+
+    PROCEDURE TranferLineExist@1108200006(OrderNo@1108200000 : Code[20];OrderLineNo@1108200001 : Integer) LineExist : Boolean;
+    VAR
+      LocTransferLine@1108200002 : Record 5741;
+    BEGIN
+      LineExist := FALSE;
+
+      LocTransferLine.RESET;
+      LocTransferLine.SETCURRENTKEY("Purchase Order No.");
+      LocTransferLine.SETRANGE("Purchase Order No.",OrderNo);
+      LocTransferLine.SETRANGE("Purchase Order Line No.",OrderLineNo);
+      IF LocTransferLine.FIND('-') THEN
+        LineExist := TRUE;
+      EXIT;
+    END;
+
+    PROCEDURE CreateTransOrder@1119443000(PurchHeader@1119443001 : Record 38);
+    VAR
+      gobtext001@1119443002 : TextConst 'DEU=Umlagerungsauftrag %1 wurde erstellt.';
+      PurchLine@1119443003 : Record 39;
+      TransHeader@1119443006 : Record 5740;
+      vContainerNo@1119443004 : Code[20];
+      vBLNo@1108200000 : Code[20];
+      vTransOrderNo@1119443005 : Code[20];
+      ReleaseTranferDoc@1108200001 : Codeunit 5708;
+    BEGIN
+
+      IF (PurchHeader."Document Type" <> PurchHeader."Document Type"::Order) THEN
+        EXIT;
+      IF NOT CheckShip(PurchHeader."Buy-from Vendor No.") THEN
+        EXIT;
+
+      IF NOT TransferOrderExist(PurchHeader."No.") THEN BEGIN
+        CLEAR(vTransOrderNo);
+        IF CreateTransHeadFromPurchHead(PurchHeader,vTransOrderNo) THEN BEGIN
+          PurchLine.RESET;
+          PurchLine.SETRANGE("Document Type",PurchHeader."Document Type");
+          PurchLine.SETRANGE("Document No.",PurchHeader."No.");
+          PurchLine.SETRANGE(Type,PurchLine.Type::Item);
+          PurchLine.SETFILTER("No.",'<>%1','');
+          PurchLine.SETFILTER(Quantity,'<>%1',0);
+          IF PurchLine.FIND('-') AND NOT TranferLineExist(PurchLine."Document No.",PurchLine."Line No.") THEN REPEAT
+            IF CreateTransLinePromPurchHead(PurchHeader,PurchLine,vTransOrderNo) THEN ;
+          UNTIL PurchLine.NEXT = 0;
+        END;
+      END;
+    END;
+
+    PROCEDURE CreateTransHeadFromPurchHead@1119443002(PurchHeader@1119443001 : Record 38;VAR locTransOrderNo@1119443000 : Code[20]) : Boolean;
+    VAR
+      TransHeader@1119443003 : Record 5740;
+      PurchLine@1119443002 : Record 39;
+    BEGIN
+
+      CLEAR(TransHeader);
+      TransHeader.INSERT(TRUE);
+      TransHeader.VALIDATE("Transfer-from Code", PurchHeader."Location Code");
+      //Hauptlager
+      Location.SETFILTER("Main Location",'Ja');
+      IF Location.FINDFIRST THEN
+      TransHeader.VALIDATE("Transfer-to Code",Location.Code)
+      ELSE ERROR('%1',GOBText008);
+      TransHeader.VALIDATE("Purchase Order No.",PurchHeader."No.");
+      TransHeader."Buy-from Vendor No" := PurchHeader."Buy-from Vendor No.";
+      TransHeader."Pay-to Vendor No." := PurchHeader."Pay-to Vendor No.";
+      TransHeader."Order Date" := PurchHeader."Order Date";
+      TransHeader."Assigned User ID" := USERID;
+      TransHeader.VALIDATE("Shipment Date",TODAY);
+      TransHeader."Receipt Date" := TransHeader."Shipment Date";
+      locTransOrderNo :=TransHeader."No.";
+      IF TransHeader.MODIFY THEN
+        EXIT(TRUE);
+    END;
+
+    PROCEDURE CreateTransLinePromPurchHead@1119443003(PurchHeader@1119443002 : Record 38;PurchLine@1119443000 : Record 39;locTransOrderNo@1119443008 : Code[20]) : Boolean;
+    VAR
+      TransHeader@1119443006 : Record 5740;
+      TransLine@1119443005 : Record 5741;
+      TransLine2@1119443004 : Record 5741;
+      TransLine3@1000000000 : Record 5741;
+    BEGIN
+
+      IF TranferLineExist(PurchLine."Document No.",PurchLine."Line No.") THEN
+        EXIT;
+
+      IF (PurchLine."Document Type" <> PurchLine."Document Type"::Order) THEN
+        EXIT;
+
+      IF NOT CheckShip(PurchHeader."Buy-from Vendor No.") THEN
+        EXIT;
+
+
+      TransLine2.RESET;
+      TransLine2.SETRANGE("Document No.",locTransOrderNo);
+      IF NOT TransLine2.FINDLAST THEN
+        TransLine2."Line No." := TransLine2."Line No." + 10000;
+
+      CLEAR(TransLine);
+      TransLine."Document No." := locTransOrderNo;
+      TransLine."Line No." := TransLine2."Line No.";
+      TransLine.INSERT(TRUE);
+
+      TransLine.VALIDATE("Item No.",PurchLine."No.");
+      TransLine.VALIDATE("Variant Code",PurchLine."Variant Code");
+      TransLine.VALIDATE("Unit of Measure Code",PurchLine."Unit of Measure Code");
+      TransLine.VALIDATE(Quantity,PurchLine.Quantity);
+
+      TransLine."Container No." := PurchLine."Container No.";
+      TransLine."Bill of Lading No." := PurchLine."Bill of Lading No.";
+
+      TransLine.VALIDATE("Purchase Order No.", PurchLine."Document No." );
+      TransLine.VALIDATE("Purchase Order Line No.", PurchLine."Line No." );
+      TransLine.VALIDATE("Buy-from Vendor No",PurchLine."Buy-from Vendor No.");
+      TransLine.VALIDATE("Receipt Date",CALCDATE(PurchLine."Move Time",PurchLine."Expected Receipt Date"));
+
+      TransLine.VALIDATE("Planning Flexibility",TransLine."Planning Flexibility"::None);
+
+      IF TransLine.MODIFY THEN
+        EXIT(TRUE);
+    END;
+
+    PROCEDURE DeleteTransLineFromPurchLine@1106400015(PurchLine@1106400000 : Record 39);
+    VAR
+      TransHeader@1106400003 : Record 5740;
+      TransLine@1106400002 : Record 5741;
+      TransLine2@1106400001 : Record 5741;
+    BEGIN
+      // Diese Funktion lîscht Transfer Line
+
+      IF (PurchLine."Document Type" <> PurchLine."Document Type"::Order) THEN
+        EXIT;
+
+      IF NOT TranferLineExist(PurchLine."Document No.",PurchLine."Line No.") THEN
+        EXIT;
+
+      TransLine.RESET;
+      TransLine.SETCURRENTKEY("Purchase Order No.");
+      TransLine.SETRANGE("Purchase Order No.", PurchLine."Document No.");
+      TransLine.SETRANGE("Purchase Order Line No.", PurchLine."Line No.");
+      IF TransLine.FINDFIRST THEN BEGIN
+        TransLine.DELETE;
+      END;
+    END;
+
+    PROCEDURE DeleteTransHeaderFromPurchLine@1108200004(PurchHeader@1108200000 : Record 38);
+    VAR
+      TransferHeader@1108200001 : Record 5740;
+    BEGIN
+      IF PurchHeader."Document Type" <> PurchHeader."Document Type"::Order THEN
+        EXIT;
+
+      IF NOT TransferOrderExist(PurchHeader."No.") THEN
+        EXIT;
+
+      TransferHeader.RESET;
+      TransferHeader.SETCURRENTKEY("Purchase Order No.");
+      TransferHeader.SETRANGE("Purchase Order No.",PurchHeader."No.");
+      IF TransferHeader.FIND('-') THEN
+        TransferHeader.DELETE(TRUE);
+    END;
+
+    PROCEDURE ModifyTransLineFromPurchLine@1108200007(PurchLine@1108200000 : Record 39);
+    VAR
+      TransferLine@1108200001 : Record 5741;
+      ModifyLine@1108200002 : Boolean;
+    BEGIN
+
+      ModifyLine := FALSE;
+
+      IF PurchLine."Document Type" <> PurchLine."Document Type"::Order THEN
+        EXIT;
+      IF (PurchLine.Type <> PurchLine.Type::Item) THEN
+        EXIT;
+      IF (PurchLine."Document No." = '') OR (PurchLine."Line No." = 0) THEN
+        EXIT;
+      IF NOT CheckShip(PurchLine."Buy-from Vendor No.") THEN
+        EXIT;
+
+      TransferLine.RESET;
+      TransferLine.SETCURRENTKEY("Purchase Order No.","Purchase Order Line No.");
+      TransferLine.SETRANGE("Purchase Order No.",PurchLine."Document No.");
+      TransferLine.SETRANGE("Purchase Order Line No.",PurchLine."Line No.");
+      IF TransferLine.FINDFIRST THEN BEGIN
+        IF PurchLine."Qty. to Receive (Base)" <> SavePurchLineXrec."Qty. to Receive (Base)" THEN BEGIN
+            //A/p0282
+            //FileNameExistInTransferLine(TransferLine);
+            QtyShippedinPurchOrder(PurchLine);
+            //Ep0282
+            TransferLine.VALIDATE("Qty. to Ship (Base)",PurchLine."Qty. to Receive (Base)");
+            ModifyLine := TRUE;
+        END;
+        IF PurchLine."Expected Receipt Date" <> SavePurchLineXrec."Expected Receipt Date" THEN BEGIN
+          TransferLine.VALIDATE("Receipt Date",CALCDATE(PurchLine."Move Time",PurchLine."Expected Receipt Date"));
+          ModifyLine := TRUE;
+        END;
+        IF PurchLine."Unit of Measure Code" <> SavePurchLineXrec."Unit of Measure Code" THEN BEGIN
+          TransferLine.VALIDATE("Unit of Measure Code",PurchLine."Unit of Measure Code");
+          ModifyLine := TRUE;
+        END;
+        IF PurchLine."Bill of Lading No." <> SavePurchLineXrec."Bill of Lading No." THEN BEGIN
+          //A/p0282
+          //FileNameExistInTransferLine(TransferLine);
+          QtyShippedinPurchOrder(PurchLine);
+          //Ep0282
+          TransferLine."Bill of Lading No." := PurchLine."Bill of Lading No.";
+          ModifyLine := TRUE;
+        END;
+        IF PurchLine."Quantity (Base)" <> SavePurchLineXrec."Quantity (Base)" THEN BEGIN
+          TransferLine.VALIDATE(Quantity,PurchLine.Quantity);
+          ModifyLine := TRUE;
+        END;
+        IF PurchLine."Container No." <>  SavePurchLineXrec."Container No." THEN BEGIN
+          //A/p0282
+          //FileNameExistInTransferLine(TransferLine);
+          QtyShippedinPurchOrder(PurchLine);
+          //Ep0282
+
+          TransferLine."Container No." := PurchLine."Container No.";
+          ModifyLine := TRUE;
+        END;
+        END;
+
+        IF ModifyLine THEN
+          TransferLine.MODIFY(TRUE);
+    END;
+
+    PROCEDURE ModifyPurchLineFromTransLine@1108200014(TransferLine@1108200000 : Record 5741);
+    VAR
+      PurchLine@1108200001 : Record 39;
+      ModifyLine@1108200002 : Boolean;
+    BEGIN
+
+      ModifyLine := FALSE;
+
+      IF (TransferLine."Document No." = '') OR (TransferLine."Line No." = 0) THEN
+        EXIT;
+
+      IF NOT CheckShip(TransferLine."Buy-from Vendor No") THEN
+        EXIT;
+
+      PurchLine.RESET;
+      PurchLine.SETCURRENTKEY("Document No.","Line No.");
+      PurchLine.SETRANGE("Document No.",TransferLine."Purchase Order No.");
+      PurchLine.SETRANGE("Line No.",TransferLine."Purchase Order Line No.");
+      IF PurchLine.FINDFIRST THEN BEGIN
+
+        IF TransferLine."Qty. to Receive (Base)" <> SaveTransferLineXrec."Qty. to Receive (Base)" THEN BEGIN
+            PurchLine.SuspendStatusCheck(TRUE);
+            PurchLine.VALIDATE("Qty. to Receive (Base)",TransferLine."Qty. to Ship (Base)");
+            ModifyLine := TRUE;
+        END;
+
+        IF TransferLine."Receipt Date" <> SaveTransferLineXrec."Receipt Date" THEN BEGIN
+          PurchLine.VALIDATE("Expected Receipt Date",CALCDATE('-('+FORMAT(PurchLine."Move Time")+')',TransferLine."Receipt Date"));
+          ModifyLine := TRUE;
+        END;
+        IF TransferLine."Unit of Measure Code" <> SaveTransferLineXrec."Unit of Measure Code" THEN BEGIN
+          PurchLine.VALIDATE("Unit of Measure Code",TransferLine."Unit of Measure Code");
+          ModifyLine := TRUE;
+        END;
+        IF TransferLine."Bill of Lading No." <> SaveTransferLineXrec."Bill of Lading No." THEN BEGIN
+          PurchLine."Bill of Lading No." := TransferLine."Bill of Lading No.";
+          ModifyLine := TRUE;
+        END;
+        IF TransferLine."Quantity (Base)" <> SaveTransferLineXrec."Quantity (Base)" THEN BEGIN
+          PurchLine.VALIDATE(Quantity,TransferLine.Quantity);
+          ModifyLine := TRUE;
+        END;
+        IF TransferLine."Container No." <>  SaveTransferLineXrec."Container No." THEN BEGIN
+          PurchLine."Container No." :=TransferLine."Container No.";
+          ModifyLine := TRUE;
+        END;
+        END;
+
+        IF ModifyLine THEN
+          PurchLine.MODIFY(TRUE);
+    END;
+
+    PROCEDURE FileNameExistInTransferLine@1108200009(pTransferLine@1108200000 : Record 5741);
+    BEGIN
+      IF pTransferLine."Container No." <> '' THEN BEGIN
+        ERROR(GOBText002,pTransferLine."Document No.");
+      END;
+    END;
+
+    PROCEDURE PostTransOrderSilentYesNo@1108200013(pSilent@1108200000 : Boolean;pContainerNo@1108200001 : Code[20]);
+    VAR
+      WhseReceiptHeader@1108200002 : Record 7316;
+    BEGIN
+      IF pSilent THEN BEGIN
+        PostTransOrder(pContainerNo,pSilent)
+      END ELSE BEGIN
+        IF CONFIRM(STRSUBSTNO(GOBText003,pContainerNo,FALSE)) THEN
+          PostTransOrder(pContainerNo,pSilent)
+        ELSE
+          MESSAGE(GOBText004);
+      END;
+    END;
+
+    PROCEDURE PostTransOrder@1108200010(pContainerNo@1108200000 : Code[20];pSilent@1108200003 : Boolean);
+    VAR
+      TransHeader@1108200002 : Record 5740;
+      TransLine@1108200004 : Record 5741;
+      TransOrderPostShipment@1108200001 : Codeunit 5704;
+      TransOrderPostReceipt@1000000000 : Codeunit 5705;
+      TmpTransDocNo@1108200005 : Code[20];
+    BEGIN
+      CLEAR(TmpTransDocNo);
+
+      TransLine.RESET;
+      //TransLine.SETCURRENTKEY("Container No.");
+      TransLine.SETRANGE("Container No.",pContainerNo);
+      IF TransLine.FIND('-') THEN BEGIN
+        REPEAT
+          IF TmpTransDocNo <> TransLine."Document No." THEN BEGIN
+            TransHeader.RESET;
+            TransHeader.SETRANGE("No.",TransLine."Document No.");
+            IF TransHeader.FIND('-') THEN BEGIN
+              ResetQtytoShip(TransHeader."No.",pContainerNo);
+              TmpTransDocNo := TransHeader."No.";
+              TransOrderPostShipment.RUN(TransHeader);
+              SetQtytoShip(TransHeader."No.",pContainerNo);
+            END ELSE BEGIN
+              IF pSilent = FALSE THEN
+                MESSAGE(GOBText005);
+            END;
+          END;
+        UNTIL TransLine.NEXT=0;
+      END;
+    END;
+
+    PROCEDURE ResetQtytoShip@1000000014(pDocNo@1000000001 : Code[20];pContainerNo@1000000000 : Code[20]);
+    VAR
+      TransLine@1000000002 : Record 5741;
+    BEGIN
+      TransLine.RESET;
+      TransLine.SETRANGE("Document No.",pDocNo);
+      TransLine.SETFILTER("Container No.",'<>%1',pContainerNo);
+      IF TransLine.FIND('-') THEN BEGIN
+        REPEAT
+          TransLine."Qty. to Ship tmp" := TransLine."Qty. to Ship";
+          TransLine.VALIDATE("Qty. to Ship",0);
+          TransLine.MODIFY;
+        UNTIL TransLine.NEXT=0;
+      END;
+    END;
+
+    PROCEDURE SetQtytoShip@1000000016(pDocNo@1000000001 : Code[20];pContainerNo@1000000000 : Code[20]);
+    VAR
+      TransLine@1000000002 : Record 5741;
+    BEGIN
+      TransLine.RESET;
+      TransLine.SETRANGE("Document No.",pDocNo);
+      TransLine.SETFILTER("Container No.",'<>%1','');
+      IF TransLine.FIND('-') THEN BEGIN
+        REPEAT
+          TransLine.VALIDATE("Qty. to Ship",TransLine."Qty. to Ship tmp");
+          TransLine.MODIFY;
+        UNTIL TransLine.NEXT=0;
+      END;
+    END;
+
+    PROCEDURE UpdateTransferHeader@1108200002(pTransferLine@1108200000 : Record 5741);
+    VAR
+      locTransferHeader@1108200001 : Record 5740;
+    BEGIN
+      IF (locTransferHeader.GET(pTransferLine."Document No.")) THEN BEGIN
+        locTransferHeader."Container No." := pTransferLine."Container No.";
+        locTransferHeader."Bill of Lading No." := pTransferLine."Bill of Lading No.";
+        locTransferHeader.MODIFY;
+      END;
+    END;
+
+    PROCEDURE UpdatePurchHeader@1000000005(OnlyFOB@1000000000 : Boolean;PurchaseFilter@1000000001 : Text[1024]);
+    VAR
+      PurchHeader@1119443000 : Record 38;
+      PurchLine@1119443001 : Record 39;
+    BEGIN
+      // Aktualisiert Feld "VerfÅgbarkeit" in Purchase Header in Bezug auf das Feld "AuftragsbestÑtigung"
+      PurchHeader.RESET;
+      PurchHeader.SETRANGE("Document Type",PurchHeader."Document Type"::Order);
+      PurchHeader.SETRANGE(Status, PurchHeader.Status::Released);
+      IF OnlyFOB THEN
+      IF PurchaseFilter <> '' THEN
+        PurchHeader.SETFILTER("No.",PurchaseFilter);
+      IF GUIALLOWED THEN
+        ProgressBar.WindowOpen(DialogText002,DialogText003,PurchHeader.COUNT);
+
+      IF PurchHeader.FIND('-') THEN
+        REPEAT
+          IF GUIALLOWED THEN
+            ProgressBar.WindowUpdate(PurchHeader."No.");
+
+          PurchLine.RESET;
+          PurchLine.SETCURRENTKEY(Type,"No.","Document Type","Document No.");
+          PurchLine.SETRANGE("Document Type", PurchLine."Document Type"::Order);
+          PurchLine.SETRANGE("Document No.",PurchHeader."No.");
+          PurchLine.SETRANGE(Type,PurchLine.Type::Item);
+          PurchLine.SETFILTER("No.", '<>%1', '');
+          PurchLine.SETFILTER("Outstanding Qty. (Base)",'>%1',0);
+          IF NOT PurchLine.FINDFIRST THEN
+          PurchHeader.MODIFY;
+        UNTIL PurchHeader.NEXT = 0;
+
+        IF GUIALLOWED THEN
+          ProgressBar.WindowClose;
+    END;
+
+    PROCEDURE CheckMainLocation@1108200000(LocationParameter@1108200000 : Record 14);
+    BEGIN
+      BEGIN
+        Location.SETRANGE("Main Location",TRUE);
+        IF Location.FINDFIRST THEN ERROR('%1',GOBText009);
+        Location.RESET;
+      END;
+    END;
+
+    PROCEDURE SaveXrecPurch@1108200015(PurchLineXrec@1108200000 : Record 39);
+    BEGIN
+      // Record wird vor jedem Modify bei Foreign Trage Transfer Orders gespeichert
+      SavePurchLineXrec := PurchLineXrec;
+    END;
+
+    PROCEDURE SaveXrecTransf@1108200003(TransferLineXrec@1108200000 : Record 5741);
+    BEGIN
+      // Record wird vor jedem Modify bei Foreign Trage Transfer Orders gespeichert
+      SaveTransferLineXrec := TransferLineXrec;
+    END;
+
+    PROCEDURE QtyShippedinPurchOrder@1000000000(ParPurchLine@1000000000 : Record 39);
+    BEGIN
+      //A/p0282
+      IF ParPurchLine."Quantity Received" <> 0 THEN
+        ERROR(GOBText010);
+      //E/p0282
+    END;
+
+    BEGIN
+    {
+      +-----------------------------------------------------+
+      |               GOB Software & Systeme                |
+      +-----------------------------------------------------+
+      |                FOB-Prozesse                       |
+      -------------------------------------------------------
+
+      Version       Comment
+      -------------------------------------------------------
+      FOB           Codeunit fÅr FOB relevante Funktionen
+      p0282  gob-mab  neue Funktion QtyShippedinPurchOrder, PrÅfung verÑndert auf Menge geliefert
+    }
+    END.
+  }
+}
+

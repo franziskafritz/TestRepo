@@ -1,0 +1,229 @@
+OBJECT Codeunit 50142 Create RET Invoice
+{
+  OBJECT-PROPERTIES
+  {
+    Date=14.08.15;
+    Time=12:28:20;
+    Modified=Yes;
+    Version List=H4515;
+  }
+  PROPERTIES
+  {
+    TableNo=36;
+    OnRun=BEGIN
+            IF "Document Type" = Rec."Document Type"::"Return Order" THEN BEGIN //move this condition to codeunit 80
+              SalesReceivablesSetup.GET;
+
+              SalesReturnOrderLine.SETRANGE("Document No.","No.");
+              SalesReturnOrderLine.SETRANGE("Document Type","Document Type");
+              SalesReturnOrderLine.SETRANGE(Type,SalesReturnOrderLine.Type::Item);
+
+              IF GetRETVendors() THEN BEGIN
+                REPEAT
+                  SalesReturnOrderLine.SETRANGE("Vendor No.",VendorTmp."No.");
+
+                  CustomerVendorLink.SETRANGE("Vendor No.",VendorTmp."No.");
+                  IF NOT CustomerVendorLink.FINDFIRST THEN
+                    ERROR(TextHME005,VendorTmp."No.");
+
+                  ReturnPercentage := GetReturnPercentage(VendorTmp."No.");
+
+                  IF NOT GetSalesHeader(CustomerVendorLink."Customer No.") THEN
+                    CreateSalesInvoice(Rec,SalesReturnOrderLine)
+                  ELSE BEGIN
+                    ChangeSalesInvoice(Rec,SalesReturnOrderLine);
+                  END;
+                UNTIL VendorTmp.NEXT = 0;
+                MESSAGE(TextHME001);
+              END;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      VendorTmp@1000000000 : TEMPORARY Record 23;
+      TextHME001@1000000001 : TextConst 'ENU=New Return Agreement Order(s) have been created.';
+      SalesReturnOrderLine@1000000002 : Record 37;
+      SalesReceivablesSetup@1000000003 : Record 311;
+      SalesHeader@1000000005 : Record 36;
+      SalesLine@1000000004 : Record 37;
+      CustomerVendorLink@1000000006 : Record 5157815;
+      ReturnPercentage@1000000007 : Decimal;
+      LastLineNo@1000000009 : Integer;
+      ID@1000000008 : Integer;
+      TextHME002@1000000010 : TextConst 'ENU=Sales Return Order No.: %1';
+      TextHME003@1000000011 : TextConst 'ENU=Return %1 for the Vendor %2 must be more than 0!';
+      TextHME004@1000000012 : TextConst 'ENU=%';
+      TextHME005@1000000013 : TextConst 'ENU=Connection beetween Vendor %1 and Customer does not exist!';
+
+    PROCEDURE CreateSalesInvoice@1000000009(SalesReturnOrderHeaderV@1000000004 : Record 36;VAR SalesReturnOrderLineR@1000000001 : Record 37);
+    BEGIN
+      SalesHeader.RESET;
+      SalesHeader.INIT;
+      SalesHeader."No." := '';
+      SalesHeader."Document Type" := SalesHeader."Document Type"::Order;
+      SalesHeader.VALIDATE("Posting Date",WORKDATE);
+      SalesHeader.VALIDATE("Sell-to Customer No.",CustomerVendorLink."Customer No.");
+      SalesHeader.VALIDATE("Return Agreement",TRUE);
+      SalesHeader."External Document No." := SalesReturnOrderHeaderV."No."; //must be channged
+      SalesHeader."Prices Including VAT" := SalesReturnOrderHeaderV."Prices Including VAT";
+      SalesHeader.INSERT(TRUE);
+
+      CreateSalesCommentLine(SalesHeader,SalesReturnOrderHeaderV."No.");
+
+      IF SalesReturnOrderLineR.FINDSET(FALSE,FALSE) THEN REPEAT
+        CreateSalesLine(SalesHeader,SalesReturnOrderLineR,FALSE,0);
+        CreateSalesLine(SalesHeader,SalesReturnOrderLineR,TRUE,ReturnPercentage);
+      UNTIL SalesReturnOrderLineR.NEXT = 0;
+    END;
+
+    PROCEDURE ChangeSalesInvoice@1000000032(SalesReturnOrderHeaderV@1000000000 : Record 36;VAR SalesReturnOrderLineR@1000000001 : Record 37);
+    BEGIN
+      CreateSalesCommentLine(SalesHeader,SalesReturnOrderHeaderV."No.");
+
+      SalesReturnOrderLineR.FINDSET(FALSE,FALSE);
+      REPEAT
+        CreateSalesLine(SalesHeader,SalesReturnOrderLineR,FALSE,0);
+        CreateSalesLine(SalesHeader,SalesReturnOrderLineR,TRUE,ReturnPercentage);
+      UNTIL SalesReturnOrderLineR.NEXT = 0;
+    END;
+
+    PROCEDURE CreateSalesLine@1000000000(SalesHeaderV@1000000005 : Record 36;SalesReturnOrderLineV@1000000001 : Record 37;IsChargeItemLineV@1000000000 : Boolean;ReturnPercentageV@1000000002 : Decimal);
+    BEGIN
+      SetLastIDAndLastLineNo(SalesHeaderV);
+
+      SalesLine.INIT;
+      SalesLine."Document Type" := SalesReturnOrderLineV."Document Type"::Order;
+      SalesLine."Document No." := SalesHeaderV."No.";
+      SalesLine."Line No." := LastLineNo + 10000;
+      SalesLine.VALIDATE("Sell-to Customer No.",CustomerVendorLink."Customer No.");
+
+      IF NOT IsChargeItemLineV THEN BEGIN
+        SalesLine.VALIDATE(Type,SalesReturnOrderLineV.Type);
+        SalesLine.VALIDATE("No.",SalesReturnOrderLineV."No.");
+        SalesLine.ID := ID + 1;
+        SalesLine.VALIDATE(Quantity,SalesReturnOrderLineV.Quantity);
+        SalesLine.VALIDATE("Unit Price",SalesReturnOrderLineV."Unit Price");
+        SalesLine.VALIDATE("Line Amount",SalesReturnOrderLineV."Line Amount");
+        SalesLine.VALIDATE("Purchasing Code",SalesReceivablesSetup."RET Purchasing Code");
+      END ELSE BEGIN
+        SalesLine.VALIDATE(Type,SalesLine.Type::"Charge (Item)");
+        SalesLine.VALIDATE("No.",SalesReceivablesSetup."RET Item Charge");
+        SalesLine.ID := ID + 1;
+        SalesLine.VALIDATE(Quantity,1);
+        SalesLine."Parent ID" := SalesLine.ID - 1;
+        SalesLine.VALIDATE("Unit Price",SalesReturnOrderLineV."Line Amount" * ReturnPercentageV / 100);
+        SalesLine.VALIDATE("Qty. to Ship",SalesLine.Quantity);
+      END;
+
+      SalesLine.INSERT;
+    END;
+
+    PROCEDURE CreateSalesCommentLine@1000000018(SalesHeaderV@1000000000 : Record 36;SalesReturnOrderNoV@1000000003 : Code[20]);
+    BEGIN
+      SetLastIDAndLastLineNo(SalesHeaderV);
+
+      SalesLine.INIT;
+      SalesLine."Document Type" := SalesLine."Document Type"::Order;
+      SalesLine."Document No." := SalesHeaderV."No.";
+      SalesLine."Line No." := LastLineNo + 10000;
+      SalesLine.VALIDATE("Sell-to Customer No.",CustomerVendorLink."Customer No.");
+      SalesLine.VALIDATE(Type,SalesLine.Type::" ");
+      SalesLine.ID := ID + 1;
+      SalesLine.Description := STRSUBSTNO(TextHME002,SalesReturnOrderNoV);
+      SalesLine.INSERT;
+    END;
+
+    PROCEDURE SetLastIDAndLastLineNo@1000000008(SalesHeaderV@1000000000 : Record 36);
+    BEGIN
+      SalesLine.SETRANGE("Document Type",SalesLine."Document Type"::Order);
+      SalesLine.SETRANGE("Document No.",SalesHeaderV."No.");
+
+      LastLineNo := 0;
+      ID := 0;
+
+      IF SalesLine.FINDLAST THEN BEGIN
+        LastLineNo := SalesLine."Line No.";
+        ID := SalesLine.ID;
+      END;
+    END;
+
+    LOCAL PROCEDURE GetRETVendors@1000000002() : Boolean;
+    VAR
+      VendorNoL@1000000000 : Code[20];
+    BEGIN
+      VendorTmp.DELETEALL;
+
+      IF SalesReturnOrderLine.FINDSET(FALSE,FALSE) THEN REPEAT
+        IF IsReturnToVendor(SalesReturnOrderLine."Vendor No.") THEN BEGIN
+            VendorTmp."No." := SalesReturnOrderLine."Vendor No.";
+            IF NOT VendorTmp.INSERT THEN;
+          END;
+      UNTIL SalesReturnOrderLine.NEXT = 0;
+
+      EXIT(VendorTmp.FINDSET(FALSE,FALSE));
+    END;
+
+    PROCEDURE GetSalesHeader@1000000001(CustomerNoV@1000000000 : Code[20]) : Boolean;
+    VAR
+      SalesHeaderL@1000000001 : Record 36;
+      SalesShipmentHeaderL@1000000002 : Record 110;
+    BEGIN
+      SalesHeader.RESET;
+      SalesHeader.SETRANGE("Return Agreement",TRUE);
+      SalesHeader.SETRANGE("Document Type",SalesHeaderL."Document Type"::Order);
+      SalesHeader.SETRANGE("Sell-to Customer No.",CustomerNoV);
+      SalesHeader.SETRANGE(Status,SalesHeaderL.Status::Open);
+
+      IF SalesHeader.FINDFIRST THEN BEGIN
+        SalesShipmentHeaderL.SETCURRENTKEY("Order No.");
+        SalesShipmentHeaderL.SETRANGE("Order No.",SalesHeader."No.");
+        IF NOT SalesShipmentHeaderL.FINDFIRST THEN
+          EXIT(TRUE);
+      END;
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE IsReturnToVendor@1000000003(VendorNoV@1000000000 : Code[20]) : Boolean;
+    VAR
+      ItemL@1000000003 : Record 27;
+      VendorL@1000000001 : Record 23;
+      IsReturnToVendor@1000000002 : Boolean;
+    BEGIN
+      VendorL.GET(VendorNoV);
+
+      IF (VendorL."Return Agreement Type" <> VendorL."Return Agreement Type"::" ") AND (VendorL."Return %" > 0) THEN
+        EXIT(TRUE)
+      ELSE
+        ERROR(TextHME003,TextHME004,VendorL."No.");
+    END;
+
+    PROCEDURE GetReturnPercentage@1000000020(VendorNoV@1000000000 : Code[20]) : Decimal;
+    VAR
+      VendorL@1000000001 : Record 23;
+    BEGIN
+      VendorL.GET(VendorNoV);
+      EXIT(VendorL."Return %");
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+
+      H4515       14.08.15 BGA       Created
+    }
+    END.
+  }
+}
+

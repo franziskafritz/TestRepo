@@ -1,0 +1,1140 @@
+OBJECT Codeunit 50031 Batch Autom. Process Day
+{
+  OBJECT-PROPERTIES
+  {
+    Date=23.02.15;
+    Time=11:27:12;
+    Modified=Yes;
+    Version List=#DN(1),GOB1.02,HME2159,T0062;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    Permissions=TableData 50043=rimd,
+                TableData 50044=rim;
+    OnRun=VAR
+            InvoiceCounter@1000000003 : Integer;
+            EmailCounter@1000000002 : Integer;
+            RunCode@1000000001 : Boolean;
+            FPCGenSetup@1000000000 : Record 50055;
+            LocOrdersToPost@1000000004 : Record 50096;
+          BEGIN
+
+            SalesSetup.GET;
+            CalcSalesInvDisc := SalesSetup."Calc. Inv. Discount";
+            PurchSetup.GET;
+            CalcPurchInvDisc := PurchSetup."Calc. Inv. Discount";
+
+            FPCGenSetup.GET;
+            FPCGenSetup.TESTFIELD("Sleep Batch Autom. Process Day");
+            FPCGenSetup.TESTFIELD("No. of Processes Day");
+
+            IF FPCGenSetup."BatchPost incl. Sales Post" THEN BEGIN
+              //H1475,P1217 12.09.14 ARI ++++++++++++++++++++++++++++++++++
+              BatchPostDoc.SETFILTER("Action Type",'%1|%2|%3|%4|%5|%6|%7|%8|%9|%10',
+              //H1475,P1217 12.09.14 ARI ----------------------------------
+                PostedBatchPostDoc."Action Type"::"Purch. EMail",
+                PostedBatchPostDoc."Action Type"::"Create Purch. Order",
+                PostedBatchPostDoc."Action Type"::"Exp. MW",
+                BatchPostDoc."Action Type" :: "Sales Post",BatchPostDoc."Action Type"::"Sales EMail",
+                BatchPostDoc."Action Type"::WhseReturnConfirmation,BatchPostDoc."Action Type"::RefundConfirmation,
+                //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+                BatchPostDoc."Action Type"::POCancInquiryMail,
+                //H0609 14.10.13 HCN -----------------------------
+                //A/P0892/ + |%8
+                BatchPostDoc."Action Type" :: "Create Int. Purch. Order",
+                //E/P0892/
+                //H1475 12.09.14 ARI ++++++++++++++++++++++++++++++++++
+                BatchPostDoc."Action Type" ::"Send Payment Advise");
+                //H1475 12.09.14 ARI ----------------------------------
+            END ELSE BEGIN
+              //H1475,P1217 12.09.14 ARI ++++++++++++++++++++++++++++++++++
+              BatchPostDoc.SETFILTER("Action Type",'%1|%2|%3|%4|%5|%6|%7|%8|%9',
+              //H1475,P1217 12.09.14 ARI ----------------------------------
+                PostedBatchPostDoc."Action Type"::"Purch. EMail",
+                PostedBatchPostDoc."Action Type"::"Create Purch. Order",
+                PostedBatchPostDoc."Action Type"::"Exp. MW",
+                BatchPostDoc."Action Type"::"Sales EMail",
+                BatchPostDoc."Action Type"::WhseReturnConfirmation,BatchPostDoc."Action Type"::RefundConfirmation,
+                //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+                BatchPostDoc."Action Type"::POCancInquiryMail,
+                //H0609 14.10.13 HCN -----------------------------
+                //A/P0892/ + |%7
+                BatchPostDoc."Action Type" :: "Create Int. Purch. Order",
+                //E/P0892/
+                //H1475 12.09.14 ARI ++++++++++++++++++++++++++++++++++
+                BatchPostDoc."Action Type" ::"Send Payment Advise");
+                //H1475 12.09.14 ARI ----------------------------------
+
+            END;
+
+            BatchPostDoc.SETRANGE(BatchPostDoc."No. of Tries",0,2);
+
+            InvoiceCounter := 0;
+            EmailCounter := 0;
+            CrMemoCounter := 0;
+            RunCode := TRUE;
+
+            IF NOT BatchPostDoc.ISEMPTY THEN BEGIN
+              BatchPostDoc.FIND('-');
+              REPEAT
+                RunCode := TRUE;
+
+                IF NOT FPCGenSetup."Post All Inv. Email BatchPost" THEN BEGIN
+                  IF BatchPostDoc."Action Type" = BatchPostDoc."Action Type" :: "Sales Post" THEN
+                    InvoiceCounter := InvoiceCounter + 1;
+                  IF (BatchPostDoc."Action Type" = BatchPostDoc."Action Type" :: "Sales EMail") AND
+                    (BatchPostDoc."Document Type" = BatchPostDoc."Document Type" :: Invoice) THEN
+                    EmailCounter := EmailCounter + 1;
+                END;
+                IF (BatchPostDoc."Action Type" = BatchPostDoc."Action Type" :: "Sales EMail") AND
+                  (BatchPostDoc."Document Type" = BatchPostDoc."Document Type" :: "Credit Memo") THEN
+                  CrMemoCounter := CrMemoCounter + 1;
+
+                IF (BatchPostDoc."Action Type" = BatchPostDoc."Action Type" :: "Sales Post")
+                    AND (InvoiceCounter > FPCGenSetup."No. of Processes Day") THEN
+                  RunCode := FALSE;
+                IF (BatchPostDoc."Action Type" = BatchPostDoc."Action Type" :: "Sales EMail") AND
+                  (BatchPostDoc."Document Type" = BatchPostDoc."Document Type" :: Invoice)
+                    AND (EmailCounter > FPCGenSetup."No. of Processes Day") THEN
+                  RunCode := FALSE;
+                IF (BatchPostDoc."Action Type" = BatchPostDoc."Action Type" :: "Sales EMail") AND
+                    (BatchPostDoc."Document Type" = BatchPostDoc."Document Type" :: Invoice) AND
+                    (FPCGenSetup."Dont Send Inv. Mails via Batch") THEN
+                  RunCode := FALSE;
+                IF (BatchPostDoc."Action Type" = BatchPostDoc."Action Type" :: "Sales EMail") AND
+                  (BatchPostDoc."Document Type" = BatchPostDoc."Document Type" :: "Credit Memo")
+                    AND (CrMemoCounter > FPCGenSetup."No. of Cr. Memo Mails") THEN
+                  RunCode := FALSE;
+
+                //H0740 28.11.13 HCN +++++++++++++++++++++++++++++
+                {
+                //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+                IF (BatchPostDoc."Action Type" = BatchPostDoc."Action Type" ::POCancInquiryMail) AND
+                   FPCGenSetup."Enable POCancInquiryMails"
+                THEN BEGIN
+                  EmailCounter += 1;
+                END;
+                IF (BatchPostDoc."Action Type" = BatchPostDoc."Action Type" ::POCancInquiryMail) AND
+                   (NOT FPCGenSetup."Enable POCancInquiryMails" OR
+                    (EmailCounter > FPCGenSetup."No. of Processes Day"))
+                THEN BEGIN
+                  RunCode := FALSE;
+                END;
+                //H0609 14.10.13 HCN -----------------------------
+                }
+                //H0740 28.11.13 HCN -----------------------------
+
+                //H1475 12.09.14 ARI ++++++++++++++++++++++++++++++++
+                IF (BatchPostDoc."Action Type" = BatchPostDoc."Action Type" ::"Send Payment Advise") AND
+                   FPCGenSetup."Enable Payment Advise Mail"
+                THEN BEGIN
+                  EmailCounter += 1;
+                END;
+                //H1475 12.09.14 ARI --------------------------------
+                IF RunCode THEN BEGIN
+                  Code;
+                  COMMIT;
+                  SLEEP(FPCGenSetup."Sleep Batch Autom. Process Day");
+                END;
+              UNTIL BatchPostDoc.NEXT = 0;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      SalesSetup@1000000018 : Record 311;
+      PurchSetup@1000000014 : Record 312;
+      BatchPostDoc@1000000024 : Record 50043;
+      PostedBatchPostDoc@1000000015 : Record 50044;
+      PostedBatchPostDoc2@1000000023 : Record 50044;
+      SalesHeader@1000000011 : Record 36;
+      SalesLine@1000000010 : Record 37;
+      PurchHeader@1000000022 : Record 38;
+      GeneralMgt2@1000000017 : Codeunit 50040;
+      BatchAutomInvProc@1000000019 : Codeunit 50032;
+      SalesCalcDisc@1000000028 : Codeunit 60;
+      PurchCalcDisc@1000000027 : Codeunit 70;
+      SalesPost@1000000026 : Codeunit 80;
+      PurchPost@1000000025 : Codeunit 90;
+      AutomEMailProc@1000000029 : Codeunit 50030;
+      CreatePurchOrder@1000000030 : Codeunit 50041;
+      CalcSalesInvDisc@1000000021 : Boolean;
+      CalcPurchInvDisc@1000000020 : Boolean;
+      ValueSet@1000000013 : Text[1024];
+      Text004@1000000034 : TextConst 'DEU=Beleg gebucht.;ENU=Document Posted.';
+      Text004a@1000000003 : TextConst 'DEU=Beleg versendet.;ENU=Document send.';
+      Text005@1000000033 : TextConst 'DEU=Verschieben eines erledigten Auftrags.;ENU=Move completed Job.';
+      ErrText001@1000000032 : TextConst 'DEU=Beleg nicht gefunden.;ENU=Document not found.';
+      ErrText002@1000000004 : TextConst 'DEU=Vor Buchungsfunktion.;ENU=Before Document-Post.';
+      ErrText002a@1000000012 : TextConst 'DEU=Vor Versendungsfunktion.;ENU=Before Document-Send.';
+      ErrText004@1000000002 : TextConst 'DEU=Beleg bereits verarbeitet.;ENU=Already processed.';
+      ErrText005@1000000001 : TextConst 'DEU=Wiederholter Buchungsfehler.;ENU=Reoccurring Posting Error.';
+      "-------------"@1000000005 : Integer;
+      SalesInvHeader@1000000009 : Record 112;
+      SalesCrMemoHeader@1000000008 : Record 114;
+      PurchInvHeader@1000000007 : Record 122;
+      PurchCrMemoHeader@1000000006 : Record 124;
+      ErrText005a@1000000000 : TextConst 'DEU=Wiederholter Versendungsfehler.;ENU=Reoccurring Sending Error.';
+      ErrText006@1000000016 : TextConst 'DEU=Teillieferung.;ENU=Partial Shipment.';
+      ErrText007@1000000031 : TextConst 'DEU=Mag. RG Buchungsnr. leer';
+      OrderImpLog@1000000035 : Record 50001;
+      ErrText008@1000000036 : TextConst 'DEU=nicht durch GOB geliefert';
+      ErrText009@1000000037 : TextConst 'DEU=Groupon';
+      errtext010@1000000038 : TextConst 'DEU=ADvor 25.05.12 hist. nicht erl.;ENU=ADvor 25.05.12 hist. nicht erl.';
+      Errtext011@1000000039 : TextConst 'DEU=Bereits versendet / Marked /NL/FR;ENU=<Bereits versendet / Marked>';
+      GlobalCalledByMC@1000000040 : Boolean;
+      errtext010a@1000000041 : TextConst 'DEU=ADvor 25.05.12 hist. erl. nicht TAB;ENU=ADvor 25.05.12 hist. erl. nicht TAB';
+      "*HME**************************"@1000000042 : Integer;
+      AutomEMailProc2@1000000043 : Codeunit 50094;
+      CrMemoCounter@1000000044 : Integer;
+      P0740_Text01@1000000045 : TextConst 'DEU=Rabattgutschein darf nicht gebucht werden.';
+
+    PROCEDURE Code@1000000002();
+    VAR
+      L_MP@1000000003 : Boolean;
+      L_NotMP@1000000002 : Boolean;
+      L_AllShipped@1000000001 : Boolean;
+      MiddlewareURL@1000000000 : Codeunit 50035;
+      SalesInvHeader@1108200000 : Record 112;
+      LocSalesSetup@1000000004 : Record 311;
+      LocInvSent@1000000005 : Record 80020;
+      LocSalesLineRes@1000000009 : Record 37;
+      Resource_Rec@1000000008 : Record 156;
+      first2letters@1000000007 : Code[2];
+      first3letters@1000000006 : Code[3];
+      LocOrderstoPost@1000000010 : Record 50096;
+      FPCGenSetup@1000000011 : Record 50055;
+      InterfaceProcessMgt@1000000012 : Codeunit 50087;
+      "***P0740 local***"@1000000013 : Integer;
+      lVoucher@1000000014 : Codeunit 50101;
+      FPCGeneralSetup@1000000015 : Record 50055;
+      PaymentProposalHeadL@1000000016 : Record 5157896;
+    BEGIN
+      FPCGenSetup.GET;
+
+      IF BatchPostDoc.Status = BatchPostDoc.Status::open THEN BEGIN
+        IF BatchPostDoc."No. of Tries" <= 2 THEN BEGIN
+          BatchPostDoc."Processed at" := CURRENTDATETIME;
+          BatchPostDoc."No. of Tries" += 1;
+          // xxx
+          //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+          IF BatchPostDoc."Action Type" IN [2,3,11] THEN
+          {
+          IF BatchPostDoc."Action Type" IN [2,3] THEN
+          }
+          //H0609 14.10.13 HCN -----------------------------
+            BatchPostDoc.Comment := ErrText002a
+          ELSE
+            BatchPostDoc.Comment := ErrText002;
+          BatchPostDoc.MODIFY;
+          COMMIT;
+          CASE BatchPostDoc."Action Type" OF
+            // Post Sales Invoice
+            BatchPostDoc."Action Type"::"Sales Post":
+              BEGIN
+                IF SalesHeader.GET(BatchPostDoc."Document Type",BatchPostDoc."Document No.") THEN BEGIN
+                  L_AllShipped := TRUE;
+                  L_MP := FALSE;
+                  L_NotMP := FALSE;
+                  SalesLine.RESET;
+                  SalesLine.SETRANGE("Document Type",SalesHeader."Document Type");
+                  SalesLine.SETRANGE("Document No.",SalesHeader."No.");
+                  SalesLine.SETFILTER(Quantity,'<>0');
+                  IF SalesLine.FINDSET THEN
+                    REPEAT
+                      IF SalesLine.Type = SalesLine.Type::Item THEN BEGIN
+                        IF SalesLine."Qty. Shipped Not Invoiced" <> 0 THEN BEGIN
+                          IF GeneralMgt2.CheckMP(SalesLine."No.",SalesLine."Vendor No.") = 2 THEN
+                            L_MP := TRUE
+                          ELSE
+                            L_NotMP := TRUE;
+                        END;
+                        //A/gob-mab/13.07.12/gob1.01/Teilfaktura Frankreich
+                        //IF SalesLine.Quantity > SalesLine."Quantity Shipped" THEN
+                        IF (SalesLine.Quantity > SalesLine."Quantity Shipped") AND
+                        (SalesHeader."Sell-to Country/Region Code" <> 'FR') THEN
+                        //E/gob-mab/13.07.12/gob1.01
+
+                          L_AllShipped := FALSE;
+                      END ELSE
+                        L_NotMP := TRUE;
+                    UNTIL (NOT L_AllShipped) OR (SalesLine.NEXT = 0);
+
+                  IF L_AllShipped THEN BEGIN
+                    //A/gob-mab/18.07.12/gob1.02/Nr. Serie fÅr Rechnung setzen
+                    LocSalesSetup.GET;
+                    //A/p0377/
+                    IF SalesHeader."Order Date" <= 250512D THEN BEGIN
+                      //A/p0456
+                      //Keine hist. Buchung = Fehler
+                      IF (FPCGenSetup."Post hist. Orders" = FALSE) THEN BEGIN
+                        BatchPostDoc.Comment := errtext010;
+                        BatchPostDoc."No. of Tries" := 3;
+                        BatchPostDoc.MODIFY;
+                        EXIT;
+                      END;
+                      //Hist. Buchung erlaubt, aber nicht in Orders to post = Fehler
+                      //S/p0533
+                      //IF (FPCGenSetup."Post hist. Orders" = TRUE) AND (NOT LocOrderstoPost.GET(SalesHeader."No.")) THEN BEGIN
+                      //  BatchPostDoc.Comment := errtext010a;
+                      //  BatchPostDoc."No. of Tries" := 3;
+                      //  BatchPostDoc.MODIFY;
+                      //  EXIT;
+                      //END;
+                      //E/p0456
+
+                    //E/p0377/
+                    END;
+                    //A/p0377/08.10.12
+                    //S/P0757/23.01.13
+                    //IF (SalesHeader."VAT Country/Region Code" = 'FR') AND (SalesHeader."VAT Bus. Posting Group" = 'FR')
+                    //  AND (SalesHeader."Order Date" <= 190612D) THEN BEGIN
+                    //  BatchPostDoc.Comment := 'VAT / FR';
+                    //  BatchPostDoc."No. of Tries" := 3;
+                    //  BatchPostDoc.MODIFY;
+                    //  EXIT;
+                    //END;
+                    //E/P0757/23.01.13
+
+                    //E/p0377/08.10.12
+
+                    // S/P0740
+                    IF FPCGenSetup."Not Post Voucher" THEN BEGIN
+                      IF lVoucher.FindVoucher(SalesHeader,SalesLine) THEN BEGIN
+                        BatchPostDoc.Comment := P0740_Text01;
+                        BatchPostDoc."No. of Tries" := 3;
+                        BatchPostDoc.MODIFY;
+                        EXIT;
+                      END;
+                    END;
+                    // E/P0740
+
+                    IF LocSalesSetup."Posted Invoice Magento Nos." = '' THEN BEGIN
+                      BatchPostDoc.Comment := ErrText007;
+                      BatchPostDoc."No. of Tries" := 3;
+                      BatchPostDoc.MODIFY;
+                      //InsertPostedBatchDoc(BatchPostDoc.Status::canceled,ErrText007);
+                      //BatchPostDoc.DELETE;
+                      EXIT;
+                    END ELSE BEGIN
+                      //S/p0537
+                      IF SalesHeader.Kommissionierung = FALSE THEN BEGIN
+                        SalesHeader."Ignore Komm. Control" := TRUE;
+                        SalesHeader."Cancel Without Interfaces" := TRUE;
+                        //SalesHeader.MODIFY;
+                      END;
+                      //E/p0537
+
+                      SalesHeader."Posting No. Series" := LocSalesSetup."Posted Invoice Magento Nos.";
+                      SalesHeader.MODIFY;
+                      COMMIT;
+                    END;
+                    //A/p0173/nicht durch gob gelieferte dÅrfen jetzt gebucht werden
+                    {*** p0173
+                    OrderImpLog.RESET;
+                    OrderImpLog.SETRANGE("Order No.",SalesHeader."No.");
+                    OrderImpLog.SETRANGE("Shipping Status",'SHIPPED');
+                    IF OrderImpLog.ISEMPTY THEN BEGIN
+                      BatchPostDoc.Comment := ErrText008;
+                      BatchPostDoc."No. of Tries" := 3;
+                      BatchPostDoc.MODIFY;
+                      //InsertPostedBatchDoc(BatchPostDoc.Status::canceled,ErrText008);
+                      //BatchPostDoc.DELETE;
+                      EXIT;
+                    END;
+                    ***** p0173}
+                    //E/p0173
+                    //S/p0533
+                    //S/P0765
+                    //IF COPYSTR(SalesHeader."No.",1,2) = '22' THEN BEGIN
+                    //  BatchPostDoc.Comment := 'Order No. 22';
+                    //  BatchPostDoc."No. of Tries" := 3;
+                    //  BatchPostDoc.MODIFY;
+                    //  EXIT;
+                    //END;
+                    //E/P0765
+
+                    //E/p0533
+                    //A/p0224/23.08.12 /groupon PrÅfung fÅr NAV Kommissionierte AuftrÑge
+                    LocSalesLineRes.RESET;
+                    LocSalesLineRes.SETRANGE("Document Type",LocSalesLineRes."Document Type" :: Order);
+                    LocSalesLineRes.SETRANGE("Document No.",SalesHeader."No.");
+                    LocSalesLineRes.SETRANGE(Type,LocSalesLineRes.Type :: Resource);
+                    IF LocSalesLineRes.FIND('-') THEN BEGIN
+                      REPEAT
+                        //A/p0521
+                        //Resource_Rec.GET(LocSalesLineRes."No.");
+                        IF Resource_Rec.GET(LocSalesLineRes."No.") THEN BEGIN
+                        //E/p0521
+                          //S/P0778
+
+                          //first2letters := COPYSTR(Resource_Rec."No.",1,2);
+                          //S/P0764
+                          //IF (first2letters = 'GR') OR (first2letters = 'GG') THEN BEGIN
+                          //E/P0764
+                          //IF (first2letters = 'GR') THEN BEGIN
+                            //BatchPostDoc.Comment := ErrText009 + ' NAV';
+                            //BatchPostDoc."No. of Tries" := 3;
+                            //BatchPostDoc.MODIFY;
+                            //EXIT;
+                          //END;
+
+                          //E/P0778
+
+                          //S/P0764/PrÅfung nicht mehr aktuell...
+                          //first3letters := COPYSTR(Resource_Rec."No.",1,3);
+                          //IF (first3letters = 'RES') THEN BEGIN
+                            //BatchPostDoc.Comment := ErrText009 + ' NAV';
+                            //BatchPostDoc."No. of Tries" := 3;
+                            //BatchPostDoc.MODIFY;
+                            //EXIT;
+                          //END;
+
+                          //P0764/dafÅr neue PrÅfung ...
+                          IF (Resource_Rec.Type = Resource_Rec.Type :: Groupon) OR
+                             (Resource_Rec."Gen. Prod. Posting Group" = 'GROUPON') THEN BEGIN
+                            BatchPostDoc.Comment := ErrText009 + ' NAV';
+                            BatchPostDoc."No. of Tries" := 3;
+                            BatchPostDoc.MODIFY;
+                            EXIT;
+                          END;
+
+                          //E/P0764
+
+                        //A/p0521
+                        END;
+                        //E/p0521
+                      UNTIL LocSalesLineRes.NEXT = 0;
+                    END;
+                    //E/p0224/23.08.12
+                    COMMIT;
+                    //E/gob-mab/18.07.12/gob1.02
+                    BatchPostDoc.Comment := '';
+                    BatchPostDoc."Comment 2" := '';
+                    BatchPostDoc."Comment 3" := '';
+                    BatchPostDoc."Comment 4" := '';
+                    IF L_MP AND (NOT L_NotMP) THEN
+                      SalesHeader."Last Marketplace" := SalesHeader."Last Marketplace"::MP2
+                    ELSE
+                      SalesHeader."Last Marketplace" := SalesHeader."Last Marketplace"::"-";
+                    CLEARLASTERROR;
+                    CLEAR(BatchAutomInvProc);
+                    IF BatchAutomInvProc.RUN(SalesHeader) THEN BEGIN
+                      IF SalesHeader."Last Posting No." = '' THEN
+                        BatchPostDoc."Posted Document No." := SalesHeader."No."
+                      ELSE
+                        BatchPostDoc."Posted Document No." := SalesHeader."Last Posting No.";
+                      //A/p0377/09.10.12/
+                      IF LocOrderstoPost.GET(SalesHeader."No.") THEN BEGIN
+                        LocOrderstoPost."RG Nr." := BatchPostDoc."Posted Document No.";
+                        LocOrderstoPost.MODIFY;
+                      END;
+                      //E/p0377/09.10.12/
+                      InsertPostedBatchDoc(BatchPostDoc.Status::posted,'');
+                      //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+                      BatchPostDoc.DELETE(TRUE);
+                      {
+                      BatchPostDoc.DELETE;
+                      }
+                      //H0609 14.10.13 HCN -----------------------------
+
+                    END ELSE BEGIN
+                      BatchPostDoc.Comment := COPYSTR(GETLASTERRORTEXT,1,250);
+                      BatchPostDoc."Comment 2" := COPYSTR(GETLASTERRORTEXT,251,250);
+                      BatchPostDoc."Comment 3" := COPYSTR(GETLASTERRORTEXT,501,250);
+                      BatchPostDoc.MODIFY;
+                    END;
+                  END ELSE BEGIN
+                    // partial shipment
+                    //A/gob-mab/21.06.12/gob001
+                    IF SalesHeader."Sell-to Country/Region Code" <> 'FR' THEN BEGIN
+                    //E/gob-mab/21.06.12/gob001
+                    InsertPostedBatchDoc(BatchPostDoc.Status::canceled,ErrText006);
+                    //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+                    BatchPostDoc.DELETE(TRUE);
+                    {
+                    BatchPostDoc.DELETE;
+                    }
+                    //H0609 14.10.13 HCN -----------------------------
+                    //A/gob-mab/21.06.12/gob001
+                    END;
+                    //E/gob-mab/21.06.12/gob001
+
+                  END;
+                END ELSE BEGIN
+                  // Document not found
+                  InsertPostedBatchDoc(BatchPostDoc.Status::canceled,ErrText001);
+                  //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+                  BatchPostDoc.DELETE(TRUE);
+                  {
+                  BatchPostDoc.DELETE;
+                  }
+                  //H0609 14.10.13 HCN -----------------------------
+                END;
+              END;
+            // send order mail
+            BatchPostDoc."Action Type"::"Purch. EMail":
+              BEGIN
+                //A/p0474
+                //IF PurchHeader.GET(BatchPostDoc."Document Type",BatchPostDoc."Document No.") THEN BEGIN
+                IF PurchHeader.GET(PurchHeader."Document Type" :: Order,BatchPostDoc."Document No.") THEN BEGIN
+                //E/p0474
+
+                  CLEAR(AutomEMailProc);
+                  AutomEMailProc.SetParameters;
+                  IF AutomEMailProc.RUN(BatchPostDoc) THEN BEGIN
+                    InsertPostedBatchDoc(BatchPostDoc.Status::posted,'');
+                    //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+                    BatchPostDoc.DELETE(TRUE);
+                    {
+                    BatchPostDoc.DELETE;
+                    }
+                    //H0609 14.10.13 HCN -----------------------------
+                  END ELSE BEGIN
+                    BatchPostDoc.Comment := COPYSTR(GETLASTERRORTEXT,1,250);
+                    BatchPostDoc."Comment 2" := COPYSTR(GETLASTERRORTEXT,251,250);
+                    BatchPostDoc."Comment 3" := COPYSTR(GETLASTERRORTEXT,501,250);
+                    BatchPostDoc.MODIFY;
+                  END;
+                END ELSE BEGIN
+                  // Document not found
+                  InsertPostedBatchDoc(BatchPostDoc.Status::canceled,ErrText001);
+                  //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+                  BatchPostDoc.DELETE(TRUE);
+                  {
+                  BatchPostDoc.DELETE;
+                  }
+                  //H0609 14.10.13 HCN -----------------------------
+                END;
+              END;
+            // send invoice mail
+            BatchPostDoc."Action Type"::"Sales EMail":
+              BEGIN
+                //A/P0011
+                //A/P0131
+                {***********
+                IF BatchPostDoc."Document Type" <> BatchPostDoc."Document Type"::"Return Order" THEN BEGIN
+                //A/gob.rste
+                //IF SalesHeader.GET(BatchPostDoc."Document Type",BatchPostDoc."Document No.") THEN BEGIN
+                IF SalesInvHeader.GET(BatchPostDoc."Document No.") THEN BEGIN
+                //E/gob-rste
+                  CLEAR(AutomEMailProc);
+                  AutomEMailProc.SetParameters;
+                  IF AutomEMailProc.RUN(BatchPostDoc) THEN BEGIN
+                    InsertPostedBatchDoc(BatchPostDoc.Status::posted,'');
+                    //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+                    BatchPostDoc.DELETE(true);
+                    {
+                    BatchPostDoc.DELETE;
+                    }
+                    //H0609 14.10.13 HCN -----------------------------
+                  END ELSE BEGIN
+                    BatchPostDoc.Comment := COPYSTR(GETLASTERRORTEXT,1,250);
+                    BatchPostDoc."Comment 2" := COPYSTR(GETLASTERRORTEXT,251,250);
+                    BatchPostDoc."Comment 3" := COPYSTR(GETLASTERRORTEXT,501,250);
+                    BatchPostDoc.MODIFY;
+                  END;
+                END ELSE BEGIN
+                  // Document not found
+                  InsertPostedBatchDoc(BatchPostDoc.Status::canceled,ErrText001);
+                  //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+                  BatchPostDoc.DELETE(true);
+                  {
+                  BatchPostDoc.DELETE;
+                  }
+                  //H0609 14.10.13 HCN -----------------------------
+                  END;
+                END ELSE BEGIN
+                ***********}
+                //E/P0131
+                IF BatchPostDoc."Document Type" = BatchPostDoc."Document Type"::"Return Order" THEN BEGIN
+                  IF SalesHeader.GET(BatchPostDoc."Document Type",BatchPostDoc."Document No.") THEN BEGIN
+                    CLEAR(AutomEMailProc);
+                    AutomEMailProc.SetParameters;
+                    IF AutomEMailProc.RUN(BatchPostDoc) THEN BEGIN
+                      InsertPostedBatchDoc(BatchPostDoc.Status::posted,'');
+                      //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+                      BatchPostDoc.DELETE(TRUE);
+                      {
+                      BatchPostDoc.DELETE;
+                      }
+                      //H0609 14.10.13 HCN -----------------------------
+                    END ELSE BEGIN
+                      BatchPostDoc.Comment := COPYSTR(GETLASTERRORTEXT,1,250);
+                      BatchPostDoc."Comment 2" := COPYSTR(GETLASTERRORTEXT,251,250);
+                      BatchPostDoc."Comment 3" := COPYSTR(GETLASTERRORTEXT,501,250);
+                      BatchPostDoc.MODIFY;
+                    END;
+                  END ELSE BEGIN
+                    // Document not found
+                    InsertPostedBatchDoc(BatchPostDoc.Status::canceled,ErrText001);
+                    //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+                    BatchPostDoc.DELETE(TRUE);
+                    {
+                    BatchPostDoc.DELETE;
+                    }
+                    //H0609 14.10.13 HCN -----------------------------
+                  END;
+                END;
+                //E/P0131
+                //E/P0011
+
+                //A/P0600
+                IF BatchPostDoc."Document Type" = BatchPostDoc."Document Type"::Order THEN BEGIN
+                  IF SalesHeader.GET(BatchPostDoc."Document Type",BatchPostDoc."Document No.") THEN BEGIN
+                    CLEAR(AutomEMailProc);
+                    AutomEMailProc.SetParameters;
+                    IF AutomEMailProc.RUN(BatchPostDoc) THEN BEGIN
+                      InsertPostedBatchDoc(BatchPostDoc.Status::posted,'');
+                      //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+                      BatchPostDoc.DELETE(TRUE);
+                      {
+                      BatchPostDoc.DELETE;
+                      }
+                      //H0609 14.10.13 HCN -----------------------------
+                    END ELSE BEGIN
+                      BatchPostDoc.Comment := COPYSTR(GETLASTERRORTEXT,1,250);
+                      BatchPostDoc."Comment 2" := COPYSTR(GETLASTERRORTEXT,251,250);
+                      BatchPostDoc."Comment 3" := COPYSTR(GETLASTERRORTEXT,501,250);
+                      BatchPostDoc.MODIFY;
+                    END;
+                  END ELSE BEGIN
+                    // Document not found
+                    InsertPostedBatchDoc(BatchPostDoc.Status::canceled,ErrText001);
+                    //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+                    BatchPostDoc.DELETE(TRUE);
+                    {
+                    BatchPostDoc.DELETE;
+                    }
+                    //H0609 14.10.13 HCN -----------------------------
+                  END;
+                END;
+                //E/P0600
+
+                //A/P0173
+                IF BatchPostDoc."Document Type" = BatchPostDoc."Document Type" :: Invoice THEN BEGIN
+                  IF SalesInvHeader.GET(BatchPostDoc."Document No.") THEN BEGIN
+                    //keine bereits versendeten verschicken oder als nicht zu versendende gekennzeichnete
+                    IF NOT LocInvSent.GET(SalesInvHeader."Order No.") AND NOT SalesInvHeader."Dont Send EMail"
+                    //A/p0253 / p0368
+                    //AND (COPYSTR(SalesInvHeader."External Document No.",1,3) <> '102')
+                    //AND (COPYSTR(SalesInvHeader."External Document No.",1,3) <> '103')
+                    //E/p0253 /p0368
+                    THEN BEGIN
+                      CLEAR(AutomEMailProc);
+                      AutomEMailProc.SetParameters;
+                      IF AutomEMailProc.RUN(BatchPostDoc) THEN BEGIN
+                        InsertPostedBatchDoc(BatchPostDoc.Status::posted,'');
+                        //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+                        BatchPostDoc.DELETE(TRUE);
+                        {
+                        BatchPostDoc.DELETE;
+                        }
+                        //H0609 14.10.13 HCN -----------------------------
+                      END ELSE BEGIN
+                        BatchPostDoc.Comment := COPYSTR(GETLASTERRORTEXT,1,250);
+                        BatchPostDoc."Comment 2" := COPYSTR(GETLASTERRORTEXT,251,250);
+                        BatchPostDoc."Comment 3" := COPYSTR(GETLASTERRORTEXT,501,250);
+                        BatchPostDoc.MODIFY;
+                      END;
+                    END ELSE BEGIN
+                      // bereits versendet/not allowed
+                      InsertPostedBatchDoc(BatchPostDoc.Status::canceled,Errtext011);
+                      //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+                      BatchPostDoc.DELETE(TRUE);
+                      {
+                      BatchPostDoc.DELETE;
+                      }
+                      //H0609 14.10.13 HCN -----------------------------
+                    END;
+
+                  END ELSE BEGIN
+                    // SalesInvHeader not found
+                    InsertPostedBatchDoc(BatchPostDoc.Status::canceled,ErrText001);
+                    //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+                    BatchPostDoc.DELETE(TRUE);
+                    {
+                    BatchPostDoc.DELETE;
+                    }
+                    //H0609 14.10.13 HCN -----------------------------
+                  END;
+                END;
+                //E/P0173
+                //A/P0677
+                IF BatchPostDoc."Document Type" = BatchPostDoc."Document Type" :: "Credit Memo" THEN BEGIN
+                  IF SalesCrMemoHeader.GET(BatchPostDoc."Document No.") THEN BEGIN
+                    CLEAR(AutomEMailProc);
+                    AutomEMailProc.SetParameters;
+                    IF AutomEMailProc.RUN(BatchPostDoc) THEN BEGIN
+                      InsertPostedBatchDoc(BatchPostDoc.Status::posted,'');
+                      //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+                      BatchPostDoc.DELETE(TRUE);
+                      {
+                      BatchPostDoc.DELETE;
+                      }
+                      //H0609 14.10.13 HCN -----------------------------
+                    END ELSE BEGIN
+                      BatchPostDoc.Comment := COPYSTR(GETLASTERRORTEXT,1,250);
+                      BatchPostDoc."Comment 2" := COPYSTR(GETLASTERRORTEXT,251,250);
+                      BatchPostDoc."Comment 3" := COPYSTR(GETLASTERRORTEXT,501,250);
+                      BatchPostDoc.MODIFY;
+                    END;
+                  END ELSE BEGIN
+                    // SalesCreditMemo not found
+                    InsertPostedBatchDoc(BatchPostDoc.Status::canceled,ErrText001);
+                    //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+                    BatchPostDoc.DELETE(TRUE);
+                    {
+                    BatchPostDoc.DELETE;
+                    }
+                    //H0609 14.10.13 HCN -----------------------------
+                  END;
+                END;
+                //E/P0677
+
+              END;
+            // create purchase orders
+            BatchPostDoc."Action Type"::"Create Purch. Order":
+              BEGIN
+                IF SalesHeader.GET(BatchPostDoc."Document Type",BatchPostDoc."Document No.") THEN BEGIN
+                  //S/P0966
+                  CreatePurchOrder.SetLineNoFilter(BatchPostDoc."Sales Line Filter" +
+                    BatchPostDoc."Sales Line Filter 2" +
+                    BatchPostDoc."Sales Line Filter 3" +
+                    BatchPostDoc."Sales Line Filter 4");
+                  //E/P0966
+                  IF CreatePurchOrder.RUN(SalesHeader) THEN BEGIN
+                    InsertPostedBatchDoc(BatchPostDoc.Status::posted,'');
+                    //A/P0564
+                    FPCGeneralSetup.RESET;
+                    FPCGeneralSetup.GET;
+                    FPCGeneralSetup.TESTFIELD("Status Open");
+                    FPCGeneralSetup.TESTFIELD("Status Pick");
+                    FPCGeneralSetup.TESTFIELD("Trigger Dropship Creation");
+                    FPCGeneralSetup.TESTFIELD("Interface Code Dropshipment");
+                    IF InterfaceProcessMgt.TriggerActive(FPCGeneralSetup."Interface Code Dropshipment") THEN
+                      InterfaceProcessMgt.UpdateProcessLogForInterface(SalesHeader."No.",
+                                                                       0,
+                                                                       FPCGeneralSetup."Interface Code Dropshipment",
+                                                                       FPCGeneralSetup."Status Open",
+                                                                       FPCGeneralSetup."Status Pick",
+                                                                       FPCGeneralSetup."Trigger Dropship Creation");
+                    //E/P0564
+                    //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+                    BatchPostDoc.DELETE(TRUE);
+                    {
+                    BatchPostDoc.DELETE;
+                    }
+                    //H0609 14.10.13 HCN -----------------------------
+                  END ELSE BEGIN
+                    BatchPostDoc.Comment := COPYSTR(GETLASTERRORTEXT,1,250);
+                    BatchPostDoc."Comment 2" := COPYSTR(GETLASTERRORTEXT,251,250);
+                    BatchPostDoc."Comment 3" := COPYSTR(GETLASTERRORTEXT,501,250);
+                    BatchPostDoc.MODIFY;
+                  END;
+                  CLEAR(CreatePurchOrder);
+                END ELSE BEGIN
+                  // Document not found
+                  InsertPostedBatchDoc(BatchPostDoc.Status::canceled,ErrText001);
+                  //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+                  BatchPostDoc.DELETE(TRUE);
+                  {
+                  BatchPostDoc.DELETE;
+                  }
+                  //H0609 14.10.13 HCN -----------------------------
+                END;
+              END;
+            //A/P0892
+            // create international purchase orders
+            BatchPostDoc."Action Type"::"Create Int. Purch. Order":
+              BEGIN
+                IF SalesHeader.GET(BatchPostDoc."Document Type",BatchPostDoc."Document No.") THEN BEGIN
+                  //S/P0966
+                  CreatePurchOrder.SetLineNoFilter(BatchPostDoc."Sales Line Filter" +
+                    BatchPostDoc."Sales Line Filter 2" +
+                    BatchPostDoc."Sales Line Filter 3" +
+                    BatchPostDoc."Sales Line Filter 4");
+                  //E/P0966
+                  //H2105 13.02.15 MSL ++++++++++++++++++++++++++++++++++++++++++++
+                  IF CreatePurchOrder.RUN(SalesHeader) THEN BEGIN
+                  //H2105 13.02.15 MSL --------------------------------------------
+                    InsertPostedBatchDoc(BatchPostDoc.Status::posted,'');
+
+                    FPCGeneralSetup.RESET;
+                    FPCGeneralSetup.GET;
+                    FPCGeneralSetup.TESTFIELD("Status Open");
+                    FPCGeneralSetup.TESTFIELD("Status Pick");
+                    FPCGeneralSetup.TESTFIELD("Trigger Dropship Creation");
+                    FPCGeneralSetup.TESTFIELD("Interface Code Dropshipment");
+                    IF InterfaceProcessMgt.TriggerActive(FPCGeneralSetup."Interface Code Dropshipment") THEN
+                      InterfaceProcessMgt.UpdateProcessLogForInterface(SalesHeader."No.",
+                                                                       0,
+                                                                       FPCGeneralSetup."Interface Code Dropshipment",
+                                                                       FPCGeneralSetup."Status Open",
+                                                                       FPCGeneralSetup."Status Pick",
+                                                                       FPCGeneralSetup."Trigger Dropship Creation");
+                    //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+                    BatchPostDoc.DELETE(TRUE);
+                    {
+                    BatchPostDoc.DELETE;
+                    }
+                    //H0609 14.10.13 HCN -----------------------------
+                  END ELSE BEGIN
+                    BatchPostDoc.Comment := COPYSTR(GETLASTERRORTEXT,1,250);
+                    BatchPostDoc."Comment 2" := COPYSTR(GETLASTERRORTEXT,251,250);
+                    BatchPostDoc."Comment 3" := COPYSTR(GETLASTERRORTEXT,501,250);
+                    BatchPostDoc.MODIFY;
+                  END;
+                  CLEAR(CreatePurchOrder);
+                END ELSE BEGIN
+                  // Document not found
+                  InsertPostedBatchDoc(BatchPostDoc.Status::canceled,ErrText001);
+                  //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+                  BatchPostDoc.DELETE(TRUE);
+                  {
+                  BatchPostDoc.DELETE;
+                  }
+                  //H0609 14.10.13 HCN -----------------------------
+                END;
+                //CreatePurchOrder.InitLineNoFilter('');
+              END;
+            //E/P0892
+            // export purchase order to middleware
+            BatchPostDoc."Action Type"::"Exp. MW":
+              BEGIN
+                IF PurchHeader.GET(BatchPostDoc."Document Type",BatchPostDoc."Document No.") THEN BEGIN
+                  IF MiddlewareURL.RUN(PurchHeader) THEN BEGIN
+                    InsertPostedBatchDoc(BatchPostDoc.Status::posted,'');
+                    //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+                    BatchPostDoc.DELETE(TRUE);
+                    {
+                    BatchPostDoc.DELETE;
+                    }
+                    //H0609 14.10.13 HCN -----------------------------
+                  END ELSE BEGIN
+                    BatchPostDoc.Comment := COPYSTR(GETLASTERRORTEXT,1,250);
+                    BatchPostDoc."Comment 2" := COPYSTR(GETLASTERRORTEXT,251,250);
+                    BatchPostDoc."Comment 3" := COPYSTR(GETLASTERRORTEXT,501,250);
+                    BatchPostDoc.MODIFY;
+                  END;
+                END ELSE BEGIN
+                  // Document not found
+                  InsertPostedBatchDoc(BatchPostDoc.Status::canceled,ErrText001);
+                  //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+                  BatchPostDoc.DELETE(TRUE);
+                  {
+                  BatchPostDoc.DELETE;
+                  }
+                  //H0609 14.10.13 HCN -----------------------------
+                END;
+              END;
+
+            //H0114  10.12.12  ABR  +++++++++++++++++++++++++++++++++++++++++++++
+            //T0014 30.06.14 MSL ++++++++++++++++++++++++++++++
+            {
+            BatchPostDoc."Action Type"::WhseReturnConfirmation:
+              BEGIN
+                CLEAR(AutomEMailProc2);
+                AutomEMailProc2.SetParameters;
+                IF AutomEMailProc2.RUN(BatchPostDoc) THEN BEGIN
+                  InsertPostedBatchDoc(BatchPostDoc.Status::posted,'');
+                  //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+                  BatchPostDoc.DELETE(TRUE);
+                  {
+                  BatchPostDoc.DELETE;
+                  }
+                  //H0609 14.10.13 HCN -----------------------------
+                END ELSE BEGIN
+                  BatchPostDoc.Comment := COPYSTR(GETLASTERRORTEXT,1,250);
+                  BatchPostDoc."Comment 2" := COPYSTR(GETLASTERRORTEXT,251,250);
+                  BatchPostDoc."Comment 3" := COPYSTR(GETLASTERRORTEXT,501,250);
+                  BatchPostDoc.MODIFY;
+                END;
+              END;
+            }
+            //T0014 30.06.14 MSL ------------------------------
+            BatchPostDoc."Action Type"::RefundConfirmation:
+              BEGIN
+                CLEAR(AutomEMailProc2);
+                AutomEMailProc2.SetParameters;
+                IF AutomEMailProc2.RUN(BatchPostDoc) THEN BEGIN
+                  InsertPostedBatchDoc(BatchPostDoc.Status::posted,'');
+                  //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+                  BatchPostDoc.DELETE(TRUE);
+                  {
+                  BatchPostDoc.DELETE;
+                  }
+                  //H0609 14.10.13 HCN -----------------------------
+                END ELSE BEGIN
+                  BatchPostDoc.Comment := COPYSTR(GETLASTERRORTEXT,1,250);
+                  BatchPostDoc."Comment 2" := COPYSTR(GETLASTERRORTEXT,251,250);
+                  BatchPostDoc."Comment 3" := COPYSTR(GETLASTERRORTEXT,501,250);
+                  BatchPostDoc.MODIFY;
+                END;
+              END;
+            //H0114  10.12.12  ABR  ---------------------------------------------
+
+            //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+            BatchPostDoc."Action Type"::POCancInquiryMail:
+              BEGIN
+                CLEAR(AutomEMailProc2);
+                AutomEMailProc2.SetParameters;
+                IF AutomEMailProc2.RUN(BatchPostDoc) THEN BEGIN
+                  InsertPostedBatchDoc(BatchPostDoc.Status::posted,'');
+                  BatchPostDoc.DELETE(TRUE);
+                END ELSE BEGIN
+                  BatchPostDoc.Comment := COPYSTR(GETLASTERRORTEXT,1,250);
+                  BatchPostDoc."Comment 2" := COPYSTR(GETLASTERRORTEXT,251,250);
+                  BatchPostDoc."Comment 3" := COPYSTR(GETLASTERRORTEXT,501,250);
+                  BatchPostDoc.MODIFY;
+                END;
+              END;
+            //H0609 14.10.13 HCN -----------------------------
+            //H1475 12.09.14 ARI ++++++++++++++++++++++++++++++++
+            BatchPostDoc."Action Type"::"Send Payment Advise":
+              BEGIN
+                CLEAR(AutomEMailProc);
+                AutomEMailProc.SetParameters;
+                IF AutomEMailProc.RUN(BatchPostDoc) THEN BEGIN
+                  InsertPostedBatchDoc(BatchPostDoc.Status::posted,'');
+                  //H2159 19.02.15 TST ++++++++++++++++++++++++++++++++
+                  IF BatchPostDoc."Document Type" = BatchPostDoc."Document Type"::"Payment Advise" THEN BEGIN
+                    PaymentProposalHeadL.RESET;
+                    PaymentProposalHeadL.SETRANGE("Gen. Journal Batch",BatchPostDoc."Document No.");
+
+                    IF PaymentProposalHeadL.FINDLAST THEN
+                      PaymentProposalHeadL.MODIFYALL("Payment Advice Status", PaymentProposalHeadL."Payment Advice Status"::Sended);
+                  END;
+                  //H2159 19.02.15 TST --------------------------------
+                  BatchPostDoc.DELETE(TRUE);
+                END ELSE BEGIN
+                  BatchPostDoc.Comment := COPYSTR(GETLASTERRORTEXT,1,250);
+                  BatchPostDoc."Comment 2" := COPYSTR(GETLASTERRORTEXT,251,250);
+                  BatchPostDoc."Comment 3" := COPYSTR(GETLASTERRORTEXT,501,250);
+                  BatchPostDoc.MODIFY;
+                  //H2159 19.02.15 TST ++++++++++++++++++++++++++++++++
+                  IF BatchPostDoc."Document Type" = BatchPostDoc."Document Type"::"Payment Advise" THEN BEGIN
+                    PaymentProposalHeadL.RESET;
+                    PaymentProposalHeadL.SETRANGE("Gen. Journal Batch",BatchPostDoc."Document No.");
+                    IF PaymentProposalHeadL.FINDLAST THEN BEGIN
+                      PaymentProposalHeadL."Payment Advice Status" := PaymentProposalHeadL."Payment Advice Status"::Error;
+                      PaymentProposalHeadL.MODIFY;
+                    END;
+                  END;
+                  //H2159 19.02.15 TST --------------------------------
+                END;
+              END;
+            //H1475 12.09.14 ARI --------------------------------
+
+          END; //case
+        END ELSE BEGIN
+          // too many tries
+          //H0740 28.11.13 HCN +++++++++++++++++++++++++++++
+          IF BatchPostDoc."Action Type" IN [2,3,11] THEN
+          {
+          IF BatchPostDoc."Action Type" IN [2,3] THEN
+          }
+          //H0740 28.11.13 HCN -----------------------------
+            PostedBatchPostDoc.Comment := ErrText005a
+          ELSE
+            PostedBatchPostDoc.Comment := ErrText005;
+          BatchPostDoc.MODIFY;
+        END;
+      END ELSE BEGIN
+        // Job already completed
+        InsertPostedBatchDoc(BatchPostDoc.Status, Text005);
+        //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+        BatchPostDoc.DELETE(TRUE);
+        {
+        BatchPostDoc.DELETE;
+        }
+        //H0609 14.10.13 HCN -----------------------------
+      END;
+    END;
+
+    PROCEDURE PostSalesPrepmtInv@1000000000(_SalesHeader@1000000000 : Record 36;_Print@1000000002 : Boolean);
+    VAR
+      LC_SalesPostPrepayments@1000000001 : Codeunit 442;
+      "****TEC***********************"@1000000004 : Integer;
+      MPCommissionMgt@1000000003 : Codeunit 50502;
+    BEGIN
+      SalesHeader.RESET;
+      SalesHeader.SETRANGE("Document Type",_SalesHeader."Document Type");
+      SalesHeader.SETRANGE("No.",_SalesHeader."No.");
+      IF NOT SalesHeader.FIND('-') THEN
+        EXIT;
+      //S/P1223
+      LC_SalesPostPrepayments.SetCallFromRelease(TRUE);
+      //E/P1213
+      LC_SalesPostPrepayments.Invoice(SalesHeader);
+      //S/P1223
+      LC_SalesPostPrepayments.SetCallFromRelease(FALSE);
+      //E/P1213
+      SalesHeader.GET(_SalesHeader."Document Type",_SalesHeader."No.");
+      SalesHeader.Status := SalesHeader.Status::Released;
+      SalesHeader.MODIFY;
+      //T0062 10.12.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      MPCommissionMgt.CheckOrderState(SalesHeader);
+      //T0062 10.12.14 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE PostSalesPrepmtCrMemo@1000000001(_SalesHeader@1000000001 : Record 36;_Print@1000000002 : Boolean);
+    VAR
+      LC_SalesPostPrepayments@1000000000 : Codeunit 442;
+    BEGIN
+      SalesHeader.RESET;
+      SalesHeader.SETRANGE("Document Type",_SalesHeader."Document Type");
+      SalesHeader.SETRANGE("No.",_SalesHeader."No.");
+      IF NOT SalesHeader.FIND('-') THEN
+        EXIT;
+
+      IF LC_SalesPostPrepayments.CheckOpenPrepaymentLines(SalesHeader,1) THEN BEGIN
+        LC_SalesPostPrepayments.CreditMemo(SalesHeader);
+        COMMIT;
+        IF _Print THEN BEGIN
+          SalesCrMemoHeader."No." := SalesHeader."Last Prepmt. Cr. Memo No.";
+          SalesCrMemoHeader.SETRECFILTER;
+      //    ReportSelection.SETRANGE(Usage,ReportSelection.Usage::"S.Cr.Memo");
+      //    ReportSelection.FIND('-');
+      //    REPEAT
+      //      ReportSelection.TESTFIELD("Report ID");
+      //      REPORT.RUN(ReportSelection."Report ID",FALSE,FALSE,SalesCrMemoHeader);
+      //    UNTIL ReportSelection.NEXT = 0;
+        END;
+      END;
+    END;
+
+    PROCEDURE InsertPostedBatchDoc@1000000003(_Status@1000000000 : Integer;_Comment@1000000001 : Text[250]);
+    VAR
+      LT_Post@1000000002 : Integer;
+      BatchPostDocumentLineL@1000000003 : Record 50190;
+      PostedBatchPostDocumentLineL@1000000004 : Record 50191;
+      SalesLineL@1000000005 : Record 37;
+    BEGIN
+      PostedBatchPostDoc.LOCKTABLE;
+      IF NOT PostedBatchPostDoc2.FINDLAST THEN
+        CLEAR(PostedBatchPostDoc2);
+      CLEAR(PostedBatchPostDoc);
+      PostedBatchPostDoc.TRANSFERFIELDS(BatchPostDoc);
+      PostedBatchPostDoc."Entry No." := PostedBatchPostDoc2."Entry No." + 1;
+      PostedBatchPostDoc.Status := _Status;
+      PostedBatchPostDoc.Comment := _Comment;
+      PostedBatchPostDoc."Processed at" := CURRENTDATETIME;
+      PostedBatchPostDoc.INSERT;
+
+      //H0609 14.10.13 HCN +++++++++++++++++++++++++++++
+      // insert lines for specific action types:
+      CASE BatchPostDoc."Action Type" OF
+      //H1475,H0609 18.09.14 ARI +++++++++++++++++++++++++++++++++++++++
+        BatchPostDoc."Action Type"::POCancInquiryMail,
+        BatchPostDoc."Action Type"::"Send Payment Advise":
+      //H1475,H0609 18.09.14 ARI ---------------------------------------
+          BEGIN
+            CLEAR(BatchPostDocumentLineL);
+            BatchPostDocumentLineL.SETCURRENTKEY("Assigned to Entry No.","Line No.");
+            BatchPostDocumentLineL.SETRANGE("Assigned to Entry No.",BatchPostDoc."Entry No.");
+            IF BatchPostDocumentLineL.FIND('-') THEN BEGIN
+              REPEAT
+                PostedBatchPostDocumentLineL.INIT;
+                PostedBatchPostDocumentLineL.TRANSFERFIELDS(BatchPostDocumentLineL);
+                PostedBatchPostDocumentLineL."Assigned to Entry No." := PostedBatchPostDoc."Entry No.";
+                PostedBatchPostDocumentLineL.Status := _Status;
+                PostedBatchPostDocumentLineL.INSERT;
+              UNTIL BatchPostDocumentLineL.NEXT = 0;
+            END;
+          END;
+        ELSE BEGIN
+        END;
+      END;
+      //H0609 14.10.13 HCN -----------------------------
+    END;
+
+    PROCEDURE SetBatchLine@1000000005(_BatchPostDoc@1000000000 : Record 50043);
+    BEGIN
+      BatchPostDoc.SETRANGE("Entry No.",_BatchPostDoc."Entry No.");
+      BatchPostDoc.FIND('-');
+    END;
+
+    BEGIN
+    {
+      1.00  10.10.11  eich  -object created
+      gob1.00  21.06.12  gob-mab Filter auf Sales Post erweitert
+      gob1.00  21.06.12  gob-mab  Frankreich darf und muss Teilfakturiert werden...
+      gob1.01  13.07.12  gob-mab  Teilfaktura Fr.
+      gob1.02  18.07.12  gob-mab  Buchungsnr. setzen, da bei Komm in NAV und MÅller/Nazar noch Standardnr.
+                                  div. FehlerprÅfungen....
+      P0011    30.07.12  gob-mno  Change Code VK-EMAIL
+      P0131    02.08.12  gob-rste New Code for VK E-Mail
+      P0165    09.08.12  gob-mab  Filter erweitert um Sales Post
+      p0173    15.08.12  gob-mab  nicht durch gob gelieferte dÅrfen geb. da Lieferdatum korr. gesetzt wird
+      p0173    15.08.12  gob-mab  alle Filter Programmierung raus, und per Parameter gesteuert rein
+      p0173    17.08.12  gob-mab  P0131 ---> deaktivierung von VK Email Versand wieder RÅckgÑngig machen und
+                                  Sicherheitscheck
+      p0224    23.08.12  gob-mab  groupon PrÅfung fÅr NAV Kommissionierte AuftrÑge
+      p0253    29.08.12  gob-mab  kein Email Versand NL / FR
+      p0261    31.08.12  gob-mab  RunCode True und Rechnungsversand Steuerung
+      p0368    24.09.12  gob-mab  Email Versand NL / FR wieder aktivieren
+      p0377    08.10.12  gob-mab  PrÅfung ob Buchung vor 25.05 erlaubt
+      p0377    09.10.12  gob-mab  geb. Rechungsnr. in zu buchende Tabelle
+      p0377    17.10.12  gob-mab  PrÅfung auf hist. Buchung einrichtbar
+      p0456    17.10.12  gob-mab  korrektur 377
+      p0458    18.10.12  gob-mab  Sleep einrichtbar
+      p0464    18.10.12  gob-mab  Unbenannt (Day) und Anzahl einrichtbar
+      p0474    22.10.12  gob-mab  Hotfix Containermail / get document bur auf ORDER!
+      p0521    26.10.12  gob-mab  Hotfix Ressource.GET
+      p0533    30.10.12  gob-mab  Buchung vor 25.05. komplett freischalten
+      p0537    30.10.12  gob-mab  komm control deaktivieren fÅr nicht NAV Komm. AuftrÑge
+      P0600    20.11.12  gob-mno  New Code for Change Order Mails
+      P0690    18.12.12  gob-mab  Nur Rechnungsemails hochzÑhlen
+      P0677    19.12.12  gob-mab  Gutschriftversand
+      P0677    20.12.12  gob-mab  Gutschrift Counter
+      P0740    11.01.13  gob-sil  PrÅfung fÅr Gutschein
+      P0757    23.01.13  gob-mab  VAT FR PrÅfung deaktivieren (lt. Herr Zemp)
+      P0764    24.01.13  gob-mab  Groupon PrÅfung wie von Herrn Zemp definiert angepasst
+      P0765    24.01.13  gob-mab  Order No. 22 FehlerprÅfung entfernt (Hr. Wallraff)
+      P0778    30.01.13  gob-mab  Groupon Filter GR deaktiviert (Hr. Zemp)
+      P0564    21.02.13  gob-rste Create Purch. Order Set Line No. Filter fpr Crossdock activation
+      P0892    29.04.13  gob-mab  new Action Types to Filter for Int. Dropshipping
+      P0966    29.07.13  gob-rste Fill Sales Line Filter Create (Int.) Purchase Order
+      P1217    07.03.14  gob-rste Fix Filter String for Cancel Inquiry Mailing
+      P1223    12.03.14  gob-rste Avoid Double RHenus Trigger On Release Sales Order
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+
+      H0114       10.12.12  ABR       Handle new Action Types
+      H0119       17.12.12  ABR       Added New Action Typse to Filter
+
+      H0609       14.10.13  HCN       - Enforce OnDelete-Trigger of T50043 "Batch-Post Document"
+                                      - New "Action Type" incorporated for purchase order cancellation inquiry e-mails
+      H0740       28.11.13  HCN       Ensure that Purchase Order Cancellation Inquiry-E-Mails will be processed right away.
+                                      (in analogy to "Action Type"::"Purch. EMail")
+      T0014       30.06.14  MSL       FTTC 3 - Phase 1- Remove Ret. Whse. Mail Fields
+      H1475       12.09.14  ARI       Send Payment Advice via OPplus : New Function added
+      H2105       13.02.15  MSL       Proper Error Handling for Dropship/Crossdock Order creation
+      H2159       19.02.15  TST       Set Payment Advice Status
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation Tectura & Home24 NAV Team  |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      T0062       10.12.14  TEC-GH    Transfer Order Release Date
+    }
+    END.
+  }
+}
+

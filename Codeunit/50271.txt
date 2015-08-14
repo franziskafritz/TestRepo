@@ -1,0 +1,484 @@
+OBJECT Codeunit 50271 Sales Return Transit Loc. Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=01.04.15;
+    Time=11:04:06;
+    Modified=Yes;
+    Version List=HME3958,T0100;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      TextHME001@1000000000 : TextConst 'ENU=This functionality can be used only with documents of type Return Order.';
+      SalesAndReceivablesSetup@1000000003 : Record 311;
+      WarehouseSetup@1000000005 : Record 5769;
+      SalesPost@1000000001 : Codeunit 80;
+      NoSeriesMngt@1000000004 : Codeunit 396;
+      Window@1000000007 : Dialog;
+      DocumentTypeText@1000000002 : Text[50];
+      TextHME002@1000000006 : TextConst 'ENU=You cannot receive more than %1 items.';
+      TextHME003@1000000009 : TextConst 'ENU=#1########################\\@2@@@@@@@@@@@@@@@@@@@@@@@@';
+      TextHME004@1000000008 : TextConst 'ENU=Creating transfers ... please wait...';
+      FromLocationCode@1000000010 : Code[10];
+
+    PROCEDURE PostSalesReturns@1000000001(VAR SalesHeaderR@1000000000 : Record 36;Marked@1000000003 : Boolean);
+    VAR
+      CounterL@1000000001 : Integer;
+      FactorL@1000000002 : Decimal;
+    BEGIN
+      Window.OPEN(TextHME003);
+      Window.UPDATE(1,TextHME004);
+      CounterL := 1;
+      SalesHeaderR.MARKEDONLY(Marked);
+
+      IF SalesHeaderR.FINDSET THEN BEGIN
+        FactorL := 9999 / SalesHeaderR.COUNT;
+        REPEAT
+          Window.UPDATE(2,(CounterL * FactorL) DIV 1);
+          IF SalesHeaderR."Document Type" <> SalesHeaderR."Document Type"::"Return Order" THEN BEGIN
+            ERROR(TextHME001);
+          END;
+
+          SalesHeaderR.Invoice := FALSE;
+          SalesHeaderR.Receive := TRUE;
+          CLEAR(SalesPost);
+          SalesPost.RUN(SalesHeaderR);
+
+        UNTIL SalesHeaderR.NEXT = 0;
+      END;
+      Window.CLOSE;
+    END;
+
+    PROCEDURE CreateTransferOrderFromSRO@1000000000(SalesHeaderV@1000000000 : Record 36);
+    VAR
+      ReturnReceiptLineL@1000000001 : Record 6661;
+      SalesReturnReceiptSetupL@1000000002 : Record 50114;
+      TransferHeaderL@1000000003 : Record 5740;
+      TransferLineL@1000000004 : Record 5741;
+      LinkedTransferLineL@1100409001 : Record 5741;
+      LinkedTransferShipmentLineL@1100409002 : Record 5745;
+      TransferOrderPostShipmentL@1000000006 : Codeunit 5704;
+      TransferOrderPostReceiptL@1000000007 : Codeunit 5705;
+      LineNoL@1000000005 : Integer;
+      ToLocationL@1100409000 : Code[10];
+      TOLineAlreadyExistL@1100409003 : Boolean;
+      "****CC************************"@1000000008 : Integer;
+      MPDocMgtL@1000000009 : Codeunit 50500;
+    BEGIN
+      IF SalesHeaderV."Document Type" <> SalesHeaderV."Document Type"::"Return Order" THEN
+        EXIT;
+
+      SalesAndReceivablesSetup.GET;
+      WarehouseSetup.GET;
+      IF SalesAndReceivablesSetup."Default Sales Return Location" = '' THEN
+        EXIT;
+
+      IF WarehouseSetup."Return Warehouse Location Code" = '' THEN
+        EXIT;
+
+      ReturnReceiptLineL.RESET;
+      ReturnReceiptLineL.SETRANGE("Return Order No.", SalesHeaderV."No.");
+      ReturnReceiptLineL.SETFILTER(Quantity, '<>%1', 0);
+      ReturnReceiptLineL.SETRANGE(Type,ReturnReceiptLineL.Type::Item);
+      ReturnReceiptLineL.SETRANGE("Location Code",SalesAndReceivablesSetup."Default Sales Return Location");
+      //T0060 25.02.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+      MPDocMgtL.SetMPRetReceiptLineLocFilter(ReturnReceiptLineL,SalesHeaderV);
+      //T0060 25.02.15 CC-GH ---------------------------------------------------
+
+      IF ReturnReceiptLineL.FINDSET THEN BEGIN
+        REPEAT
+          TOLineAlreadyExistL := FALSE;
+          LinkedTransferLineL.RESET;
+          LinkedTransferLineL.SETRANGE("Return Receipt No.", ReturnReceiptLineL."Document No.");
+          LinkedTransferLineL.SETRANGE("Return Receipt Line No.", ReturnReceiptLineL."Line No.");
+          IF LinkedTransferLineL.ISEMPTY THEN BEGIN
+            LinkedTransferShipmentLineL.RESET;
+            LinkedTransferShipmentLineL.SETRANGE("Return Receipt No.", ReturnReceiptLineL."Document No.");
+            LinkedTransferShipmentLineL.SETRANGE("Return Receipt Line No.", ReturnReceiptLineL."Line No.");
+            IF NOT LinkedTransferShipmentLineL.ISEMPTY THEN
+              TOLineAlreadyExistL := TRUE;
+          END ELSE
+            TOLineAlreadyExistL := TRUE;
+
+          IF NOT TOLineAlreadyExistL THEN BEGIN
+            IF SalesReturnReceiptSetupL.GET(ReturnReceiptLineL."Purchasing Code",ReturnReceiptLineL."Transp. Type") THEN BEGIN
+              IF SalesReturnReceiptSetupL.Active THEN
+                ToLocationL := SalesReturnReceiptSetupL."Location Code"
+              ELSE
+                ToLocationL := WarehouseSetup."Return Warehouse Location Code";
+            END ELSE
+              ToLocationL := WarehouseSetup."Return Warehouse Location Code";
+
+            IF ToLocationL <> '' THEN BEGIN
+              TransferHeaderL.RESET;
+              TransferHeaderL.SETRANGE("Transfer-from Code", ReturnReceiptLineL."Location Code");
+              TransferHeaderL.SETRANGE("Transfer-to Code", SalesReturnReceiptSetupL."Location Code");
+              TransferHeaderL.SETFILTER(Status,'<>%1',TransferHeaderL.Status::Released);
+              IF NOT TransferHeaderL.FINDFIRST THEN BEGIN
+                TransferHeaderL.RESET;
+                TransferHeaderL.INIT;
+                TransferHeaderL.VALIDATE("No. Series",SalesAndReceivablesSetup."Sal. Ret. Transfer Order Nos.");
+                TransferHeaderL.VALIDATE("No.",NoSeriesMngt.GetNextNo(
+                  SalesAndReceivablesSetup."Sal. Ret. Transfer Order Nos.",WORKDATE,TRUE));
+                TransferHeaderL.INSERT(TRUE);
+
+                TransferHeaderL.VALIDATE("Transfer-from Code", ReturnReceiptLineL."Location Code");
+                TransferHeaderL.VALIDATE("Transfer-to Code", ToLocationL);
+                //T0060 25.02.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+                {
+                //T0060 25.02.15 CC-GH ---------------------------------------------------
+                TransferHeaderL.VALIDATE("In-Transit Code", WarehouseSetup."Ret. Transit Location Code");
+                //T0060 25.02.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+                }
+                TransferHeaderL.VALIDATE("In-Transit Code",
+                  MPDocMgtL.GetMPTransitLocationCode(WarehouseSetup."Ret. Transit Location Code",
+                    ReturnReceiptLineL."Market Place"));
+                //T0060 25.02.15 CC-GH ---------------------------------------------------
+                TransferHeaderL.VALIDATE("Posting Date",WORKDATE);
+                TransferHeaderL.VALIDATE("Shipment Date",WORKDATE);
+                TransferHeaderL.MODIFY(TRUE);
+
+                LineNoL := 10000;
+                TransferLineL.RESET;
+                TransferLineL.INIT;
+                TransferLineL.VALIDATE("Document No.", TransferHeaderL."No.");
+                TransferLineL.VALIDATE("Line No.", LineNoL);
+                TransferLineL.VALIDATE("Item No.", ReturnReceiptLineL."No.");
+                TransferLineL.VALIDATE(Quantity, ReturnReceiptLineL.Quantity);
+                TransferLineL.VALIDATE("Qty. to Ship", TransferLineL.Quantity);
+                TransferLineL."Linked Sales Doc. Type" := TransferLineL."Linked Sales Doc. Type"::"Return Order";
+                TransferLineL."Linked Sales Doc. No." := ReturnReceiptLineL."Return Order No.";
+                TransferLineL."Linked Sales Line No." := ReturnReceiptLineL."Return Order Line No.";
+                TransferLineL."Return Receipt No." := ReturnReceiptLineL."Document No.";
+                TransferLineL."Return Receipt Line No." := ReturnReceiptLineL."Line No.";
+                //T0100 26.02.15 RST +++++++++++++++++++++++++++
+                TransferLineL."Repurchase Price" := ReturnReceiptLineL."Repurchase Price";
+                //T0100 26.02.15 RST ---------------------------
+                TransferLineL.INSERT(TRUE);
+              END ELSE BEGIN
+                TransferLineL.RESET;
+                TransferLineL.SETRANGE("Document No.", TransferHeaderL."No.");
+                IF TransferLineL.FINDLAST THEN
+                  LineNoL := TransferLineL."Line No." + 10000
+                ELSE
+                  LineNoL := 10000;
+
+                TransferLineL.RESET;
+                TransferLineL.INIT;
+                TransferLineL.VALIDATE("Document No.", TransferHeaderL."No.");
+                TransferLineL.VALIDATE("Line No.", LineNoL);
+                TransferLineL.VALIDATE("Item No.", ReturnReceiptLineL."No.");
+                TransferLineL.VALIDATE(Quantity, ReturnReceiptLineL.Quantity);
+                TransferLineL.VALIDATE("Qty. to Ship", TransferLineL.Quantity);
+                TransferLineL."Linked Sales Doc. Type" := TransferLineL."Linked Sales Doc. Type"::"Return Order";
+                TransferLineL."Linked Sales Doc. No." := ReturnReceiptLineL."Return Order No.";
+                TransferLineL."Linked Sales Line No." := ReturnReceiptLineL."Return Order Line No.";
+                TransferLineL."Return Receipt No." := ReturnReceiptLineL."Document No.";
+                TransferLineL."Return Receipt Line No." := ReturnReceiptLineL."Line No.";
+                //T0100 26.02.15 RST +++++++++++++++++++++++++++
+                TransferLineL."Repurchase Price" := ReturnReceiptLineL."Repurchase Price";
+                //T0100 26.02.15 RST ---------------------------
+                TransferLineL.INSERT(TRUE);
+              END;
+            END;
+          END;
+        UNTIL ReturnReceiptLineL.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE CreateTransferOrderFromILE@1000000002(VAR RETTransitInventoryOverviewR@1000000000 : Record 50194);
+    VAR
+      ItemLedgerEntryL@1000000003 : Record 32;
+      ReturnReceiptLineL@1000000004 : Record 6661;
+      SalesReturnReceiptSetupL@1000000005 : Record 50114;
+      TransferHeaderL@1000000006 : Record 5740;
+      TransferLineL@1000000002 : Record 5741;
+      FactorL@1000000007 : Decimal;
+      LineNoL@1000000001 : Integer;
+      CounterL@1000000008 : Integer;
+      "****CC************************"@1000000010 : Integer;
+      LinkedTransferLineL@1000000013 : Record 5741;
+      MPDocMgtL@1000000009 : Codeunit 50500;
+      ToLocationL@1000000012 : Code[10];
+      TOLineAlreadyExistL@1000000011 : Boolean;
+    BEGIN
+      Window.OPEN(TextHME003);
+      Window.UPDATE(1,TextHME004);
+      CounterL := 1;
+
+      SalesAndReceivablesSetup.GET;
+      WarehouseSetup.GET;
+      IF RETTransitInventoryOverviewR.FINDSET THEN BEGIN
+        FactorL := 9999 / RETTransitInventoryOverviewR.COUNT;
+        REPEAT
+          Window.UPDATE(2,(CounterL * FactorL) DIV 1);
+          IF RETTransitInventoryOverviewR.Inventory > RETTransitInventoryOverviewR."Transfer Qty." THEN BEGIN
+            ItemLedgerEntryL.RESET;
+            ItemLedgerEntryL.SETRANGE(Open, TRUE);
+            ItemLedgerEntryL.SETRANGE("Item No.", RETTransitInventoryOverviewR."No.");
+            //H3958 24.03.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+            {
+            //H3958 24.03.15 CC-GH ---------------------------------------------------
+            ItemLedgerEntryL.SETRANGE("Location Code", SalesAndReceivablesSetup."Default Sales Return Location");
+            //H3958 24.03.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+            }
+            ItemLedgerEntryL.SETRANGE("Location Code", RETTransitInventoryOverviewR."Location Code");
+            //H3958 24.03.15 CC-GH ---------------------------------------------------
+            IF NOT ItemLedgerEntryL.ISEMPTY THEN BEGIN
+              ItemLedgerEntryL.FINDSET;
+              REPEAT
+                IF ItemLedgerEntryL."Entry Type" = ItemLedgerEntryL."Entry Type"::Sale THEN BEGIN
+                  IF ItemLedgerEntryL."Document Type" = ItemLedgerEntryL."Document Type"::"Sales Return Receipt" THEN BEGIN
+
+                    ReturnReceiptLineL.RESET;
+                    ReturnReceiptLineL.SETRANGE("Document No.", ItemLedgerEntryL."Document No.");
+                    ReturnReceiptLineL.SETRANGE("No.", ItemLedgerEntryL."Item No.");
+                    ReturnReceiptLineL.SETRANGE("Line No.", ItemLedgerEntryL."Document Line No.");
+                    ReturnReceiptLineL.SETRANGE(Type, ReturnReceiptLineL.Type::Item);
+
+                    IF ReturnReceiptLineL.FINDFIRST THEN BEGIN
+                      //H3958 24.03.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+                      TOLineAlreadyExistL := FALSE;
+                      LinkedTransferLineL.RESET;
+                      LinkedTransferLineL.SETRANGE("Return Receipt No.", ReturnReceiptLineL."Document No.");
+                      LinkedTransferLineL.SETRANGE("Return Receipt Line No.", ReturnReceiptLineL."Line No.");
+                      IF NOT LinkedTransferLineL.ISEMPTY THEN
+                        TOLineAlreadyExistL := TRUE;
+
+                      IF NOT TOLineAlreadyExistL THEN BEGIN
+                      //H3958 24.03.15 CC-GH ---------------------------------------------------
+                        SalesReturnReceiptSetupL.GET(ReturnReceiptLineL."Purchasing Code",ReturnReceiptLineL."Transp. Type");
+
+                        IF SalesReturnReceiptSetupL.Active AND (ReturnReceiptLineL.Type = ReturnReceiptLineL.Type::Item) THEN BEGIN
+                          TransferHeaderL.RESET;
+                          TransferHeaderL.SETRANGE("Transfer-from Code", ReturnReceiptLineL."Location Code");
+                          TransferHeaderL.SETRANGE("Transfer-to Code", SalesReturnReceiptSetupL."Location Code");
+                          TransferHeaderL.SETRANGE("Transfer-to Code", RETTransitInventoryOverviewR."Location Code");
+                          TransferHeaderL.SETFILTER(Status,'<>%1',TransferHeaderL.Status::Released);
+                          IF NOT TransferHeaderL.FINDFIRST THEN BEGIN
+                            TransferHeaderL.RESET;
+                            TransferHeaderL.INIT;
+                            TransferHeaderL.VALIDATE("No. Series",SalesAndReceivablesSetup."Sal. Ret. Transfer Order Nos.");
+                            TransferHeaderL.VALIDATE("No.",NoSeriesMngt.GetNextNo(
+                              SalesAndReceivablesSetup."Sal. Ret. Transfer Order Nos.",WORKDATE,TRUE));
+                            TransferHeaderL.INSERT(TRUE);
+
+                            TransferHeaderL.VALIDATE("Transfer-from Code", ReturnReceiptLineL."Location Code");
+                            TransferHeaderL.VALIDATE("Transfer-to Code", SalesReturnReceiptSetupL."Location Code");
+                            //H3958 24.03.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+                            {
+                            //H3958 24.03.15 CC-GH ---------------------------------------------------
+                            TransferHeaderL.VALIDATE("In-Transit Code",WarehouseSetup."Ret. Transit Location Code");
+                            //H3958 24.03.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+                            }
+                            TransferHeaderL.VALIDATE("In-Transit Code",
+                              MPDocMgtL.GetMPTransitLocationCode(WarehouseSetup."Ret. Transit Location Code",
+                                ReturnReceiptLineL."Market Place"));
+                            //H3958 24.03.15 CC-GH ---------------------------------------------------
+                            TransferHeaderL.VALIDATE("Posting Date",WORKDATE);
+                            TransferHeaderL.VALIDATE("Shipment Date",WORKDATE);
+                            TransferHeaderL.MODIFY(TRUE);
+
+                            TransferLineL.RESET;
+                            TransferLineL.SETRANGE("Document No.", TransferHeaderL."No.");
+                            IF TransferLineL.FINDLAST THEN
+                              LineNoL := TransferLineL."Line No." + 10000
+                            ELSE
+                              LineNoL := 10000;
+
+                            TransferLineL.RESET;
+                            TransferLineL.INIT;
+                            TransferLineL.VALIDATE("Document No.", TransferHeaderL."No.");
+                            TransferLineL.VALIDATE("Line No.", LineNoL);
+                            TransferLineL.VALIDATE("Item No.", ReturnReceiptLineL."No.");
+                            //H3958 24.03.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+                            {
+                            //H3958 24.03.15 CC-GH ---------------------------------------------------
+                            TransferLineL.VALIDATE(Quantity, RETTransitInventoryOverviewR.Inventory -
+                              RETTransitInventoryOverviewR."Transfer Qty.");
+                            //H3958 24.03.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+                            }
+                            TransferLineL.VALIDATE(Quantity, ItemLedgerEntryL."Remaining Quantity");
+                            //H3958 24.03.15 CC-GH ---------------------------------------------------
+                            TransferLineL.VALIDATE("Qty. to Ship", TransferLineL.Quantity);
+                            TransferLineL."Linked Sales Doc. Type" := TransferLineL."Linked Sales Doc. Type"::"Return Order";
+                            TransferLineL."Linked Sales Doc. No." := ReturnReceiptLineL."Return Order No.";
+                            TransferLineL."Linked Sales Line No." := ReturnReceiptLineL."Return Order Line No.";
+                            //T0100 26.02.15 RST +++++++++++++++++++++++++++
+                            TransferLineL."Repurchase Price" := ReturnReceiptLineL."Repurchase Price";
+                            //T0100 26.02.15 RST ---------------------------
+                            TransferLineL.INSERT(TRUE);
+
+                          END ELSE BEGIN
+                            TransferLineL.RESET;
+                            TransferLineL.INIT;
+                            TransferLineL.VALIDATE("Document No.", TransferHeaderL."No.");
+                            TransferLineL.VALIDATE("Line No.", LineNoL);
+                            TransferLineL.VALIDATE("Item No.", ReturnReceiptLineL."No.");
+                            TransferLineL.VALIDATE(Quantity, ReturnReceiptLineL.Quantity);
+                            TransferLineL.VALIDATE("Qty. to Ship", TransferLineL.Quantity);
+                            TransferLineL."Linked Sales Doc. Type" := TransferLineL."Linked Sales Doc. Type"::"Return Order";
+                            TransferLineL."Linked Sales Doc. No." := ReturnReceiptLineL."Return Order No.";
+                            TransferLineL."Linked Sales Line No." := ReturnReceiptLineL."Return Order Line No.";
+                            //T0100 26.02.15 RST +++++++++++++++++++++++++++
+                            TransferLineL."Repurchase Price" := ReturnReceiptLineL."Repurchase Price";
+                            //T0100 26.02.15 RST ---------------------------
+                            TransferLineL.INSERT(TRUE);
+                          END;
+                        END;
+                      //H3958 24.03.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+                      END;
+                      //H3958 24.03.15 CC-GH ---------------------------------------------------
+                    END;
+                  END;
+                END;
+              UNTIL ItemLedgerEntryL.NEXT = 0;
+            END;
+          END;
+        UNTIL RETTransitInventoryOverviewR.NEXT = 0;
+      END;
+
+      Window.CLOSE;
+    END;
+
+    PROCEDURE CreateTransferOrderForLocation@1000000003(VAR RETTransitInventoryOverviewR@1000000000 : Record 50194);
+    VAR
+      LocationL@1000000001 : Record 14;
+      TransferHeaderL@1000000004 : Record 5740;
+      TransferLineL@1000000005 : Record 5741;
+      TransferOrderPostShipmentL@1000000010 : Codeunit 5704;
+      TransferOrderPostReceiptL@1000000009 : Codeunit 5705;
+      LocationListL@1000000002 : Form 15;
+      LocationCodeL@1000000003 : Code[10];
+      FactorL@1000000008 : Decimal;
+      LineNoL@1000000006 : Integer;
+      CounterL@1000000007 : Integer;
+      "****CC************************"@1000000012 : Integer;
+      MPDocMgtL@1000000011 : Codeunit 50500;
+    BEGIN
+      WarehouseSetup.GET;
+      SalesAndReceivablesSetup.GET;
+
+      LocationListL.LOOKUPMODE := TRUE;
+      IF LocationListL.RUNMODAL = ACTION::LookupOK THEN BEGIN
+        Window.OPEN(TextHME003);
+        Window.UPDATE(1,TextHME004);
+        CounterL := 1;
+
+        LocationCodeL := LocationListL.GetSelectionFilter;
+        //H3958 24.03.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+        LocationL.GET(LocationCodeL);
+        //H3958 24.03.15 CC-GH ---------------------------------------------------
+
+        IF RETTransitInventoryOverviewR.FINDSET THEN BEGIN
+          FactorL := 9999 / RETTransitInventoryOverviewR.COUNT;
+          REPEAT
+            Window.UPDATE(2,(CounterL * FactorL) DIV 1);
+            IF RETTransitInventoryOverviewR.Inventory > RETTransitInventoryOverviewR."Transfer Qty." THEN BEGIN
+              TransferHeaderL.RESET;
+              TransferHeaderL.SETRANGE("Transfer-from Code", RETTransitInventoryOverviewR."Location Code");
+              TransferHeaderL.SETRANGE("Transfer-to Code", LocationCodeL);
+              TransferHeaderL.SETFILTER(Status,'<>%1',TransferHeaderL.Status::Released);
+              IF NOT TransferHeaderL.FINDFIRST THEN BEGIN
+                TransferHeaderL.RESET;
+                TransferHeaderL.INIT;
+                TransferHeaderL.VALIDATE("No. Series",SalesAndReceivablesSetup."Sal. Ret. Transfer Order Nos.");
+                TransferHeaderL.VALIDATE("No.",NoSeriesMngt.GetNextNo(
+                SalesAndReceivablesSetup."Sal. Ret. Transfer Order Nos.",WORKDATE,TRUE));
+                TransferHeaderL.INSERT(TRUE);
+
+                TransferHeaderL.VALIDATE("Transfer-from Code", RETTransitInventoryOverviewR."Location Code");
+                TransferHeaderL.VALIDATE("In-Transit Code",WarehouseSetup."Ret. Transit Location Code");
+                TransferHeaderL.VALIDATE("Transfer-to Code", LocationCodeL);
+                //H3958 24.03.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+                {
+                //H3958 24.03.15 CC-GH ---------------------------------------------------
+                TransferHeaderL.VALIDATE("In-Transit Code",WarehouseSetup."Ret. Transit Location Code");
+                //H3958 24.03.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+                }
+                TransferHeaderL.VALIDATE("In-Transit Code",
+                  MPDocMgtL.GetMPTransitLocationCode(WarehouseSetup."Ret. Transit Location Code",
+                    LocationL."Market Place Partner Location"));
+                //H3958 24.03.15 CC-GH ---------------------------------------------------
+
+                TransferHeaderL.VALIDATE("Posting Date",WORKDATE);
+                TransferHeaderL.VALIDATE("Shipment Date",WORKDATE);
+                TransferHeaderL.MODIFY(TRUE);
+
+                TransferLineL.RESET;
+                TransferLineL.SETRANGE("Document No.", TransferHeaderL."No.");
+                IF TransferLineL.FINDLAST THEN
+                  LineNoL := TransferLineL."Line No." + 10000
+                ELSE
+                  LineNoL := 10000;
+
+                TransferLineL.RESET;
+                TransferLineL.INIT;
+                TransferLineL.VALIDATE("Document No.", TransferHeaderL."No.");
+                TransferLineL.VALIDATE("Line No.", LineNoL);
+                TransferLineL.VALIDATE("Item No.", RETTransitInventoryOverviewR."No.");
+                TransferLineL.VALIDATE(Quantity, RETTransitInventoryOverviewR.Inventory -
+                  RETTransitInventoryOverviewR."Transfer Qty.");
+                TransferLineL.VALIDATE("Qty. to Ship", TransferLineL.Quantity);
+                TransferLineL.INSERT(TRUE);
+              END ELSE BEGIN
+                TransferLineL.RESET;
+                TransferLineL.INIT;
+                TransferLineL.VALIDATE("Document No.", TransferHeaderL."No.");
+                TransferLineL.VALIDATE("Line No.", LineNoL);
+                TransferLineL.VALIDATE("Item No.", RETTransitInventoryOverviewR."No.");
+                TransferLineL.VALIDATE(Quantity, RETTransitInventoryOverviewR.Inventory);
+                TransferLineL.VALIDATE("Qty. to Ship", TransferLineL.Quantity);
+                TransferLineL.INSERT(TRUE);
+              END;
+            END;
+          UNTIL RETTransitInventoryOverviewR.NEXT = 0;
+        END;
+      END;
+
+      Window.CLOSE;
+    END;
+
+    PROCEDURE SetFromLocationCode@1000000004(LocationCode@1000000000 : Code[10]);
+    BEGIN
+      FromLocationCode := LocationCode;
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+
+      _____________________________________________
+      H1200       01.07.14 DMA       Ship Sales Returns via Return Transit location, CREATED
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation Tectura & Home24 NAV Team  |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      T0060       25.02.15  CC-GH     Special Return Locations for Marketplace
+      T0100       26.02.15  CC-RST    Fill Repurchase Price
+      H3958       24.02.15  CC-GH     Handel MP Return Location if Transfer Order ist created from MP-RetTrans
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,776 @@
+OBJECT Codeunit 50004 Create Item Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=10.03.14;
+    Time=15:32:22;
+    Modified=Yes;
+    Version List=DN(1),HME0392;
+  }
+  PROPERTIES
+  {
+    TableNo=50002;
+    OnRun=VAR
+            E001@1000000000 : TextConst 'DEU="Artikelnr. zu lang ;";ENU="Item no. to long ;"';
+            L_NewItemNo@1000000001 : Code[20];
+            L_ItemFilter@1000000004 : Text[30];
+            L_StrPos@1000000002 : Integer;
+            L_StrLen@1000000003 : Integer;
+          BEGIN
+            ItemImp := Rec;
+            ErrorText := '';
+
+            IF STRLEN(ItemImp."Item No.") > MAXSTRLEN(Item."No.") THEN BEGIN
+              L_NewItemNo := '';
+              L_StrPos := STRPOS(ItemImp."Item No.",ItemImp."EAN Code" + '-');
+              L_StrLen := STRLEN(ItemImp."EAN Code");
+              IF (L_StrPos > 0) AND (L_StrLen <> 0) THEN BEGIN
+                L_ItemFilter := PADSTR(COPYSTR(ItemImp."Item No.",1,L_StrPos - 1),L_StrPos + L_StrLen - 1,'?') +
+                  COPYSTR(ItemImp."Item No.",L_StrPos + L_StrLen);
+                ItemImp2.SETCURRENTKEY("Item No.");
+                ItemImp2.FILTERGROUP(2);
+                ItemImp2.SETFILTER("Item No.",'%1',L_ItemFilter);
+                ItemImp2.FILTERGROUP(0);
+                ItemImp2.SETFILTER("Item No.",'<>%1',ItemImp."Item No.");
+                IF ItemImp2.ISEMPTY THEN
+                  L_NewItemNo := DELSTR(ItemImp."Item No.",L_StrPos,L_StrLen + 1);
+              END;
+              IF L_NewItemNo = '' THEN BEGIN
+                ErrorText := ErrorText + E001;
+              END ELSE BEGIN
+                ItemImp."Item No." := L_NewItemNo;
+                CreateItem;
+              END;
+            END ELSE
+              CreateItem;
+
+            IF ErrorText <> '' THEN
+              ERROR(ErrorText);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      PurchSetup@1000000012 : Record 312;
+      Item@1000000004 : Record 27;
+      Item2@1000000006 : Record 27;
+      ItemImp@1000000000 : Record 50002;
+      ItemImp2@1000000007 : Record 50002;
+      TempItem@1000000010 : TEMPORARY Record 27;
+      TempExtTextLine@1000000011 : TEMPORARY Record 280;
+      WEBShop@1000000009 : Record 5251553;
+      WEBShopItem@1000000008 : Record 5251566;
+      ItemShip@1000000013 : Record 50031;
+      ItemParcels@1000000014 : Record 50023;
+      ImpItemMgt@1000000005 : Codeunit 50004;
+      TempItemCrossRef@1000000015 : TEMPORARY Record 5717;
+      ItemCrossRef@1000000016 : Record 5717;
+      ErrorText@1000000003 : Text[250];
+      EntryNo@1000000002 : Integer;
+      i@1000000001 : Integer;
+
+    LOCAL PROCEDURE CreateItem@1000000008();
+    VAR
+      LT_ItemUOM@1000000001 : Record 5404;
+      LT_Manufacturer@1000000003 : Record 5720;
+      LC_GeneralMgt2@1000000016 : Codeunit 50040;
+      ChangeLogMgt@1000000011 : Codeunit 423;
+      RecRef@1000000007 : RecordRef;
+      xRecRef@1000000004 : RecordRef;
+      L_NoOfItems@1000000015 : Integer;
+      L_ItemCategory@1000000006 : Code[20];
+      L_ProductGroup@1000000005 : Code[20];
+      L_Descr@1000000002 : Text[50];
+      L_DateForm@1000000013 : DateFormula;
+      L_UnitPrice@1000000012 : Decimal;
+      L_IsMP@1000000014 : Boolean;
+      L_IsMP2@1000000010 : Integer;
+      i@1000000000 : Integer;
+      E003@1000000009 : TextConst 'DEU="Artikelkategorie fehlt ;";ENU="Item category no found ;"';
+      E004@1000000008 : TextConst 'DEU="Hersteller fehlt ;";ENU="Manufacturer not exist ;"';
+      eBayCode@1000000017 : Record 5095817;
+    BEGIN
+      CLEAR(TempItem);
+      TempItem."No." := ItemImp."Item No.";
+      IF ItemImp."Base Unit of Measure" = '' THEN
+        ItemImp."Base Unit of Measure" := 'ST';
+      TempItem."Base Unit of Measure" := ItemImp."Base Unit of Measure";
+      TempItem."Unit Cost" := ROUND(ItemImp."Unit Cost",0.01);
+      TempItem."Last Direct Cost" := ROUND(ItemImp."Unit Cost",0.01);
+      IF ItemImp."Special Unit Price" <> 0 THEN
+        L_UnitPrice := ROUND(ItemImp."Special Unit Price",0.01)
+      ELSE
+        L_UnitPrice := ROUND(ItemImp."Unit Price",0.01);
+      TempItem."Unit Price" := L_UnitPrice;
+      TempItem."Vendor Com. %" := ROUND(ItemImp."Profit %" * 100,0.01);
+      TempItem."Net Weight" := ItemImp."Net Weight";
+      TempItem."Unit Volume" := ItemImp."Unit Volume";
+      TempItem."Shipping Cost" := ItemImp."Shipping Cost";
+      TempItem."Shipping Source" := ItemImp."Shipping Source";
+      //S/P0934
+      //TempItem."Shipping Code" := ItemImp."Freight Type";
+      eBayCode.RESET;
+      eBayCode.SETRANGE(Type,eBayCode.Type::"Shipping Code");
+      eBayCode.SETRANGE("Match Shipping Code",UPPERCASE(ItemImp."Freight Type"));
+      //H0392  10.06.13  ABR  +++++++++++++++++++++++++++++++
+      IF eBayCode.FINDFIRST THEN
+      //H0392  10.06.13  ABR  -------------------------------
+        TempItem."Shipping Code" := eBayCode.Code
+      ELSE
+        TempItem."Shipping Code" := ItemImp."Freight Type";
+      //E/P0934
+      TempItem."Assembly Service Code" := ItemImp."Assembly Service Code";
+      TempItem."Assembly Service Amount" := ItemImp."Assembly Service Amount";
+      TempItem."Units per Parcel" := ItemImp."Units per Parcel";
+      TempItem."No. 2" := FORMAT(ItemImp."Ext. Item No.");
+      TempItem."Vendor No." := ItemImp."Vendor No.";
+      IF EVALUATE(L_DateForm,'<'+ FORMAT(ItemImp."Lead Time Calculation (min.)") + 'D>') THEN
+        TempItem."Lead Time Calculation (min.)" := L_DateForm;
+      IF EVALUATE(L_DateForm,'<'+ FORMAT(ItemImp."Lead Time Calculation (max.)") + 'D>') THEN
+        TempItem."Lead Time Calculation (max.)" := L_DateForm;
+
+      //H0369  31.05.13  ABR  +++++++++++++++++++++++++++++++++++++++++++
+      TempItem."Lead Time incl. Corr." := ItemImp."Lead Time incl. Corr.";
+      //H0369  31.05.13  ABR  -------------------------------------------
+
+      CheckEAN(TempItem."No.");
+
+      // A/P0EAN
+      // TempItem.EAN := ItemImp."EAN Code";
+      IF ItemImp."EAN Code" <> '' THEN BEGIN
+        TempItemCrossRef.INIT;
+        TempItemCrossRef."Item No." := TempItem."No.";
+        TempItemCrossRef."Unit of Measure" := TempItem."Base Unit of Measure";
+        TempItemCrossRef."Cross-Reference Type" := TempItemCrossRef."Cross-Reference Type"::"Bar Code";
+        TempItemCrossRef."Cross-Reference No." := ItemImp."EAN Code";
+        //S/P1066
+        //TempItemCrossRef.INSERT;
+        IF TempItemCrossRef.INSERT THEN;
+        //E/P1066
+      END;
+      // E/P0EAN
+
+      TempItem."Vendor Description" := ItemImp."Original Description";
+
+      IF ItemImp.Manufacturer <> '' THEN BEGIN
+        LT_Manufacturer.SETRANGE(Name,COPYSTR(ItemImp.Manufacturer,1,50));
+        IF LT_Manufacturer.FINDFIRST THEN BEGIN
+          TempItem."Manufacturer Code" := LT_Manufacturer.Code;
+        END ELSE BEGIN
+          IF LT_Manufacturer.GET(COPYSTR(ItemImp.Manufacturer,1,10)) THEN
+            LT_Manufacturer.Code := COPYSTR(ItemImp.Manufacturer,1,9) + '2'
+          ELSE
+            LT_Manufacturer.Code := COPYSTR(ItemImp.Manufacturer,1,10);
+          LT_Manufacturer.Name := COPYSTR(ItemImp.Manufacturer,1,50);
+          IF NOT LT_Manufacturer.INSERT THEN
+            ErrorText:= ErrorText + COPYSTR(E004,1,MAXSTRLEN(ItemImp."Import Error Text"))
+          ELSE
+            TempItem."Manufacturer Code" := LT_Manufacturer.Code;
+        END;
+      END;
+      TempItem."Vendor Item No." := COPYSTR(ItemImp."Manufacturer Item No.",1,MAXSTRLEN(TempItem."Vendor Item No."));
+      TempItem."Vendor Item No. Add." := COPYSTR(ItemImp."Manufacturer Item No.",MAXSTRLEN(TempItem."Vendor Item No.") + 1);
+
+      i := 1;
+      REPEAT
+        MakeDescription(ItemImp."Item Description",L_Descr,MAXSTRLEN(TempItem.Description));
+        CASE i OF
+          1: TempItem.Description := L_Descr;
+          2: TempItem."Description 2" := L_Descr;
+          ELSE BEGIN
+            IF i = 3 THEN BEGIN
+              TempExtTextLine.DELETEALL;
+              EntryNo := 0;
+            END;
+            EntryNo := EntryNo + 10000;
+            CLEAR(TempExtTextLine);
+            TempExtTextLine."Line No." := EntryNo;
+            TempExtTextLine.Text := L_Descr;
+            TempExtTextLine.INSERT;
+          END;
+        END; //case
+        i := i + 1;
+      UNTIL ItemImp."Item Description" = '';
+
+      L_IsMP := FALSE;
+      L_IsMP2 := LC_GeneralMgt2.CheckMP(TempItem."No.",ItemImp."Vendor No.");
+      IF L_IsMP2 > 0 THEN BEGIN
+        ItemImp."Product Group" := '';
+        L_IsMP := TRUE;
+      END;
+
+      IF (NOT Item.GET(TempItem."No.")) OR (ItemImp."Product Category" <> '') THEN
+        IF NOT FindItemCategory(L_ItemCategory,L_ProductGroup,L_IsMP,L_IsMP2) THEN BEGIN
+          ErrorText:= ErrorText + COPYSTR(E003,1,MAXSTRLEN(ItemImp."Import Error Text"));
+          EXIT;
+        END;
+
+      IF NOT Item.GET(TempItem."No.") THEN BEGIN
+        Item.INIT;
+        Item."No." := TempItem."No.";
+
+        // 2.00 B 13.08.12 DYN(eich) >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        //original Item.INSERT;
+        Item.INSERT(TRUE);
+        // 2.00 E 13.08.12 DYN(eich) <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+        Item.VALIDATE("Item Category Code",L_ItemCategory);
+        Item.VALIDATE("Product Group Code",L_ProductGroup);
+        LT_ItemUOM.INIT;
+        LT_ItemUOM.Code := TempItem."Base Unit of Measure";
+        LT_ItemUOM."Item No." := Item."No.";
+        IF LT_ItemUOM.INSERT THEN;
+        Item.VALIDATE("Base Unit of Measure",TempItem."Base Unit of Measure");
+        Item.VALIDATE("Price Includes VAT",TRUE);
+        Item.VALIDATE("Price/Profit Calculation",Item."Price/Profit Calculation"::"Profit=Price-Cost");
+        IF WEBShop.FINDSET THEN REPEAT
+          WEBShopItem."Webshop Code" := WEBShop.Code;
+          WEBShopItem.SKU := Item."No.";
+          WEBShopItem.Type := WEBShopItem.Type::Simple;
+          WEBShopItem."Item No." := Item."No.";
+          WEBShopItem."Item Unit of Measure Code" := TempItem."Base Unit of Measure";
+          IF WEBShopItem.INSERT THEN;
+        UNTIL WEBShop.NEXT = 0;
+        //Item.VALIDATE("Reordering Policy",Item."Reordering Policy"::"Fixed Reorder Qty."); //P0938
+        //Item."Order Tracking Policy" := Item."Order Tracking Policy"::"Tracking & Action Msg."; //P0938
+        Item.VALIDATE(Item."Reorder Quantity",1);
+        IF L_IsMP2 = 2 THEN
+          Item."Inventory Value Zero" := TRUE;
+        UpdateItem(L_IsMP2);
+        Item.MODIFY;
+        //A/gob-rste/24.09.12/P0374
+        //UpdateInsertStockkeepingUnit(Item); //P0919
+        //E/gob-rste/24.09.12/P0374
+        //### RecRef.GETTABLE(Item);
+        //### ChangeLogMgt.LogInsertion(RecRef);
+      END ELSE BEGIN
+        //### xRecRef.GETTABLE(Item);
+        IF (Item."Shipping Source" <> TempItem."Shipping Source") OR
+           (Item."Shipping Code" <> TempItem."Shipping Code") THEN BEGIN
+          ItemShip."Item No." := Item."No.";
+          ItemShip."Starting Date" := TODAY;
+          ItemShip."Shipping Source" := TempItem."Shipping Source";
+          ItemShip."Shipping Type" := TempItem."Shipping Code";
+          IF ItemShip.INSERT THEN;
+        END;
+
+        IF UpdateItem(L_IsMP2) THEN BEGIN
+          Item.MODIFY;
+          //A/gob-rste/24.09.12/P0374
+          //UpdateInsertStockkeepingUnit(Item); P0919
+          //E/gob-rste/24.09.12/P0374
+          //### RecRef.GETTABLE(Item);
+          //### ChangeLogMgt.LogModification(RecRef,xRecRef);
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE UpdateItem@1000000006(_IsMP2@1000000010 : Integer) : Boolean;
+    VAR
+      LT_ItemUOM@1000000001 : Record 5404;
+      LT_ExtTextHeader@1000000004 : Record 279;
+      LT_ExtTextLine@1000000003 : Record 280;
+      LT_Manufacturer@1000000007 : Record 5720;
+      LT_ItemReference@1000000005 : Record 5717;
+      LT_ValueEntry@1000000012 : Record 5802;
+      L_Descr@1000000002 : Text[50];
+      L_ChangeItem@1000000011 : Boolean;
+      L_LineNo@1000000009 : Integer;
+      i@1000000000 : Integer;
+      E003@1000000006 : TextConst 'DEU="Artikelkategorie fehlt ;";ENU="Item category no found ;"';
+      E004@1000000008 : TextConst 'DEU="Hersteller fehlt ;";ENU="Manufacturer not exist ;"';
+    BEGIN
+      L_ChangeItem := FALSE;
+
+      IF (Item."Unit Cost" <> TempItem."Unit Cost") AND (Item."Unit Cost" = 0) THEN
+        IF NOT TestEntriesExist THEN BEGIN
+          L_ChangeItem := TRUE;
+          Item.VALIDATE("Unit Cost",ROUND(TempItem."Unit Cost",0.00001));
+        END;
+      IF Item."Last Direct Cost" <> TempItem."Last Direct Cost" THEN BEGIN
+        L_ChangeItem := TRUE;
+        Item.VALIDATE(Item."Last Direct Cost",ROUND(TempItem."Unit Cost",0.00001));
+      END;
+      IF Item."Unit Price" <> TempItem."Unit Price" THEN BEGIN
+        L_ChangeItem := TRUE;
+        Item.VALIDATE("Unit Price",TempItem."Unit Price");
+      END;
+
+      IF ((_IsMP2 = 2) AND (NOT Item."Inventory Value Zero")) OR ((_IsMP2 <> 2) AND Item."Inventory Value Zero") THEN BEGIN
+        LT_ValueEntry.SETCURRENTKEY("Item No.","Valuation Date","Location Code","Variant Code");
+        LT_ValueEntry.SETRANGE("Item No.",Item."No.");
+        IF LT_ValueEntry.ISEMPTY THEN BEGIN
+          Item."Inventory Value Zero" := _IsMP2 = 2;
+          L_ChangeItem := TRUE;
+        END;
+      END;
+
+      IF (Item."Net Weight" <> TempItem."Net Weight") OR
+         (Item."Unit Volume" <> TempItem."Unit Volume") OR
+         (Item."Shipping Cost" <> TempItem."Shipping Cost") OR
+         (Item."Shipping Source" <> TempItem."Shipping Source") OR
+         (Item."Shipping Code" <> TempItem."Shipping Code") OR
+         (Item."Assembly Service Code" <> TempItem."Assembly Service Code") OR
+         (Item."Assembly Service Amount" <> TempItem."Assembly Service Amount") OR
+         (Item."No. 2" <> TempItem."No. 2") OR
+         (Item."Lead Time Calculation (min.)" <> TempItem."Lead Time Calculation (min.)") OR
+         (Item."Lead Time Calculation (max.)" <> TempItem."Lead Time Calculation (max.)") OR
+         //H0369  31.05.13  ABR  +++++++++++++++++++++++++++++++++++++++++++
+         (Item."Lead Time incl. Corr." <> TempItem."Lead Time incl. Corr.") OR
+         //H0369  31.05.13  ABR  -------------------------------------------
+         (Item.Description <> TempItem.Description) OR
+         (Item."Description 2" <> TempItem."Description 2") OR
+         (Item."Vendor No." <> TempItem."Vendor No.") OR
+         (Item."Vendor Com. %" <> TempItem."Vendor Com. %") OR
+         (Item."Vendor Item No." <> TempItem."Vendor Item No.") OR
+         (Item."Vendor Item No. Add." <> TempItem."Vendor Item No. Add.") OR
+         (Item."Vendor Description" <> TempItem."Vendor Description") OR
+         (Item."Manufacturer Code" <> TempItem."Manufacturer Code") THEN BEGIN
+        L_ChangeItem := TRUE;
+        Item."Net Weight" := TempItem."Net Weight";
+        Item."Unit Volume" := TempItem."Unit Volume";
+        Item."Shipping Cost" := TempItem."Shipping Cost";
+        Item."Shipping Source" := TempItem."Shipping Source";
+        Item."Shipping Code" := TempItem."Shipping Code";
+        Item."Assembly Service Code" := TempItem."Assembly Service Code";
+        Item."Assembly Service Amount" := TempItem."Assembly Service Amount";
+        Item."No. 2" := FORMAT(TempItem."No. 2");
+        //H0369  31.05.13  ABR  +++++++++++++++++++++++++++++++++++++++++++
+        IF (FORMAT(TempItem."Lead Time Calculation (min.)") <> '') OR
+           (FORMAT(TempItem."Lead Time Calculation (max.)") <> '') THEN BEGIN
+        //H0369  31.05.13  ABR  -------------------------------------------
+        Item."Lead Time Calculation (min.)" := TempItem."Lead Time Calculation (min.)";
+        Item."Lead Time Calculation (max.)" := TempItem."Lead Time Calculation (max.)";
+        //H0369  31.05.13  ABR  +++++++++++++++++++++++++++++++++++++++++++
+        END;
+        Item."Lead Time incl. Corr." := TempItem."Lead Time incl. Corr.";
+        //H0369  31.05.13  ABR  -------------------------------------------
+        Item.VALIDATE(Description,TempItem.Description);
+        Item."Description 2" := TempItem."Description 2";
+        Item."Vendor No." := TempItem."Vendor No.";
+        Item."Vendor Com. %" := TempItem."Vendor Com. %";
+        Item."Vendor Item No." := TempItem."Vendor Item No.";
+        Item."Vendor Item No. Add." := TempItem."Vendor Item No. Add.";
+        Item."Vendor Description" := TempItem."Vendor Description";
+        Item."Manufacturer Code" := TempItem."Manufacturer Code";
+      END;
+
+      Item.CALCFIELDS("Parcels Number");
+      IF Item."Parcels Number" <> TempItem."Units per Parcel" THEN BEGIN
+        ItemParcels.RESET;
+        ItemParcels.SETRANGE("Item No.",Item."No.");
+        IF NOT ItemParcels.ISEMPTY THEN
+          ItemParcels.DELETEALL;
+        IF TempItem."Units per Parcel" > 0 THEN BEGIN
+          L_LineNo := 0;
+          FOR i := 1 TO TempItem."Units per Parcel" DO BEGIN
+            L_LineNo := L_LineNo + 10000;
+            ItemParcels.INIT;
+            ItemParcels."Item No." := Item."No.";
+            ItemParcels."Line No." := L_LineNo;
+            ItemParcels.INSERT;
+          END;
+        END;
+      END;
+
+      // A/P0EAN
+      // IF Item.EAN <> TempItem.EAN THEN BEGIN
+      //   L_ChangeItem := TRUE;
+      //   Item.EAN := TempItem.EAN;
+      //   IF TempItem.EAN <> '' THEN BEGIN
+      //     CLEAR(LT_ItemReference);
+      //     LT_ItemReference.INIT;
+      //     LT_ItemReference."Item No." := Item."No.";
+      //     LT_ItemReference."Unit of Measure" := Item."Base Unit of Measure";
+      //     LT_ItemReference."Cross-Reference Type" := LT_ItemReference."Cross-Reference Type"::"Bar Code";
+      //     LT_ItemReference."Cross-Reference No." := TempItem.EAN;
+      //     IF LT_ItemReference.INSERT THEN;
+      //   END ELSE BEGIN
+      //     LT_ItemReference.RESET;
+      //     LT_ItemReference.SETRANGE("Item No.",Item."No.");
+      //     LT_ItemReference.SETRANGE("Unit of Measure",Item."Base Unit of Measure");
+      //     LT_ItemReference.SETRANGE("Cross-Reference Type",LT_ItemReference."Cross-Reference Type"::"Bar Code");
+      //     IF NOT LT_ItemReference.ISEMPTY THEN
+      //       LT_ItemReference.DELETEALL;
+      //   END;
+      // END;
+
+      // Wenn temporÑr erstellte Referenz gefÅllt ist...
+      IF TempItemCrossRef."Cross-Reference No." <> '' THEN BEGIN
+        // ... nachsehen, ob fÅr zu aktualisierenden Artikel bereits diese EAN gÅltig hinterlegt ist
+        // S/P1220
+        // LT_ItemReference.SETRANGE("Item No.",Item."No.");
+        // LT_ItemReference.SETRANGE("Unit of Measure",Item."Base Unit of Measure");
+        // LT_ItemReference.SETRANGE("Cross-Reference Type",LT_ItemReference."Cross-Reference Type"::"Bar Code");
+        // LT_ItemReference.SETRANGE("Cross-Reference No.",TempItemCrossRef."Cross-Reference No.");
+        // LT_ItemReference.SETRANGE("Discontinue Bar Code",FALSE);
+        IF LT_ItemReference.GET(Item."No.",'',Item."Base Unit of Measure",LT_ItemReference."Cross-Reference Type"::"Bar Code",
+                                '',TempItemCrossRef."Cross-Reference No.") THEN BEGIN
+          IF LT_ItemReference."Discontinue Bar Code" THEN BEGIN
+            LT_ItemReference."Discontinue Bar Code" := FALSE;
+            LT_ItemReference.MODIFY;
+          END;
+        END ELSE BEGIN
+          // Wenn keine EAN eingetragen, dann erstelle Referenz
+          // IF LT_ItemReference.ISEMPTY THEN BEGIN
+        // E/P1220
+          LT_ItemReference.INIT;
+          LT_ItemReference."Item No." := Item."No.";
+          LT_ItemReference."Unit of Measure" := Item."Base Unit of Measure";
+          LT_ItemReference."Cross-Reference Type" := LT_ItemReference."Cross-Reference Type"::"Bar Code";
+          LT_ItemReference."Cross-Reference No." := TempItemCrossRef."Cross-Reference No.";
+          IF LT_ItemReference.INSERT THEN;
+        // S/P1220
+        //   END ELSE;
+        //   // Wenn EAN gefunden wird mit der selben Nummer, muss nichts passieren
+        END;
+        // E/P1220
+
+        // A/P1079
+        // Deaktivieren aller alten EANs
+        LT_ItemReference.SETRANGE("Item No.",Item."No.");
+        LT_ItemReference.SETRANGE("Unit of Measure",Item."Base Unit of Measure");
+        LT_ItemReference.SETRANGE("Cross-Reference Type",LT_ItemReference."Cross-Reference Type"::"Bar Code");
+        LT_ItemReference.SETFILTER("Cross-Reference No.",'<>%1',TempItemCrossRef."Cross-Reference No.");
+        LT_ItemReference.SETRANGE("Discontinue Bar Code");
+        IF LT_ItemReference.FINDSET THEN REPEAT
+          LT_ItemReference."Discontinue Bar Code" := TRUE;
+          LT_ItemReference.MODIFY;
+        UNTIL LT_ItemReference.NEXT = 0;
+        // E/P1079
+      END ELSE BEGIN
+        // Wenn keine EAN mitgegeben wird, dann deaktivieren aller alten EANs
+        LT_ItemReference.SETRANGE("Item No.",Item."No.");
+        LT_ItemReference.SETRANGE("Unit of Measure",Item."Base Unit of Measure");
+        LT_ItemReference.SETRANGE("Cross-Reference Type",LT_ItemReference."Cross-Reference Type"::"Bar Code");
+        IF LT_ItemReference.FINDSET THEN REPEAT
+          LT_ItemReference."Discontinue Bar Code" := TRUE;
+          LT_ItemReference.MODIFY;
+        UNTIL LT_ItemReference.NEXT = 0;
+      END;
+      // E/P0EAN
+
+
+      IF TempExtTextLine.FIND('-') THEN BEGIN
+        L_ChangeItem := TRUE;
+        IF NOT LT_ExtTextHeader.GET(LT_ExtTextHeader."Table Name"::Item,Item."No.",'',1) THEN BEGIN
+          LT_ExtTextHeader.INIT;
+          LT_ExtTextHeader."Table Name" := LT_ExtTextHeader."Table Name"::Item;
+          LT_ExtTextHeader."No." := Item."No.";
+          LT_ExtTextHeader."Text No." := 1;
+          LT_ExtTextHeader.VALIDATE("All Language Codes",TRUE);
+        END;
+        LT_ExtTextLine.SETRANGE("Table Name",LT_ExtTextHeader."Table Name");
+        LT_ExtTextLine.SETRANGE("No.",LT_ExtTextHeader."No.");
+        LT_ExtTextLine.SETRANGE("Language Code",LT_ExtTextHeader."Language Code");
+        LT_ExtTextLine.SETRANGE("Text No.",LT_ExtTextHeader."Text No.");
+        IF NOT LT_ExtTextLine.ISEMPTY THEN
+          LT_ExtTextLine.DELETEALL;
+        EntryNo := 0;
+        Item."Automatic Ext. Texts" := TRUE;
+        REPEAT
+          EntryNo := EntryNo + 10000;
+          LT_ExtTextLine.INIT;
+          LT_ExtTextLine."Table Name" := LT_ExtTextHeader."Table Name";
+          LT_ExtTextLine."No." := LT_ExtTextHeader."No.";
+          LT_ExtTextLine."Language Code" := LT_ExtTextHeader."Language Code";
+          LT_ExtTextLine."Text No." := LT_ExtTextHeader."Text No.";
+          LT_ExtTextLine."Line No." := EntryNo;
+          LT_ExtTextLine.Text := TempExtTextLine.Text;
+          LT_ExtTextLine.INSERT;
+        UNTIL TempExtTextLine.NEXT = 0;
+      END;
+
+      EXIT(L_ChangeItem);
+    END;
+
+    LOCAL PROCEDURE MakeDescription@1000000004(VAR _RestText@1000000000 : Text[250];VAR _SelectText@1000000005 : Text[250];_TextLenght@1000000002 : Integer);
+    VAR
+      i@1000000003 : Integer;
+    BEGIN
+      _SelectText := COPYSTR(_RestText,1,_TextLenght);
+      IF STRLEN(_RestText) < _TextLenght THEN BEGIN
+        _RestText := '';
+        EXIT;
+      END;
+      FOR i := _TextLenght DOWNTO 1 DO BEGIN
+        IF COPYSTR(_SelectText,i,1) IN [' ',',',';','-'] THEN BEGIN
+          _SelectText := DELCHR(COPYSTR(_SelectText,1,i),'>',' ');
+          _RestText := DELSTR(_RestText,1,i);
+          i := 0;
+        END;
+        IF i = 1 THEN BEGIN
+          _SelectText := DELCHR(COPYSTR(_SelectText,1,_TextLenght),'>',' ');
+          _RestText := DELSTR(_RestText,1,_TextLenght);
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE TestLedgerEntriesExist@1006(_TestOpen@1000000000 : Boolean) : Boolean;
+    VAR
+      LT_ItemLedgEntry@1001 : Record 32;
+      E002@1000000001 : TextConst 'DEU="Basiseinheit darf nicht geÑndert werden ;";ENU="Base unit cannot change ;"';
+    BEGIN
+      LT_ItemLedgEntry.SETCURRENTKEY("Item No.");
+      LT_ItemLedgEntry.SETRANGE("Item No.",Item."No.");
+      IF _TestOpen THEN
+        LT_ItemLedgEntry.SETRANGE(Open,TRUE);
+      IF LT_ItemLedgEntry.ISEMPTY THEN
+        EXIT(TRUE)
+      ELSE BEGIN
+        ErrorText := ErrorText + COPYSTR(E002,1,MAXSTRLEN(ItemImp."Import Error Text"));
+        EXIT(FALSE);
+      END;
+    END;
+
+    PROCEDURE TestEntriesExist@1000000001() : Boolean;
+    VAR
+      LT_ItemLedgEntry@1001 : Record 32;
+      LT_PurchOrderLine@1000000000 : Record 39;
+    BEGIN
+      LT_ItemLedgEntry.SETCURRENTKEY("Item No.");
+      LT_ItemLedgEntry.SETRANGE("Item No.",Item."No.");
+      IF LT_ItemLedgEntry.FIND('-') THEN
+        EXIT(TRUE);
+      LT_PurchOrderLine.SETCURRENTKEY("Document Type",Type,"No.");
+      LT_PurchOrderLine.SETFILTER("Document Type",'%1|%2',LT_PurchOrderLine."Document Type"::Order,
+        LT_PurchOrderLine."Document Type"::"Return Order");
+      LT_PurchOrderLine.SETRANGE(Type,LT_PurchOrderLine.Type::Item);
+      LT_PurchOrderLine.SETRANGE("No.",Item."No.");
+      IF LT_PurchOrderLine.FIND('-') THEN
+        EXIT(TRUE);
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE GetBaseUOM@1000000002(ItemNo@1000000000 : Code[20]) ResultSet : ARRAY [2] OF Text[100];
+    VAR
+      Item@1000000001 : Record 27;
+    BEGIN
+      IF Item.GET(ItemNo) THEN BEGIN
+        ResultSet[1] := Item.Description;
+        ResultSet[2] := Item."Base Unit of Measure";
+      END;
+    END;
+
+    PROCEDURE GetDescription@1100122000(ItemNo@1100122000 : Code[20]) ResultSet : Text[100];
+    VAR
+      Item@1100122001 : Record 27;
+    BEGIN
+      IF Item.GET(ItemNo) THEN
+        ResultSet := Item.Description;
+    END;
+
+    PROCEDURE ItemExists@1100122002(Code@1100122000 : Code[100]) Result : Boolean;
+    VAR
+      Item@1100122001 : Record 27;
+    BEGIN
+      IF Item.GET(Code) THEN
+        Result := TRUE
+      ELSE
+        Result := FALSE;
+    END;
+
+    PROCEDURE CheckEAN@1000000003(_ItemNo@1000000005 : Code[20]);
+    VAR
+      L_EANincorrect@1000000002 : Boolean;
+      L_Sum@1000000003 : Integer;
+      L_CheckSum@1000000004 : Integer;
+      L_ErrorText@1000000007 : Text[80];
+      L_Int@1000000001 : Integer;
+      E005@1000000000 : TextConst 'DEU="EAN fehlerhaft ;";ENU="EAN false ; "';
+      E006@1000000006 : TextConst 'DEU="EAN existiert zu Artikel %1 ;";ENU="EAN exist for item %1 ;"';
+      ItemCrossRef@1000000008 : Record 5717;
+    BEGIN
+      L_Sum := 0;
+      L_CheckSum := 0;
+      i := 0;
+      IF STRLEN(ItemImp."EAN Code") <> 13 THEN
+        L_ErrorText:= E005
+      ELSE
+        FOR i:= 1 TO 13 DO BEGIN
+          IF EVALUATE(L_Int,COPYSTR(ItemImp."EAN Code",i,1)) THEN BEGIN
+            CASE i OF
+              1,3,5,7,9,11:
+                L_Sum := L_Sum + L_Int;
+              2,4,6,8,10,12:
+                L_Sum := L_Sum + (L_Int * 3);
+              13:
+                BEGIN
+                  L_CheckSum := L_Sum + L_Int;
+                  IF (ROUND(L_CheckSum/10,1) * 10) <> L_CheckSum THEN
+                    L_ErrorText:= E005;
+                END;
+            END; //case
+          END ELSE
+            L_ErrorText:= E005;
+        END;
+
+      IF ItemImp."EAN Code" <> '' THEN BEGIN
+        // A/P0EAN
+        // Item2.SETRANGE(EAN,ItemImp."EAN Code");
+        // Item2.SETFILTER("No.",'<>%1',_ItemNo);
+        // IF NOT Item2.ISEMPTY THEN BEGIN
+        //   Item2.FINDFIRST;
+        //    L_ErrorText:= STRSUBSTNO(E006,Item2."No.");
+        ItemCrossRef.SETFILTER("Item No.",'<>%1',_ItemNo);
+        ItemCrossRef.SETRANGE("Unit of Measure",ItemImp."Base Unit of Measure");
+        ItemCrossRef.SETRANGE("Cross-Reference Type",ItemCrossRef."Cross-Reference Type"::"Bar Code");
+        ItemCrossRef.SETRANGE("Cross-Reference No.",ItemImp."EAN Code");
+        ItemCrossRef.SETRANGE("Discontinue Bar Code",FALSE);
+        IF NOT ItemCrossRef.ISEMPTY THEN BEGIN
+           ItemCrossRef.FINDFIRST;
+           L_ErrorText:= STRSUBSTNO(E006,ItemCrossRef."Item No.");
+        END;
+        // E/P0EAN
+      END;
+
+      // A/P1079
+      //### IF L_ErrorText <> '' THEN
+      //###   ErrorText:= ErrorText + L_ErrorText;
+      IF L_ErrorText <> '' THEN
+        ErrorText:= ErrorText + L_ErrorText;
+      // E/P1079
+
+      IF L_ErrorText <> '' THEN
+        ItemImp."EAN Code" := '';
+    END;
+
+    PROCEDURE FindItemCategory@1000000000(VAR _ItemCategory@1000000005 : Code[20];VAR _ProductGroup@1000000004 : Code[20];_IsMP@1000000001 : Boolean;_IsMP2@1000000000 : Integer) : Boolean;
+    VAR
+      LT_ProdGroup@1000000002 : Record 5723;
+      LT_ItemCategory@1000000006 : Record 5722;
+    BEGIN
+      _ItemCategory := '';
+      _ProductGroup := '';
+      ItemImp."Product Category" := CONVERTSTR(ItemImp."Product Category",'&','/');
+
+      // A/P0EAN
+      ItemImp."Product Category" := DELCHR(ItemImp."Product Category");
+      // E/P0EAN
+
+      LT_ProdGroup.RESET;
+      LT_ProdGroup.SETRANGE(Description,ItemImp."Product Group");
+      IF _IsMP THEN BEGIN
+        LT_ProdGroup.SETRANGE("Begin Item No.",COPYSTR(TempItem."No.",1,5));
+        IF NOT LT_ProdGroup.FINDFIRST THEN
+          LT_ProdGroup.SETRANGE("Begin Item No.",COPYSTR(TempItem."No.",1,2));
+      END ELSE
+        LT_ProdGroup.SETFILTER("Begin Item No.",'%1|%2',COPYSTR(TempItem."No.",1,2),'');
+      IF ItemImp."Product Category" = '' THEN BEGIN
+        IF NOT LT_ProdGroup.FINDLAST THEN
+          EXIT(FALSE)
+        ELSE BEGIN
+          _ItemCategory := LT_ProdGroup."Item Category Code";
+          _ProductGroup := LT_ProdGroup.Code;
+        END;
+      END ELSE BEGIN
+        IF _IsMP THEN
+          LT_ItemCategory.SETFILTER(Description,'%1','@'+ 'MP' + FORMAT(_IsMP2) +' '+ ItemImp."Product Category")
+        ELSE
+          LT_ItemCategory.SETFILTER(Description,'%1','@'+ ItemImp."Product Category");
+        IF NOT LT_ItemCategory.FINDLAST THEN
+          EXIT(FALSE);
+        _ItemCategory := LT_ItemCategory.Code;
+        LT_ProdGroup.SETRANGE("Item Category Code",LT_ItemCategory.Code);
+        IF LT_ProdGroup.FINDFIRST THEN
+          _ProductGroup := LT_ProdGroup.Code;
+      END;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE UpdateItemIntBatch@1000000007(VAR _ItemImp@1000000000 : Record 50002);
+    VAR
+      L_Window@1000000001 : Dialog;
+    BEGIN
+      IF _ItemImp.FIND('-') THEN BEGIN
+        L_Window.OPEN('lfd.-Nr. #1##########');
+        REPEAT
+          IF (_ItemImp."Import Status" = _ItemImp."Import Status"::Inserted) OR
+             (_ItemImp."Import Status" = _ItemImp."Import Status"::Error) THEN BEGIN
+            L_Window.UPDATE(1,_ItemImp."Entry No.");
+            IF _ItemImp."Item No." = '' THEN BEGIN
+              _ItemImp."Import Status" := _ItemImp."Import Status"::Canceled;
+              _ItemImp."Import Error Text" := '';
+            END ELSE BEGIN
+              COMMIT;
+              CLEARLASTERROR;
+              IF ImpItemMgt.RUN(_ItemImp) THEN BEGIN
+                _ItemImp."Import Status" := _ItemImp."Import Status"::Used;
+                _ItemImp."Import Error Text" := '';
+              END ELSE BEGIN;
+                _ItemImp."Import Status" := _ItemImp."Import Status"::Error;
+                _ItemImp."Import Error Text" := COPYSTR(GETLASTERRORTEXT,1,MAXSTRLEN(_ItemImp."Import Error Text"));
+              END;
+            END;
+            _ItemImp."Modified on" := CURRENTDATETIME;
+            _ItemImp.MODIFY;
+          END;
+        UNTIL _ItemImp.NEXT = 0;
+        L_Window.CLOSE;
+      END;
+    END;
+
+    PROCEDURE UpdateInsertStockkeepingUnit@1000000005(p_Item@1000000001 : Record 27);
+    VAR
+      StockkeepingUnit@1000000000 : Record 5700;
+      ItemLoc@1000000002 : Record 27;
+      ReportCreateStockkeepingUnit@1000000003 : Report 5706;
+      UpdateSKU@1000000004 : Boolean;
+    BEGIN
+      //A/gob-rste/24.09.12/P0374
+      UpdateSKU := FALSE;
+      StockkeepingUnit.RESET;
+      StockkeepingUnit.SETCURRENTKEY("Item No.","Location Code","Variant Code");
+      StockkeepingUnit.SETRANGE("Item No.",p_Item."No.");
+      IF StockkeepingUnit.FINDFIRST THEN BEGIN
+        IF StockkeepingUnit."Vendor No." <> p_Item."Vendor No." THEN
+          UpdateSKU := TRUE;
+      END ELSE
+        UpdateSKU := TRUE;
+
+      IF UpdateSKU THEN  BEGIN
+        IF ItemLoc.GET(p_Item."No.") THEN BEGIN
+          CLEAR(ReportCreateStockkeepingUnit);
+          //ReportCreateStockkeepingUnit.SETTABLEVIEW(Item);
+          ReportCreateStockkeepingUnit.SetItemNoFilter(p_Item."No.");
+          ReportCreateStockkeepingUnit.InitializeRequest(0,FALSE,TRUE);
+          ReportCreateStockkeepingUnit.USEREQUESTFORM(FALSE);
+          ReportCreateStockkeepingUnit.SetHideDialog(TRUE);
+          ReportCreateStockkeepingUnit.RUNMODAL;
+        END;
+      END;
+      //E/gob-rste/24.09.12/P0374
+    END;
+
+    BEGIN
+    {
+      1.00  10.06.11  eich Erweiterung und ErgÑnzung um FiBu-relevante Daten
+      2.00  13.08.12  eich insert item with true
+
+      P0374 04.10.12  gob-rste Update SKU ich Item Change
+      P0934 29.05.13  gob-rste Import Items AS2NAV
+      P0919 04.06.13  gob-Fuchs SKU Erzeugung auskommentiert
+      P0938 05.06.13  gob-Fuchs Reordering Policy, Order Tracking Policy auskommentiert
+      P0EAN 08.07.13  gob-ael  EAN Code in Tabelle Item Cross Reference gebracht
+      P1066 06.08.13  gob-rste IF Insert THEN
+      P1079 19.08.13  gob-ael  EAN Code deaktivieren, wenn alte vorhanden
+      P1220 10.03.14  gob-ael  Wenn EAN Code bereits vorhanden und deaktiviert, dann wieder aktivieren
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+      *** Module: Enhancement Item Master Data ***
+      H0369       31.05.13 ABR       Preparing for Itemservice
+      H0392       10.06.13 ABR       Performance Improved
+    }
+    END.
+  }
+}
+

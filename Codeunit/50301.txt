@@ -1,0 +1,300 @@
+OBJECT Codeunit 50301 Whse. LF Sales Export Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=19.03.15;
+    Time=12:53:56;
+    Modified=Yes;
+    Version List=#HME2183;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+            WhseLFSetup.GET;
+            WhseLFSetup.TESTFIELD("Interface ID KAD");
+
+            CASE InterfaceCode OF
+              WhseLFSetup."Interface ID KAD": ExportKAD;              // KAD-EXPORT
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      FPCInterfaceSetup@1000000006 : Record 50014;
+      WhseLFSetup@1000000001 : Record 50300;
+      WhseLFSalesExpHeader@1000000002 : Record 50304;
+      InterfaceCode@1000000000 : Code[10];
+      Filename@1000000003 : Text[250];
+      TextDatetime@1000000004 : Text[30];
+      WhseLFGenMgt@1000000005 : Codeunit 50307;
+      HMEText001@1000000007 : TextConst 'ENU="%1 is blank for %2; %3: %4, %5: %6"';
+
+    PROCEDURE SetInterfaceCode@1000000001(InterfaceCodeV@1000000000 : Code[10]);
+    BEGIN
+      InterfaceCode := InterfaceCodeV;
+    END;
+
+    PROCEDURE SetWhseLFSalesExpHeader@1000000004(WhseLFSalesExpHeaderV@1000000000 : Record 50304);
+    BEGIN
+      WhseLFSalesExpHeader := WhseLFSalesExpHeaderV;
+    END;
+
+    LOCAL PROCEDURE ExportKAD@1000000002();
+    VAR
+      SalesHeaderL@1000000018 : Record 36;
+      PurchasingL@1000000004 : Record 5721;
+      WhseLFSalesExportLineL@1000000006 : Record 50305;
+      WhseLFSalesExportLineItemL@1000000003 : Record 50305;
+      WhseLFSalesExportLineAssemblyL@1000000002 : Record 50305;
+      WhseLFSalesExportLineBarcodeL@1000000012 : Record 50305;
+      LocationL@1000000010 : Record 14;
+      ItemL@1000000011 : Record 27;
+      WhseH24SubInterfaceL@1000000014 : Record 50506;
+      WhseLFImportExportFilesL@1000000000 : Record 50308;
+      CountryRegionL@1000000009 : Record 9;
+      HermesDepotDirectInjL@1000000019 : Record 50333;
+      HermesSetupL@1000000020 : Record 50319;
+      FPCManagementL@1000000015 : Codeunit 50003;
+      OutStreamL@1000000008 : OutStream;
+      InstreamL@1000000001 : InStream;
+      FileVarL@1000000007 : File;
+      TransmissionNoIntL@1000000013 : Integer;
+      ActionTypeL@1000000016 : Integer;
+      ItemTextL@1000000005 : Text[250];
+      DepotStrL@1000000017 : Text[20];
+    BEGIN
+      // KAK = KAK + KAL + x*KAP
+
+      // H2127  24.02.15  MKR +++++++++++++++++++++++++++++++++++++++
+      WhseH24SubInterfaceL.GET(WhseLFSetup."Interface ID KAD", WhseLFSalesExpHeader."Whse. H24 Identifier Code");
+      FPCInterfaceSetup.GET(WhseH24SubInterfaceL."FPC Interface Setup Code");
+      // H2127  24.02.15  MKR ---------------------------------------
+      FPCInterfaceSetup.TESTFIELD("Export Folder");
+
+      Filename := CreateKADFile;
+      WhseLFGenMgt.FileCreate(FPCInterfaceSetup."Export Folder",Filename);
+
+      // Export KAK (Header)
+      WhseLFGenMgt.FileOpen(FPCInterfaceSetup."Export Folder",Filename);
+      WhseLFGenMgt.FileAddLine(PADSTR(WhseLFSalesExpHeader."Record Type",3,' '),FALSE);
+      // H2127  24.02.15  MKR ++++++++++++++++++++++++++++++++++++++++++++++++
+      WhseLFGenMgt.FileAddLine(PADSTR(WhseLFSalesExpHeader."Whse. H24 Identifier Code",4,' '),FALSE);
+      // H2127  24.02.15  MKR ------------------------------------------------
+      WhseLFGenMgt.FileAddLine(PADSTR(WhseLFSalesExpHeader."Branch Code",6,' '),FALSE);
+      //H2183  04.03.15  DMO +++++++++++++++++++++++++++++++++++++++
+      //WhseLFGenMgt.FileAddLine(PADSTR(FORMAT(WhseLFSetup."home24 Branch No."),20,' '),FALSE);
+      HermesSetupL.GET;
+      DepotStrL := '';
+      WhseLFSalesExportLineL.SETRANGE("Entry No.",WhseLFSalesExpHeader."Entry No.");
+      IF WhseLFSalesExportLineL.FINDFIRST AND
+        (WhseLFSalesExportLineL."Shipping Agent Code" = HermesSetupL."Shipping Agent Hermes")
+      THEN BEGIN
+        LocationL.GET(WhseLFSalesExportLineL."Location Code");
+        DepotStrL := LocationL."Hermes Injection Depot";
+
+        SalesHeaderL.GET(WhseLFSalesExpHeader."Document Type",WhseLFSalesExpHeader."Document No.");
+        HermesDepotDirectInjL.GetSalesOrderDILocation(SalesHeaderL,LocationL);
+        DepotStrL += ',' + LocationL.Code;
+      END;
+      WhseLFGenMgt.FileAddLine(PADSTR(DepotStrL,20,' '),FALSE);
+      //H2183  04.03.15  DMO ---------------------------------------
+      WhseLFGenMgt.FileAddLine(PADSTR(WhseLFSalesExpHeader."LF Order No.",20,' '),FALSE);
+      WhseLFGenMgt.FileAddLine(PADSTR(WhseLFSalesExpHeader."Document No.",20,' '),FALSE);
+      WhseLFGenMgt.FileAddLine(PADSTR(WhseLFSalesExpHeader."Ship-to Customer No.",15,' '),FALSE);
+      CASE WhseLFSalesExpHeader."Transmission Mode" OF
+        WhseLFSalesExpHeader."Transmission Mode"::New: WhseLFGenMgt.FileAddLine('1',FALSE);
+        WhseLFSalesExpHeader."Transmission Mode"::Update: WhseLFGenMgt.FileAddLine('2',FALSE);
+        WhseLFSalesExpHeader."Transmission Mode"::Cancel: WhseLFGenMgt.FileAddLine('3',FALSE);
+      END;
+      //H2157 16.03.15 DMO +++++++++++++++++++++++++++++
+      WhseLFGenMgt.FileAddLine(PADSTR(' ',10,' '),FALSE);
+      //H2157 16.03.15 DMO -----------------------------
+      TextDatetime :=
+        FORMAT(WhseLFSalesExpHeader."Order Date",0,'<Day,2>.<Month,2>.<Year4>') +
+        '-' +
+        FORMAT(TIME,0,'<Hours24,2><Filler Character,0>:<Minutes,2>:<Seconds,2>');
+      WhseLFGenMgt.FileAddLine(PADSTR(TextDatetime,19,' '),FALSE);
+      WhseLFSalesExportLineL.SETRANGE("Entry No.",WhseLFSalesExpHeader."Entry No.");
+      IF WhseLFSalesExportLineL.FINDFIRST THEN BEGIN
+        PurchasingL.GET(WhseLFSalesExportLineL."Purchasing Code");
+        CASE PurchasingL."Delivery Type" OF
+          PurchasingL."Delivery Type"::Kunde:
+            BEGIN
+              //H2183  04.03.15  DMO +++++++++++++++++++++++++++++++++++++++
+              IF PurchasingL."Parcel Channel" THEN
+                WhseLFGenMgt.FileAddLine(PADSTR('K',32,' '),FALSE)
+              ELSE
+                WhseLFGenMgt.FileAddLine(PADSTR('C',32,' '),FALSE);
+              //H2183  04.03.15  DMO ---------------------------------------
+            END;
+          PurchasingL."Delivery Type"::Selbstabholer: WhseLFGenMgt.FileAddLine(PADSTR('S',32,' '),FALSE);
+        END;
+      END;
+      WhseLFSalesExportLineAssemblyL.SETRANGE("Entry No.",WhseLFSalesExpHeader."Entry No.");
+      WhseLFSalesExportLineAssemblyL.SETRANGE(Type,WhseLFSalesExportLineL.Type::Assembly);
+      IF WhseLFSalesExportLineAssemblyL.FINDSET THEN
+        REPEAT
+          WhseLFSalesExportLineItemL.SETRANGE("Entry No.",WhseLFSalesExpHeader."Entry No.");
+          WhseLFSalesExportLineItemL.SETRANGE(Type,WhseLFSalesExportLineL.Type::Item);
+          WhseLFSalesExportLineItemL.SETRANGE("Pos. No.",WhseLFSalesExportLineAssemblyL."Attached to Pos. No.");
+          IF WhseLFSalesExportLineItemL.FINDFIRST THEN
+            ItemTextL += WhseLFSalesExportLineItemL."No." + ',';
+        UNTIL WhseLFSalesExportLineAssemblyL.NEXT = 0;
+
+      ItemTextL := DELCHR(ItemTextL,'>',',');
+      IF ItemTextL <> '' THEN
+        ItemTextL := COPYSTR('Montage fÅr: ' + ItemTextL,1,250);
+      WhseLFGenMgt.FileAddLine(PADSTR(ItemTextL,250,' '),FALSE);
+
+      WhseLFGenMgt.FileAddLine(';',TRUE);
+
+      // Export KAL (Header)
+      IF WhseLFSalesExpHeader."Sales Return Order" THEN
+        WhseLFGenMgt.FileAddLine(PADSTR(WhseLFSetup."Record Type KAA",3,' '),FALSE)
+      ELSE
+        WhseLFGenMgt.FileAddLine(PADSTR(WhseLFSetup."Record Type KAL",3,' '),FALSE);
+      CASE WhseLFSalesExpHeader.Salutation OF
+        WhseLFSalesExpHeader.Salutation::Mr: WhseLFGenMgt.FileAddLine('1',FALSE);
+        WhseLFSalesExpHeader.Salutation::Mrs: WhseLFGenMgt.FileAddLine('2',FALSE);
+        WhseLFSalesExpHeader.Salutation::Company: WhseLFGenMgt.FileAddLine('3',FALSE);
+      END;
+      WhseLFGenMgt.FileAddLine(PADSTR(FPCManagementL.DeleteCRLF(WhseLFSalesExpHeader."Ship-to Name", FALSE),60,' '),FALSE);
+      WhseLFGenMgt.FileAddLine(PADSTR(FPCManagementL.DeleteCRLF(WhseLFSalesExpHeader."Ship-to Name 2", FALSE),30,' '),FALSE);
+      WhseLFGenMgt.FileAddLine(PADSTR(FPCManagementL.DeleteCRLF(WhseLFSalesExpHeader."Ship-to Address 2", FALSE),60,' '),FALSE);
+      WhseLFGenMgt.FileAddLine(PADSTR(FPCManagementL.DeleteCRLF(WhseLFSalesExpHeader."Ship-to Address", FALSE),58,' '),FALSE);
+      WhseLFGenMgt.FileAddLine(PADSTR(FPCManagementL.DeleteCRLF(WhseLFSalesExpHeader."Ship-to Post Code", FALSE),8,' '),FALSE);
+      WhseLFGenMgt.FileAddLine(PADSTR(FPCManagementL.DeleteCRLF(WhseLFSalesExpHeader."Ship-to City", FALSE),50,' '),FALSE);
+
+      IF NOT CountryRegionL.GET(WhseLFSalesExpHeader."Ship-to Country/Region Code") THEN BEGIN
+        CountryRegionL.INIT;
+        CountryRegionL."Country Code Rhenus" := 'D';
+      END;
+      WhseLFGenMgt.FileAddLine(PADSTR(CountryRegionL."Country Code Rhenus",3,' '),FALSE);
+      WhseLFGenMgt.FileAddLine(PADSTR(WhseLFSalesExpHeader."Phone No.",60,' '),FALSE);
+      WhseLFGenMgt.FileAddLine(PADSTR(WhseLFSalesExpHeader."E-Mail",70,' '),FALSE);
+      //H1412 05.09.14 EHN ++++++++++++++++++++++++++++++++
+      WhseLFGenMgt.FileAddLine(PADSTR(WhseLFSalesExpHeader."Ship-to Country/Region Code",2,' '),FALSE);
+      WhseLFGenMgt.FileAddLine(PADSTR(WhseLFSalesExpHeader."Language Code",3,' '),FALSE);
+      //H1412 05.09.14 EHN --------------------------------
+      WhseLFGenMgt.FileAddLine(PADSTR(FORMAT(WhseLFSalesExpHeader."Shipment Date"),20,' '),FALSE);
+      WhseLFGenMgt.FileAddLine(';',TRUE);
+
+      // Export KAP
+      WhseLFSalesExportLineItemL.RESET;
+      WhseLFSalesExportLineItemL.SETRANGE("Entry No.",WhseLFSalesExpHeader."Entry No.");
+      WhseLFSalesExportLineItemL.SETRANGE(Type,WhseLFSalesExportLineItemL.Type::Item);
+      IF WhseLFSalesExportLineItemL.FINDSET THEN
+        REPEAT
+          WhseLFGenMgt.FileAddLine(PADSTR(WhseLFSalesExportLineItemL."Record Type",3,' '),FALSE);
+          WhseLFGenMgt.FileAddLine(PADSTR(FORMAT(WhseLFSalesExportLineItemL."Pos. No."),5,' '),FALSE);
+          ActionTypeL := WhseLFSalesExportLineItemL."Action Type";
+          WhseLFGenMgt.FileAddLine(PADSTR(FORMAT(ActionTypeL),3,' '),FALSE);
+          WhseLFGenMgt.FileAddLine(PADSTR(FORMAT(WhseLFSalesExportLineItemL.Quantity),5,' '),FALSE);
+
+          IF NOT (WhseLFSalesExportLineItemL."Return Line") THEN BEGIN
+            LocationL.GET(WhseLFSalesExportLineItemL."Location Code");
+            WhseLFGenMgt.FileAddLine(PADSTR(LocationL."Item Quality Code",1,' '),FALSE);
+          END ELSE
+            WhseLFGenMgt.FileAddLine(PADSTR('M',1,' '),FALSE);
+
+          IF WhseLFSalesExportLineItemL.Crossdock THEN
+            WhseLFGenMgt.FileAddLine('1',FALSE)
+          ELSE
+            WhseLFGenMgt.FileAddLine('0',FALSE);
+
+          IF WhseLFSalesExportLineItemL."Return Line" THEN
+            WhseLFGenMgt.FileAddLine('0',FALSE)
+          ELSE
+            WhseLFGenMgt.FileAddLine(' ',FALSE);
+
+          WhseLFGenMgt.FileAddLine(PADSTR(WhseLFSalesExportLineItemL."No.",30,' '),FALSE);
+          WhseLFGenMgt.FileAddLine(PADSTR(WhseLFSalesExportLineItemL.Description,50,' '),FALSE);
+          WhseLFGenMgt.FileAddLine(PADSTR(FORMAT(WhseLFSalesExportLineItemL."No. of Packages"),2,' '),FALSE);
+          WhseLFGenMgt.FileAddLine(PADSTR(COPYSTR(FORMAT(WhseLFSalesExportLineItemL."Unit Volume"),1,5),5,' '),FALSE);
+          WhseLFGenMgt.FileAddLine(PADSTR(COPYSTR(FORMAT(ROUND(WhseLFSalesExportLineItemL."Unit Weight",1)),1,4),4,' '),FALSE);
+          //H1812,H1412 11.08.14 EHN +++++++++++++++++++++++++++
+          IF WhseLFSalesExportLineL."Shipping Agent Code" <> '' THEN
+            WhseLFGenMgt.FileAddLine(PADSTR(WhseLFSalesExportLineItemL."Shipping Agent Code",10,' '),FALSE)
+          ELSE
+            ERROR(
+              STRSUBSTNO(
+                HMEText001,WhseLFSalesExportLineItemL.FIELDNAME("Shipping Agent Code"),WhseLFSalesExportLineItemL.TABLENAME,
+                WhseLFSalesExportLineItemL.FIELDNAME("Entry No."), WhseLFSalesExportLineItemL."Entry No.",
+                WhseLFSalesExportLineItemL.FIELDNAME("Entry Line No."), WhseLFSalesExportLineItemL."Entry Line No."));
+          //H1812,H1412 11.08.14 EHN ---------------------------
+          WhseLFGenMgt.FileAddLine(';',TRUE);
+        UNTIL WhseLFSalesExportLineItemL.NEXT = 0;
+
+      WhseLFGenMgt.FileSave;
+      WhseLFGenMgt.FileConvertToUTF8(FPCInterfaceSetup."Export Folder",Filename);
+      IF NOT WhseLFImportExportFilesL.GET(0,0,WhseLFSalesExpHeader."Entry No.") THEN BEGIN
+        WhseLFImportExportFilesL."Entry Type" := WhseLFImportExportFilesL."Entry Type"::Sales;
+        WhseLFImportExportFilesL."Entry Subtype" := WhseLFImportExportFilesL."Entry Subtype"::Export;
+        WhseLFImportExportFilesL."Entry No." := WhseLFSalesExpHeader."Entry No.";
+        WhseLFImportExportFilesL.INSERT;
+      END;
+      FileVarL.OPEN(FPCInterfaceSetup."Export Folder" + Filename);
+      FileVarL.CREATEINSTREAM(InstreamL);
+      WhseLFImportExportFilesL.File.CREATEOUTSTREAM(OutStreamL);
+      COPYSTREAM(OutStreamL,InstreamL);
+      WhseLFImportExportFilesL.MODIFY;
+      WhseLFSalesExpHeader.Filename := Filename;
+      WhseLFSalesExpHeader."Process Timestamp" := CURRENTDATETIME;
+      WhseLFSalesExpHeader.MODIFY;
+    END;
+
+    LOCAL PROCEDURE CreateKADFile@1000000005() : Text[70];
+    VAR
+      KADIdentL@1000000000 : Code[10];
+      ClientIdentL@1000000001 : Code[10];
+      TimestampTxtL@1000000003 : Text[50];
+    BEGIN
+      WhseLFSetup.TESTFIELD("Record Type KAD");
+      // H2127 WhseLFSetup.TESTFIELD("LF Client Identifier");
+      KADIdentL := WhseLFSetup."Record Type KAD";
+      // H2127  24.02.15  MKR +++++++++++++++++++++++++++++++++++++
+      ClientIdentL := WhseLFSalesExpHeader."Whse. H24 Identifier Code";
+      // H2127  24.02.15  MKR -------------------------------------
+      TimestampTxtL :=
+        FORMAT(
+          CURRENTDATETIME,0,
+          '<Year4><Month,2><Day,2><Hours24,2><Minutes,2><Seconds,2><Thousands,3>');
+      EXIT(KADIdentL + ClientIdentL + TimestampTxtL + '.txt');
+    END;
+
+    PROCEDURE GetFilename@1000000003() : Text[250];
+    BEGIN
+      EXIT(Filename);
+    END;
+
+    PROCEDURE DeleteFileAfterError@1000000012();
+    BEGIN
+      WhseLFGenMgt.FileSave;
+      WhseLFGenMgt.FileDeleteAfterError(FPCInterfaceSetup."Export Folder",Filename);
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+      H1408     05.08.14   DMA       Copy RHD Interface, rename and implement as Whs LF Interface
+      H1411     08.08.14   EHN       Clean up Whs LF interface of not needed functionalities: KAB and KAS and field "home24 Branch No."
+      H1412     11.08.14   EHN       LF KAD file:  Add "Versanddienstleister", Country Code and Language Code
+      H1812     13.11.14   EHN       BUG: WHSLF - only DHL is transfered to KAD
+      H2127     24.02.15   MKR       Dynamic location for all home24 operated warehouses in KAD
+      H2183     04.03.15   DMO       ExportKAD is modified
+      H2157     16.03.15   DMO       "Transmission No." is deleted
+    }
+    END.
+  }
+}
+

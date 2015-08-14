@@ -1,0 +1,1568 @@
+OBJECT Codeunit 50220 Service Order
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02.09.13;
+    Time=14:59:54;
+    Version List=HME0513;
+  }
+  PROPERTIES
+  {
+    Subtype=Test;
+    OnRun=BEGIN
+            IsInitialized := FALSE;
+            RANDOMIZE(1);  // Seed should make sure values are reproducible.
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      ServiceOrderAllocation2@1007 : Record 5950;
+      LibraryService@1003 : Codeunit 50209;
+      LibraryUtility@1004 : Codeunit 50206;
+      Assert@1002 : Codeunit 50200;
+      IsInitialized@1009 : Boolean;
+      UnknownError@1027 : TextConst 'ENU=Unknown error: %1';
+      OrderTypeMandatoryMessage@1026 : TextConst 'ENU="You have not specified the Service Order Type for Service Header Document Type=%1, No.=%2."';
+      OrderStartMandatoryMessage@1025 : TextConst 'ENU="You must specify Starting Date in Service Header Document Type=''%1'',No.=''%2''."';
+      OrderStartDateServiceTier@1024 : TextConst 'ENU="Starting Date must have a value in Service Header: Document Type=%1, No.=%2. It cannot be zero or empty."';
+      OrderFinishingMandatoryMessage@1023 : TextConst 'ENU="You must specify Finishing Date in Service Header Document Type=''%1'',No.=''%2''."';
+      OrderFinishingDateServiceTier@1022 : TextConst 'ENU="Finishing Date must have a value in Service Header: Document Type=%1, No.=%2. It cannot be zero or empty."';
+      FaultReasonCodeMandatory@1021 : TextConst 'ENU="You must specify Fault Reason Code in Service Item Line Document Type=''%1'',Document No.=''%2'',Line No.=''%3''."';
+      FaultReasonCodeServiceTier@1020 : TextConst 'ENU="Fault Reason Code must have a value in Service Item Line: Document Type=%1, Document No.=%2, Line No.=%3. It cannot be zero or empty."';
+      SalespersonCodeMandatory@1019 : TextConst 'ENU="You must specify Salesperson Code in Service Header Document Type=''%1'',No.=''%2''."';
+      SalespersonCodeServiceTier@1018 : TextConst 'ENU="Salesperson Code must have a value in Service Header: Document Type=%1, No.=%2. It cannot be zero or empty."';
+      WorkTypeCodeMandatory@1017 : TextConst 'ENU="You must specify Work Type Code in Service Line Document Type=''%1'',Document No.=''%2'',Line No.=''%3''."';
+      WorkTypeCodeServiceTier@1016 : TextConst 'ENU="Work Type Code must have a value in Service Line: Document Type=%1, Document No.=%2, Line No.=%3. It cannot be zero or empty."';
+      UnitOfMeasureMandatory@1015 : TextConst 'ENU="You must specify Unit of Measure Code in Service Line Document Type=''%1'',Document No.=''%2'',Line No.=''%3''."';
+      UnitOfMeasureServiceTier@1014 : TextConst 'ENU="Unit of Measure Code must have a value in Service Line: Document Type=%1, Document No.=%2, Line No.=%3. It cannot be zero or empty."';
+      RespTimeMandatory@1013 : TextConst 'ENU="Response Time (Hours) must not be 0 in Service Contract Line Contract Type=''%1'',Contract No.=''%2'',Line No.=''%3''."';
+      RespTimeServiceTier@1012 : TextConst 'ENU="Response Time (Hours) must have a value in Service Contract Line: Contract Type=%1, Contract No.=%2, Line No.=%3. It cannot be zero or empty."';
+      CustomerDeletionError@1011 : TextConst 'ENU=You cannot delete Customer %1 because there is at least one outstanding Service Order for this customer.';
+      ServItemDeletionError@1010 : TextConst 'ENU=You cannot delete Service Item %1,because it is attached to a service order.';
+      CustomerExistError@1000 : TextConst 'ENU=Customer No. :%1 must not exist.';
+      ServiceItemExistError@1001 : TextConst 'ENU=Service Item No. :%1 must not exist.';
+      ServiceQuoteExistError@1005 : TextConst 'ENU=Service Quote No. :%1 must not exist.';
+      ResourceNo@1006 : Code[20];
+
+    [Normal]
+    LOCAL PROCEDURE Initialize@35();
+    BEGIN
+      IF IsInitialized THEN
+        EXIT;
+
+      // Create Demonstration Database.
+      LibraryService.Initialize;
+      LibraryService.SetupServiceMgtNoSeries;
+
+      IsInitialized := TRUE;
+      COMMIT;
+    END;
+
+    [Test]
+    PROCEDURE ServiceOrderType@57();
+    VAR
+      ServiceHeader@1003 : Record 5900;
+      ServiceMgtSetup@1001 : Record 5911;
+    BEGIN
+      // Test error occurs on Posting Service Order with "Service Order Type Mandatory" True on Service Management Setup.
+
+      // 1. Setup: Set "Service Order Type Mandatory" field True on Service Management Setup.
+      Initialize;
+      ServiceMgtSetup.GET;
+      ServiceMgtSetup.VALIDATE("Service Order Type Mandatory",TRUE);
+      ServiceMgtSetup.MODIFY(TRUE);
+
+      // 2. Exercise: Create Service Order.
+      CreateServiceOrder(ServiceHeader);
+
+      // 3. Verify: Verify that the Service Order shows "Service Order Type" Mandatory error when we Post it as Ship.
+      ASSERTERROR LibraryService.PostServiceOrder(ServiceHeader,TRUE,FALSE,FALSE);
+      Assert.AreEqual(
+        STRSUBSTNO(OrderTypeMandatoryMessage,ServiceHeader."Document Type",ServiceHeader."No."),ConvertMessage(GETLASTERRORTEXT),
+        STRSUBSTNO(UnknownError,GETLASTERRORTEXT));
+
+      // 4. Teardown: Rollback "Service Order Type Mandatory" field as false on Service Management Setup.
+      ServiceMgtSetup.VALIDATE("Service Order Type Mandatory",FALSE);
+      ServiceMgtSetup.MODIFY(TRUE);
+    END;
+
+    [Test]
+    PROCEDURE ServiceOrderStart@56();
+    VAR
+      ServiceHeader@1003 : Record 5900;
+      ServiceMgtSetup@1001 : Record 5911;
+    BEGIN
+      // Test error occurs on Posting Service Order with "Service Order Start Mandatory" True on Service Management Setup.
+
+      // 1. Setup: Set "Service Order Start Mandatory" field True on Service Management Setup.
+      Initialize;
+      ServiceMgtSetup.GET;
+      ServiceMgtSetup.VALIDATE("Service Order Start Mandatory",TRUE);
+      ServiceMgtSetup.MODIFY(TRUE);
+
+      // 2. Exercise: Create Service Order.
+      CreateServiceOrder(ServiceHeader);
+
+      // 3. Verify: Verify that the Service Order shows "Service Order Starting Date" Mandatory error when we Post it as Ship.
+      ASSERTERROR LibraryService.PostServiceOrder(ServiceHeader,TRUE,FALSE,FALSE);
+      IF ISSERVICETIER THEN
+        Assert.AreEqual(
+          STRSUBSTNO(OrderStartDateServiceTier,ServiceHeader."Document Type",ServiceHeader."No."),ConvertMessage(GETLASTERRORTEXT),
+          STRSUBSTNO(UnknownError,GETLASTERRORTEXT))
+      ELSE
+        Assert.AreEqual(
+          STRSUBSTNO(OrderStartMandatoryMessage,ServiceHeader."Document Type",ServiceHeader."No."),ConvertMessage(GETLASTERRORTEXT),
+          STRSUBSTNO(UnknownError,GETLASTERRORTEXT));
+
+      // 4. Teardown: Rollback "Service Order Start Mandatory" field as false on Service Management Setup.
+      ServiceMgtSetup.VALIDATE("Service Order Start Mandatory",FALSE);
+      ServiceMgtSetup.MODIFY(TRUE);
+    END;
+
+    [Test]
+    PROCEDURE ServiceOrderFinish@55();
+    VAR
+      ServiceHeader@1003 : Record 5900;
+      ServiceMgtSetup@1001 : Record 5911;
+    BEGIN
+      // Test error occurs on Posting Service Order with "Service Order Finish Mandatory" True on Service Management Setup.
+
+      // 1. Setup: Set "Service Order Finish Mandatory" field True on Service Management Setup.
+      Initialize;
+      ServiceMgtSetup.GET;
+      ServiceMgtSetup.VALIDATE("Service Order Finish Mandatory",TRUE);
+      ServiceMgtSetup.MODIFY(TRUE);
+
+      // 2. Exercise: Create Service Order.
+      CreateServiceOrder(ServiceHeader);
+
+      // 3. Verify: Verify that the Service Order shows "Service Order Finishing Date" Mandatory error when we Post it as Ship.
+      ASSERTERROR LibraryService.PostServiceOrder(ServiceHeader,TRUE,FALSE,FALSE);
+      IF ISSERVICETIER THEN
+        Assert.AreEqual(
+          STRSUBSTNO(OrderFinishingDateServiceTier,ServiceHeader."Document Type",ServiceHeader."No."),
+          ConvertMessage(GETLASTERRORTEXT),STRSUBSTNO(UnknownError,GETLASTERRORTEXT))
+      ELSE
+        Assert.AreEqual(
+          STRSUBSTNO(OrderFinishingMandatoryMessage,ServiceHeader."Document Type",ServiceHeader."No."),
+          ConvertMessage(GETLASTERRORTEXT),STRSUBSTNO(UnknownError,GETLASTERRORTEXT));
+
+      // 4. Teardown: Rollback "Service Order Finish Mandatory" field as false on Service Management Setup.
+      ServiceMgtSetup.VALIDATE("Service Order Finish Mandatory",FALSE);
+      ServiceMgtSetup.MODIFY(TRUE);
+    END;
+
+    [Test]
+    PROCEDURE FaultReasonCode@53();
+    VAR
+      ServiceHeader@1005 : Record 5900;
+      ServiceMgtSetup@1004 : Record 5911;
+      ServiceItemLineNo@1000 : Integer;
+    BEGIN
+      // Test error occurs on Posting Service Order with "Fault Reason Code Mandatory" True on Service Management Setup.
+
+      // 1. Setup: Set "Fault Reason Code Mandatory" field True on Service Management Setup.
+      Initialize;
+      ServiceMgtSetup.GET;
+      ServiceMgtSetup.VALIDATE("Fault Reason Code Mandatory",TRUE);
+      ServiceMgtSetup.MODIFY(TRUE);
+
+      // 2. Exercise: Create Service Order.
+      ServiceItemLineNo := CreateServiceOrder(ServiceHeader);
+
+      // 3. Verify: Verify that the Service Order shows "Fault Reason Code" Mandatory error when we Post it as Ship.
+      ASSERTERROR LibraryService.PostServiceOrder(ServiceHeader,TRUE,FALSE,FALSE);
+      IF ISSERVICETIER THEN
+        Assert.AreEqual(
+          STRSUBSTNO(FaultReasonCodeServiceTier,ServiceHeader."Document Type",ServiceHeader."No.",ServiceItemLineNo),
+          ConvertMessage(GETLASTERRORTEXT),STRSUBSTNO(UnknownError,GETLASTERRORTEXT))
+      ELSE
+        Assert.AreEqual(
+          STRSUBSTNO(FaultReasonCodeMandatory,ServiceHeader."Document Type",ServiceHeader."No.",ServiceItemLineNo),
+          ConvertMessage(GETLASTERRORTEXT),STRSUBSTNO(UnknownError,GETLASTERRORTEXT));
+
+      // 4. Teardown: Rollback "Fault Reason Code Mandatory" field as false on Service Management Setup.
+      ServiceMgtSetup.VALIDATE("Fault Reason Code Mandatory",FALSE);
+      ServiceMgtSetup.MODIFY(TRUE);
+    END;
+
+    [Test]
+    PROCEDURE SalesPersonCode@52();
+    VAR
+      ServiceHeader@1007 : Record 5900;
+      ServiceMgtSetup@1006 : Record 5911;
+      ServiceItemLine@1005 : Record 5901;
+      Customer@1004 : Record 18;
+    BEGIN
+      // Test error occurs on Posting Service Order with "Salesperson Mandatory" True on Service Management Setup.
+
+      // 1. Setup: Set "Salesperson Mandatory" field True on Service Management Setup.
+      Initialize;
+      ServiceMgtSetup.GET;
+      ServiceMgtSetup.VALIDATE("Salesperson Mandatory",TRUE);
+      ServiceMgtSetup.MODIFY(TRUE);
+
+      // 2. Exercise: Create Service Order, Update Salesperson Code on Service Header.
+      Customer.FINDFIRST;
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::Order,Customer."No.");
+      ServiceHeader.VALIDATE("Salesperson Code",'');
+      ServiceHeader.MODIFY(TRUE);
+      LibraryService.CreateServiceItemLine(ServiceItemLine,ServiceHeader,'');
+
+      // 3. Verify: Verify that the Service Order shows "Salesperson" Mandatory error when we Post it as Ship.
+      ASSERTERROR LibraryService.PostServiceOrder(ServiceHeader,TRUE,FALSE,FALSE);
+      IF ISSERVICETIER THEN
+        Assert.AreEqual(
+          STRSUBSTNO(SalespersonCodeServiceTier,ServiceHeader."Document Type",ServiceHeader."No."),ConvertMessage(GETLASTERRORTEXT),
+          STRSUBSTNO(UnknownError,GETLASTERRORTEXT))
+      ELSE
+        Assert.AreEqual(
+          STRSUBSTNO(SalespersonCodeMandatory,ServiceHeader."Document Type",ServiceHeader."No."),ConvertMessage(GETLASTERRORTEXT),
+          STRSUBSTNO(UnknownError,GETLASTERRORTEXT));
+
+      // 4. Teardown: Rollback "Salesperson Mandatory" field as false on Service Management Setup.
+      ServiceMgtSetup.VALIDATE("Salesperson Mandatory",FALSE);
+      ServiceMgtSetup.MODIFY(TRUE);
+    END;
+
+    [Test]
+    PROCEDURE WorkTypeCode@51();
+    VAR
+      ServiceHeader@1008 : Record 5900;
+      ServiceLine@1007 : Record 5902;
+      ServiceMgtSetup@1006 : Record 5911;
+      Resource@1005 : Record 156;
+      ServiceItemLineNo@1000 : Integer;
+    BEGIN
+      // Test error occurs on Posting Service Order with "Work Type Code Mandatory" True on Service Management Setup.
+
+      // 1. Setup: Set "Work Type Code Mandatory" field True on Service Management Setup.
+      Initialize;
+      ServiceMgtSetup.GET;
+      ServiceMgtSetup.VALIDATE("Work Type Code Mandatory",TRUE);
+      ServiceMgtSetup.MODIFY(TRUE);
+
+      // 2. Exercise: Create Service Order.
+      ServiceItemLineNo := CreateServiceOrder(ServiceHeader);
+      Resource.FINDFIRST;
+      LibraryService.CreateServiceLine(ServiceLine,ServiceHeader,ServiceLine.Type::Resource,Resource."No.");
+      UpdateServiceLine(ServiceLine,ServiceItemLineNo);
+
+      // 3. Verify: Verify that the Service Order shows "Work Type Code" Mandatory error when we Post it as Ship.
+      ASSERTERROR LibraryService.PostServiceOrder(ServiceHeader,TRUE,FALSE,FALSE);
+      IF ISSERVICETIER THEN
+        Assert.AreEqual(
+          STRSUBSTNO(WorkTypeCodeServiceTier,ServiceHeader."Document Type",ServiceHeader."No.",ServiceLine."Line No."),
+          ConvertMessage(GETLASTERRORTEXT),STRSUBSTNO(UnknownError,GETLASTERRORTEXT))
+      ELSE
+        Assert.AreEqual(
+          STRSUBSTNO(WorkTypeCodeMandatory,ServiceHeader."Document Type",ServiceHeader."No.",ServiceLine."Line No."),
+          ConvertMessage(GETLASTERRORTEXT),STRSUBSTNO(UnknownError,GETLASTERRORTEXT));
+
+      // 4. Teardown: Rollback "Work Type Code Mandatory" field as false on Service Management Setup.
+      ServiceMgtSetup.VALIDATE("Work Type Code Mandatory",FALSE);
+      ServiceMgtSetup.MODIFY(TRUE);
+    END;
+
+    [Test]
+    PROCEDURE UnitOfMeasureCode@50();
+    VAR
+      ServiceHeader@1008 : Record 5900;
+      ServiceLine@1007 : Record 5902;
+      ServiceMgtSetup@1006 : Record 5911;
+      Item@1005 : Record 27;
+      ServiceItemLineNo@1000 : Integer;
+    BEGIN
+      // Test error occurs on Posting Service Order with "Unit of Measure Mandatory" True on Service Management Setup.
+
+      // 1. Setup: Set "Unit of Measure Mandatory" field True on Service Management Setup, Create Service Order.
+      Initialize;
+      ServiceMgtSetup.GET;
+      ServiceMgtSetup.VALIDATE("Unit of Measure Mandatory",TRUE);
+      ServiceMgtSetup.MODIFY(TRUE);
+      ServiceItemLineNo := CreateServiceOrder(ServiceHeader);
+      Item.FINDFIRST;
+      LibraryService.CreateServiceLine(ServiceLine,ServiceHeader,ServiceLine.Type::Item,Item."No.");
+      UpdateServiceLine(ServiceLine,ServiceItemLineNo);
+
+      // 2. Exercise: Update Unit of Measure Code on Service Line.
+      ServiceLine.VALIDATE("Unit of Measure Code",'');
+      ServiceLine.MODIFY(TRUE);
+
+      // 3. Verify: Verify that the Service Order shows "Unit of Measure Code" Mandatory error when we Post it as Ship.
+      ASSERTERROR LibraryService.PostServiceOrder(ServiceHeader,TRUE,FALSE,FALSE);
+      IF ISSERVICETIER THEN
+        Assert.AreEqual(
+          STRSUBSTNO(UnitOfMeasureServiceTier,ServiceHeader."Document Type",ServiceHeader."No.",ServiceLine."Line No."),
+          ConvertMessage(GETLASTERRORTEXT),STRSUBSTNO(UnknownError,GETLASTERRORTEXT))
+      ELSE
+        Assert.AreEqual(
+          STRSUBSTNO(UnitOfMeasureMandatory,ServiceHeader."Document Type",ServiceHeader."No.",ServiceLine."Line No."),
+          ConvertMessage(GETLASTERRORTEXT),STRSUBSTNO(UnknownError,GETLASTERRORTEXT));
+
+      // 4. Teardown: Rollback "Unit of Measure Mandatory" field as false on Service Management Setup.
+      ServiceMgtSetup.VALIDATE("Unit of Measure Mandatory",FALSE);
+      ServiceMgtSetup.MODIFY(TRUE);
+    END;
+
+    [Test]
+    [HandlerFunctions(ConfirmMessageHandlerForFalse)]
+    PROCEDURE ContractResponseTimeMandatory@49();
+    VAR
+      ServiceItem@1009 : Record 5940;
+      Customer@1008 : Record 18;
+      ServiceContractHeader@1007 : Record 5965;
+      ServiceContractLine@1006 : Record 5964;
+      ServiceMgtSetup@1005 : Record 5911;
+      SignServContractDoc@1004 : Codeunit 5944;
+    BEGIN
+      // Test error occurs on Signing Service Contract with "Contract Rsp. Time Mandatory" True on Service Management Setup.
+
+      // 1. Setup: Set "Contract Rsp. Time Mandatory" field True on Service Management Setup, Create and Update Response Time on
+      // Service Item.
+      Initialize;
+      ServiceMgtSetup.GET;
+      ServiceMgtSetup.VALIDATE("Contract Rsp. Time Mandatory",TRUE);
+      ServiceMgtSetup.MODIFY(TRUE);
+      Customer.FINDFIRST;
+      LibraryService.CreateServiceItem(ServiceItem,Customer."No.");
+      ServiceItem.VALIDATE("Response Time (Hours)",0);  // Use 0 to blank Response Time (Hours).
+      ServiceItem.MODIFY(TRUE);
+      CreateContractAccountGroup;
+
+      // 2. Exercise: Create Service Contract Quote.
+      LibraryService.CreateServiceContractHeader(
+        ServiceContractHeader,ServiceContractHeader."Contract Type"::Quote,ServiceItem."Customer No.");
+      LibraryService.CreateServiceContractLine(ServiceContractLine,ServiceContractHeader,ServiceItem."No.");
+      ServiceContractLine.VALIDATE("Line Value",RANDOM(100));  // Use Random to select Random Line Value.
+      ServiceContractLine.MODIFY(TRUE);
+      UpdateServiceContract(ServiceContractHeader);
+
+      // 3. Verify: Verify that the Service Contract Quote shows "Contract Response Time" Mandatory error when we Make Contract from
+      // Quote.
+      ASSERTERROR SignServContractDoc.SignContractQuote(ServiceContractHeader);
+      IF ISSERVICETIER THEN
+        Assert.AreEqual(
+          STRSUBSTNO(RespTimeServiceTier,ServiceContractLine."Contract Type",ServiceContractLine."Contract No.",
+            ServiceContractLine."Line No."),ConvertMessage(GETLASTERRORTEXT),STRSUBSTNO(UnknownError,GETLASTERRORTEXT))
+      ELSE
+        Assert.AreEqual(
+          STRSUBSTNO(RespTimeMandatory,ServiceContractLine."Contract Type",ServiceContractLine."Contract No.",
+            ServiceContractLine."Line No."),ConvertMessage(GETLASTERRORTEXT),STRSUBSTNO(UnknownError,GETLASTERRORTEXT));
+
+      // 4. Teardown: Rollback "Contract Rsp. Time Mandatory" field as false on Service Management Setup.
+      ServiceMgtSetup.VALIDATE("Contract Rsp. Time Mandatory",FALSE);
+      ServiceMgtSetup.MODIFY(TRUE);
+    END;
+
+    [Test]
+    [HandlerFunctions(ConfirmMessageHandler)]
+    PROCEDURE DeleteQuoteAfterChangeCustomer@47();
+    VAR
+      ServiceHeader@1013 : Record 5900;
+      ServiceItemLine@1012 : Record 5901;
+      ServiceLine@1011 : Record 5902;
+      Customer@1010 : Record 18;
+      ServiceItem@1009 : Record 5940;
+      Item@1008 : Record 27;
+      ServiceQuoteNo@1006 : Code[20];
+    BEGIN
+      // Test Delete Service Quote after Change Customer No. on Service Quote.
+
+      // 1. Setup: Create Service Quote.
+      Initialize;
+      Customer.FINDFIRST;
+      LibraryService.CreateServiceItem(ServiceItem,Customer."No.");
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::Quote,ServiceItem."Customer No.");
+      LibraryService.CreateServiceItemLine(ServiceItemLine,ServiceHeader,ServiceItem."No.");
+
+      Item.FINDSET;
+      LibraryService.CreateServiceItemLine(ServiceItemLine,ServiceHeader,'');
+      ServiceItemLine.VALIDATE("Item No.",Item."No.");
+      ServiceItemLine.MODIFY(TRUE);
+
+      Item.NEXT;
+      LibraryService.CreateServiceItemLine(ServiceItemLine,ServiceHeader,'');
+      LibraryService.CreateServiceLine(ServiceLine,ServiceHeader,ServiceLine.Type::Item,Item."No.");
+      UpdateServiceLine(ServiceLine,ServiceItemLine."Line No.");
+
+      // 2. Exercise: Change Customer No. on Service Quote, Delete Service Quote.
+      ChangeCustomerOnServiceQuote(ServiceHeader);
+      ServiceQuoteNo := ServiceHeader."No.";
+      ServiceHeader.DELETE(TRUE);
+
+      // 3. Verify: Verify that the Service Quote not Exist.
+      Assert.IsFalse(ServiceHeader.GET(ServiceHeader."Document Type"::Quote,ServiceQuoteNo),
+        STRSUBSTNO(ServiceQuoteExistError,ServiceQuoteNo));
+    END;
+
+    [Test]
+    [HandlerFunctions(ConfirmMessageHandler)]
+    PROCEDURE CommentsOnServiceOrder@46();
+    VAR
+      ServiceItemLine@1009 : Record 5901;
+      Customer@1008 : Record 18;
+      ServiceHeader@1007 : Record 5900;
+      TempServiceCommentLine@1006 : TEMPORARY Record 5906;
+      ServiceItem@1005 : Record 5940;
+      Loaner@1004 : Record 5913;
+      ServiceItemNo@1003 : Code[20];
+    BEGIN
+      // Test Comments on Service Order create from Service Quote.
+
+      // 1. Setup: Create Service Quote and Assign Loaner on Service Quote, Create Comments on Service Quote.
+      Initialize;
+      Customer.FINDFIRST;
+      LibraryService.CreateServiceItem(ServiceItem,Customer."No.");
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::Quote,ServiceItem."Customer No.");
+      LibraryService.CreateLoaner(Loaner);
+      LibraryService.CreateServiceItemLine(ServiceItemLine,ServiceHeader,ServiceItem."No.");
+      ServiceItemLine.VALIDATE("Loaner No.",Loaner."No.");
+      ServiceItemLine.MODIFY(TRUE);
+      CreateCommentsOnServiceQuote(ServiceItemLine);
+      ServiceItemNo := ServiceItemLine."Service Item No.";
+      SaveComments(TempServiceCommentLine,ServiceItemLine);
+
+      // 2. Exercise: Create Service Order from Service Quote, Receive Loaner on Created Service Order.
+      CODEUNIT.RUN(CODEUNIT::"Service-Quote to Order",ServiceHeader);
+      ReceiveLoanerOnServiceOrder(ServiceItemLine,ServiceItemNo);
+
+      // 3. Verify: Verify that the Comments on Service Order is Comments assign on Service Quote.
+      VerifyComments(TempServiceCommentLine,ServiceItemLine);
+    END;
+
+    [Test]
+    [HandlerFunctions(CustomerTemplateHandler)]
+    PROCEDURE CreateCustomerFromServiceOrder@45();
+    VAR
+      ServiceHeader@1006 : Record 5900;
+      Customer@1005 : Record 18;
+      ServOrderManagement@1004 : Codeunit 5900;
+    BEGIN
+      // Test error occurs on Deletion of Customer attached on Service Order.
+
+      // 1. Setup: Create Customer Template.
+      Initialize;
+      CreateCustomerTemplate;
+
+      // 2. Exercise: Create Customer from Service Order.
+      CreateServiceHeaderWithName(ServiceHeader);
+      COMMIT;
+      ServOrderManagement.CreateNewCustomer(ServiceHeader);
+      ServiceHeader.MODIFY(TRUE);
+
+      // 3. Verify: Verify that the "Outstanding Service Order Exist" error occurs when we delete Customer of Service Order.
+      Customer.GET(ServiceHeader."Customer No.");
+      ASSERTERROR Customer.DELETE(TRUE);
+      Assert.AreEqual(
+        STRSUBSTNO(CustomerDeletionError,ServiceHeader."Customer No."),ConvertMessage(GETLASTERRORTEXT),
+        STRSUBSTNO(UnknownError,GETLASTERRORTEXT));
+    END;
+
+    [Test]
+    [HandlerFunctions(ConfirmMessageHandler,MessageHandler)]
+    PROCEDURE CreateServiceItemFromOrder@44();
+    VAR
+      ServiceItemLine@1006 : Record 5901;
+      ServiceItem@1005 : Record 5940;
+      ServItemManagement@1002 : Codeunit 5920;
+    BEGIN
+      // Test error occurs on Deletion of Service Item attached on Service Order.
+
+      // 1. Setup: Create Service Order - Service Header, Service Item Line with Description.
+      Initialize;
+      CreateServItemLineDescription(ServiceItemLine);
+
+      // 2. Exercise: Create Service Item from Service Order.
+      ServItemManagement.CreateServItemOnServItemLine(ServiceItemLine);
+      ServiceItemLine.MODIFY(TRUE);
+
+      // 3. Verify: Verify that the "Outstanding Service Order Exist" error occurs when we delete Service Item of Service Order.
+      ServiceItem.GET(ServiceItemLine."Service Item No.");
+      ASSERTERROR ServiceItem.DELETE(TRUE);
+      Assert.AreEqual(
+        STRSUBSTNO(ServItemDeletionError,ServiceItemLine."Service Item No."),ConvertMessage(GETLASTERRORTEXT),
+        STRSUBSTNO(UnknownError,GETLASTERRORTEXT));
+    END;
+
+    [Test]
+    [HandlerFunctions(CustomerTemplateHandler)]
+    PROCEDURE DeleteCustomerFromServiceOrder@43();
+    VAR
+      ServiceHeader@1006 : Record 5900;
+      Customer@1005 : Record 18;
+      ServOrderManagement@1004 : Codeunit 5900;
+      CustomerNo@1002 : Code[20];
+    BEGIN
+      // Test Customer delete after deletion of attached Service Order.
+
+      // 1. Setup: Create Customer Template, Create Customer from service Order.
+      Initialize;
+      CreateCustomerTemplate;
+      CreateServiceHeaderWithName(ServiceHeader);
+      COMMIT;
+      ServOrderManagement.CreateNewCustomer(ServiceHeader);
+      ServiceHeader.MODIFY(TRUE);
+
+      CustomerNo := ServiceHeader."Customer No.";
+
+      // 2. Exercise: Delete Service Order, Delete Customer.
+      ServiceHeader.DELETE(TRUE);
+      Customer.GET(ServiceHeader."Customer No.");
+      Customer.DELETE(TRUE);
+
+      // 3. Verify: Verify that the Customer not Exist.
+      Assert.IsFalse(Customer.GET(CustomerNo),STRSUBSTNO(CustomerExistError,CustomerNo));
+    END;
+
+    [Test]
+    [HandlerFunctions(ConfirmMessageHandler,MessageHandler)]
+    PROCEDURE DeleteServiceItemFromOrder@42();
+    VAR
+      ServiceItemLine@1008 : Record 5901;
+      ServiceItem@1007 : Record 5940;
+      ServiceHeader@1006 : Record 5900;
+      ServItemManagement@1005 : Codeunit 5920;
+      ServiceItemNo@1002 : Code[20];
+    BEGIN
+      // Test Service Item delete after deletion of attached Service Order.
+
+      // 1. Setup: Create Service Item from Service Order.
+      Initialize;
+      CreateServItemLineDescription(ServiceItemLine);
+      ServItemManagement.CreateServItemOnServItemLine(ServiceItemLine);
+      ServiceItemLine.MODIFY(TRUE);
+
+      ServiceItemNo := ServiceItemLine."Service Item No.";
+
+      // 2. Exercise: Delete Service Order, Delete Service Item.
+      ServiceHeader.GET(ServiceItemLine."Document Type",ServiceItemLine."Document No.");
+      ServiceHeader.DELETE(TRUE);
+      ServiceItem.GET(ServiceItemNo);
+      ServiceItem.DELETE(TRUE);
+
+      // 3. Verify: Verify that the Service Item not Exist.
+      Assert.IsFalse(ServiceItem.GET(ServiceItemNo),STRSUBSTNO(ServiceItemExistError,ServiceItemNo));
+    END;
+
+    [Test]
+    PROCEDURE ServiceOrderResponseTimeReport@41();
+    VAR
+      ServiceHeader@1004 : Record 5900;
+      ServiceShipmentHeader@1003 : Record 5990;
+      ServiceOrderResponseTime@1002 : Report 5908;
+      FilePath@1000 : Text[1024];
+    BEGIN
+      // Test Service Order - Response Time Report.
+
+      // 1. Setup: Create Service Order - Service Header, Service Item Line, Service Line and Post it as Ship.
+      Initialize;
+      CreateServiceOrderRespCenter(ServiceHeader);
+      LibraryService.PostServiceOrder(ServiceHeader,TRUE,FALSE,FALSE);
+
+      // 2. Exercise: Save Service Order - Response Time Report as XML and XLS in local Temp folder.
+      ServiceShipmentHeader.SETRANGE("Order No.",ServiceHeader."No.");
+      ServiceShipmentHeader.SETRANGE("Responsibility Center",ServiceHeader."Responsibility Center");
+      ServiceOrderResponseTime.SETTABLEVIEW(ServiceShipmentHeader);
+      IF ISSERVICETIER THEN BEGIN
+        FilePath := TEMPORARYPATH + FORMAT(ServiceShipmentHeader."No.") + ServiceShipmentHeader."Responsibility Center" + '.xls';
+        ServiceOrderResponseTime.SAVEASEXCEL(FilePath);
+      END ELSE BEGIN
+        FilePath := TEMPORARYPATH + FORMAT(ServiceShipmentHeader."No.") + ServiceShipmentHeader."Responsibility Center" + '.xml';
+        ServiceOrderResponseTime.SAVEASXML(FilePath);
+      END;
+
+      // 3. Verify: Verify that Saved file has some data.
+      LibraryUtility.CheckFileNotEmpty(FilePath);
+    END;
+
+    [Test]
+    PROCEDURE ServiceItemLineLabelsReport@40();
+    VAR
+      Customer@1011 : Record 18;
+      ServiceHeader@1010 : Record 5900;
+      ServiceItemLine@1009 : Record 5901;
+      ServiceItem@1008 : Record 5940;
+      ServiceItemLineLabels@1007 : Report 5901;
+      FilePath@1003 : Text[1024];
+    BEGIN
+      // Test Service Item Line Labels Report.
+
+      // 1. Setup: Create Service Order - Service Header, Service Item and Service Item Line.
+      Initialize;
+      Customer.FINDFIRST;
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::Order,Customer."No.");
+      LibraryService.CreateServiceItem(ServiceItem,Customer."No.");
+      LibraryService.CreateServiceItemLine(ServiceItemLine,ServiceHeader,ServiceItem."No.");
+
+      // 2. Exercise: Save Service Item Line Labels Report as XML and XLS in local Temp folder.
+      ServiceItemLineLabels.SETTABLEVIEW(ServiceItemLine);
+      IF ISSERVICETIER THEN BEGIN
+        FilePath := TEMPORARYPATH + FORMAT(ServiceItemLine."Document Type") + ServiceItemLine."Document No." + '.xls';
+        ServiceItemLineLabels.SAVEASEXCEL(FilePath);
+      END ELSE BEGIN
+        FilePath := TEMPORARYPATH + FORMAT(ServiceItemLine."Document Type") + ServiceItemLine."Document No." + '.xml';
+        ServiceItemLineLabels.SAVEASXML(FilePath);
+      END;
+
+      // 3. Verify: Verify that Saved file has some data.
+      LibraryUtility.CheckFileNotEmpty(FilePath);
+    END;
+
+    [Test]
+    PROCEDURE ServiceProfitRespCentersReport@39();
+    VAR
+      ServiceHeader@1004 : Record 5900;
+      ServiceShipmentHeader@1003 : Record 5990;
+      ServiceProfitRespCenters@1002 : Report 5909;
+      FilePath@1000 : Text[1024];
+    BEGIN
+      // Test Service Profit(Resp. Centers) Report.
+
+      // 1. Setup: Create Service Order - Service Header, Service Item Line, Service Line and Post it as Ship and Invoice.
+      Initialize;
+      CreateServiceOrderRespCenter(ServiceHeader);
+      LibraryService.PostServiceOrder(ServiceHeader,TRUE,FALSE,TRUE);
+
+      // 2. Exercise: Save Service Profit(Resp. Centers) Report as XML and XLS in local Temp folder.
+      ServiceShipmentHeader.SETRANGE("Order No.",ServiceHeader."No.");
+      ServiceShipmentHeader.SETRANGE("Responsibility Center",ServiceHeader."Responsibility Center");
+      ServiceProfitRespCenters.SETTABLEVIEW(ServiceShipmentHeader);
+      IF ISSERVICETIER THEN BEGIN
+        FilePath := TEMPORARYPATH + FORMAT(ServiceShipmentHeader."No.") + ServiceShipmentHeader."Responsibility Center" + '.xls';
+        ServiceProfitRespCenters.SAVEASEXCEL(FilePath);
+      END ELSE BEGIN
+        FilePath := TEMPORARYPATH + FORMAT(ServiceShipmentHeader."No.") + ServiceShipmentHeader."Responsibility Center" + '.xml';
+        ServiceProfitRespCenters.SAVEASXML(FilePath);
+      END;
+
+      // 3. Verify: Verify that Saved file has some data.
+      LibraryUtility.CheckFileNotEmpty(FilePath);
+    END;
+
+    [Test]
+    PROCEDURE ServiceProfitServOrdersReport@37();
+    VAR
+      ServiceHeader@1004 : Record 5900;
+      ServiceShipmentHeader@1003 : Record 5990;
+      ServiceProfitServOrders@1002 : Report 5910;
+      FilePath@1000 : Text[1024];
+    BEGIN
+      // Test Service Profit(Serv. Orders) Report.
+
+      // 1. Setup: Create Service Order - Service Header, Service Item Line, Service Line and Post it as Ship and Invoice.
+      Initialize;
+      CreateServiceOrderRespCenter(ServiceHeader);
+      LibraryService.PostServiceOrder(ServiceHeader,TRUE,FALSE,TRUE);
+
+      // 2. Exercise: Save Service Profit(Serv. Orders) Report as XML and XLS in local Temp folder.
+      ServiceShipmentHeader.SETRANGE("Order No.",ServiceHeader."No.");
+      ServiceShipmentHeader.SETRANGE("Responsibility Center",ServiceHeader."Responsibility Center");
+      ServiceProfitServOrders.SETTABLEVIEW(ServiceShipmentHeader);
+      IF ISSERVICETIER THEN BEGIN
+        FilePath := TEMPORARYPATH + FORMAT(ServiceShipmentHeader."No.") + ServiceShipmentHeader."Responsibility Center" + '.xls';
+        ServiceProfitServOrders.SAVEASEXCEL(FilePath);
+      END ELSE BEGIN
+        FilePath := TEMPORARYPATH + FORMAT(ServiceShipmentHeader."No.") + ServiceShipmentHeader."Responsibility Center" + '.xml';
+        ServiceProfitServOrders.SAVEASXML(FilePath);
+      END;
+
+      // 3. Verify: Verify that Saved file has some data.
+      LibraryUtility.CheckFileNotEmpty(FilePath);
+    END;
+
+    [Test]
+    PROCEDURE ServiceTasksReport@36();
+    VAR
+      Customer@1011 : Record 18;
+      ServiceHeader@1010 : Record 5900;
+      ServiceItemLine@1009 : Record 5901;
+      Item@1008 : Record 27;
+      ServiceTasks@1007 : Report 5904;
+      FilePath@1003 : Text[1024];
+    BEGIN
+      // Test Service Tasks Report.
+
+      // 1. Setup: Create Service Order - Service Header and Service Item Line.
+      Initialize;
+      Customer.FINDFIRST;
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::Order,Customer."No.");
+      Item.FINDFIRST;
+      LibraryService.CreateServiceItemLine(ServiceItemLine,ServiceHeader,'');
+      ServiceItemLine.VALIDATE("Item No.",Item."No.");
+      ServiceItemLine.VALIDATE(Priority,ServiceItemLine.Priority::High);
+      ServiceItemLine.MODIFY(TRUE);
+      LibraryService.CreateServiceItemLine(ServiceItemLine,ServiceHeader,'');
+
+      // 2. Exercise: Save Service Tasks Report as XML and XLS in local Temp folder.
+      ServiceTasks.SETTABLEVIEW(ServiceItemLine);
+      IF ISSERVICETIER THEN BEGIN
+        FilePath := TEMPORARYPATH + FORMAT(ServiceItemLine."Document Type") + ServiceItemLine."Document No." + '.xls';
+        ServiceTasks.SAVEASEXCEL(FilePath);
+      END ELSE BEGIN
+        FilePath := TEMPORARYPATH + FORMAT(ServiceItemLine."Document Type") + ServiceItemLine."Document No." + '.xml';
+        ServiceTasks.SAVEASXML(FilePath);
+      END;
+
+      // 3. Verify: Verify that Saved file has some data.
+      LibraryUtility.CheckFileNotEmpty(FilePath);
+    END;
+
+    [Test]
+    [HandlerFunctions(ConfirmMessageHandler)]
+    PROCEDURE CommentsOnOrderFromQuote@1();
+    VAR
+      ServiceItemLine@1009 : Record 5901;
+      ServiceHeader@1007 : Record 5900;
+      TempServiceCommentLine@1006 : TEMPORARY Record 5906;
+    BEGIN
+      // Test Comments on Service Order create from Service Quote.
+
+      // 1. Setup: Create Service Quote and Assign Loaner on Service Quote, Create Comments on Service Quote.
+      Initialize;
+      CreateServiceQuoteWithComments(ServiceItemLine);
+      SaveComments(TempServiceCommentLine,ServiceItemLine);
+
+      // 2. Exercise: Create Service Order from Service Quote.
+      ServiceHeader.GET(ServiceItemLine."Document Type",ServiceItemLine."Document No.");
+      LibraryService.CreateOrderFromQuote(ServiceHeader);
+
+      // 3. Verify: Verify that the Comments on Service Order is Comments assign on Service Quote.
+      ServiceItemLine.SETRANGE("Service Item No.",ServiceItemLine."Service Item No.");
+      ServiceItemLine.FINDFIRST;
+      VerifyComments(TempServiceCommentLine,ServiceItemLine);
+
+      // 4. Teardown: Receive Loaner.
+      ReceiveLoanerOnServiceOrder(ServiceItemLine,ServiceItemLine."Service Item No.");
+    END;
+
+    [Test]
+    [HandlerFunctions(ConfirmMessageHandler)]
+    PROCEDURE PostedServiceShipment@2();
+    VAR
+      ServiceItemLine@1009 : Record 5901;
+      ServiceHeader@1007 : Record 5900;
+    BEGIN
+      // Test Loaner Entry and Service Document Log from Posted Service Shipment.
+
+      // 1. Setup: Create Service Quote and Assign Loaner on Service Quote, Create Comments on Service Quote, Make Order from Quote.
+      Initialize;
+      CreateServiceQuoteWithComments(ServiceItemLine);
+      ServiceHeader.GET(ServiceItemLine."Document Type",ServiceItemLine."Document No.");
+      LibraryService.CreateOrderFromQuote(ServiceHeader);
+
+      // 2. Exercise: Post Service Order as Ship and Receive Loaner on service Shipment Header.
+      ServiceItemLine.SETRANGE("Service Item No.",ServiceItemLine."Service Item No.");
+      ServiceItemLine.FINDFIRST;
+      ServiceHeader.GET(ServiceItemLine."Document Type",ServiceItemLine."Document No.");
+      LibraryService.PostServiceOrder(ServiceHeader,TRUE,FALSE,FALSE);
+
+      ReceiveLoanerOnServiceShipment(ServiceHeader."No.");
+
+      // 3. Verify: Verify Loaner Entry and Service Document Log for Loaner.
+      VerifyLoanerEntry(ServiceItemLine);
+
+      // The value 8 is the event number for Receive Loaner.
+      VerifyServiceDocumentLog(ServiceItemLine."Document No.",ServiceItemLine."Loaner No.",8);
+    END;
+
+    [Test]
+    [HandlerFunctions(ConfirmMessageHandler,ContractTemplateHandler,MessageHandler)]
+    PROCEDURE ServiceItemAndDocumentLog@5();
+    VAR
+      ServiceContractHeader@1009 : Record 5965;
+      ServiceContractLine@1010 : Record 5964;
+      ServiceHeader@1003 : Record 5900;
+      ServiceItemLine@1006 : Record 5901;
+      ServItemManagement@1002 : Codeunit 5920;
+      SignServContractDoc@1011 : Codeunit 5944;
+    BEGIN
+      // Test Service Item Log and Service Document Log after create Service Item form Order.
+
+      // 1. Setup: Create and Sign Service Contract, Create Service Header and Assign Contract No. on Header.
+      Initialize;
+      CreateServiceContract(ServiceContractHeader,ServiceContractLine,ServiceContractHeader."Contract Type"::Contract);
+      ModifyServiceContractHeader(ServiceContractHeader);
+      SignServContractDoc.SignContract(ServiceContractHeader);
+
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::Order,ServiceContractHeader."Customer No.");
+      UpdateContractOnServiceHeader(ServiceHeader,ServiceContractHeader."Contract No.");
+
+      // 2. Exercise: Create Service Item from Service Order and Assign Loaner on Service Item Line.
+      CreateServiceItemLine(ServiceItemLine,ServiceHeader);
+      ServItemManagement.CreateServItemOnServItemLine(ServiceItemLine);
+      ServiceItemLine.MODIFY(TRUE);
+      AssignLoanerOnServiceItemLine(ServiceItemLine);
+
+      // 3. Verify: Verify Service Item Log and Service Document Log.
+      // The value 11,13,2 is the event number for Customer No., Item No. changed and Automatically created on Service Item Log and 7,11
+      // is the event number for Loaner lent and Contract No. Changed on Service Document Log.
+      VerifyServiceItemLog(ServiceItemLine."Service Item No.",ServiceItemLine."Customer No.",11);
+      VerifyServiceItemLog(ServiceItemLine."Service Item No.",ServiceItemLine."Item No.",13);
+      VerifyServiceItemLogExist(ServiceItemLine."Service Item No.",2);
+      VerifyServiceDocumentLog(ServiceItemLine."Document No.",ServiceItemLine."Loaner No.",7);
+      VerifyServiceDocumentLog(ServiceItemLine."Document No.",ServiceContractHeader."Contract No.",11);
+
+      // 4. Teardown: Receive Loaner.
+      ReceiveLoanerOnServiceOrder(ServiceItemLine,ServiceItemLine."Service Item No.");
+    END;
+
+    [Test]
+    [HandlerFunctions(ConfirmMessageHandler,ContractTemplateHandler,MessageHandler)]
+    PROCEDURE ServiceItemDocumentLogOnPost@54();
+    VAR
+      ServiceContractHeader@1009 : Record 5965;
+      ServiceContractLine@1010 : Record 5964;
+      ServiceHeader@1003 : Record 5900;
+      ServiceItemLine@1006 : Record 5901;
+      Resource@1014 : Record 156;
+      ServiceLine@1001 : Record 5902;
+      ServiceShipmentHeader@1012 : Record 5990;
+      ServItemManagement@1002 : Codeunit 5920;
+      SignServContractDoc@1011 : Codeunit 5944;
+    BEGIN
+      // Test Service Item Log and Service Document Log after Posting Service Order.
+
+      // 1. Setup: Create and Sign Service Contract, Create Service Header and Assign Contract No. on Header,  Create Service Item from
+      // Service Order and Assign Loaner on Service Item Line.
+      Initialize;
+      CreateServiceContract(ServiceContractHeader,ServiceContractLine,ServiceContractHeader."Contract Type"::Contract);
+      ModifyServiceContractHeader(ServiceContractHeader);
+      SignServContractDoc.SignContract(ServiceContractHeader);
+
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::Order,ServiceContractHeader."Customer No.");
+      UpdateContractOnServiceHeader(ServiceHeader,ServiceContractHeader."Contract No.");
+
+      CreateServiceItemLine(ServiceItemLine,ServiceHeader);
+      ServItemManagement.CreateServItemOnServItemLine(ServiceItemLine);
+      ServiceItemLine.MODIFY(TRUE);
+      AssignLoanerOnServiceItemLine(ServiceItemLine);
+
+      // 2. Exercise: Create Service Line with Type Resource and Post Service Order as Ship.
+      Resource.NEXT(RANDOM(Resource.COUNT));
+      LibraryService.CreateServiceLine(ServiceLine,ServiceHeader,ServiceLine.Type::Resource,Resource."No.");
+      UpdateServiceLine(ServiceLine,ServiceItemLine."Line No.");
+
+      LibraryService.PostServiceOrder(ServiceHeader,TRUE,FALSE,FALSE);
+
+      // 3. Verify: Verify Service Item Log and Service Document Log after Posting Service Order.
+      // The value 11,13,2 is the event number for Customer No., Item No. changed and Automatically created on Service Item Log and 7,11,
+      // 6 is the event number for Loaner lent, Contract No. Changed and Shipment Created on Service Document Log.
+      ServiceShipmentHeader.SETRANGE("Order No.",ServiceHeader."No.");
+      ServiceShipmentHeader.FINDFIRST;
+      VerifyServiceItemLog(ServiceItemLine."Service Item No.",ServiceItemLine."Customer No.",11);
+      VerifyServiceItemLog(ServiceItemLine."Service Item No.",ServiceItemLine."Item No.",13);
+      VerifyServiceItemLogExist(ServiceItemLine."Service Item No.",2);
+      VerifyServiceDocumentLog(ServiceItemLine."Document No.",ServiceItemLine."Loaner No.",7);
+      VerifyServiceDocumentLog(ServiceItemLine."Document No.",ServiceContractHeader."Contract No.",11);
+      VerifyServiceDocumentShipment(ServiceShipmentHeader."No.",6);
+
+      // 4. Teardown: Receive Loaner.
+      ReceiveLoanerOnServiceOrder(ServiceItemLine,ServiceItemLine."Service Item No.");
+    END;
+
+    [Test]
+    PROCEDURE ServiceDocumentLogRepairStatus@18();
+    VAR
+      Customer@1009 : Record 18;
+      ServiceHeader@1003 : Record 5900;
+      ServiceItemLine@1006 : Record 5901;
+      ServiceItemLine2@1000 : Record 5901;
+      RepairStatus@1012 : Record 5927;
+    BEGIN
+      // Test Service Document Log created after change Repair Status code on Service Item Line.
+
+      // 1. Setup: Create Service Header and Service Item Line.
+      Initialize;
+      LibraryService.FindCustomer(Customer);
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::Order,Customer."No.");
+      LibraryService.CreateServiceItemLine(ServiceItemLine,ServiceHeader,'');
+
+      // 2. Exercise: Create Repair Status Code and Update it on Service Item Line.
+      CreateRepairStatusCodeFinish(RepairStatus);
+      ServiceItemLine2.GET(ServiceItemLine."Document Type",ServiceItemLine."Document No.",ServiceItemLine."Line No.");
+      ServiceItemLine.VALIDATE("Repair Status Code",RepairStatus.Code);
+      ServiceItemLine.UpdateServiceOrderChangeLog(ServiceItemLine2);
+      ServiceItemLine.MODIFY(TRUE);
+
+      // 3. Verify: Verify Service Document Log for Repair Status.
+      // The value 14 is the event number for Repair Status Change.
+      VerifyServiceDocumentLog(ServiceItemLine."Document No.",RepairStatus.Code,14);
+    END;
+
+    [Test]
+    PROCEDURE ServiceDocumentLogStatus@71();
+    VAR
+      Customer@1009 : Record 18;
+      ServiceHeader@1003 : Record 5900;
+      ServiceHeader2@1000 : Record 5900;
+    BEGIN
+      // Test Service Document Log created after change Status on Service Header.
+
+      // 1. Setup: Create Service Header.
+      Initialize;
+      LibraryService.FindCustomer(Customer);
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::Order,Customer."No.");
+
+      // 2. Exercise: Change Status to In Process on Service Header.
+      ServiceHeader2.GET(ServiceHeader."Document Type",ServiceHeader."No.");
+      ServiceHeader.VALIDATE(Status,ServiceHeader.Status::"In Process");
+      ServiceHeader.UpdateServiceOrderChangeLog(ServiceHeader2);
+      ServiceHeader.MODIFY(TRUE);
+
+      // 3. Verify: Verify Service Document Log for Status.
+      VerifyServiceDocumentLogExist(ServiceHeader."No.",2);  // The value 2 is the event number for Status Change.
+    END;
+
+    [Test]
+    [HandlerFunctions(FormHandlerResourceAllocation)]
+    PROCEDURE ResourceAllocation@9();
+    VAR
+      Customer@1000 : Record 18;
+      ServiceHeader@1001 : Record 5900;
+      ServiceItemLine@1002 : Record 5901;
+      ServiceItem@1003 : Record 5940;
+      Resource@1005 : Record 156;
+    BEGIN
+      // Test Service Document Log created after Resource Allocation on Service Header.
+
+      // 1. Setup: Create Service Header, Service Item and Service Item Line.
+      Initialize;
+      LibraryService.FindCustomer(Customer);
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::Order,Customer."No.");
+      LibraryService.CreateServiceItem(ServiceItem,Customer."No.");
+      LibraryService.CreateServiceItemLine(ServiceItemLine,ServiceHeader,ServiceItem."No.");
+
+      // 2. Exercise: Allocate Resource on Service Order.
+      AllocateResource(Resource,ServiceItemLine);
+
+      // 3. Verify: Verify Service Document Log for Resource Allocation.
+      VerifyServiceDocumentLog(ServiceHeader."No.",Resource."No.",4);  // The value 4 is the event number for REsource Allocation.
+    END;
+
+    [Test]
+    [HandlerFunctions(FormHandlerResourceAllocation,FormHandlerCancelAllocation)]
+    PROCEDURE CancelResourceAllocation@83();
+    VAR
+      Customer@1000 : Record 18;
+      ServiceHeader@1001 : Record 5900;
+      ServiceItemLine@1002 : Record 5901;
+      ServiceItem@1003 : Record 5940;
+      Resource@1005 : Record 156;
+      ServiceDocumentLog@1008 : Record 5912;
+      ServiceOrderAllocation@1006 : Record 5950;
+    BEGIN
+      // Test Service Document Log created after Change Resource Allocation on Service Header.
+
+      // 1. Setup: Create Service Header, Service Item and Service Item Line and Allocate Resource on Service Order.
+      Initialize;
+      LibraryService.FindCustomer(Customer);
+      LibraryService.CreateServiceItem(ServiceItem,Customer."No.");
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::Order,Customer."No.");
+      CreateServiceItemLineRepair(ServiceItemLine,ServiceHeader,ServiceItem."No.");
+      AllocateResource(Resource,ServiceItemLine);
+
+      // 2. Exercise: Change Resource No. on Service Order Allocation.
+      ServiceOrderAllocation.GET(ServiceOrderAllocation2."Entry No.");
+      Resource.NEXT;
+      COMMIT;
+      ServiceOrderAllocation.VALIDATE("Resource No.",Resource."No.");
+
+      // 3. Verify: Verify Service Document Log for Change Resource Allocation.
+      ServiceDocumentLog.SETRANGE("Document Type",ServiceDocumentLog."Document Type"::Order);
+      ServiceDocumentLog.SETRANGE("Document No.",ServiceHeader."No.");
+      ServiceDocumentLog.SETRANGE(After,ResourceNo);
+      ServiceDocumentLog.FINDLAST;
+      ServiceDocumentLog.TESTFIELD("Event No.",5);  // The value 5 is the event number for Cancel Resource Allocation.
+    END;
+
+    [Test]
+    [HandlerFunctions(FormHandlerResourceAllocation,FormHandlerRelAllocation)]
+    PROCEDURE ResourceReAllocation@63();
+    VAR
+      Customer@1000 : Record 18;
+      ServiceHeader@1001 : Record 5900;
+      ServiceItemLine@1002 : Record 5901;
+      ServiceItem@1003 : Record 5940;
+      Resource@1005 : Record 156;
+      ServiceDocumentLog@1008 : Record 5912;
+      ServiceOrderAllocation@1006 : Record 5950;
+      ServAllocationManagement@1009 : Codeunit 5930;
+    BEGIN
+      // Test Service Document Log created after Cancel Resource Allocation on Service Header.
+
+      // 1. Setup: Create Service Header, Service Item and Service Item Line and Allocate Resource on Service Order.
+      Initialize;
+      LibraryService.FindCustomer(Customer);
+      LibraryService.CreateServiceItem(ServiceItem,Customer."No.");
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::Order,Customer."No.");
+      CreateServiceItemLineRepair(ServiceItemLine,ServiceHeader,ServiceItem."No.");
+      AllocateResource(Resource,ServiceItemLine);
+
+      // 2. Exercise: Cancel Resource Allocation.
+      ServiceOrderAllocation.GET(ServiceOrderAllocation2."Entry No.");
+      COMMIT;
+      ServAllocationManagement.CancelAllocation(ServiceOrderAllocation);
+
+      // 3. Verify: Verify Service Document Log for Cancel Resource Allocation.
+      ServiceDocumentLog.SETRANGE("Document Type",ServiceDocumentLog."Document Type"::Order);
+      ServiceDocumentLog.SETRANGE("Document No.",ServiceHeader."No.");
+      ServiceDocumentLog.SETRANGE(After,Resource."No.");
+      ServiceDocumentLog.FINDLAST;
+      ServiceDocumentLog.TESTFIELD("Event No.",17);  // The value 17 is the event number for Reallocation Needed.
+    END;
+
+    [Test]
+    PROCEDURE DeleteServiceOrder@77();
+    VAR
+      Customer@1000 : Record 18;
+      ServiceHeader@1001 : Record 5900;
+      ServiceItemLine@1002 : Record 5901;
+      ServiceItem@1003 : Record 5940;
+    BEGIN
+      // Test Service Item Log created after Delete service Order.
+
+      // 1. Setup: Create Service Header, Service Item and Service Item Line.
+      Initialize;
+      LibraryService.FindCustomer(Customer);
+      LibraryService.CreateServiceItem(ServiceItem,Customer."No.");
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::Order,Customer."No.");
+      LibraryService.CreateServiceItemLine(ServiceItemLine,ServiceHeader,ServiceItem."No.");
+
+      // 2. Exercise: Delete Service Order.
+      ServiceHeader.DELETE(TRUE);
+
+      // 3. Verify: Verify Service Document Log for Delete service Order.
+      VerifyServiceItemLogExist(ServiceItem."No.",7);  // The value 7 is the event number for delete Service Order.
+    END;
+
+    [Test]
+    PROCEDURE ServiceLineExtendedText@38();
+    VAR
+      Customer@1006 : Record 18;
+      Item@1007 : Record 27;
+      ServiceHeader@1005 : Record 5900;
+      ServiceLine@1004 : Record 5902;
+      TransferExtendedText@1000 : Codeunit 378;
+      LibrarySCM@1010 : Codeunit 50210;
+      Description@1001 : Text[50];
+    BEGIN
+      // Test Extended Text created on Service Line.
+
+      // 1. Setup: Create Item, Extended Text for Item, Service Order - Service Header and Service Line.
+      Initialize;
+      LibraryService.FindCustomer(Customer);
+      LibrarySCM.CreateItem(Item);
+      Description := CreateExtendedTextForItem(Item."No.");
+
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::Order,Customer."No.");
+      ServiceLine.VALIDATE("Document Type",ServiceHeader."Document Type");
+      ServiceLine.VALIDATE("Document No.",ServiceHeader."No.");
+      ServiceLine.VALIDATE(Type,ServiceLine.Type::Item);
+      ServiceLine.VALIDATE("No.",Item."No.");
+
+      // 2. Exercise: Add Extended Text to the Service Line by Insert Extended Text function.
+      TransferExtendedText.ServCheckIfAnyExtText(ServiceLine,TRUE);
+      TransferExtendedText.InsertServExtText(ServiceLine);
+
+      // 3. Verify: Verify Extended Text on Service Line.
+      ServiceLine.SETRANGE("Document Type",ServiceHeader."Document Type");
+      ServiceLine.SETRANGE("Document No.",ServiceHeader."No.");
+      ServiceLine.FINDFIRST;
+      ServiceLine.TESTFIELD(Description,Description);
+    END;
+
+    LOCAL PROCEDURE AllocateResource@87(VAR Resource@1002 : Record 156;ServiceItemLine@1003 : Record 5901);
+    VAR
+      ServiceOrderSubform@1001 : Form 5902;
+    BEGIN
+      Resource.NEXT(RANDOM(Resource.COUNT));
+      ResourceNo := Resource."No.";  // Set Global Variable for Form Handler.
+      CLEAR(ServiceOrderSubform);
+      ServiceOrderSubform.SETRECORD(ServiceItemLine);
+      ServiceOrderSubform.AllocateResource;
+    END;
+
+    LOCAL PROCEDURE AssignLoanerOnServiceItemLine@64(VAR ServiceItemLine@1000 : Record 5901);
+    VAR
+      Loaner@1001 : Record 5913;
+    BEGIN
+      Loaner.NEXT(RANDOM(Loaner.COUNT));
+      ServiceItemLine.VALIDATE("Loaner No.",Loaner."No.");
+      ServiceItemLine.MODIFY(TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateContractAccountGroup@34();
+    VAR
+      GLAccount@1001 : Record 15;
+      ServiceContractAccountGroup@1000 : Record 5973;
+    BEGIN
+      // Select G/L Account where Gen. Bus. Posting Group not Blank and Direct Posting True.
+      GLAccount.SETFILTER("Gen. Bus. Posting Group",'<>''''');
+      GLAccount.SETRANGE("Direct Posting",TRUE);
+      GLAccount.FINDFIRST;
+      LibraryService.CreateServiceContractAcctGrp(ServiceContractAccountGroup);
+      ServiceContractAccountGroup.VALIDATE("Non-Prepaid Contract Acc.",GLAccount."No.");
+      ServiceContractAccountGroup.MODIFY(TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateCustomerTemplate@33();
+    VAR
+      CustomerTemplate@1004 : Record 5105;
+      GenBusinessPostingGroup@1003 : Record 250;
+      CustomerPostingGroup@1002 : Record 92;
+      LibrarySCM@1001 : Codeunit 50210;
+    BEGIN
+      GenBusinessPostingGroup.FINDFIRST;
+      CustomerPostingGroup.FINDFIRST;
+      LibrarySCM.CreateCustomerTemplate(CustomerTemplate);
+      CustomerTemplate.VALIDATE("Gen. Bus. Posting Group",GenBusinessPostingGroup.Code);
+      CustomerTemplate.VALIDATE("Customer Posting Group",CustomerPostingGroup.Code);
+      CustomerTemplate.MODIFY(TRUE);
+    END;
+
+    LOCAL PROCEDURE CreateExtendedTextForItem@59(ItemNo@1002 : Code[20]) : Text[50];
+    VAR
+      ExtendedTextHeader@1001 : Record 279;
+      ExtendedTextLine@1000 : Record 280;
+    BEGIN
+      LibraryService.CreateExtendedTextHeaderItem(ExtendedTextHeader,ItemNo);
+      ExtendedTextHeader.VALIDATE("Starting Date",WORKDATE);
+      ExtendedTextHeader.VALIDATE("All Language Codes",TRUE);
+      ExtendedTextHeader.MODIFY(TRUE);
+
+      LibraryService.CreateExtendedTextLineItem(ExtendedTextLine,ExtendedTextHeader);
+      ExtendedTextLine.VALIDATE(Text,LibraryUtility.GenerateRandomCode(ExtendedTextLine.FIELDNO(Text),DATABASE::"Extended Text Line"));
+      ExtendedTextLine.MODIFY(TRUE);
+      EXIT(ExtendedTextLine.Text);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateRepairStatusCodeFinish@61(VAR RepairStatus@1001 : Record 5927);
+    BEGIN
+      RepairStatus.SETRANGE(Finished,TRUE);
+      IF NOT RepairStatus.FINDFIRST THEN BEGIN
+        LibraryService.CreateRepairStatus(RepairStatus);
+        RepairStatus.VALIDATE(Finished,TRUE);
+        RepairStatus.MODIFY(TRUE);
+      END;
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateServiceContract@10(VAR ServiceContractHeader@1003 : Record 5965;VAR ServiceContractLine@1001 : Record 5964;ContractType@1000 : Option);
+    VAR
+      Customer@1002 : Record 18;
+    BEGIN
+      // Create Service Item, Service Contract Header, Service Contract Line.
+      LibraryService.FindCustomer(Customer);
+      LibraryService.CreateServiceContractHeader(ServiceContractHeader,ContractType,Customer."No.");
+      CreateServiceContractLine(ServiceContractLine,ServiceContractHeader);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateServiceContractLine@16(VAR ServiceContractLine@1002 : Record 5964;ServiceContractHeader@1000 : Record 5965);
+    VAR
+      ServiceItem@1001 : Record 5940;
+    BEGIN
+      LibraryService.CreateServiceItem(ServiceItem,ServiceContractHeader."Customer No.");
+      LibraryService.CreateServiceContractLine(ServiceContractLine,ServiceContractHeader,ServiceItem."No.");
+      ServiceContractLine.VALIDATE("Line Cost",RANDOM(10));  // Use Random because value is not important.
+      ServiceContractLine.VALIDATE("Line Value",RANDOM(10));  // Use Random because value is not important.
+      ServiceContractLine.MODIFY(TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateServiceItemLine@58(VAR ServiceItemLine@1003 : Record 5901;ServiceHeader@1000 : Record 5900);
+    VAR
+      Item@1001 : Record 27;
+    BEGIN
+      // Create Service Order - Service Header and Service Item Line with Item.
+      LibraryService.FindItem(Item);
+      LibraryService.CreateServiceItemLine(ServiceItemLine,ServiceHeader,'');
+      ServiceItemLine.VALIDATE("Item No.",Item."No.");
+      ServiceItemLine.VALIDATE(Description,Item."No.");
+      ServiceItemLine.MODIFY(TRUE);
+    END;
+
+    LOCAL PROCEDURE CreateServiceItemLineRepair@98(VAR ServiceItemLine@1002 : Record 5901;ServiceHeader@1001 : Record 5900;ServiceItemNo@1004 : Code[20]);
+    VAR
+      RepairStatus@1000 : Record 5927;
+    BEGIN
+      LibraryService.CreateRepairStatus(RepairStatus);
+      LibraryService.CreateServiceItemLine(ServiceItemLine,ServiceHeader,ServiceItemNo);
+      ServiceItemLine.VALIDATE("Repair Status Code",RepairStatus.Code);
+      ServiceItemLine.MODIFY(TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateServiceHeaderWithName@32(VAR ServiceHeader@1000 : Record 5900);
+    VAR
+      PostCode@1001 : Record 225;
+    BEGIN
+      ServiceHeader.INIT;
+      ServiceHeader.VALIDATE("Document Type",ServiceHeader."Document Type"::Order);
+      ServiceHeader.INSERT(TRUE);
+
+      // Select Post Code.
+      PostCode.FINDFIRST;
+      ServiceHeader.VALIDATE(Name,FORMAT(ServiceHeader."Document Type") + ServiceHeader."No.");
+      ServiceHeader.VALIDATE(Address,FORMAT(ServiceHeader."Document Type") + ServiceHeader."No." + PostCode.City);
+      ServiceHeader.VALIDATE("Post Code",PostCode.Code);
+      ServiceHeader.MODIFY(TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateServItemLineDescription@31(VAR ServiceItemLine@1003 : Record 5901);
+    VAR
+      Customer@1004 : Record 18;
+      ServiceHeader@1000 : Record 5900;
+    BEGIN
+      // Create Service Order - Service Header and Service Item Line with description.
+      Customer.FINDFIRST;
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::Order,Customer."No.");
+      LibraryService.CreateServiceItemLine(ServiceItemLine,ServiceHeader,'');
+      ServiceItemLine.VALIDATE(
+        Description,FORMAT(ServiceItemLine."Document Type") + ServiceItemLine."Document No." + FORMAT(ServiceItemLine."Line No."));
+      ServiceItemLine.MODIFY(TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateServiceOrder@30(VAR ServiceHeader@1001 : Record 5900) : Integer;
+    VAR
+      Customer@1002 : Record 18;
+      ServiceItemLine@1000 : Record 5901;
+    BEGIN
+      Customer.FINDFIRST;
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::Order,Customer."No.");
+      LibraryService.CreateServiceItemLine(ServiceItemLine,ServiceHeader,'');
+      EXIT(ServiceItemLine."Line No.");
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateServiceOrderRespCenter@29(VAR ServiceHeader@1000 : Record 5900);
+    VAR
+      Customer@1004 : Record 18;
+      Item@1005 : Record 27;
+      ResponsibilityCenter@1003 : Record 5714;
+      ServiceItemLine@1002 : Record 5901;
+      ServiceLine@1001 : Record 5902;
+    BEGIN
+      // Create Service Header with Responsibility Center, Create Service Item Line and Service Line.
+      Customer.FINDFIRST;
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::Order,Customer."No.");
+      ResponsibilityCenter.FINDFIRST;
+      ServiceHeader.VALIDATE("Responsibility Center",ResponsibilityCenter.Code);
+      ServiceHeader.MODIFY(TRUE);
+      LibraryService.CreateServiceItemLine(ServiceItemLine,ServiceHeader,'');
+      Item.FINDFIRST;
+      LibraryService.CreateServiceLine(ServiceLine,ServiceHeader,ServiceLine.Type::Item,Item."No.");
+      UpdateServiceLine(ServiceLine,ServiceItemLine."Line No.");
+    END;
+
+    LOCAL PROCEDURE CreateServiceQuoteWithComments@3(VAR ServiceItemLine@1006 : Record 5901);
+    VAR
+      Customer@1005 : Record 18;
+      ServiceHeader@1004 : Record 5900;
+      ServiceItem@1002 : Record 5940;
+      ServiceLine@1008 : Record 5902;
+      Item@1007 : Record 27;
+      Loaner@1001 : Record 5913;
+      LibrarySCM@1000 : Codeunit 50210;
+    BEGIN
+      // Create Service Item, Service Header with Document Type Quote, Service Item Line, Assign Loaner No. on Service Item Line,
+      // Create Service Line with Type Item and Create Commnet on Service Quote.
+      LibrarySCM.SetStockoutWarning(FALSE);
+      LibraryService.FindCustomer(Customer);
+      LibraryService.CreateServiceItem(ServiceItem,Customer."No.");
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::Quote,ServiceItem."Customer No.");
+      LibraryService.CreateLoaner(Loaner);
+      LibraryService.CreateServiceItemLine(ServiceItemLine,ServiceHeader,ServiceItem."No.");
+      ServiceItemLine.VALIDATE("Loaner No.",Loaner."No.");
+      ServiceItemLine.MODIFY(TRUE);
+
+      LibraryService.FindItem(Item);
+      LibraryService.CreateServiceLine(ServiceLine,ServiceHeader,ServiceLine.Type::Item,Item."No.");
+      UpdateServiceLine(ServiceLine,ServiceItemLine."Line No.");
+      CreateCommentsOnServiceQuote(ServiceItemLine);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE ChangeCustomerOnServiceQuote@26(VAR ServiceHeader@1000 : Record 5900);
+    VAR
+      Customer@1001 : Record 18;
+    BEGIN
+      // Select different Customer from Service Header Customer No.
+      Customer.SETFILTER("No.",'<>%1',ServiceHeader."Customer No.");
+      Customer.FINDFIRST;
+      ServiceHeader.VALIDATE("Customer No.",Customer."No.");
+      ServiceHeader.MODIFY(TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateCommentsOnServiceQuote@28(ServiceItemLine@1001 : Record 5901);
+    VAR
+      ServiceCommentLine@1002 : Record 5906;
+    BEGIN
+      LibraryService.CreateCommentLineForServHeader(ServiceCommentLine,ServiceItemLine,ServiceCommentLine.Type::Fault);
+      LibraryService.CreateCommentLineForServHeader(ServiceCommentLine,ServiceItemLine,ServiceCommentLine.Type::Resolution);
+      LibraryService.CreateCommentLineForServHeader(ServiceCommentLine,ServiceItemLine,ServiceCommentLine.Type::Accessory);
+      LibraryService.CreateCommentLineForServHeader(ServiceCommentLine,ServiceItemLine,ServiceCommentLine.Type::Internal);
+      LibraryService.CreateCommentLineForServHeader(ServiceCommentLine,ServiceItemLine,ServiceCommentLine.Type::"Service Item Loaner");
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE ConvertMessage@25(ErrorMessage@1000 : Text[1024]) : Text[1024];
+    VAR
+      NewLine@1001 : Text[1];
+    BEGIN
+      // Remove New Line Character from Error Message.
+      NewLine[1] := 13;
+      EXIT(DELCHR(ErrorMessage,'=',NewLine));
+    END;
+
+    LOCAL PROCEDURE FindServiceDocumentLog@60(VAR ServiceDocumentLog@1002 : Record 5912;DocumentType@1000 : Option;DocumentNo@1001 : Code[20]);
+    BEGIN
+      ServiceDocumentLog.SETRANGE("Document Type",DocumentType);
+      ServiceDocumentLog.SETRANGE("Document No.",DocumentNo);
+      ServiceDocumentLog.FINDFIRST;
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE ModifyServiceContractHeader@8(VAR ServiceContractHeader@1000 : Record 5965);
+    BEGIN
+      ServiceContractHeader.CALCFIELDS("Calcd. Annual Amount");
+      ServiceContractHeader.VALIDATE("Annual Amount",ServiceContractHeader."Calcd. Annual Amount");
+      ServiceContractHeader.VALIDATE("Starting Date",WORKDATE);
+      ServiceContractHeader.VALIDATE("Price Update Period",ServiceContractHeader."Service Period");
+      ServiceContractHeader.MODIFY(TRUE);
+    END;
+
+    LOCAL PROCEDURE ReceiveLoanerOnServiceShipment@7(OrderNo@1000 : Code[20]);
+    VAR
+      ServiceShipmentHeader@1003 : Record 5990;
+      ServiceShipmentItemLine@1002 : Record 5989;
+      PostedServiceShptSubform@1001 : Form 5976;
+    BEGIN
+      ServiceShipmentHeader.SETRANGE("Order No.",OrderNo);
+      ServiceShipmentHeader.FINDFIRST;
+      ServiceShipmentItemLine.SETRANGE("No.",ServiceShipmentHeader."No.");
+      ServiceShipmentItemLine.FINDFIRST;
+      CLEAR(PostedServiceShptSubform);
+      PostedServiceShptSubform.SETTABLEVIEW(ServiceShipmentItemLine);
+      PostedServiceShptSubform.SETRECORD(ServiceShipmentItemLine);
+      PostedServiceShptSubform.ReceiveLoaner;
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE ReceiveLoanerOnServiceOrder@24(VAR ServiceItemLine@1001 : Record 5901;ServiceItemNo@1000 : Code[20]);
+    VAR
+      ServLoanerManagement@1002 : Codeunit 5901;
+    BEGIN
+      ServiceItemLine.SETRANGE("Service Item No.",ServiceItemNo);
+      ServiceItemLine.FINDFIRST;
+      ServLoanerManagement.ReceiveLoaner(ServiceItemLine);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE SaveComments@23(VAR TempServiceCommentLine@1001 : TEMPORARY Record 5906;ServiceItemLine@1000 : Record 5901);
+    VAR
+      ServiceCommentLine@1002 : Record 5906;
+    BEGIN
+      ServiceCommentLine.SETRANGE("Table Name",ServiceCommentLine."Table Name"::"Service Header");
+      ServiceCommentLine.SETRANGE("Table Subtype",ServiceItemLine."Document Type");
+      ServiceCommentLine.SETRANGE("No.",ServiceItemLine."Document No.");
+      ServiceCommentLine.FINDSET;
+      REPEAT
+        TempServiceCommentLine := ServiceCommentLine;
+        TempServiceCommentLine.INSERT;
+      UNTIL ServiceCommentLine.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE UpdateContractOnServiceHeader@75(VAR ServiceHeader@1000 : Record 5900;ContractNo@1002 : Code[20]);
+    VAR
+      ServiceHeader2@1001 : Record 5900;
+    BEGIN
+      ServiceHeader2.GET(ServiceHeader."Document Type",ServiceHeader."No.");
+      ServiceHeader.VALIDATE("Contract No.",ContractNo);
+      ServiceHeader.UpdateServiceOrderChangeLog(ServiceHeader2);
+      ServiceHeader.MODIFY(TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE UpdateServiceContract@21(VAR ServiceContractHeader@1000 : Record 5965);
+    BEGIN
+      ServiceContractHeader.CALCFIELDS("Calcd. Annual Amount");
+      ServiceContractHeader.VALIDATE("Annual Amount",ServiceContractHeader."Calcd. Annual Amount");
+      ServiceContractHeader.MODIFY(TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE UpdateServiceLine@19(VAR ServiceLine@1003 : Record 5902;ServiceItemLineNo@1002 : Integer);
+    BEGIN
+      ServiceLine.VALIDATE("Service Item Line No.",ServiceItemLineNo);
+      ServiceLine.VALIDATE(Quantity,RANDOM(100));  // Use Random to select Random Quantity.
+      ServiceLine.MODIFY(TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE VerifyComments@17(VAR TempServiceCommentLine@1001 : TEMPORARY Record 5906;ServiceItemLine@1000 : Record 5901);
+    VAR
+      ServiceCommentLine@1002 : Record 5906;
+    BEGIN
+      TempServiceCommentLine.FINDFIRST;
+      ServiceCommentLine.SETRANGE("Table Name",ServiceCommentLine."Table Name"::"Service Header");
+      ServiceCommentLine.SETRANGE("No.",ServiceItemLine."Document No.");
+      ServiceCommentLine.SETRANGE("Table Line No.",ServiceItemLine."Line No.");
+      ServiceCommentLine.FINDSET;
+      REPEAT
+        ServiceCommentLine.TESTFIELD(Type,TempServiceCommentLine.Type);
+        ServiceCommentLine.TESTFIELD(Comment,TempServiceCommentLine.Comment);
+        TempServiceCommentLine.NEXT;
+      UNTIL ServiceCommentLine.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE VerifyLoanerEntry@4(ServiceItemLine@1000 : Record 5901);
+    VAR
+      LoanerEntry@1001 : Record 5914;
+    BEGIN
+      LoanerEntry.SETRANGE("Loaner No.",ServiceItemLine."Loaner No.");
+      LoanerEntry.FINDFIRST;
+      LoanerEntry.TESTFIELD("Document No.",ServiceItemLine."Document No.");
+      LoanerEntry.TESTFIELD("Service Item Line No.",ServiceItemLine."Line No.");
+      LoanerEntry.TESTFIELD("Service Item No.",ServiceItemLine."Service Item No.");
+      LoanerEntry.TESTFIELD(Lent,FALSE);
+      LoanerEntry.TESTFIELD("Customer No.",ServiceItemLine."Customer No.");
+    END;
+
+    LOCAL PROCEDURE VerifyServiceDocumentLog@81(DocumentNo@1000 : Code[20];After@1001 : Text[50];EventNo@1002 : Integer);
+    VAR
+      ServiceDocumentLog@1003 : Record 5912;
+    BEGIN
+      ServiceDocumentLog.SETRANGE(After,After);
+      FindServiceDocumentLog(ServiceDocumentLog,ServiceDocumentLog."Document Type"::Order,DocumentNo);
+      ServiceDocumentLog.TESTFIELD("Event No.",EventNo);
+    END;
+
+    LOCAL PROCEDURE VerifyServiceDocumentLogExist@97(DocumentNo@1000 : Code[20];EventNo@1002 : Integer);
+    VAR
+      ServiceDocumentLog@1003 : Record 5912;
+    BEGIN
+      ServiceDocumentLog.SETRANGE("Event No.",EventNo);
+      FindServiceDocumentLog(ServiceDocumentLog,ServiceDocumentLog."Document Type"::Order,DocumentNo);
+    END;
+
+    LOCAL PROCEDURE VerifyServiceDocumentShipment@73(DocumentNo@1000 : Code[20];EventNo@1002 : Integer);
+    VAR
+      ServiceDocumentLog@1003 : Record 5912;
+    BEGIN
+      FindServiceDocumentLog(ServiceDocumentLog,ServiceDocumentLog."Document Type"::Shipment,DocumentNo);
+      ServiceDocumentLog.TESTFIELD("Event No.",EventNo);
+    END;
+
+    LOCAL PROCEDURE VerifyServiceItemLog@74(ServiceItemNo@1000 : Code[20];After@1001 : Text[50];EventNo@1002 : Integer);
+    VAR
+      ServiceItemLog@1003 : Record 5942;
+    BEGIN
+      ServiceItemLog.SETRANGE("Service Item No.",ServiceItemNo);
+      ServiceItemLog.SETRANGE(After,After);
+      ServiceItemLog.FINDFIRST;
+      ServiceItemLog.TESTFIELD("Event No.",EventNo);
+    END;
+
+    LOCAL PROCEDURE VerifyServiceItemLogExist@99(ServiceItemNo@1000 : Code[20];EventNo@1002 : Integer);
+    VAR
+      ServiceItemLog@1003 : Record 5942;
+    BEGIN
+      ServiceItemLog.SETRANGE("Service Item No.",ServiceItemNo);
+      ServiceItemLog.SETRANGE("Event No.",EventNo);
+      ServiceItemLog.FINDFIRST;
+    END;
+
+    [ConfirmHandler]
+    PROCEDURE ConfirmMessageHandler@14(Question@1001 : Text[1024];VAR Reply@1000 : Boolean);
+    BEGIN
+      Reply := TRUE;
+    END;
+
+    [ConfirmHandler]
+    PROCEDURE ConfirmMessageHandlerForFalse@13(Question@1001 : Text[1024];VAR Reply@1000 : Boolean);
+    BEGIN
+      Reply := FALSE;
+    END;
+
+    [ModalFormHandler]
+    PROCEDURE CustomerTemplateHandler@12(VAR CustomerTemplateList@1001 : Form 5156;VAR Response@1000 : Action);
+    BEGIN
+      Response := ACTION::LookupOK;
+    END;
+
+    [ModalFormHandler]
+    PROCEDURE ContractTemplateHandler@6(VAR ServiceContractTemplateList@1001 : Form 6056;VAR Response@1000 : Action);
+    BEGIN
+      Response := ACTION::LookupOK;
+    END;
+
+    [MessageHandler]
+    PROCEDURE MessageHandler@11(Message@1000 : Text[1024]);
+    BEGIN
+      // Just for Handle the Message.
+    END;
+
+    [FormHandler]
+    PROCEDURE FormHandlerResourceAllocation@20(VAR ResourceAllocations@1000 : Form 6005);
+    VAR
+      ServiceOrderAllocation@1001 : Record 5950;
+    BEGIN
+      ServiceOrderAllocation.INIT;
+      ResourceAllocations.GETRECORD(ServiceOrderAllocation);
+      ServiceOrderAllocation.VALIDATE("Resource No.",ResourceNo);
+      ServiceOrderAllocation.VALIDATE("Allocation Date",WORKDATE);
+      ServiceOrderAllocation.MODIFY(TRUE);
+
+      ServiceOrderAllocation2 := ServiceOrderAllocation;
+    END;
+
+    [ModalFormHandler]
+    PROCEDURE FormHandlerCancelAllocation@27(VAR ReallocationEntryReasons@1000 : Form 6022;VAR Response@1002 : Action);
+    BEGIN
+      Response := ACTION::Yes;
+    END;
+
+    [ModalFormHandler]
+    PROCEDURE FormHandlerRelAllocation@89(VAR CancelledAllocationReasons@1000 : Form 6002;VAR Response@1002 : Action);
+    BEGIN
+      Response := ACTION::Yes;
+    END;
+
+    BEGIN
+    {
+      Test for CRM Service Orders:
+        1. Test that it is possible to create Service Order manually. All the fields marked as mandatory should be filled in.
+        2. Test that it is possible to create customers and service items with specified parameters within the Service Order.
+           Verify that it is possible to modify or delete these entities.
+        3. Test that it is possible to create, modify or delete service orders
+        4. Test that it is possible to create a service order with item lines where service items have different values in the
+           Ship-to-Code field.
+        5. Test that it is possible to lend a loaner from a service quote, convert the quote to a service order and then return the
+           Loaner.
+        6. Test that it is possible to create, modify and delete Service Quotes
+        7. Test that it is possible to make a service order from a service quote. Verifying that it is possible to modify and delete the
+           created Service Order.
+        8. Test the correctness and consistency of data on the service order reports: Service Order Response Time, Service Item Line
+           Labels, Service Profit (Serv. Orders).
+        9. Test that it is possible to Receive Loaner on the Posted Service Shipment.
+       10. Test Service Document Log after Change Contract No. on Service Order.
+       11. Test Service Document Log after Change Contract No. on Posted Service Shipment.
+       13. Test Service Document Log and Service Item Log after Lent and Receive Loaner.
+       14. Test Service Document Log after Resource Allocation and Cancel Resource Allocation on service Order.
+       15. Test Service Item Log after delete Service Order.
+       16. Test it is possible to insert Extended Text on Service Line.
+    }
+    END.
+  }
+}
+

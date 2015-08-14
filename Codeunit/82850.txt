@@ -1,0 +1,1115 @@
+OBJECT Codeunit 82850 Inbound EDI Service
+{
+  OBJECT-PROPERTIES
+  {
+    Date=06.02.15;
+    Time=15:55:23;
+    Modified=Yes;
+    Version List=EDIINT6.00,H1907,HME2047;
+  }
+  PROPERTIES
+  {
+    TableNo=82856;
+    OnRun=VAR
+            rInbEDIMessage@1000000000 : Record 82856;
+          BEGIN
+            {
+            rInbEDIMessage.SETRANGE("Commited Record",TRUE);
+            rInbEDIMessage.SETRANGE("NAV Processed",FALSE);
+            IF rInbEDIMessage.FIND('-') THEN BEGIN
+              REPEAT
+                MapInboundMessage(rInbEDIMessage);
+              UNTIL rInbEDIMessage.NEXT = 0;
+            END;
+
+            MESSAGE('Done!');
+            }
+
+            MapInboundMessage(Rec);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      rEDIPartner@1000000003 : Record 82851;
+      iCommentLineCounter@1000000002 : Integer;
+      iLineCounterREMADV@1119443000 : Integer;
+      sDocNo@1000000001 : Integer;
+      bShowMessage@1000000000 : Boolean;
+      Text001@1115500000 : TextConst 'DEU=Es wurde ein Verkaufsauftrag erzeugt.';
+      Text002@1115500001 : TextConst 'DEU=Es wurden %2 AuftrÑge erzeugt.';
+      sMappingPartnerCode@1000000004 : Code[20];
+
+    PROCEDURE MapInboundMessage@1115500000(rEDI_Message@1115500000 : Record 82856) : Integer;
+    VAR
+      rEDIHeader@1115500003 : Record 82857;
+      iHeaderCount@1115500004 : Integer;
+    BEGIN
+      //Anzahl Header ermitteln
+      rEDIHeader.SETRANGE("EDI Message No.",rEDI_Message."EDI Message No.");
+      rEDIHeader.FINDLAST;
+
+      //insert Header
+      FOR iHeaderCount := 1 TO rEDIHeader."EDI Header No." DO
+        CreateHeader(rEDI_Message,iHeaderCount);
+
+      rEDI_Message."NAV Processed" := TRUE;
+      rEDI_Message.MODIFY;
+
+      IF bShowMessage THEN BEGIN
+        IF rEDIHeader."EDI Header No." = 1 THEN
+          MESSAGE(Text001)
+        ELSE
+          MESSAGE(Text002,rEDIHeader."EDI Header No.");
+      END ELSE BEGIN
+        EXIT(rEDIHeader."EDI Header No.");
+      END;
+    END;
+
+    PROCEDURE CreateHeader@1115500002(rEDI_Message@1115500000 : Record 82856;iHeaderCount@1115500001 : Integer);
+    VAR
+      rEDIMapping@1115500002 : Record 82854;
+      rEDIHeader@1000000000 : Record 82857;
+      rEDILines@1115500006 : Record 82858;
+      oRecRef@1115500004 : RecordRef;
+      oFieldRef@1115500005 : FieldRef;
+      sPartnerCode@1115500003 : Code[20];
+      iLineCount@1115500007 : Integer;
+      rInbEDIPurchHeader@1000000001 : Record 82868;
+    BEGIN
+      //Partner zu iLN finden
+      sPartnerCode := GetPartnerHeader(rEDI_Message."Interchange Sender GLN");
+
+      IF rEDIPartner."Mapping Partner" <> '' THEN
+        sMappingPartnerCode := rEDIPartner."Mapping Partner"
+      ELSE
+        sMappingPartnerCode := sPartnerCode;
+
+      //Insert Header
+      rEDIMapping.SETRANGE("In-/Outbound Document",rEDIMapping."In-/Outbound Document"::Inbound);
+      rEDIMapping.SETRANGE("Document Type",rEDI_Message."Document Type");
+      rEDIMapping.SETRANGE(Type,rEDIMapping.Type::Header);
+      rEDIMapping.SETRANGE("Partner Code",sMappingPartnerCode);
+      rEDIMapping.SETRANGE("Primary Key",TRUE);
+      rEDIMapping.FIND('-');
+
+      oRecRef.OPEN(rEDIMapping."Table ID");
+
+      REPEAT
+        oFieldRef := oRecRef.FIELD(rEDIMapping."Field ID");
+        WriteHeaderValueToField(oFieldRef,rEDIMapping,rEDI_Message,iHeaderCount,oRecRef);
+      UNTIL rEDIMapping.NEXT = 0;
+
+      oRecRef.INSERT(TRUE);
+
+      //Modify Header
+      rEDIMapping.SETRANGE("Primary Key",FALSE);
+      rEDIMapping.FIND('-');
+
+      REPEAT
+        IF rEDIMapping."Field ID" <> 0 THEN BEGIN
+          oFieldRef := oRecRef.FIELD(rEDIMapping."Field ID");
+          WriteHeaderValueToField(oFieldRef,rEDIMapping,rEDI_Message,iHeaderCount,oRecRef);
+        END;
+      UNTIL rEDIMapping.NEXT = 0;
+
+      //Uhrzeit in Auftrag Åbernehmen
+      IF oRecRef.NUMBER = 36 THEN BEGIN
+        oFieldRef := oRecRef.FIELD(99008501);
+        oFieldRef.VALUE := TIME;
+      END;
+
+      //Daten in Zwischentabelle Åbernehmen
+      IF oRecRef.NUMBER = 82868 THEN BEGIN
+        oFieldRef := oRecRef.FIELD(82853);
+        oFieldRef.VALUE := sPartnerCode;
+        oFieldRef := oRecRef.FIELD(99008500);
+        oFieldRef.VALUE := TODAY;
+        oFieldRef := oRecRef.FIELD(99008501);
+        oFieldRef.VALUE := TIME;
+        oFieldRef := oRecRef.FIELD(82854);
+        oFieldRef.VALUE := rEDI_Message."EDI Message No.";
+      END;
+
+      oRecRef.MODIFY(TRUE);
+
+      //Kopfbemerkungen ermitteln & Belegnummer Åbergeben
+      IF oRecRef.NUMBER = 82868 THEN BEGIN
+        oFieldRef := oRecRef.FIELD(3);
+        sDocNo := oFieldRef.VALUE;
+      END;
+
+      rEDIMapping.RESET;
+      rEDIMapping.SETRANGE("In-/Outbound Document",rEDIMapping."In-/Outbound Document"::Inbound);
+      rEDIMapping.SETRANGE("Document Type",rEDI_Message."Document Type");
+      rEDIMapping.SETRANGE(Type,rEDIMapping.Type::Comment);
+      rEDIMapping.SETRANGE("Partner Code",sMappingPartnerCode);
+      rEDIMapping.SETFILTER("Belongs To Header Entry No.",'<>0');
+      IF NOT rEDIMapping.ISEMPTY THEN BEGIN
+        rEDIHeader.SETRANGE("EDI Message No.",rEDI_Message."EDI Message No.");
+        rEDIHeader.SETRANGE("Field Type",'FREITEXT');
+        IF rEDIHeader.FIND('-') THEN BEGIN
+          CLEAR(iCommentLineCounter);
+          REPEAT
+            CreateHeaderComments(rEDI_Message,rEDIHeader,0,sPartnerCode,oRecRef);
+          UNTIL rEDIHeader.NEXT = 0;
+        END;
+      END;
+
+      //Anzahl Zeilen ermitteln
+      rEDILines.SETRANGE("EDI Message No.",rEDI_Message."EDI Message No.");
+      rEDILines.SETRANGE("EDI Header No.",iHeaderCount);
+      rEDILines.FINDLAST;
+
+      FOR iLineCount := 1 TO rEDILines."EDI Line No." DO
+        CreateLines(rEDI_Message,iHeaderCount,iLineCount,sPartnerCode,oRecRef);
+
+      IF oRecRef.NUMBER = 82868 THEN BEGIN
+        oRecRef.SETTABLE(rInbEDIPurchHeader);
+        rInbEDIPurchHeader.CompareToOrder();
+        rInbEDIPurchHeader.GET(rInbEDIPurchHeader."No.");
+        IF rInbEDIPurchHeader."No. of Differences" = 0 THEN
+          rInbEDIPurchHeader.AcceptPurchaseDocument();
+      END;
+    END;
+
+    PROCEDURE CreateLines@1115500006(rEDI_Message@1115500000 : Record 82856;iHeaderCount@1115500001 : Integer;iLineCount@1115500002 : Integer;sPartnerCode@1115500003 : Code[20];oHeaderRecRef@1115500007 : RecordRef);
+    VAR
+      rEDIMapping@1115500004 : Record 82854;
+      rHeaderEDIMapping@1115500009 : Record 82854;
+      rEDILine@1000000002 : Record 82858;
+      oRecRef@1115500005 : RecordRef;
+      oFieldRef@1115500006 : FieldRef;
+      oHeaderFieldRef@1115500008 : FieldRef;
+    BEGIN
+      //Insert Line
+      rEDIMapping.SETRANGE("In-/Outbound Document",rEDIMapping."In-/Outbound Document"::Inbound);
+      rEDIMapping.SETRANGE("Document Type",rEDI_Message."Document Type");
+      rEDIMapping.SETRANGE(Type,rEDIMapping.Type::Line);
+      rEDIMapping.SETRANGE("Partner Code",sMappingPartnerCode);
+      rEDIMapping.SETRANGE("Primary Key",TRUE);
+      rEDIMapping.FIND('-');
+
+      oRecRef.OPEN(rEDIMapping."Table ID");
+
+      REPEAT
+        IF rEDIMapping."Belongs To Header Entry No." <> 0 THEN BEGIN
+          rHeaderEDIMapping.SETRANGE("In-/Outbound Document",rHeaderEDIMapping."In-/Outbound Document"::Inbound);
+          rHeaderEDIMapping.SETRANGE("Document Type",rEDI_Message."Document Type");
+          rHeaderEDIMapping.SETRANGE(Type,rEDIMapping.Type::Header);
+          rHeaderEDIMapping.SETRANGE("Partner Code",sMappingPartnerCode);
+          rHeaderEDIMapping.SETRANGE("Entry No.",rEDIMapping."Belongs To Header Entry No.");
+          rHeaderEDIMapping.SETRANGE("Primary Key",TRUE);
+          rHeaderEDIMapping.FINDFIRST;
+
+          oHeaderFieldRef := oHeaderRecRef.FIELD(rHeaderEDIMapping."Field ID");
+          CASE rEDIMapping."Field Datatype" OF
+            rEDIMapping."Field Datatype"::Decimal : rEDIMapping."Field Value Decimal" := oHeaderFieldRef.VALUE;
+            rEDIMapping."Field Datatype"::Date : rEDIMapping."Field Value Date" := oHeaderFieldRef.VALUE;
+            rEDIMapping."Field Datatype"::Text : rEDIMapping."Field Value Text" := oHeaderFieldRef.VALUE;
+          END;
+        END;
+
+        oFieldRef := oRecRef.FIELD(rEDIMapping."Field ID");
+        WriteLineValueToField(oFieldRef,rEDIMapping,rEDI_Message,iHeaderCount,iLineCount,oRecRef);
+      UNTIL rEDIMapping.NEXT = 0;
+
+      oRecRef.INSERT(TRUE);
+
+      //Modify Line
+      rEDIMapping.SETRANGE("Primary Key",FALSE);
+      rEDIMapping.FIND('-');
+
+      REPEAT
+        IF rEDIMapping."Field ID" <> 0 THEN BEGIN
+          oFieldRef := oRecRef.FIELD(rEDIMapping."Field ID");
+          WriteLineValueToField(oFieldRef,rEDIMapping,rEDI_Message,iHeaderCount,iLineCount,oRecRef);
+        END;
+      UNTIL rEDIMapping.NEXT = 0;
+
+      oRecRef.MODIFY(TRUE);
+
+      //Zeilenbemerkungen ermitteln
+      rEDIMapping.RESET;
+      rEDIMapping.SETRANGE("In-/Outbound Document",rEDIMapping."In-/Outbound Document"::Inbound);
+      rEDIMapping.SETRANGE("Document Type",rEDI_Message."Document Type");
+      rEDIMapping.SETRANGE(Type,rEDIMapping.Type::Comment);
+      rEDIMapping.SETRANGE("Partner Code",sMappingPartnerCode);
+      rEDIMapping.SETFILTER("Belongs To Line Entry No.",'<>0');
+      IF NOT rEDIMapping.ISEMPTY THEN BEGIN
+        rEDILine.SETRANGE("EDI Message No.",rEDI_Message."EDI Message No.");
+        rEDILine.SETRANGE("EDI Header No.",iHeaderCount);
+        rEDILine.SETRANGE("Field Type",'FREITEXT');
+        IF rEDILine.FIND('-') THEN BEGIN
+          CLEAR(iCommentLineCounter);
+          REPEAT
+            CreateLineComments(rEDI_Message,rEDILine,iLineCount,sPartnerCode,oRecRef);
+          UNTIL rEDILine.NEXT = 0;
+        END;
+      END;
+    END;
+
+    PROCEDURE WriteHeaderValueToField@1115500003(VAR oFieldRef@1115500000 : FieldRef;rEDIMapping@1115500001 : Record 82854;rEDI_Message@1115500002 : Record 82856;iHeaderCount@1115500003 : Integer;oRecRef@1000000000 : RecordRef);
+    VAR
+      rEDIHeader@1115500004 : Record 82857;
+      rEDIMappingBelongsTo@1000000001 : Record 82854;
+      rEDIHeaderBelongsTo@1000000002 : Record 82857;
+      rPurchaseHeader@1000000006 : Record 38;
+      iBelongsToEntryNo@1000000003 : Integer;
+      iFieldLength@1000000005 : Integer;
+      bExit@1000000004 : Boolean;
+    BEGIN
+      //Daten aus Header holen
+      IF rEDIMapping."Field Type" <> '' THEN BEGIN
+
+        //A,gob-dst,11.12.2012,Lieferadresse
+        //Mappingzeile finden, zu der das Element gehîrt
+        IF rEDIMapping."Belongs To Entry No." <> 0 THEN BEGIN
+          rEDIMappingBelongsTo.SETRANGE("Document Type",rEDIMapping."Document Type");
+          rEDIMappingBelongsTo.SETRANGE("Navision Document Type",rEDIMapping."Navision Document Type");
+          rEDIMappingBelongsTo.SETRANGE("In-/Outbound Document",rEDIMapping."In-/Outbound Document");
+          rEDIMappingBelongsTo.SETRANGE(Type,rEDIMapping.Type);
+          rEDIMappingBelongsTo.SETRANGE("Partner Code",rEDIMapping."Partner Code");
+          rEDIMappingBelongsTo.SETRANGE("Entry No.",rEDIMapping."Belongs To Entry No.");
+          IF rEDIMappingBelongsTo.FINDFIRST THEN BEGIN
+            rEDIHeaderBelongsTo.SETRANGE("EDI Message No.",rEDI_Message."EDI Message No.");
+            rEDIHeaderBelongsTo.SETRANGE("EDI Header No.",iHeaderCount);
+            rEDIHeaderBelongsTo.SETRANGE("Field Type",rEDIMappingBelongsTo."Field Type");
+            rEDIHeaderBelongsTo.SETRANGE("Field Qualifier",rEDIMappingBelongsTo."Field Qualifier");
+            IF rEDIHeaderBelongsTo.FINDFIRST THEN BEGIN
+              iBelongsToEntryNo := rEDIHeaderBelongsTo."Entry No.";
+              bExit := FALSE;
+
+              REPEAT
+                CLEAR(rEDIHeader);
+                rEDIHeader.RESET();
+                rEDIHeader.SETRANGE("EDI Message No.",rEDI_Message."EDI Message No.");
+                rEDIHeader.SETRANGE("EDI Header No.",iHeaderCount);
+                rEDIHeader.SETRANGE("Belongs To Entry No.",iBelongsToEntryNo);
+                IF rEDIHeader.FINDFIRST THEN BEGIN
+                  IF (rEDIMapping."Field Type" = rEDIHeader."Field Type")
+                  AND (rEDIMapping."Field Qualifier" = rEDIHeader."Field Qualifier") THEN BEGIN
+                    bExit := TRUE;
+                  END ELSE BEGIN
+                    iBelongsToEntryNo := rEDIHeader."Entry No.";
+                  END;
+                END ELSE BEGIN
+                  bExit := TRUE;
+                END;
+              UNTIL bExit;
+
+              CASE rEDIMapping."Field Datatype" OF
+                rEDIMapping."Field Datatype"::Decimal: rEDIMapping."Field Value Decimal" := rEDIHeader."Field Value Decimal";
+                rEDIMapping."Field Datatype"::Date: rEDIMapping."Field Value Date" := rEDIHeader."Field Value Date";
+                rEDIMapping."Field Datatype"::Text: rEDIMapping."Field Value Text" := rEDIHeader."Field Value Text";
+              END;
+            END;
+          END ELSE BEGIN
+            rEDIHeader.RESET();
+            rEDIHeader.SETRANGE("EDI Message No.",rEDI_Message."EDI Message No.");
+            rEDIHeader.SETRANGE("EDI Header No.",iHeaderCount);
+            rEDIHeader.SETRANGE("Field Type",rEDIMapping."Field Type");
+            rEDIHeader.SETRANGE("Field Qualifier",rEDIMapping."Field Qualifier");
+            IF rEDIHeader.FINDFIRST THEN BEGIN
+              CASE rEDIMapping."Field Datatype" OF
+                rEDIMapping."Field Datatype"::Decimal: rEDIMapping."Field Value Decimal" := rEDIHeader."Field Value Decimal";
+                rEDIMapping."Field Datatype"::Date: rEDIMapping."Field Value Date" := rEDIHeader."Field Value Date";
+                rEDIMapping."Field Datatype"::Text: rEDIMapping."Field Value Text" := rEDIHeader."Field Value Text";
+              END;
+            END;
+          END;
+        END ELSE BEGIN
+          rEDIHeader.RESET();
+          rEDIHeader.SETRANGE("EDI Message No.",rEDI_Message."EDI Message No.");
+          rEDIHeader.SETRANGE("EDI Header No.",iHeaderCount);
+          rEDIHeader.SETRANGE("Field Type",rEDIMapping."Field Type");
+          rEDIHeader.SETRANGE("Field Qualifier",rEDIMapping."Field Qualifier");
+          IF rEDIHeader.FINDFIRST THEN BEGIN
+            CASE rEDIMapping."Field Datatype" OF
+              rEDIMapping."Field Datatype"::Decimal: rEDIMapping."Field Value Decimal" := rEDIHeader."Field Value Decimal";
+              rEDIMapping."Field Datatype"::Date: rEDIMapping."Field Value Date" := rEDIHeader."Field Value Date";
+              rEDIMapping."Field Datatype"::Text: rEDIMapping."Field Value Text" := rEDIHeader."Field Value Text";
+            END;
+          END;
+        END;
+      {
+        rEDIHeader.SETRANGE("EDI Message No.",rEDI_Message."EDI Message No.");
+        rEDIHeader.SETRANGE("EDI Header No.",iHeaderCount);
+        rEDIHeader.SETRANGE("Field Qualifier",rEDIMapping."Field Qualifier");
+        rEDIHeader.SETRANGE("Field Type",rEDIMapping."Field Type");
+        IF rEDIHeader.FINDFIRST THEN
+          CASE rEDIMapping."Field Datatype" OF
+            rEDIMapping."Field Datatype"::Decimal: rEDIMapping."Field Value Decimal" := rEDIHeader."Field Value Decimal";
+            rEDIMapping."Field Datatype"::Date: rEDIMapping."Field Value Date" := rEDIHeader."Field Value Date";
+            rEDIMapping."Field Datatype"::Text: rEDIMapping."Field Value Text" := rEDIHeader."Field Value Text";
+          END;
+      }
+      //E,gob-dst,11.12.2012,Lieferadresse
+
+      END;
+
+      //Convert
+      //H2047 02.02.15 gob-Sievet +++++++++++++++++
+      IF (rEDIMapping."Table ID" = 82868) AND (rEDIMapping."Field ID" = 82850) THEN
+        iFieldLength := MAXSTRLEN(rPurchaseHeader."No.")
+      ELSE
+        iFieldLength := oFieldRef.LENGTH;
+      //H2047 02.02.15 gob-Sievet -----------------
+
+      IF rEDIMapping.Convert THEN
+      //  ConvertField(rEDIMapping,oRecRef);
+        ConvertField(rEDIMapping,oRecRef,rEDI_Message,iHeaderCount,0);
+      IF rEDIMapping.ValidateField THEN BEGIN
+        // Feld validieren
+        CASE rEDIMapping."Field Datatype" OF
+          rEDIMapping."Field Datatype"::Decimal: oFieldRef.VALIDATE(rEDIMapping."Field Value Decimal");
+          rEDIMapping."Field Datatype"::Date: oFieldRef.VALIDATE(rEDIMapping."Field Value Date");
+          //H2047 02.02.15 gob-Sievet +++++++++++++++++
+          //rEDIMapping."Field Datatype"::Text: oFieldRef.VALIDATE(rEDIMapping."Field Value Text");
+          rEDIMapping."Field Datatype"::Text: oFieldRef.VALIDATE(COPYSTR(rEDIMapping."Field Value Text",1,iFieldLength));
+          //H2047 02.02.15 gob-Sievet -----------------
+        END;
+      END ELSE BEGIN
+        //Wert in Feld schreiben
+        CASE rEDIMapping."Field Datatype" OF
+          rEDIMapping."Field Datatype"::Decimal: oFieldRef.VALUE := rEDIMapping."Field Value Decimal";
+          rEDIMapping."Field Datatype"::Date: oFieldRef.VALUE := rEDIMapping."Field Value Date";
+          //H2047 02.02.15 gob-Sievet +++++++++++++++++
+          //rEDIMapping."Field Datatype"::Text: oFieldRef.VALUE := rEDIMapping."Field Value Text";
+          rEDIMapping."Field Datatype"::Text: oFieldRef.VALUE := COPYSTR(rEDIMapping."Field Value Text",1,iFieldLength);
+          //H2047 02.02.15 gob-Sievet -----------------
+        END;
+      END;
+    END;
+
+    PROCEDURE WriteLineValueToField@1115500010(VAR oFieldRef@1115500000 : FieldRef;rEDIMapping@1115500001 : Record 82854;rEDI_Message@1115500002 : Record 82856;iHeaderCount@1115500003 : Integer;iLineCount@1115500005 : Integer;oRecRef@1000000000 : RecordRef);
+    VAR
+      rEDILine@1115500004 : Record 82858;
+    BEGIN
+      //Daten aus Header holen
+      IF rEDIMapping."Field Type" <> '' THEN BEGIN
+        rEDILine.SETRANGE("EDI Message No.",rEDI_Message."EDI Message No.");
+        rEDILine.SETRANGE("EDI Header No.",iHeaderCount);
+        rEDILine.SETRANGE("EDI Line No.",iLineCount);
+        rEDILine.SETRANGE("Field Type",rEDIMapping."Field Type");
+        rEDILine.SETRANGE("Field Qualifier",rEDIMapping."Field Qualifier");
+
+        IF rEDILine.FINDFIRST THEN
+          CASE rEDIMapping."Field Datatype" OF
+            rEDILine."Field Datatype"::Decimal: rEDIMapping."Field Value Decimal" := rEDILine."Field Value Decimal";
+            rEDILine."Field Datatype"::Date: rEDIMapping."Field Value Date" := rEDILine."Field Value Date";
+            rEDILine."Field Datatype"::Text: rEDIMapping."Field Value Text" := rEDILine."Field Value Text";
+          END;
+      END;
+
+      //Convert
+      IF rEDIMapping.Convert THEN
+        ConvertField(rEDIMapping,oRecRef,rEDI_Message,iHeaderCount,iLineCount);
+
+      IF rEDIMapping."Multiplicator Pos.-No." <> 0 THEN BEGIN
+        rEDIMapping.TESTFIELD("Field Datatype",rEDIMapping."Field Datatype"::Decimal);
+        rEDIMapping."Field Value Decimal" := rEDIMapping."Field Value Decimal" * rEDIMapping."Multiplicator Pos.-No.";
+      END;
+
+      IF rEDIMapping.ValidateField THEN BEGIN
+        // Feld validieren
+        CASE rEDIMapping."Field Datatype" OF
+          rEDIMapping."Field Datatype"::Decimal: oFieldRef.VALIDATE(rEDIMapping."Field Value Decimal");
+          rEDIMapping."Field Datatype"::Date: oFieldRef.VALIDATE(rEDIMapping."Field Value Date");
+          //H2047 02.02.15 gob-Sievet +++++++++++++++++
+          //rEDIMapping."Field Datatype"::Text: oFieldRef.VALIDATE(rEDIMapping."Field Value Text");
+          rEDIMapping."Field Datatype"::Text: oFieldRef.VALIDATE(COPYSTR(rEDIMapping."Field Value Text",1,oFieldRef.LENGTH));
+          //H2047 02.02.15 gob-Sievet -----------------
+
+        END;
+      END ELSE BEGIN
+        //Wert in Feld schreiben
+        CASE rEDIMapping."Field Datatype" OF
+          rEDIMapping."Field Datatype"::Decimal: oFieldRef.VALUE := rEDIMapping."Field Value Decimal";
+          rEDIMapping."Field Datatype"::Date: oFieldRef.VALUE := rEDIMapping."Field Value Date";
+          //H2047 02.02.15 gob-Sievet +++++++++++++++++
+          //rEDIMapping."Field Datatype"::Text: oFieldRef.VALUE := rEDIMapping."Field Value Text";
+          rEDIMapping."Field Datatype"::Text: oFieldRef.VALUE := COPYSTR(rEDIMapping."Field Value Text",1,oFieldRef.LENGTH);
+          //H2047 02.02.15 gob-Sievet -----------------
+        END;
+      END;
+
+      //A,gob-dst,07.05.2013,P0908
+      //Increment Line No.
+      IF rEDIMapping."Increment Line" THEN BEGIN
+        oFieldRef.VALUE := iLineCount;
+        IF rEDIMapping."Multiplicator Pos.-No." <> 0 THEN
+          oFieldRef.VALUE := iLineCount * rEDIMapping."Multiplicator Pos.-No.";
+      END;
+      //E,gob-dst,07.05.2013,P0908
+    END;
+
+    PROCEDURE ConvertField@1115500004(VAR rEDIMapping@1115500000 : Record 82854;VAR oRecRef@1000000000 : RecordRef;rEDIMessage@1000000001 : Record 82856;iHeaderCount@1000000002 : Integer;iLineCount@1000000003 : Integer);
+    BEGIN
+      CASE rEDIMapping."Function No." OF
+        1: Function_001(rEDIMapping);
+        2: Function_002(rEDIMapping);
+        3: Function_003(rEDIMapping);
+        4: Function_004(rEDIMapping);
+        5: Function_005(rEDIMapping,oRecRef,rEDIMessage."EDI Message No.",iHeaderCount,iLineCount);
+        // S/P1183
+        6: Function_006(rEDIMapping);
+        7: Function_007(rEDIMapping);
+        // E/P1183
+      END;
+    END;
+
+    PROCEDURE GetPartnerHeader@1115500001(ILN@1115500000 : Code[13]) : Code[20];
+    BEGIN
+      rEDIPartner.SETRANGE(GLN,ILN);
+      rEDIPartner.FINDFIRST();
+      EXIT(rEDIPartner.Code);
+    END;
+
+    PROCEDURE SetShowMessage@1000000000(pShowMessage@1000000000 : Boolean);
+    BEGIN
+      bShowMessage := pShowMessage;
+    END;
+
+    PROCEDURE "--- Comments ---"@1119443006();
+    BEGIN
+    END;
+
+    PROCEDURE CreateHeaderComments@1000000002(rEDI_Message@1115500000 : Record 82856;rEDI_Header@1115500001 : Record 82857;iLineCount@1115500002 : Integer;sPartnerCode@1115500003 : Code[20];oHeaderRecRef@1115500007 : RecordRef);
+    VAR
+      rEDIMapping@1115500004 : Record 82854;
+      rHeaderEDIMapping@1115500009 : Record 82854;
+      oRecRef@1115500005 : RecordRef;
+      oFieldRef@1115500006 : FieldRef;
+      oHeaderFieldRef@1115500008 : FieldRef;
+    BEGIN
+      iCommentLineCounter := iCommentLineCounter + 10000;
+
+      //Insert Header Comment
+      rEDIMapping.SETRANGE("In-/Outbound Document",rEDIMapping."In-/Outbound Document"::Inbound);
+      rEDIMapping.SETRANGE("Document Type",rEDI_Message."Document Type");
+      rEDIMapping.SETRANGE(Type,rEDIMapping.Type::Comment);
+      rEDIMapping.SETRANGE("Partner Code",sMappingPartnerCode);
+      rEDIMapping.SETRANGE("Primary Key",TRUE);
+      rEDIMapping.FIND('-');
+
+      oRecRef.OPEN(rEDIMapping."Table ID");
+
+      REPEAT
+        IF rEDIMapping."Belongs To Header Entry No." <> 0 THEN BEGIN
+          rHeaderEDIMapping.SETRANGE("In-/Outbound Document",rHeaderEDIMapping."In-/Outbound Document"::Inbound);
+          rHeaderEDIMapping.SETRANGE("Document Type",rEDI_Message."Document Type");
+          rHeaderEDIMapping.SETRANGE(Type,rEDIMapping.Type::Header);
+          rHeaderEDIMapping.SETRANGE("Partner Code",sMappingPartnerCode);
+          rHeaderEDIMapping.SETRANGE("Entry No.",rEDIMapping."Belongs To Header Entry No.");
+          rHeaderEDIMapping.SETRANGE("Primary Key",TRUE);
+          rHeaderEDIMapping.FINDFIRST;
+
+          oHeaderFieldRef := oHeaderRecRef.FIELD(rHeaderEDIMapping."Field ID");
+          CASE rEDIMapping."Field Datatype" OF
+            rEDIMapping."Field Datatype"::Decimal : rEDIMapping."Field Value Decimal" := oHeaderFieldRef.VALUE;
+            rEDIMapping."Field Datatype"::Date : rEDIMapping."Field Value Date" := oHeaderFieldRef.VALUE;
+            rEDIMapping."Field Datatype"::Text : rEDIMapping."Field Value Text" := FORMAT(oHeaderFieldRef.VALUE);
+          END;
+        END;
+
+        oFieldRef := oRecRef.FIELD(rEDIMapping."Field ID");
+        WriteHeaderCommentValueToField(oFieldRef,rEDIMapping,rEDI_Message,iCommentLineCounter,rEDI_Header,oRecRef);
+      UNTIL rEDIMapping.NEXT = 0;
+
+      oRecRef.INSERT(TRUE);
+
+      //Modify Comment
+      rEDIMapping.SETRANGE("Primary Key",FALSE);
+      rEDIMapping.FIND('-');
+
+      REPEAT
+        IF rEDIMapping."Field ID" <> 0 THEN BEGIN
+          oFieldRef := oRecRef.FIELD(rEDIMapping."Field ID");
+          WriteHeaderCommentValueToField(oFieldRef,rEDIMapping,rEDI_Message,iCommentLineCounter,rEDI_Header,oRecRef);
+        END;
+      UNTIL rEDIMapping.NEXT = 0;
+
+      oRecRef.MODIFY;
+    END;
+
+    PROCEDURE CreateLineComments@1000000005(rEDI_Message@1115500000 : Record 82856;rEDI_Line@1000000000 : Record 82858;iLineCount@1115500002 : Integer;sPartnerCode@1115500003 : Code[20];oHeaderRecRef@1115500007 : RecordRef);
+    VAR
+      rEDIMapping@1115500004 : Record 82854;
+      rHeaderEDIMapping@1115500009 : Record 82854;
+      oRecRef@1115500005 : RecordRef;
+      oFieldRef@1115500006 : FieldRef;
+      oHeaderFieldRef@1115500008 : FieldRef;
+    BEGIN
+      iCommentLineCounter := iCommentLineCounter + 10000;
+
+      //Insert Line Comment
+      rEDIMapping.SETRANGE("In-/Outbound Document",rEDIMapping."In-/Outbound Document"::Inbound);
+      rEDIMapping.SETRANGE("Document Type",rEDI_Message."Document Type");
+      rEDIMapping.SETRANGE(Type,rEDIMapping.Type::Line);
+      rEDIMapping.SETRANGE("Partner Code",sMappingPartnerCode);
+      rEDIMapping.SETRANGE("Primary Key",TRUE);
+      rEDIMapping.FIND('-');
+
+      oRecRef.OPEN(rEDIMapping."Table ID");
+
+      REPEAT
+        IF rEDIMapping."Belongs To Header Entry No." <> 0 THEN BEGIN
+          rHeaderEDIMapping.SETRANGE("In-/Outbound Document",rHeaderEDIMapping."In-/Outbound Document"::Inbound);
+          rHeaderEDIMapping.SETRANGE("Document Type",rEDI_Message."Document Type");
+          rHeaderEDIMapping.SETRANGE(Type,rEDIMapping.Type::Header);
+          rHeaderEDIMapping.SETRANGE("Partner Code",sMappingPartnerCode);
+          rHeaderEDIMapping.SETRANGE("Entry No.",rEDIMapping."Belongs To Header Entry No.");
+          rHeaderEDIMapping.SETRANGE("Primary Key",TRUE);
+          rHeaderEDIMapping.FINDFIRST;
+
+          oHeaderFieldRef := oHeaderRecRef.FIELD(rHeaderEDIMapping."Field ID");
+          CASE rEDIMapping."Field Datatype" OF
+            rEDIMapping."Field Datatype"::Decimal : rEDIMapping."Field Value Decimal" := oHeaderFieldRef.VALUE;
+            rEDIMapping."Field Datatype"::Date : rEDIMapping."Field Value Date" := oHeaderFieldRef.VALUE;
+            rEDIMapping."Field Datatype"::Text : rEDIMapping."Field Value Text" := oHeaderFieldRef.VALUE;
+          END;
+        END;
+
+        oFieldRef := oRecRef.FIELD(rEDIMapping."Field ID");
+        WriteLineCommentValueToField(oFieldRef,rEDIMapping,rEDI_Message,iLineCount,iCommentLineCounter,rEDI_Line,oRecRef);
+      UNTIL rEDIMapping.NEXT = 0;
+
+      oRecRef.INSERT(TRUE);
+
+      //Modify Line
+      rEDIMapping.SETRANGE("Primary Key",FALSE);
+      rEDIMapping.FIND('-');
+
+      REPEAT
+        IF rEDIMapping."Field ID" <> 0 THEN BEGIN
+          oFieldRef := oRecRef.FIELD(rEDIMapping."Field ID");
+          WriteLineCommentValueToField(oFieldRef,rEDIMapping,rEDI_Message,iLineCount,iCommentLineCounter,rEDI_Line,oRecRef);
+        END;
+      UNTIL rEDIMapping.NEXT = 0;
+
+      oRecRef.MODIFY;
+    END;
+
+    PROCEDURE WriteHeaderCommentValueToField@1000000008(VAR oFieldRef@1115500000 : FieldRef;rEDIMapping@1115500001 : Record 82854;rEDI_Message@1115500002 : Record 82856;iLineNo@1000000000 : Integer;rEDIHeader@1000000001 : Record 82857;oRecRef@1000000002 : RecordRef);
+    BEGIN
+      //Daten aus Header holen
+      IF rEDIMapping."Field Type" <> '' THEN BEGIN
+        CASE rEDIMapping."Field Datatype" OF
+          rEDIMapping."Field Datatype"::Decimal: rEDIMapping."Field Value Decimal" := rEDIHeader."Field Value Decimal";
+          rEDIMapping."Field Datatype"::Date: rEDIMapping."Field Value Date" := rEDIHeader."Field Value Date";
+          rEDIMapping."Field Datatype"::Text: rEDIMapping."Field Value Text" := rEDIHeader."Field Value Text";
+        END;
+      END;
+
+      //Convert
+      IF rEDIMapping.Convert THEN
+        ConvertField(rEDIMapping,oRecRef,rEDI_Message,rEDIHeader."EDI Header No.",iLineNo);
+
+      IF rEDIMapping.ValidateField THEN BEGIN
+        // Feld validieren
+        CASE rEDIMapping."Field Datatype" OF
+          rEDIMapping."Field Datatype"::Decimal: oFieldRef.VALIDATE(rEDIMapping."Field Value Decimal");
+          rEDIMapping."Field Datatype"::Date: oFieldRef.VALIDATE(rEDIMapping."Field Value Date");
+          //H2047 02.02.15 gob-Sievet +++++++++++++++++
+          //rEDIMapping."Field Datatype"::Text: oFieldRef.VALIDATE(rEDIMapping."Field Value Text");
+          rEDIMapping."Field Datatype"::Text: oFieldRef.VALIDATE(COPYSTR(rEDIMapping."Field Value Text",1,oFieldRef.LENGTH));
+          //H2047 02.02.15 gob-Sievet -----------------
+        END;
+      END ELSE BEGIN
+        //Wert in Feld schreiben
+        CASE rEDIMapping."Field Datatype" OF
+          rEDIMapping."Field Datatype"::Decimal: oFieldRef.VALUE := rEDIMapping."Field Value Decimal";
+          rEDIMapping."Field Datatype"::Date: oFieldRef.VALUE := rEDIMapping."Field Value Date";
+          //H2047 02.02.15 gob-Sievet +++++++++++++++++
+          //rEDIMapping."Field Datatype"::Text: oFieldRef.VALUE := rEDIMapping."Field Value Text";
+          rEDIMapping."Field Datatype"::Text: oFieldRef.VALUE := COPYSTR(rEDIMapping."Field Value Text",1,oFieldRef.LENGTH);
+          //H2047 02.02.15 gob-Sievet +++++++++++++++++
+        END;
+      END;
+
+      //Increment Line
+      IF rEDIMapping."Increment Line" THEN
+        oFieldRef.VALUE := iLineNo;
+    END;
+
+    PROCEDURE WriteLineCommentValueToField@1000000007(VAR oFieldRef@1115500000 : FieldRef;rEDIMapping@1115500001 : Record 82854;rEDI_Message@1115500002 : Record 82856;iLineCount@1115500005 : Integer;iLineNo@1000000000 : Integer;rEDILine@1000000001 : Record 82858;oRecRef@1000000002 : RecordRef);
+    BEGIN
+      //Daten aus Header holen
+      IF rEDIMapping."Field Type" <> '' THEN BEGIN
+        CASE rEDIMapping."Field Datatype" OF
+          rEDIMapping."Field Datatype"::Decimal: rEDIMapping."Field Value Decimal" := rEDILine."Field Value Decimal";
+          rEDIMapping."Field Datatype"::Date: rEDIMapping."Field Value Date" := rEDILine."Field Value Date";
+          rEDIMapping."Field Datatype"::Text: rEDIMapping."Field Value Text" := rEDILine."Field Value Text";
+        END;
+      END;
+
+      //Convert
+      IF rEDIMapping.Convert THEN
+        ConvertField(rEDIMapping,oRecRef,rEDI_Message,rEDILine."EDI Header No.",rEDILine."EDI Line No.");
+
+      IF rEDIMapping."Multiplicator Pos.-No." <> 0 THEN BEGIN
+        rEDIMapping.TESTFIELD("Field Datatype",rEDIMapping."Field Datatype"::Decimal);
+        rEDIMapping."Field Value Decimal" := rEDIMapping."Field Value Decimal" * rEDIMapping."Multiplicator Pos.-No.";
+      END;
+
+      IF rEDIMapping.ValidateField THEN BEGIN
+        // Feld validieren
+        CASE rEDIMapping."Field Datatype" OF
+          rEDIMapping."Field Datatype"::Decimal: oFieldRef.VALIDATE(rEDIMapping."Field Value Decimal");
+          rEDIMapping."Field Datatype"::Date: oFieldRef.VALIDATE(rEDIMapping."Field Value Date");
+          //H2047 02.02.15 gob-Sievet +++++++++++++++++
+          //rEDIMapping."Field Datatype"::Text: oFieldRef.VALIDATE(rEDIMapping."Field Value Text");
+          rEDIMapping."Field Datatype"::Text: oFieldRef.VALIDATE(COPYSTR(rEDIMapping."Field Value Text",1,oFieldRef.LENGTH));
+          //H2047 02.02.15 gob-Sievet -----------------
+        END;
+      END ELSE BEGIN
+        //Wert in Feld schreiben
+        CASE rEDIMapping."Field Datatype" OF
+          rEDIMapping."Field Datatype"::Decimal: oFieldRef.VALUE := rEDIMapping."Field Value Decimal";
+          rEDIMapping."Field Datatype"::Date: oFieldRef.VALUE := rEDIMapping."Field Value Date";
+          //H2047 02.02.15 gob-Sievet +++++++++++++++++
+          //rEDIMapping."Field Datatype"::Text: oFieldRef.VALUE := rEDIMapping."Field Value Text";
+          rEDIMapping."Field Datatype"::Text: oFieldRef.VALUE := COPYSTR(rEDIMapping."Field Value Text",1,oFieldRef.LENGTH);
+          //H2047 02.02.15 gob-Sievet -----------------
+
+        END;
+      END;
+
+      //Increment Line
+      IF rEDIMapping."Increment Line" THEN
+        oFieldRef.VALUE := iLineNo;
+    END;
+
+    PROCEDURE "--- REMADV ---"@1119443005();
+    BEGIN
+    END;
+
+    PROCEDURE MapInboundREMADV@1119443000(rEDI_Message@1115500000 : Record 82856) : Integer;
+    VAR
+      rEDIHeader@1115500003 : Record 82857;
+      iHeaderCount@1115500004 : Integer;
+    BEGIN
+      //Anzahl Header ermitteln
+      rEDIHeader.SETRANGE("EDI Message No.",rEDI_Message."EDI Message No.");
+      rEDIHeader.FINDLAST;
+
+      //insert Header
+      FOR iHeaderCount := 1 TO rEDIHeader."EDI Header No." DO
+        CreateJournalLineHeader(rEDI_Message,iHeaderCount);
+
+      rEDI_Message."NAV Processed" := TRUE;
+      rEDI_Message.MODIFY;
+
+      IF bShowMessage THEN BEGIN
+        IF rEDIHeader."EDI Header No." = 1 THEN
+          MESSAGE(Text001)
+        ELSE
+          MESSAGE(Text002,rEDIHeader."EDI Header No.");
+      END ELSE BEGIN
+        EXIT(rEDIHeader."EDI Header No.");
+      END;
+    END;
+
+    PROCEDURE CreateJournalLineHeader@1119443001(rEDI_Message@1115500000 : Record 82856;iHeaderCount@1115500001 : Integer);
+    VAR
+      rGenJournalLine@1119443003 : Record 81;
+      rEDIMapping@1115500002 : Record 82854;
+      rEDILines@1115500006 : Record 82858;
+      oRecRef@1115500004 : RecordRef;
+      oFieldRef@1115500005 : FieldRef;
+      sJournalBatch@1119443001 : Code[10];
+      sJournalTemplate@1119443000 : Code[10];
+      sPartnerCode@1115500003 : Code[20];
+      iLineCount@1115500007 : Integer;
+    BEGIN
+      //Partner zu iLN finden
+      sPartnerCode := GetPartnerHeader(rEDI_Message."Interchange Sender GLN");
+
+      //Insert Header
+      rEDIMapping.SETRANGE("In-/Outbound Document",rEDIMapping."In-/Outbound Document"::Inbound);
+      rEDIMapping.SETRANGE("Document Type",rEDI_Message."Document Type");
+      rEDIMapping.SETRANGE(Type,rEDIMapping.Type::Header);
+      rEDIMapping.SETRANGE("Partner Code",sMappingPartnerCode);
+      rEDIMapping.SETRANGE("Primary Key",TRUE);
+      rEDIMapping.FIND('-');
+      sJournalTemplate := rEDIMapping."Field Value Text";
+      rEDIMapping.NEXT;
+      sJournalBatch := rEDIMapping."Field Value Text";
+
+      rGenJournalLine.SETRANGE("Journal Template Name",sJournalTemplate);
+      rGenJournalLine.SETRANGE("Journal Batch Name",sJournalBatch);
+      IF rGenJournalLine.FINDLAST THEN
+        iLineCounterREMADV := rGenJournalLine."Line No."
+      ELSE
+        iLineCounterREMADV := 0;
+
+      rEDIMapping.SETRANGE("Primary Key");
+      rEDIMapping.FIND('-');
+
+      oRecRef.OPEN(rEDIMapping."Table ID");
+
+      REPEAT
+        IF rEDIMapping."Field ID" <> 0 THEN BEGIN
+          oFieldRef := oRecRef.FIELD(rEDIMapping."Field ID");
+          WriteREMADVHeaderValueToField(oFieldRef,rEDIMapping,rEDI_Message,iHeaderCount,oRecRef);
+        END;
+      UNTIL rEDIMapping.NEXT = 0;
+
+      //Anzahl Zeilen ermitteln
+      rEDILines.SETRANGE("EDI Message No.",rEDI_Message."EDI Message No.");
+      rEDILines.SETRANGE("EDI Header No.",iHeaderCount);
+      rEDILines.FINDLAST;
+
+      FOR iLineCount := 1 TO rEDILines."EDI Line No." DO
+        CreateJournalLineLine(rEDI_Message,iHeaderCount,iLineCount,sPartnerCode,oRecRef);
+    END;
+
+    PROCEDURE CreateJournalLineLine@1119443004(rEDI_Message@1115500000 : Record 82856;iHeaderCount@1115500001 : Integer;iLineCount@1115500002 : Integer;sPartnerCode@1115500003 : Code[20];oHeaderRecRef@1115500007 : RecordRef);
+    VAR
+      rEDIMapping@1115500004 : Record 82854;
+      oRecRef@1115500005 : RecordRef;
+      oFieldRef@1115500006 : FieldRef;
+    BEGIN
+      //Insert Line
+      rEDIMapping.SETRANGE("In-/Outbound Document",rEDIMapping."In-/Outbound Document"::Inbound);
+      rEDIMapping.SETRANGE("Document Type",rEDI_Message."Document Type");
+      rEDIMapping.SETRANGE(Type,rEDIMapping.Type::Line);
+      rEDIMapping.SETRANGE("Partner Code",sMappingPartnerCode);
+      rEDIMapping.FIND('-');
+
+      oRecRef := oHeaderRecRef;
+
+      {
+      REPEAT
+        IF rEDIMapping."Belongs To Header Entry No." <> 0 THEN BEGIN
+          rHeaderEDIMapping.SETRANGE("In-/Outbound Document",rHeaderEDIMapping."In-/Outbound Document"::Inbound);
+          rHeaderEDIMapping.SETRANGE("Document Type",rEDI_Message."Document Type");
+          rHeaderEDIMapping.SETRANGE(Type,rEDIMapping.Type::Header);
+          rHeaderEDIMapping.SETRANGE("Partner Code",sPartnerCode);
+          rHeaderEDIMapping.SETRANGE("Entry No.",rEDIMapping."Belongs To Header Entry No.");
+          rHeaderEDIMapping.SETRANGE("Primary Key",TRUE);
+          rHeaderEDIMapping.FINDFIRST;
+          oHeaderFieldRef := oHeaderRecRef.FIELD(rHeaderEDIMapping."Field ID");
+          CASE rEDIMapping."Field Datatype" OF
+            rEDIMapping."Field Datatype"::Decimal : rEDIMapping."Field Value Decimal" := oHeaderFieldRef.VALUE;
+            rEDIMapping."Field Datatype"::Date : rEDIMapping."Field Value Date" := oHeaderFieldRef.VALUE;
+            rEDIMapping."Field Datatype"::Text : rEDIMapping."Field Value Text" := oHeaderFieldRef.VALUE;
+          END;
+        END;
+        oFieldRef := oRecRef.FIELD(rEDIMapping."Field ID");
+        WriteLineValueToField(oFieldRef,rEDIMapping,rEDI_Message,iHeaderCount,iLineCount);
+      UNTIL rEDIMapping.NEXT = 0;
+      oRecRef.INSERT(TRUE);
+      //Modify Line
+      rEDIMapping.SETRANGE("Primary Key",FALSE);
+      rEDIMapping.FIND('-');
+      }
+
+      REPEAT
+        IF rEDIMapping."Field ID" <> 0 THEN BEGIN
+          oFieldRef := oRecRef.FIELD(rEDIMapping."Field ID");
+          WriteREMADVLineValueToField(oFieldRef,rEDIMapping,rEDI_Message,iHeaderCount,iLineCount,oRecRef);
+        END;
+      UNTIL rEDIMapping.NEXT = 0;
+
+      oRecRef.INSERT(TRUE);
+    END;
+
+    PROCEDURE WriteREMADVHeaderValueToField@1119443002(VAR oFieldRef@1115500000 : FieldRef;rEDIMapping@1115500001 : Record 82854;rEDI_Message@1115500002 : Record 82856;iHeaderCount@1115500003 : Integer;oRecRef@1000000000 : RecordRef);
+    VAR
+      rEDIHeader@1115500004 : Record 82857;
+    BEGIN
+      //Daten aus Header holen
+      IF rEDIMapping."Field Type" <> '' THEN BEGIN
+        rEDIHeader.SETRANGE("EDI Message No.",rEDI_Message."EDI Message No.");
+        rEDIHeader.SETRANGE("EDI Header No.",iHeaderCount);
+        rEDIHeader.SETRANGE("Field Qualifier",rEDIMapping."Field Qualifier");
+        rEDIHeader.SETRANGE("Field Type",rEDIMapping."Field Type");
+
+        IF rEDIHeader.FINDFIRST THEN
+          CASE rEDIMapping."Field Datatype" OF
+            rEDIMapping."Field Datatype"::Decimal: rEDIMapping."Field Value Decimal" := rEDIHeader."Field Value Decimal";
+            rEDIMapping."Field Datatype"::Date: rEDIMapping."Field Value Date" := rEDIHeader."Field Value Date";
+            rEDIMapping."Field Datatype"::Text: rEDIMapping."Field Value Text" := rEDIHeader."Field Value Text";
+          END;
+      END;
+
+      //Convert
+      IF rEDIMapping.Convert THEN
+        ConvertField(rEDIMapping,oRecRef,rEDI_Message,iHeaderCount,0);
+
+      IF rEDIMapping.ValidateField THEN BEGIN
+        // Feld validieren
+        CASE rEDIMapping."Field Datatype" OF
+          rEDIMapping."Field Datatype"::Decimal: oFieldRef.VALIDATE(rEDIMapping."Field Value Decimal");
+          rEDIMapping."Field Datatype"::Date: oFieldRef.VALIDATE(rEDIMapping."Field Value Date");
+          //H2047 02.02.15 gob-Sievet +++++++++++++++++
+          //rEDIMapping."Field Datatype"::Text: oFieldRef.VALIDATE(rEDIMapping."Field Value Text");
+          rEDIMapping."Field Datatype"::Text: oFieldRef.VALIDATE(COPYSTR(rEDIMapping."Field Value Text",1,oFieldRef.LENGTH));
+          //H2047 02.02.15 gob-Sievet -----------------
+        END;
+      END ELSE BEGIN
+        //Wert in Feld schreiben
+        CASE rEDIMapping."Field Datatype" OF
+          rEDIMapping."Field Datatype"::Decimal: oFieldRef.VALUE := rEDIMapping."Field Value Decimal";
+          rEDIMapping."Field Datatype"::Date: oFieldRef.VALUE := rEDIMapping."Field Value Date";
+          //H2047 02.02.15 gob-Sievet +++++++++++++++++
+          //rEDIMapping."Field Datatype"::Text: oFieldRef.VALUE := rEDIMapping."Field Value Text";
+          rEDIMapping."Field Datatype"::Text: oFieldRef.VALUE := COPYSTR(rEDIMapping."Field Value Text",1,oFieldRef.LENGTH);
+          //H2047 02.02.15 gob-Sievet -----------------
+        END;
+      END;
+    END;
+
+    PROCEDURE WriteREMADVLineValueToField@1119443003(VAR oFieldRef@1115500000 : FieldRef;rEDIMapping@1115500001 : Record 82854;rEDI_Message@1115500002 : Record 82856;iHeaderCount@1115500003 : Integer;iLineCount@1115500005 : Integer;oRecRef@1000000000 : RecordRef);
+    VAR
+      rEDILine@1115500004 : Record 82858;
+    BEGIN
+      //Daten aus Header holen
+      IF rEDIMapping."Field Type" <> '' THEN BEGIN
+        rEDILine.SETRANGE("EDI Message No.",rEDI_Message."EDI Message No.");
+        rEDILine.SETRANGE("EDI Header No.",iHeaderCount);
+        rEDILine.SETRANGE("EDI Line No.",iLineCount);
+        rEDILine.SETRANGE("Field Type",rEDIMapping."Field Type");
+        rEDILine.SETRANGE("Field Qualifier",rEDIMapping."Field Qualifier");
+
+        IF rEDILine.FINDFIRST THEN
+          CASE rEDIMapping."Field Datatype" OF
+            rEDILine."Field Datatype"::Decimal: rEDIMapping."Field Value Decimal" := rEDILine."Field Value Decimal";
+            rEDILine."Field Datatype"::Date: rEDIMapping."Field Value Date" := rEDILine."Field Value Date";
+            rEDILine."Field Datatype"::Text: rEDIMapping."Field Value Text" := rEDILine."Field Value Text";
+          END;
+      END;
+
+      //Convert
+      IF rEDIMapping.Convert THEN
+        ConvertField(rEDIMapping,oRecRef,rEDI_Message,iHeaderCount,iLineCount);
+
+      IF rEDIMapping."Multiplicator Pos.-No." <> 0 THEN BEGIN
+        rEDIMapping.TESTFIELD("Field Datatype",rEDIMapping."Field Datatype"::Decimal);
+        rEDIMapping."Field Value Decimal" := rEDIMapping."Field Value Decimal" * rEDIMapping."Multiplicator Pos.-No.";
+      END;
+
+      IF rEDIMapping."Increment Line" THEN BEGIN
+        iLineCounterREMADV := iLineCounterREMADV + 10000;
+        rEDIMapping."Field Value Decimal" := iLineCounterREMADV;
+      END;
+
+      IF rEDIMapping.ValidateField THEN BEGIN
+        // Feld validieren
+        CASE rEDIMapping."Field Datatype" OF
+          rEDIMapping."Field Datatype"::Decimal: oFieldRef.VALIDATE(rEDIMapping."Field Value Decimal");
+          rEDIMapping."Field Datatype"::Date: oFieldRef.VALIDATE(rEDIMapping."Field Value Date");
+          //H2047 02.02.15 gob-Sievet +++++++++++++++++
+          //rEDIMapping."Field Datatype"::Text: oFieldRef.VALIDATE(rEDIMapping."Field Value Text");
+          rEDIMapping."Field Datatype"::Text: oFieldRef.VALIDATE(COPYSTR(rEDIMapping."Field Value Text",1,oFieldRef.LENGTH));
+          //H2047 02.02.15 gob-Sievet -----------------
+        END;
+      END ELSE BEGIN
+        //Wert in Feld schreiben
+        CASE rEDIMapping."Field Datatype" OF
+          rEDIMapping."Field Datatype"::Decimal: oFieldRef.VALUE := rEDIMapping."Field Value Decimal";
+          rEDIMapping."Field Datatype"::Date: oFieldRef.VALUE := rEDIMapping."Field Value Date";
+          //H2047 02.02.15 gob-Sievet +++++++++++++++++
+          //rEDIMapping."Field Datatype"::Text: oFieldRef.VALUE := rEDIMapping."Field Value Text";
+          rEDIMapping."Field Datatype"::Text: oFieldRef.VALUE := COPYSTR(rEDIMapping."Field Value Text",1,oFieldRef.LENGTH);
+          //H2047 02.02.15 gob-Sievet -----------------
+        END;
+      END;
+    END;
+
+    PROCEDURE "--- Convert Functions ---"@1115500005();
+    BEGIN
+    END;
+
+    PROCEDURE Function_001@1115500011(VAR rEDIMapping@1115500000 : Record 82854);
+    BEGIN
+      //Funktion_001
+      //RÅckgabewert: TODAY
+
+      rEDIMapping."Field Value Date" := TODAY;
+    END;
+
+    PROCEDURE Function_002@1115500007(VAR rEDIMapping@1115500000 : Record 82854);
+    VAR
+      rCustomer@1115500001 : Record 18;
+    BEGIN
+      //Funktion_002
+      //RÅckgabewert: Customer No.
+      {
+      rCustomer.SETRANGE("Global Location Number (GLN)",rEDIMapping."Field Value Text");
+      rCustomer.FINDFIRST;
+
+      rEDIMapping."Field Value Text" := rCustomer."No.";
+      }
+    END;
+
+    PROCEDURE Function_003@1000000001(VAR rEDIMapping@1115500000 : Record 82854);
+    VAR
+      rItemCrossReference@1115500001 : Record 5717;
+    BEGIN
+      //Funktion_003
+      //RÅckgabewert: Item No.
+
+      rItemCrossReference.SETRANGE("Cross-Reference Type",rItemCrossReference."Cross-Reference Type"::"Bar Code");
+      rItemCrossReference.SETRANGE("Cross-Reference No.",rEDIMapping."Field Value Text");
+      IF rItemCrossReference.FINDFIRST THEN
+        rEDIMapping."Field Value Text" := rItemCrossReference."Item No."
+      ELSE
+        rEDIMapping."Field Value Text" := '';
+    END;
+
+    PROCEDURE Function_004@1000000003(VAR rEDIMapping@1115500000 : Record 82854);
+    VAR
+      rVendor@1115500001 : Record 23;
+    BEGIN
+      //Funktion_004
+      //RÅckgabewert: Vendor No.
+      rVendor.SETRANGE(rVendor."GLN/ILN",rEDIMapping."Field Value Text");
+      rVendor.FINDFIRST;
+
+      rEDIMapping."Field Value Text" := rVendor."No.";
+    END;
+
+    PROCEDURE Function_005@1000000004(VAR rEDIMapping@1000000001 : Record 82854;VAR oRecRef@1000000000 : RecordRef;iMessageNo@1000000007 : Integer;iHeaderNo@1000000008 : Integer;iLineNo@1000000009 : Integer);
+    VAR
+      EDIDHLShipmentCode_l@1000000002 : Record 50112;
+      InboundEDILines_l@1000000003 : Record 82858;
+      InboundEDIDocPurchLine_l@1000000004 : Record 82869;
+      InboundEDIPurchDocHeader_l@1000000005 : Record 82868;
+      InbEDIDocPurchLine_l@1000000006 : Record 82869;
+      "**** HME *********************"@1000000010 : Integer;
+      PurchaseLineL@1000000011 : Record 39;
+      SalesLineL@1000000012 : Record 37;
+    BEGIN
+      //Funktion_005
+      //Wegschreiben der Sendungsnr.
+
+      oRecRef.SETTABLE(InboundEDIDocPurchLine_l);
+      InboundEDIPurchDocHeader_l.GET(InboundEDIDocPurchLine_l."Document No.");
+      //InboundEDILines_l.SETRANGE("EDI Message No.",InboundEDIPurchDocHeader_l."EDI Message ID");
+      InboundEDILines_l.SETRANGE("EDI Message No.",iMessageNo);
+      InboundEDILines_l.SETRANGE("EDI Header No.",iHeaderNo);
+      InboundEDILines_l.SETRANGE("EDI Line No.",iLineNo);
+      InboundEDILines_l.SETRANGE("Field Type",'IDENTIFIKATIONSNUMMER');
+      InboundEDILines_l.SETRANGE("Field Qualifier",'NVE');
+      //InboundEDILines_l.SETRANGE("EDI Line No.",InboundEDIDocPurchLine_l."Line No." / 10000);
+      IF InboundEDILines_l.FINDSET THEN BEGIN
+        REPEAT
+          EDIDHLShipmentCode_l.INIT;
+          EDIDHLShipmentCode_l."Entry No." := 0;
+          EDIDHLShipmentCode_l."Header Document Type" := EDIDHLShipmentCode_l."Header Document Type"::DESADV;
+          EDIDHLShipmentCode_l."Header Document No." := FORMAT(InboundEDIPurchDocHeader_l."No.");
+          EDIDHLShipmentCode_l."Document Type" := EDIDHLShipmentCode_l."Document Type"::"Purchase Order";
+          EDIDHLShipmentCode_l."Document No." := InboundEDIPurchDocHeader_l."Purchase Document No.";
+          EDIDHLShipmentCode_l.Direction := EDIDHLShipmentCode_l.Direction::Inbound;
+          EDIDHLShipmentCode_l."DHL Shipment Code" := COPYSTR(InboundEDILines_l."Field Value Text",1,30);
+          //A,gob-dst,16.05.2013,P0917
+          //EDIDHLShipmentCode_l."Line No." := InboundEDIDocPurchLine_l."Reference Line No.";
+          EDIDHLShipmentCode_l."Line No." := InboundEDIDocPurchLine_l."Line No.";
+          //E,gob-dst,16.05.2013,P0917
+          //H1907, P0883 07.01.15 EHN +++++++++++++++++++++++++++++++++++++++++++
+          InbEDIDocPurchLine_l.GET(InboundEDIDocPurchLine_l."Document No.",InboundEDIDocPurchLine_l."Line No.");
+          IF InbEDIDocPurchLine_l."Shipping Agent" <> '' THEN BEGIN
+            EDIDHLShipmentCode_l."Shipping Agent" := InbEDIDocPurchLine_l."Shipping Agent";
+          END ELSE BEGIN
+            IF PurchaseLineL.GET(PurchaseLineL."Document Type"::Order,
+                                 InboundEDIPurchDocHeader_l."Purchase Document No.",
+                                 InboundEDIDocPurchLine_l."Line No.") THEN
+              IF SalesLineL.GET(SalesLineL."Document Type"::Order,
+                                PurchaseLineL."Order No.",
+                                PurchaseLineL."Order Line No.") THEN
+                EDIDHLShipmentCode_l."Shipping Agent" := SalesLineL."Shipping Agent Code";
+          END;
+          //H1907, P0883 07.01.15 EHN -------------------------------------------
+          EDIDHLShipmentCode_l.INSERT;
+        UNTIL InboundEDILines_l.NEXT = 0;
+      END
+      //H1907 07.01.15 EHN +++++++++++++++++++++++++++++++++++++++++++
+      ELSE BEGIN
+        IF InboundEDIPurchDocHeader_l."Document Type" = InboundEDIPurchDocHeader_l."Document Type"::"Dispatch Advice" THEN BEGIN
+          EDIDHLShipmentCode_l.INIT;
+          EDIDHLShipmentCode_l."Entry No." := 0;
+          EDIDHLShipmentCode_l."Header Document Type" := EDIDHLShipmentCode_l."Header Document Type"::DESADV;
+          EDIDHLShipmentCode_l."Header Document No." := FORMAT(InboundEDIPurchDocHeader_l."No.");
+          EDIDHLShipmentCode_l."Document Type" := EDIDHLShipmentCode_l."Document Type"::"Purchase Order";
+          EDIDHLShipmentCode_l."Document No." := InboundEDIPurchDocHeader_l."Purchase Document No.";
+          EDIDHLShipmentCode_l.Direction := EDIDHLShipmentCode_l.Direction::Inbound;
+          EDIDHLShipmentCode_l."Line No." := InboundEDIDocPurchLine_l."Line No.";
+          InbEDIDocPurchLine_l.GET(InboundEDIDocPurchLine_l."Document No.",InboundEDIDocPurchLine_l."Line No.");
+          IF InbEDIDocPurchLine_l."Shipping Agent" <> '' THEN BEGIN
+            EDIDHLShipmentCode_l."Shipping Agent" := InbEDIDocPurchLine_l."Shipping Agent";
+          END ELSE BEGIN
+            IF PurchaseLineL.GET(PurchaseLineL."Document Type"::Order,
+                                 InboundEDIPurchDocHeader_l."Purchase Document No.",
+                                 InboundEDIDocPurchLine_l."Line No.") THEN
+              IF SalesLineL.GET(SalesLineL."Document Type"::Order,
+                                PurchaseLineL."Order No.",
+                                PurchaseLineL."Order Line No.") THEN
+                EDIDHLShipmentCode_l."Shipping Agent" := SalesLineL."Shipping Agent Code";
+          END;
+          EDIDHLShipmentCode_l.INSERT;
+        END;
+      END;
+      //H1907 07.01.15 EHN -------------------------------------------
+    END;
+
+    PROCEDURE Function_006@1000000006(VAR rEDIMapping@1115500000 : Record 82854);
+    VAR
+      sDay@1115500001 : Text[2];
+      sMonth@1000000000 : Text[2];
+      sYear@1000000001 : Text[4];
+    BEGIN
+      //Funktion_006
+      //RÅckgabewert: Datum aus Datumsformat 203
+
+      sYear := COPYSTR(rEDIMapping."Field Value Text",1,4);
+      sMonth := COPYSTR(rEDIMapping."Field Value Text",5,2);
+      sDay := COPYSTR(rEDIMapping."Field Value Text",7,2);
+
+      rEDIMapping."Field Value Text" := sDay + sMonth + sYear;
+    END;
+
+    PROCEDURE Function_007@1000000010(VAR rEDIMapping@1115500000 : Record 82854);
+    VAR
+      sTime@1115500001 : Text[4];
+    BEGIN
+      //Funktion_007
+      //RÅckgabewert: Zeit aus Datumsformat 203
+
+      sTime := COPYSTR(rEDIMapping."Field Value Text",9,4);
+
+      rEDIMapping."Field Value Text" := sTime;
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------------+
+      |                   ∏  Copyright                   |
+      |       GOB Software & Systeme GmbH & Co. KG       |
+      +--------------------------------------------------+
+      |                      home24                      |
+      +--------------------------------------------------+
+
+      Project   Date          Consultant  Comment
+      --------------------------------------------------------
+      P1183     29.01.2014    gob-dst     IFTMIN Schweiz: Neue Funktion 6 zur Speicherung der Trackingnummern aus der IFTSTA
+      H2047     02.02.2015    gob-Sievet  EDI INVOIC cut off field conetnt purchase order
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      H1907       07.01.15  EHN       Insert into EDI DHL Shipment Code in case vendors don't sent us DHL tracking info via DESADV
+    }
+    END.
+  }
+}
+

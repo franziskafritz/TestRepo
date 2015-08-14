@@ -1,0 +1,301 @@
+OBJECT Codeunit 50028 Calc. Max. Or. Date After Pay.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=11.11.13;
+    Time=10:59:24;
+    Modified=Yes;
+    Version List=GOB,H0296;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=BEGIN
+            Code(Rec);
+          END;
+
+  }
+  CODE
+  {
+
+    PROCEDURE Code@1000000000(VAR JobQueueEntry_v@1000000001 : Record 472);
+    VAR
+      SalesHeader_l@1000000015 : Record 36;
+      SalesLine_l@1000000000 : Record 37;
+      eBayNavCXMLLog_l@1000000002 : Record 5096060;
+      FPCSetup@1000000010 : Record 50055;
+      Window_l@1000000012 : Dialog;
+      Factor_l@1000000013 : Decimal;
+      Counter_l@1000000014 : Decimal;
+      MaxLineNo_l@1000000017 : Integer;
+      locDateAfterPayment@1000000003 : Date;
+      SalesHeaderArch_l@1000000004 : Record 5107;
+      SalesLineArch_l@1000000005 : Record 5108;
+      CalendarManagement_l@1000000009 : Codeunit 7600;
+      Description_l@1000000008 : Text[50];
+      DaysAdded_l@1000000007 : Integer;
+      NewDate_l@1000000006 : Date;
+    BEGIN
+      //A/P0430 - Neue Logik
+      {
+      eBayNavCXMLLog_l.RESET;
+      IF JobQueueEntry_v."Parameter String" <> '' THEN
+        eBayNavCXMLLog_l.SETFILTER("Line No.", JobQueueEntry_v."Parameter String");
+
+      eBayNavCXMLLog_l.SETRANGE("Source Type", eBayNavCXMLLog_l."Source Type"::Payment);
+
+      IF GUIALLOWED THEN BEGIN
+        Window_l.OPEN(
+          '#1###############################################\\' +
+          'VK-Zeilen prÅfen  #2############## @3@@@@@@@@@@@@');
+
+        Window_l.UPDATE(1, 'Verkaufszeilen werden geprÅft. Bitte warten!');
+
+        IF eBayNavCXMLLog_l.COUNT > 0 THEN
+          Factor_l := 9999 / eBayNavCXMLLog_l.COUNT;
+      END;
+
+      IF eBayNavCXMLLog_l.FIND('-') THEN BEGIN
+        REPEAT
+          IF GUIALLOWED THEN BEGIN
+            Counter_l += 1;
+            Window_l.UPDATE(2, eBayNavCXMLLog_l."Source No.");
+            Window_l.UPDATE(3, (Counter_l * Factor_l) DIV 1);
+          END;
+
+          IF eBayNavCXMLLog_l."Line No." > MaxLineNo_l THEN
+            MaxLineNo_l := eBayNavCXMLLog_l."Line No.";
+
+          IF SalesHeader_l.GET(SalesHeader_l."Document Type"::Order, eBayNavCXMLLog_l."Source No.") THEN BEGIN
+            SalesLine_l.RESET;
+            SalesLine_l.SETRANGE("Document Type", SalesHeader_l."Document Type");
+            SalesLine_l.SETRANGE("Document No.", SalesHeader_l."No.");
+            SalesLine_l.setrange(Type,SalesLine_l.Type::Item);
+            IF SalesLine_l.FINDSET(TRUE) THEN BEGIN
+              IF SalesHeader_l."Payment Update Date" <> 0DT THEN BEGIN
+                SalesLine_l."Max. Order Date after Payment" :=
+                  CALCDATE('<' + FORMAT(SalesLine_l."Delivery Days") + 'D>',
+                   DT2DATE(SalesHeader_l."Payment Update Date"));
+                SalesLine_l.MODIFY;
+              END ELSE BEGIN
+                SalesLine_l."Max. Order Date after Payment" :=
+                  CALCDATE('<' + FORMAT(SalesLine_l."Delivery Days") + 'D>',
+                   DT2DATE(eBayNavCXMLLog_l."Conducted at"));
+                SalesLine_l.MODIFY;
+              END;
+            END;
+          END;
+        UNTIL eBayNavCXMLLog_l.NEXT = 0;
+
+        JobQueueEntry_v."Parameter String" := STRSUBSTNO('>%1', MaxLineNo_l);
+        JobQueueEntry_v.MODIFY;
+      END;
+
+      IF GUIALLOWED THEN
+        Window_l.CLOSE;
+      }
+
+      FPCSetup.GET();
+
+      // offene AuftrÑge
+      SalesHeader_l.RESET;
+      SalesHeader_l.SETCURRENTKEY("Order Date");
+      SalesHeader_l.SETFILTER("Order Date",JobQueueEntry_v."Parameter String");
+      SalesHeader_l.SETRANGE("Document Type",SalesHeader_l."Document Type"::Order);
+      IF SalesHeader_l.FIND('-') THEN BEGIN
+
+        IF GUIALLOWED THEN BEGIN
+          Window_l.OPEN(
+            '#1###############################################\\' +
+            '#2############## @3@@@@@@@@@@@@');
+
+          Window_l.UPDATE(1, 'VerkaufsauftrÑge werden geprÅft. Bitte warten!');
+          Factor_l := 9999 / SalesHeader_l.COUNT;
+        END;
+
+        REPEAT
+          IF GUIALLOWED THEN BEGIN
+            Counter_l += 1;
+            Window_l.UPDATE(2, SalesHeader_l."No.");
+            Window_l.UPDATE(3, (Counter_l * Factor_l) DIV 1);
+          END;
+
+          SalesLine_l.RESET;
+          SalesLine_l.SETCURRENTKEY("Document Type","Document No.","Line No.");
+          SalesLine_l.SETRANGE("Document Type", SalesHeader_l."Document Type");
+          SalesLine_l.SETRANGE("Document No.", SalesHeader_l."No.");
+          SalesLine_l.SETFILTER("Line No.",'<>%1',0);
+          SalesLine_l.SETRANGE(Type,SalesLine_l.Type::Item);
+          //A/gob-adb/18.04.13
+          //IF SalesLine_l.FINDSET(TRUE) THEN BEGIN
+          IF SalesLine_l.FIND('-') THEN BEGIN
+          //E/gob-adb/18.04.13
+            REPEAT
+              CLEAR(NewDate_l);
+              CLEAR(DaysAdded_l);
+              CLEAR(locDateAfterPayment);
+
+              IF (SalesHeader_l."Payment Update Date" <> 0DT) THEN BEGIN
+                //A/P0453
+                NewDate_l := DT2DATE(SalesHeader_l."Payment Update Date");
+                WHILE DaysAdded_l < SalesLine_l."Delivery Days" DO BEGIN
+                  NewDate_l := CALCDATE('<1D>', NewDate_l);
+                  IF NOT CalendarManagement_l.CheckDateStatus('BC', NewDate_l, Description_l) THEN // NOT NONWORKING
+                    DaysAdded_l += 1;
+                END;
+
+                locDateAfterPayment := NewDate_l;
+
+                //locDateAfterPayment :=  CALCDATE('<' + FORMAT(SalesLine_l."Delivery Days") + 'D>',
+                //     DT2DATE(SalesHeader_l."Payment Update Date"));
+                //E/P0453
+
+                //H0289 05.04.13 ARU +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+                //IF (locDateAfterPayment <> SalesLine_l."Max. Order Date after Payment") THEN BEGIN
+                IF (locDateAfterPayment <> SalesLine_l."Max. Order Date after Payment") AND NOT
+                    FPCSetup."Recalculate MODaP" THEN BEGIN
+                //H0289 05.04.13 ARU ---------------------------------------------------------------
+                  //H0269 21.03.12 ARU ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+                  //SalesLine_l."Max. Order Date after Payment" := locDateAfterPayment;
+                  SalesLine_l.VALIDATE("Max. Order Date after Payment", locDateAfterPayment);
+                  //H0269 21.03.12 ARU ------------------------------------------------------
+                  SalesLine_l.MODIFY;
+                //H0289 05.04.13 ARU ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+                //END;
+                END ELSE IF FPCSetup."Recalculate MODaP" THEN BEGIN
+                  SalesLine_l.VALIDATE("Max. Order Date after Payment", locDateAfterPayment);
+                  SalesLine_l.MODIFY;
+                END;
+                //H0289 05.04.13 ARU --------------------------------------------------------
+              END ELSE BEGIN
+                SalesLine_l."Max. Order Date after Payment" := 0D;
+                SalesLine_l.MODIFY;
+              END;
+            UNTIL SalesLine_l.NEXT = 0;
+          END;
+          //A/gob-adb/11.11.13
+          COMMIT;
+          //E/gob-adb/11.11.13
+        UNTIL SalesHeader_l.NEXT = 0;
+      END;
+
+      IF GUIALLOWED THEN
+        Window_l.CLOSE;
+
+      // abgeschlossene AuftrÑge
+      SalesHeaderArch_l.RESET;
+      SalesHeaderArch_l.SETCURRENTKEY("Order Date");
+      SalesHeaderArch_l.SETFILTER("Order Date",JobQueueEntry_v."Parameter String");
+      SalesHeaderArch_l.SETRANGE("Document Type",SalesHeaderArch_l."Document Type"::Order);
+      IF SalesHeaderArch_l.FIND('-') THEN BEGIN
+
+        IF GUIALLOWED THEN BEGIN
+          Window_l.OPEN(
+            '#1###############################################\\' +
+            '#2############## @3@@@@@@@@@@@@');
+
+          Window_l.UPDATE(1, 'Archivierte VerkaufsauftrÑge werden geprÅft. Bitte warten!');
+          Factor_l := 9999 / SalesHeaderArch_l.COUNT;
+        END;
+
+        REPEAT
+
+          IF GUIALLOWED THEN BEGIN
+            Counter_l += 1;
+            Window_l.UPDATE(2, SalesHeaderArch_l."No.");
+            Window_l.UPDATE(3, (Counter_l * Factor_l) DIV 1);
+          END;
+
+          SalesLineArch_l.RESET;
+          SalesLineArch_l.SETCURRENTKEY("Document Type","Document No.","Line No.");
+          SalesLineArch_l.SETRANGE("Document Type", SalesHeaderArch_l."Document Type");
+          SalesLineArch_l.SETRANGE("Document No.", SalesHeaderArch_l."No.");
+          SalesLineArch_l.SETFILTER("Line No.",'<>%1',0);
+          SalesLineArch_l.SETRANGE(Type,SalesLineArch_l.Type::Item);
+          //A/gob-adb/18.04.13
+          //IF SalesLineArch_l.FINDSET(TRUE) THEN BEGIN
+          IF SalesLineArch_l.FIND('-') THEN BEGIN
+          //E/gob-adb/18.04.13
+            REPEAT
+              IF (SalesHeaderArch_l."Payment Update Date" <> 0DT) THEN BEGIN
+                //H0296 08.04.13 ARU ++++++
+                CLEAR(NewDate_l);
+                CLEAR(DaysAdded_l);
+                CLEAR(locDateAfterPayment);
+                //H0296 08.04.13 ARU ------
+
+                //A/P0453
+                NewDate_l := DT2DATE(SalesHeaderArch_l."Payment Update Date");
+                WHILE DaysAdded_l < SalesLineArch_l."Delivery Days" DO BEGIN
+                  NewDate_l := CALCDATE('<1D>', NewDate_l);
+                  IF NOT CalendarManagement_l.CheckDateStatus('BC', NewDate_l, Description_l) THEN // NOT NONWORKING
+                    DaysAdded_l += 1;
+                END;
+
+                locDateAfterPayment := NewDate_l;
+
+                //locDateAfterPayment :=  CALCDATE('<' + FORMAT(SalesLineArch_l."Delivery Days") + 'D>',
+                //     DT2DATE(SalesHeaderArch_l."Payment Update Date"));
+                //E/P0453
+
+                //H0289 05.04.13 ARU +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+                //IF locDateAfterPayment <> SalesLineArch_l."Max. Order Date after Payment" THEN BEGIN
+                IF (locDateAfterPayment <> SalesLineArch_l."Max. Order Date after Payment") AND NOT
+                    FPCSetup."Recalculate MODaP" THEN BEGIN
+                //H0289 05.04.13 ARU -----------------------------------------------------------------
+                  //H0269 21.03.13 ARU +++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+                  //SalesLineArch_l."Max. Order Date after Payment" := locDateAfterPayment;
+                  SalesLineArch_l.VALIDATE("Max. Order Date after Payment",locDateAfterPayment);
+                  //H0269 21.03.13 ARU ---------------------------------------------------------
+                  SalesLineArch_l.MODIFY;
+                //H0289 05.04.13 ARU ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+                //END;
+                END ELSE IF FPCSetup."Recalculate MODaP" THEN BEGIN
+                  SalesLineArch_l.VALIDATE("Max. Order Date after Payment", locDateAfterPayment);
+                  SalesLineArch_l.MODIFY;
+                END;
+                //H0289 05.04.13 ARU ------------------------------------------------------------
+              END ELSE BEGIN
+                SalesLineArch_l."Max. Order Date after Payment" := 0D;
+                SalesLineArch_l.MODIFY;
+              END;
+            UNTIL SalesLineArch_l.NEXT = 0;
+          END;
+
+          //A/gob-adb/11.11.13
+          COMMIT;
+          //E/gob-adb/11.11.13
+        UNTIL SalesHeaderArch_l.NEXT = 0;
+      END;
+
+      IF GUIALLOWED THEN
+        Window_l.CLOSE;
+      //E/P0430
+    END;
+
+    BEGIN
+    {
+      P0430  10.10.12  GOB-MNO   Fix Kalkulation Max Order Date after Payment
+      P0453  17.10.12  GOB-MNO   Berechnung nur mit Werktagen
+      P0890  18.04.13  gob-adb   Prevent Locking
+      P1143  11.11.13  gob-adb   COMMIT's insterted
+
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+
+      H0269  21.03.13  ARU       BugFix > Validate on MOD after Pmt. is missing
+      H0289  05.04.13  ARU       Afterwards recalculate all "MOD after Pmt."
+      H0296  08.04.13  ARU       MODaP not Upd for all arch. SO-Lines (only for the first) > BugFix
+    }
+    END.
+  }
+}
+

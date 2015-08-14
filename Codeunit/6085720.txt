@@ -1,0 +1,257 @@
+OBJECT Codeunit 6085720 Purch. Alloc.-Post
+{
+  OBJECT-PROPERTIES
+  {
+    Date=13.03.14;
+    Time=01:00:00;
+    Version List=DCW13.70.00.3.50.07;
+  }
+  PROPERTIES
+  {
+    TableNo=6085730;
+    OnRun=VAR
+            DocDim@1160040000 : Record 357;
+            TempJnlLineDim@1160040001 : TEMPORARY Record 356;
+          BEGIN
+            CLEARALL;
+
+            PurchAllocHeader.COPY(Rec);
+            GLSetup.GET;
+
+            DCSetup.GET;
+
+            WITH PurchAllocHeader DO BEGIN
+              TESTFIELD(Status,Status::Open);
+              IF PurchAllocHeader."Document Type" IN [PurchAllocHeader."Document Type"::Order,PurchAllocHeader."Document Type"::Invoice] THEN
+                TESTFIELD("Vendor Invoice No.")
+              ELSE
+                TESTFIELD("Vendor Cr. Memo No.");
+              TESTFIELD("Posting Date");
+
+              PurchAllocLine.SETRANGE("Document No.",PurchAllocHeader."No.");
+              IF NOT PurchAllocLine.FINDFIRST THEN
+                ERROR(Text001);
+
+              VendPostingGr.GET(PurchAllocHeader."Vendor Posting Group");
+              VendPostingGr.TESTFIELD("Purch. Allocation Account");
+
+              IF GenJnlCheckLine.DateNotAllowed("Posting Date") THEN
+                FIELDERROR("Posting Date",Text003);
+
+              REPEAT
+                IF PurchAllocHeader."Document Type" IN
+                  [PurchAllocHeader."Document Type"::"Credit Memo",PurchAllocHeader."Document Type"::"Return Order"]
+                THEN BEGIN
+                  PurchAllocLine."Amount Including VAT" := -PurchAllocLine."Amount Including VAT";
+                  PurchAllocLine.Amount := -PurchAllocLine.Amount;
+                END;
+
+                IF (PurchAllocLine."Gen. Bus. Posting Group" <> GenPostingSetup."Gen. Bus. Posting Group") OR
+                  (PurchAllocLine."Gen. Prod. Posting Group" <> GenPostingSetup."Gen. Prod. Posting Group")
+                THEN
+                  GenPostingSetup.GET(PurchAllocLine."Gen. Bus. Posting Group",PurchAllocLine."Gen. Prod. Posting Group");
+
+                NextLineNo := NextLineNo + 10000;
+                GenJnlLine.INIT;
+                GenJnlLine."Line No." := NextLineNo;
+                GenJnlLine."Account Type" := GenJnlLine."Account Type"::"G/L Account";
+                GenJnlLine."Account No." := PurchAllocLine."G/L Account No.";
+                GenJnlLine."Source Code" := DCSetup."Purch. Alloc. Source Code";
+                GenJnlLine.Description := STRSUBSTNO(Text002,PurchAllocHeader."Document Type",PurchAllocHeader."Document No.");
+                GenJnlLine."Posting Date" := PurchAllocHeader."Posting Date";
+                GenJnlLine."Document No." := PurchAllocLine."Document No.";
+                GenJnlLine."Document Type" := GenJnlLine."Document Type"::Invoice;
+                IF PurchAllocHeader."Document Type" IN [PurchAllocHeader."Document Type"::Order,
+                  PurchAllocHeader."Document Type"::Invoice]
+                THEN
+                  GenJnlLine."External Document No." := PurchAllocHeader."Vendor Invoice No."
+                ELSE
+                  GenJnlLine."External Document No." := PurchAllocHeader."Vendor Cr. Memo No.";
+                GenJnlLine."Source Type" := GenJnlLine."Source Type"::Vendor;
+                GenJnlLine."Source No." := PurchAllocHeader."Pay-to Vendor No.";
+                GenJnlLine."Gen. Posting Type" := GenJnlLine."Gen. Posting Type"::Purchase;
+                GenJnlLine."Gen. Bus. Posting Group" := PurchAllocLine."Gen. Bus. Posting Group";
+                GenJnlLine."Gen. Prod. Posting Group" := PurchAllocLine."Gen. Prod. Posting Group";
+                GenJnlLine."VAT Bus. Posting Group" := PurchAllocLine."VAT Bus. Posting Group";
+                GenJnlLine."VAT Prod. Posting Group" := PurchAllocLine."VAT Prod. Posting Group";
+                GenJnlLine."VAT Calculation Type" := PurchAllocLine."VAT Calculation Type";
+                GenJnlLine."VAT %" := PurchAllocLine."VAT %";
+                GenJnlLine."System-Created Entry" := TRUE;
+
+                IF PurchAllocHeader."Currency Code" <> '' THEN BEGIN
+                  AmountInclVAT :=
+                    ROUND(
+                      CurrExchRate.ExchangeAmtFCYToLCY(
+                        PurchAllocHeader."Posting Date",PurchAllocHeader."Currency Code",
+                        PurchAllocLine."Amount Including VAT",PurchAllocHeader."Currency Factor"));
+                  AmountExclVAT :=
+                    ROUND(
+                      CurrExchRate.ExchangeAmtFCYToLCY(
+                        PurchAllocHeader."Posting Date",PurchAllocHeader."Currency Code",
+                        PurchAllocLine.Amount,PurchAllocHeader."Currency Factor"));
+                END ELSE BEGIN
+                  AmountInclVAT := PurchAllocLine."Amount Including VAT";
+                  AmountExclVAT := PurchAllocLine.Amount;
+                END;
+
+                GenJnlLine.VALIDATE(Amount,AmountInclVAT);
+
+            //    TempJnlLineDim.RESET;
+                TempJnlLineDim.DELETEALL;
+                DocDim.SETRANGE("Table ID",DATABASE::"Purch. Allocation Line");
+                DocDim.SETRANGE("Document Type",0);
+                DocDim.SETRANGE("Document No.",PurchAllocLine."Document No.");
+                DocDim.SETRANGE("Line No.",PurchAllocLine."Line No.");
+                DimMgt.CopyDocDimToJnlLineDim(DocDim,TempJnlLineDim);
+
+                CreateJnlDim(TempJnlLineDim,GLSetup."Global Dimension 1 Code",PurchAllocLine."Shortcut Dimension 1 Code");
+                CreateJnlDim(TempJnlLineDim,GLSetup."Global Dimension 2 Code",PurchAllocLine."Shortcut Dimension 2 Code");
+
+                UpdateGlobalDimFromJnlLineDim(TempJnlLineDim,GenJnlLine."Shortcut Dimension 1 Code",GenJnlLine."Shortcut Dimension 2 Code");
+
+                GenJnlPostLine.RunWithCheck(GenJnlLine,TempJnlLineDim);
+
+                TotalAmtExclVATLCY += AmountExclVAT;
+                TotalAmtInclVATLCY += AmountInclVAT;
+
+                TotalAmtExclVAT += PurchAllocLine.Amount;
+                TotalAmtInclVAT += PurchAllocLine."Amount Including VAT";
+              UNTIL PurchAllocLine.NEXT = 0;
+
+
+              GenJnlLine.INIT;
+              GenJnlLine."Line No." := NextLineNo;
+              GenJnlLine."Account Type" := GenJnlLine."Account Type"::"G/L Account";
+              GenJnlLine."Source Code" := DCSetup."Purch. Alloc. Source Code";
+              GenJnlLine.Description := STRSUBSTNO(Text002,PurchAllocHeader."Document Type",PurchAllocHeader."Document No.");
+              GenJnlLine."Account No." := VendPostingGr."Purch. Allocation Account";
+              GenJnlLine."Posting Date" := "Posting Date";
+              GenJnlLine."Document No." := PurchAllocHeader."No.";
+              GenJnlLine."Source No." := PurchAllocHeader."Pay-to Vendor No.";
+              GenJnlLine."System-Created Entry" := TRUE;
+              GenJnlLine.VALIDATE(Amount,-TotalAmtInclVATLCY);
+
+            //  TempJnlLineDim.RESET;
+              TempJnlLineDim.DELETEALL;
+              DocDim.SETRANGE("Table ID",DATABASE::"Purch. Allocation Header");
+              DocDim.SETRANGE("Document Type",0);
+              DocDim.SETRANGE("Document No.",PurchAllocLine."Document No.");
+              DocDim.SETRANGE("Line No.",0);
+              DimMgt.CopyDocDimToJnlLineDim(DocDim,TempJnlLineDim);
+
+              CreateJnlDim(TempJnlLineDim,GLSetup."Global Dimension 1 Code",PurchAllocHeader."Shortcut Dimension 1 Code");
+              CreateJnlDim(TempJnlLineDim,GLSetup."Global Dimension 2 Code",PurchAllocHeader."Shortcut Dimension 2 Code");
+
+              UpdateGlobalDimFromJnlLineDim(TempJnlLineDim,GenJnlLine."Shortcut Dimension 1 Code",GenJnlLine."Shortcut Dimension 2 Code");
+
+
+              GenJnlPostLine.RunWithCheck(GenJnlLine,TempJnlLineDim);
+
+              IF NOT PurchAllocEntry.FINDLAST THEN
+                CLEAR(PurchAllocEntry);
+
+              PurchAllocEntry.INIT;
+              PurchAllocEntry."Entry No." := PurchAllocEntry."Entry No." + 1;
+              PurchAllocEntry.Open := "Applies-to Doc. No." = '';
+              PurchAllocEntry."Document No." := PurchAllocHeader."No.";
+              PurchAllocEntry."Source Type" := PurchAllocHeader."Document Type";
+              PurchAllocEntry."Source No." := PurchAllocHeader."Document No.";
+              PurchAllocEntry."Posting Date" := PurchAllocHeader."Posting Date";
+              PurchAllocEntry."Vendor No." := PurchAllocHeader."Pay-to Vendor No.";
+              PurchAllocEntry."Vendor Posting Group" := PurchAllocHeader."Vendor Posting Group";
+              PurchAllocEntry.Amount := TotalAmtExclVAT;
+              PurchAllocEntry."Amount (LCY)" := TotalAmtExclVATLCY;
+              PurchAllocEntry."Amount Including VAT" := TotalAmtInclVAT;
+              PurchAllocEntry."Amount Including VAT (LCY)" := TotalAmtInclVATLCY;
+              PurchAllocEntry."Currency Code" := PurchAllocHeader."Currency Code";
+              PurchAllocEntry."Vendor Invoice No." := PurchAllocHeader."Vendor Invoice No.";
+              PurchAllocEntry."Vendor Cr. Memo No." := PurchAllocHeader."Vendor Cr. Memo No.";
+              PurchAllocEntry."Shortcut Dimension 1 Code" := GenJnlLine."Shortcut Dimension 1 Code";
+              PurchAllocEntry."Shortcut Dimension 2 Code" := GenJnlLine."Shortcut Dimension 2 Code";
+
+              DimMgt.MoveJnlLineDimToLedgEntryDim(TempJnlLineDim,DATABASE::"Purch. Alloc. Entry",PurchAllocEntry."Entry No.");
+
+              IF "Applies-to Doc. No." <> '' THEN BEGIN
+                ApplPurchAllocEntry.SETCURRENTKEY("Document No.");
+                ApplPurchAllocEntry.SETRANGE("Document No.","Applies-to Doc. No.");
+                ApplPurchAllocEntry.SETRANGE(Open,TRUE);
+                ApplPurchAllocEntry.FINDFIRST;
+                ApplPurchAllocEntry."Applies-to Entry" := PurchAllocEntry."Entry No.";
+                ApplPurchAllocEntry.Open := FALSE;
+                ApplPurchAllocEntry.MODIFY;
+
+                PurchAllocEntry."Applies-to Entry" := ApplPurchAllocEntry."Entry No.";
+                PurchAllocEntry.Open := FALSE;
+              END;
+
+              PurchAllocEntry.INSERT;
+
+              Status := Status::Posted;
+              MODIFY;
+            END;
+
+            Rec := PurchAllocHeader;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      PurchAllocHeader@1070000 : Record 6085730;
+      PurchAllocLine@1070001 : Record 6085731;
+      PurchAllocEntry@1070002 : Record 6085732;
+      ApplPurchAllocEntry@161024029 : Record 6085732;
+      DCSetup@161024014 : Record 6085573;
+      GLSetup@161024015 : Record 98;
+      GenJnlLine@161024012 : Record 81;
+      VendPostingGr@161024013 : Record 93;
+      GenPostingSetup@161024016 : Record 252;
+      CurrExchRate@161024024 : Record 330;
+      GenJnlCheckLine@161024022 : Codeunit 11;
+      GenJnlPostLine@161024020 : Codeunit 12;
+      DimMgt@1160040000 : Codeunit 408;
+      AmountInclVAT@161024018 : Decimal;
+      AmountExclVAT@161024019 : Decimal;
+      TotalAmtExclVAT@161024025 : Decimal;
+      TotalAmtInclVAT@161024021 : Decimal;
+      TotalAmtExclVATLCY@161024027 : Decimal;
+      TotalAmtInclVATLCY@161024026 : Decimal;
+      NextLineNo@1070009 : Integer;
+      Text001@1070014 : TextConst 'DEU=Es gibt nichts zu buchen.;ENU=There is nothing to post.';
+      Text002@161024023 : TextConst 'DEU=Einkauf Zuweisung, %1 %2;ENU=Purchase Allocation, %1 %2';
+      Text003@161024028 : TextConst 'DEU=liegt nicht innerhalb des zugelassenen Buchungszeitraums;ENU=is not within your range of allowed posting dates';
+
+    PROCEDURE CreateJnlDim@161024019(VAR JnlLineDim@1160040000 : Record 356;DimCode@161024012 : Code[20];DimValueCode@161024013 : Code[20]);
+    BEGIN
+      IF DimValueCode = '' THEN
+        EXIT;
+
+      JnlLineDim.SETRANGE("Dimension Code",DimCode);
+      IF NOT JnlLineDim.FINDFIRST THEN BEGIN
+        JnlLineDim.INIT;
+        JnlLineDim."Dimension Code" := DimCode;
+        JnlLineDim."Dimension Value Code" := DimValueCode;
+        JnlLineDim.INSERT;
+      END;
+
+      JnlLineDim.SETRANGE("Dimension Code");
+    END;
+
+    PROCEDURE UpdateGlobalDimFromJnlLineDim@1160040000(VAR JnlLineDim@1160040000 : TEMPORARY Record 356;VAR ShortcutDim1@1160040001 : Code[20];VAR ShortcutDim2@1160040002 : Code[20]);
+    BEGIN
+      JnlLineDim.SETRANGE("Dimension Code",GLSetup."Shortcut Dimension 1 Code");
+      IF JnlLineDim.FINDFIRST THEN
+        ShortcutDim1 := JnlLineDim."Dimension Value Code";
+
+      JnlLineDim.SETRANGE("Dimension Code",GLSetup."Shortcut Dimension 2 Code");
+      IF JnlLineDim.FINDFIRST THEN
+        ShortcutDim2 := JnlLineDim."Dimension Value Code";
+
+      JnlLineDim.SETRANGE("Dimension Code");
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

@@ -1,0 +1,1714 @@
+OBJECT Codeunit 50005 Create Order Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=13.03.15;
+    Time=18:28:14;
+    Modified=Yes;
+    Version List=DN(1),gob1.00,HME2099;
+  }
+  PROPERTIES
+  {
+    TableNo=50001;
+    OnRun=BEGIN
+            OrderImp := Rec;
+            ErrorText := '';
+
+            CASE OrderImp."Imp. Type" OF
+              1: UpdateSalesHeader;
+              2: UpdateSalesLine;
+              3: UpdateRetoure;
+              4: UpdateSalesLineStatus;
+            END; //case
+
+            ErrorText := DELCHR(ErrorText,'>',';');
+            IF ErrorText <> '' THEN
+              ERROR(ErrorText);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      PurchSetup@1000000025 : Record 312;
+      Customer@1000000011 : Record 18;
+      Vendor@1000000026 : Record 23;
+      CustBill@1000000013 : Record 18;
+      CustSell@1000000015 : Record 18;
+      CustomerTemplate@1000000009 : Record 5105;
+      SalesHeader@1000000004 : Record 36;
+      SalesHeaderRet@1000000028 : Record 36;
+      SalesLine@1000000006 : Record 37;
+      SalesLineRet@1000000031 : Record 37;
+      SalesInvHeader@1000000010 : Record 112;
+      SalesCrMemoHeader@1000000029 : Record 114;
+      OrderImp@1000000000 : Record 50001;
+      OrderImpHeader@1000000012 : Record 50001;
+      OrderImpLine@1000000024 : Record 50001;
+      PaymMethode@1000000019 : Record 289;
+      Item@1000000021 : Record 27;
+      CreateOrderMgt@1000000005 : Codeunit 50005;
+      E001@1000000007 : TextConst 'DEU=Keine Debitorvorlage fÅr %1 gefunden.;ENU=Customer Template not found for %1.';
+      CustNo@1000000001 : Code[20];
+      ErrorText@1000000003 : Text[250];
+      EntryNo@1000000002 : Integer;
+      E002@1000000008 : TextConst 'DEU="Artikelnr. zu lang ;";ENU="Item no. to long ;"';
+      E003a@1000000014 : TextConst 'DEU="Auftrag berechnet mit Nr. %1 ;";ENU="Order invoiced with no. %1 ;"';
+      E003b@1000000030 : TextConst 'DEU="Retoure berechnet mit Nr. %1 ;";ENU="Retoure invoiced with no. %1 ;"';
+      E004@1000000016 : TextConst 'DEU="Kunde geÑndert von %1 ;";ENU="Customer changed from %1 ;"';
+      E005@1000000017 : TextConst 'DEU="Rechnungsempf. geÑndert von %1 ;";ENU="Inv. Customer changed from %1 ;"';
+      E006@1000000018 : TextConst 'DEU="%1 fehlt ;";ENU="%1 empty ;"';
+      LineNo@1000000020 : Integer;
+      E007@1000000022 : TextConst 'DEU="Artikelnr. geÑndert ;";ENU="Item No. changed ;"';
+      i@1000000023 : Integer;
+      E008@1000000027 : TextConst 'DEU="Kreditorennr. %1 nicht gefunden ;";ENU="Vendor No. %1 not found ;"';
+      E009@1000000032 : TextConst 'DEU="StornobegrÅndung fehlt / leer ;";ENU="Cancel reason does not exist or it is empty ;"';
+      E010@1000000033 : TextConst 'DEU=Position bereits geliefert.;ENU=Posiition delivered.';
+      E011@1000000034 : TextConst 'DEU=Position breits storniert.;ENU=Position canceled.';
+      E012@1108200000 : TextConst 'ENU=Shipping Date not filled';
+      IGNOREORDERS_del@1108200001 : Record 50067;
+      E013@1108200002 : TextConst 'ENU=Order No. %1 with Item %2 is not in the System.';
+      e014@1108200003 : TextConst 'ENU=Order is not in Orders to post';
+      e015@1108200004 : TextConst 'ENU=OrderDate < 25.05.12 || 17* || 22* || E-mail sent';
+      counteritem@1108200005 : Integer;
+      counterkanal2@1108200006 : Integer;
+      e016@1108200007 : TextConst 'ENU=only Channel 2';
+      OrderImpCheck@1108200008 : Record 50001;
+      shipmentdate@1108200009 : Date;
+      diffshipmentdates@1108200010 : Boolean;
+      counter@1108200011 : Integer;
+      SalesLine3@1000000035 : Record 37;
+      SalesLine2@1000000036 : Record 37;
+      counteritem2@1000000037 : Integer;
+      counteritemstorno@1000000038 : Integer;
+      TextHME001@1000000039 : TextConst 'ENU=Channel Selection record does not exist or is inactive:\\Webshop: %1, Stock Location: %2, Transp. Type: %3';
+      TextHME002@1000000040 : TextConst 'ENU=Puchasing Code not found:\\Webshop: %1, Stock Location: %2';
+
+    LOCAL PROCEDURE UpdateCustomer@1000000000(_CustAddr@1000000003 : Record 18;_BillAddr@1000000001 : Code[20]) : Code[20];
+    VAR
+      L_Descr@1000000002 : Text[50];
+      i@1000000000 : Integer;
+    BEGIN
+      CustomerTemplate.RESET;
+      CustomerTemplate.SETRANGE("Country/Region Code",_CustAddr."Country/Region Code");
+      IF NOT CustomerTemplate.FINDFIRST THEN
+        ERROR(E001,OrderImp."Sell-to Country/Region Code");
+
+      Customer.SETCURRENTKEY("E-Mail",Name,"Name 2",City);
+      Customer.SETFILTER("E-Mail",'%1',_CustAddr."E-Mail");
+      Customer.SETFILTER(Name,'%1',_CustAddr.Name);
+      Customer.SETFILTER("Name 2",'%1',_CustAddr."Name 2");
+      Customer.SETFILTER(City,'%1',_CustAddr.City);
+      Customer.SETRANGE("Country/Region Code",_CustAddr."Country/Region Code");
+      IF (NOT Customer.FIND('+')) OR ((Customer."Our Account No." <> '') AND
+         (Customer."Our Account No." <> OrderImp."Sell-to Customer No.")) THEN BEGIN
+        Customer.INIT;
+        Customer."No." := '';
+        Customer.INSERT(TRUE);
+        Customer.VALIDATE(Name,_CustAddr.Name);
+        Customer."Name 2" := _CustAddr."Name 2";
+        Customer.City := _CustAddr.City;
+        Customer."Country/Region Code" := _CustAddr."Country/Region Code";
+        Customer."E-Mail" := _CustAddr."E-Mail";
+        Customer."Customer Posting Group" := CustomerTemplate."Customer Posting Group";
+        Customer."Customer Price Group" := CustomerTemplate."Customer Price Group";
+        Customer."Invoice Disc. Code" := CustomerTemplate."Invoice Disc. Code";
+        Customer."Customer Disc. Group" := CustomerTemplate."Customer Disc. Group";
+        Customer."Allow Line Disc." := CustomerTemplate."Allow Line Disc.";
+        Customer."Gen. Bus. Posting Group" := CustomerTemplate."Gen. Bus. Posting Group";
+        Customer."VAT Bus. Posting Group" := CustomerTemplate."VAT Bus. Posting Group";
+        Customer."Payment Terms Code" := CustomerTemplate."Payment Terms Code";
+        Customer."Payment Method Code" := CustomerTemplate."Payment Method Code";
+        Customer."Shipment Method Code" := CustomerTemplate."Shipment Method Code";
+        Customer."Shipping Advice" := Customer."Shipping Advice"::Partial;
+        Customer.VALIDATE("Prices Including VAT",CustomerTemplate."Prices Including VAT");
+        Customer.MODIFY;
+      END;
+      IF (Customer."Bill-to Customer No." <> _BillAddr) OR
+         (Customer.Address <> _CustAddr.Address) OR
+         (Customer."Address 2" <> _CustAddr."Address 2") OR
+         (Customer."Post Code" <> _CustAddr."Post Code") OR
+         (Customer.Contact <> _CustAddr.Contact) OR
+         (Customer."Phone No." <> _CustAddr."Phone No.") THEN BEGIN
+        Customer."Bill-to Customer No." := _BillAddr;
+        Customer.Address := _CustAddr.Address;
+        Customer."Address 2" := _CustAddr."Address 2";
+        Customer."Post Code" := _CustAddr."Post Code";
+        Customer.Contact := _CustAddr.Contact;
+        Customer."Phone No." := _CustAddr."Phone No.";
+        Customer.MODIFY;
+      END;
+      EXIT(Customer."No.");
+    END;
+
+    LOCAL PROCEDURE UpdateSalesHeader@1000000005();
+    VAR
+      L_CustSellCode@1000000000 : Code[20];
+      L_CustBillCode@1000000001 : Code[20];
+    BEGIN
+      IF NOT SalesHeader.GET(SalesHeader."Document Type"::Order,OrderImp."Order No.") THEN BEGIN
+        // Archive prÅfen ###########
+        // Check Invoices
+        SalesInvHeader.RESET;
+        SalesInvHeader.SETCURRENTKEY("Order No.");
+        SalesInvHeader.SETRANGE("Order No.",OrderImp."Order No.");
+        IF SalesInvHeader.FINDFIRST THEN BEGIN
+          ErrorText := ErrorText + STRSUBSTNO(E003a,SalesInvHeader."No.");
+          EXIT;
+        END;
+        SalesHeader.INIT;
+        SalesHeader."Document Type" := SalesHeader."Document Type"::Order;
+        SalesHeader."No." := OrderImp."Order No.";
+        SalesHeader.INSERT(TRUE);
+      END ELSE
+        IF SalesHeader.Status <> SalesHeader.Status::Open THEN BEGIN
+          SalesHeader.Status := SalesHeader.Status::Open;
+          SalesHeader.MODIFY;
+        END;
+
+      MakeBillAddress;
+      L_CustSellCode := UpdateCustomer(CustBill,'');
+      L_CustBillCode := L_CustSellCode;
+      IF MakeSellAddress THEN
+        L_CustSellCode := UpdateCustomer(CustSell,L_CustBillCode);
+      IF (SalesHeader."Sell-to Customer No." <> '') AND (L_CustSellCode <> SalesHeader."Sell-to Customer No.") THEN BEGIN
+        ErrorText := ErrorText + STRSUBSTNO(E004,SalesHeader."Sell-to Customer No.");
+        EXIT;
+      END ELSE BEGIN
+        SalesHeader.VALIDATE("Sell-to Customer No.",L_CustSellCode);
+        SalesHeader."Sell-to Address" := CustSell.Address;
+        SalesHeader."Sell-to Address 2" := CustSell."Address 2";
+        SalesHeader."Sell-to Post Code" := CustSell."Post Code";
+        SalesHeader."Sell-to Contact" := CustSell.Contact;
+        //SalesHeader."Bill-to Phone No." := Custsell."Phone No.";
+        //SalesHeader."Sell-to E-Mail" :=  "Customer Email";
+      END;
+      IF (SalesHeader."Bill-to Customer No." <> '') AND (L_CustBillCode <> SalesHeader."Bill-to Customer No.") THEN BEGIN
+        ErrorText := ErrorText + STRSUBSTNO(E005,SalesHeader."Bill-to Customer No.");
+        EXIT;
+      END ELSE BEGIN
+        IF SalesHeader."Bill-to Customer No." <> L_CustBillCode THEN
+          SalesHeader.VALIDATE("Bill-to Customer No.",L_CustBillCode);
+        SalesHeader."Bill-to Address" := CustBill.Address;
+        SalesHeader."Bill-to Address 2" := CustBill."Address 2";
+        SalesHeader."Bill-to Post Code" := CustBill."Post Code";
+        SalesHeader."Bill-to Contact" := CustBill.Contact;
+        //SalesHeader."Bill-to Phone No." := Custsell."Phone No.";
+      END;
+      MakeShipAddress;
+      SalesHeader."Ship-to Name" := CustBill.Name;
+      SalesHeader."Ship-to Name 2" := CustBill."Name 2";
+      SalesHeader."Ship-to Address" := CustBill.Address;
+      SalesHeader."Ship-to Address 2" := CustBill."Address 2";
+      SalesHeader."Ship-to City" := CustBill.City;
+      SalesHeader."Ship-to Post Code" := CustBill."Post Code";
+      SalesHeader."Ship-to Country/Region Code" := CustBill."Country/Region Code";
+      //SalesHeader."Ship-to Phone No." := CustBill."Phone No.";
+
+      IF OrderImp."Order Date" = 0DT THEN BEGIN
+        ErrorText := ErrorText + STRSUBSTNO(E006,OrderImp.FIELDCAPTION("Order Date"));
+        EXIT;
+      END;
+      SalesHeader.VALIDATE("Order Date",DT2DATE(OrderImp."Order Date"));
+      SalesHeader.VALIDATE("Posting Date",SalesHeader."Order Date");
+      SalesHeader.VALIDATE("Payment Terms Code",PaymMethode."Payment Terms Code");
+      SalesHeader.VALIDATE("Payment Method Code",PaymMethode.Code);
+      SalesHeader.MODIFY;
+    END;
+
+    LOCAL PROCEDURE UpdateSalesLine@1000000007();
+    VAR
+      L_Descr@1000000000 : Text[250];
+      L_Week@1000000001 : Integer;
+      L_Year@1000000002 : Integer;
+    BEGIN
+      PurchSetup.GET;
+      SalesHeader.GET(SalesHeader."Document Type"::Order,OrderImp."Order No.");
+      CheckItemLenght;
+
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type",SalesHeader."Document Type");
+      SalesLine.SETRANGE("Document No.",SalesHeader."No.");
+      SalesLine.SETRANGE(Type,SalesLine.Type::Item);
+      SalesLine.SETRANGE("No.",Item."No.");
+      IF NOT SalesLine.FIND('-') THEN BEGIN
+        SalesLine.RESET;
+        SalesLine.SETRANGE("Document Type",SalesHeader."Document Type");
+        SalesLine.SETRANGE("Document No.",SalesHeader."No.");
+        IF SalesLine.FINDLAST THEN
+          LineNo := SalesLine."Line No." + 10000
+        ELSE
+          LineNo := 10000;
+        SalesLine.INIT;
+        SalesLine."Document Type" := SalesHeader."Document Type";
+        SalesLine."Document No." := SalesHeader."No.";
+        SalesLine."Line No." := LineNo;
+        SalesLine.VALIDATE(Type,SalesLine.Type::Item);
+        SalesLine.VALIDATE("No.",Item."No.");
+        SalesLine.INSERT(TRUE);
+      END ELSE BEGIN
+        IF (SalesLine."No." <> '') AND (SalesLine."No." <> Item."No.") THEN BEGIN
+          ErrorText := ErrorText + STRSUBSTNO(E007);
+          EXIT;
+        END;
+      END;
+      SalesLine.VALIDATE(Quantity,OrderImp.Quantity);
+      SalesLine.VALIDATE("Unit Price",ROUND((OrderImp."Unit Price incl. VAT" + OrderImp."Discount Amount") / SalesLine.Quantity,0.01));
+      SalesLine.VALIDATE("Line Amount",ROUND(OrderImp."Unit Price incl. VAT",0.01));
+      SalesLine."Vendor No." := OrderImp."Vendor No.";
+      SalesLine."Vendor Order Date" := DT2DATE(OrderImp."Order Date");
+      SalesLine."Dropship No." := COPYSTR(OrderImp."Dropship No.",1,MAXSTRLEN(SalesLine."Dropship No."));
+      SalesLine."Manufacturer Item No." := COPYSTR(OrderImp."Manufacturer Item No.",1,MAXSTRLEN(SalesLine."Manufacturer Item No."));
+      IF OrderImp."Shipping Status" = PurchSetup."Magento Status for Correction" THEN
+        SalesLine."Line Status" := OrderImp."Shipping Status"
+      ELSE
+        SalesLine."Line Status" := OrderImp."Magento Order Status";
+
+      IF OrderImp."Dropship Date" = 0DT THEN BEGIN
+        ErrorText := ErrorText + STRSUBSTNO(E006,OrderImp.FIELDCAPTION("Dropship Date"));
+        EXIT;
+      END;
+      SalesLine."Dropship Date" := DT2DATE(OrderImp."Dropship Date");
+      IF OrderImp."Shipment Date" <> 0DT THEN
+        SalesLine."Shipment Date (Exp./Real.)" := DT2DATE(OrderImp."Shipment Date");
+      IF OrderImp."Exp. Shipment Week" <> '' THEN BEGIN
+        EVALUATE(L_Week,COPYSTR(OrderImp."Exp. Shipment Week",STRPOS(OrderImp."Exp. Shipment Week",'-') + 1));
+        EVALUATE(L_Year,COPYSTR(OrderImp."Exp. Shipment Week",1,STRPOS(OrderImp."Exp. Shipment Week",'-') - 1));
+        SalesLine."Promised Delivery Date" := DWY2DATE(5,L_Week,L_Year);
+        IF OrderImp."Shipment Date" = 0DT THEN
+          SalesLine."Shipment Date (Exp./Real.)" := DWY2DATE(5,L_Week,L_Year);
+      END;
+
+      IF OrderImp."Vendor No." = '' THEN
+        ErrorText := ErrorText + STRSUBSTNO(E006,OrderImp.FIELDCAPTION("Vendor No."));
+      IF NOT Vendor.GET(OrderImp."Vendor No.") THEN
+        ErrorText := ErrorText + STRSUBSTNO(E008,OrderImp."Vendor No.");
+
+      i := 1;
+      REPEAT
+        MakeDescription(OrderImp."Item Description",L_Descr,MAXSTRLEN(SalesLine.Description));
+        CASE i OF
+          1: SalesLine.Description := L_Descr;
+          2: SalesLine."Description 2" := L_Descr;
+        END; //case
+        i := i + 1;
+      UNTIL (OrderImp."Item Description" = '') OR (i > 2);
+      SalesLine.MODIFY(TRUE);
+    END;
+
+    LOCAL PROCEDURE UpdateRetoure@1000000010();
+    VAR
+      L_Descr@1000000000 : Text[250];
+    BEGIN
+      CheckItemLenght;
+
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type",SalesLine."Document Type"::Order);
+      SalesLine.SETRANGE("Document No.",OrderImp."Order No.");
+      SalesLine.SETRANGE(Type,SalesLine.Type::Item);
+      SalesLine.SETRANGE("No.",Item."No.");
+      SalesLine.SETRANGE("Dropship No.",COPYSTR(OrderImp."Dropship No.",1,MAXSTRLEN(SalesLine."Dropship No.")));
+      IF NOT SalesLine.FINDFIRST THEN BEGIN
+        ErrorText := ErrorText + STRSUBSTNO(E006,OrderImp.FIELDCAPTION("Order No."));
+        EXIT;
+      END;
+      SalesHeader.GET(SalesLine."Document Type",SalesLine."Document No.");
+
+      // insert Return Header
+      IF NOT SalesHeaderRet.GET(SalesHeader."Document Type"::"Return Order",OrderImp."Retoure No.") THEN BEGIN
+        // Check Credit Memo
+        SalesCrMemoHeader.RESET;
+        SalesCrMemoHeader.SETCURRENTKEY("Return Order No.");
+        SalesCrMemoHeader.SETRANGE("Return Order No.",OrderImp."Retoure No.");
+        IF SalesCrMemoHeader.FINDFIRST THEN BEGIN
+          ErrorText := ErrorText + STRSUBSTNO(E003b,SalesCrMemoHeader."No.");
+          EXIT;
+        END;
+        SalesHeaderRet.INIT;
+        SalesHeaderRet."Document Type" := SalesHeaderRet."Document Type"::"Return Order";
+        SalesHeaderRet."No." := OrderImp."Retoure No.";
+        SalesHeaderRet.INSERT(TRUE);
+      END ELSE
+        IF SalesHeaderRet.Status <> SalesHeaderRet.Status::Open THEN BEGIN
+          SalesHeaderRet.Status := SalesHeaderRet.Status::Open;
+          SalesHeaderRet.MODIFY;
+        END;
+
+      IF (SalesHeaderRet."Sell-to Customer No." <> '') AND
+         (SalesHeaderRet."Sell-to Customer No." <> SalesHeader."Sell-to Customer No.") THEN BEGIN
+        ErrorText := ErrorText + STRSUBSTNO(E004,SalesHeader."Sell-to Customer No.");
+        EXIT;
+      END ELSE BEGIN
+        SalesHeaderRet.VALIDATE("Sell-to Customer No.",SalesHeader."Sell-to Customer No.");
+        SalesHeaderRet."Sell-to Address" := SalesHeader."Sell-to Address";
+        SalesHeaderRet."Sell-to Address 2" := SalesHeader."Sell-to Address 2";
+        SalesHeaderRet."Sell-to Post Code" := SalesHeader."Sell-to Post Code";
+        SalesHeaderRet."Sell-to Contact" := SalesHeader."Sell-to Contact";
+        //SalesHeaderRet."Bill-to Phone No." := SalesHeader."Bill-to Phone No.";
+        //SalesHeaderRet."Sell-to E-Mail" := SalesHeader."Sell-to E-Mail";
+      END;
+      IF (SalesHeaderRet."Bill-to Customer No." <> '') AND
+         (SalesHeaderRet."Bill-to Customer No." <> SalesHeader."Bill-to Customer No.") THEN BEGIN
+        ErrorText := ErrorText + STRSUBSTNO(E005,SalesHeader."Bill-to Customer No.");
+        EXIT;
+      END ELSE BEGIN
+        IF SalesHeaderRet."Bill-to Customer No." <> SalesHeader."Bill-to Customer No." THEN
+          SalesHeaderRet.VALIDATE("Bill-to Customer No.",SalesHeader."Bill-to Customer No.");
+        SalesHeaderRet."Bill-to Address" := SalesHeader."Bill-to Address";
+        SalesHeaderRet."Bill-to Address 2" := SalesHeader."Bill-to Address 2";
+        SalesHeaderRet."Bill-to Post Code" := SalesHeader."Bill-to Post Code";
+        SalesHeaderRet."Bill-to Contact" := SalesHeader."Bill-to Contact";
+        //SalesHeaderRet."Bill-to Phone No." := SalesHeader."Bill-to Phone No.";
+      END;
+      SalesHeaderRet."Ship-to Name" := SalesHeader."Ship-to Name";
+      SalesHeaderRet."Ship-to Name 2" := SalesHeader."Ship-to Name 2";
+      SalesHeaderRet."Ship-to Address" := SalesHeader."Ship-to Address";
+      SalesHeaderRet."Ship-to Address 2" := SalesHeader."Ship-to Address 2";
+      SalesHeaderRet."Ship-to City" := SalesHeader."Ship-to City";
+      SalesHeaderRet."Ship-to Post Code" := SalesHeader."Ship-to Post Code";
+      SalesHeaderRet."Ship-to Country/Region Code" := SalesHeader."Ship-to Country/Region Code";
+      //SalesHeaderRet."Ship-to Phone No." := SalesHeader."Ship-to Phone No.";
+
+      IF OrderImp."Order Date" = 0DT THEN BEGIN
+        ErrorText := ErrorText + STRSUBSTNO(E006,OrderImp.FIELDCAPTION("Order Date"));
+        EXIT;
+      END;
+      SalesHeaderRet.VALIDATE("Order Date",DT2DATE(OrderImp."Order Date"));
+      SalesHeaderRet.VALIDATE("Posting Date",SalesHeaderRet."Order Date");
+      SalesHeaderRet.VALIDATE("Payment Terms Code",PaymMethode."Payment Terms Code");
+      SalesHeaderRet.VALIDATE("Payment Method Code",PaymMethode.Code);
+      SalesHeaderRet.MODIFY;
+
+      // insert return line
+      SalesLineRet.RESET;
+      SalesLineRet.SETRANGE("Document Type",SalesHeaderRet."Document Type");
+      SalesLineRet.SETRANGE("Document No.",SalesHeaderRet."No.");
+      SalesLineRet.SETRANGE(Type,SalesLineRet.Type::Item);
+      SalesLineRet.SETRANGE("No.",Item."No.");
+      IF NOT SalesLineRet.FIND('-') THEN BEGIN
+        SalesLineRet.RESET;
+        SalesLineRet.SETRANGE("Document Type",SalesHeaderRet."Document Type");
+        SalesLineRet.SETRANGE("Document No.",SalesHeaderRet."No.");
+        IF SalesLineRet.FINDLAST THEN
+          LineNo := SalesLineRet."Line No." + 10000
+        ELSE
+          LineNo := 10000;
+        SalesLineRet.INIT;
+        SalesLineRet."Document Type" := SalesHeaderRet."Document Type";
+        SalesLineRet."Document No." := SalesHeaderRet."No.";
+        SalesLineRet."Line No." := LineNo;
+        SalesLineRet.VALIDATE(Type,SalesLineRet.Type::Item);
+        SalesLineRet.VALIDATE("No.",Item."No.");
+        SalesLineRet.INSERT(TRUE);
+      END ELSE BEGIN
+        IF SalesLineRet."No." <> Item."No." THEN BEGIN
+          ErrorText := ErrorText + STRSUBSTNO(E007);
+          EXIT;
+        END;
+      END;
+      SalesLineRet.VALIDATE(Quantity,OrderImp.Quantity);
+      SalesLineRet.VALIDATE("Unit Price",SalesLine."Unit Price");
+      SalesLineRet.VALIDATE("Line Amount",SalesLine."Line Amount");
+      SalesLineRet."Vendor Order Date" := DT2DATE(OrderImp."Order Date");
+      SalesLineRet."Dropship Date" := SalesLineRet."Vendor Order Date";
+      SalesLineRet."Dropship No." := COPYSTR(OrderImp."Dropship No.",1,MAXSTRLEN(SalesLineRet."Dropship No."));
+      SalesLineRet."Manufacturer Item No." := COPYSTR(OrderImp."Manufacturer Item No.",1,MAXSTRLEN(SalesLine."Manufacturer Item No."));
+      SalesLineRet."Line Status" := OrderImp."Magento Order Status";
+
+      IF SalesLine."Vendor No." = '' THEN
+        ErrorText := ErrorText + STRSUBSTNO(E006,OrderImp.FIELDCAPTION("Vendor No."));
+      IF NOT Vendor.GET(SalesLine."Vendor No.") THEN
+        ErrorText := ErrorText + STRSUBSTNO(E007,OrderImp."Vendor No.");
+      SalesLineRet."Vendor No." := SalesLine."Vendor No.";
+
+      i := 1;
+      REPEAT
+        MakeDescription(OrderImp."Item Description",L_Descr,MAXSTRLEN(SalesLineRet.Description));
+        CASE i OF
+          1: Item.Description := L_Descr;
+          2: Item."Description 2" := L_Descr;
+        END; //case
+        i := i + 1;
+      UNTIL (OrderImp."Item Description" = '') OR (i > 2);
+      SalesLineRet.MODIFY(TRUE);
+    END;
+
+    LOCAL PROCEDURE UpdateSalesLineStatus@1000000013();
+    VAR
+      LT_OrderImp@1000000004 : Record 50001;
+      LT_ReasonCode@1000000005 : Record 50045;
+      LT_SalesLine@1000000008 : Record 37;
+      LC_SalesPost@1000000009 : Codeunit 80;
+      L_Week@1000000003 : Integer;
+      L_Year@1000000002 : Integer;
+      L_ModifySalesLine@1000000000 : Boolean;
+      L_ModifySalesHeader@1000000001 : Boolean;
+      L_Cancel@1000000006 : Boolean;
+      L_Ship@1000000007 : Boolean;
+      RemainingQty@1108200000 : Decimal;
+      LocInvoicesSent@1108200001 : Record 80020;
+      LocSalesSetup@1108200002 : Record 311;
+      SalesLineCorr@1000000010 : Record 37;
+      LocOrderImp@1000000011 : Record 50001;
+      LocOrderstoPost@1000000012 : Record 50096;
+      FPCgenSetup@1000000013 : Record 50055;
+    BEGIN
+      //A/p0377
+
+      IF (STRLEN(OrderImp."Item No.") > 20) THEN BEGIN
+        ErrorText := 'Artikel Nr. zu lang';
+        EXIT;
+      END;
+      //e/p0377
+
+      CheckItemLenght; //mab: Item.GET enthalten  (dynovus)
+
+      L_ModifySalesLine := FALSE;
+      L_ModifySalesHeader := FALSE;
+
+      //A/gob-mab/19.06.12/gob1.00
+      IF OrderImp."SL Status Updated" THEN
+        EXIT;
+      //fÅr die zu lîschenden AuftrÑge, nicht Status Ñndern
+      //fÅr test inaktiv
+      //a/p0377
+      //IF IGNOREORDERS_del.GET(OrderImp."Order No.") THEN BEGIN
+      //A/p0377/17.10.12
+      FPCgenSetup.GET;
+      //A/p0456
+      {*****p0456***** nicht mehr benîtigt, da zu lîschende AuftrÑge ausgetauscht****
+      IF NOT LocOrderstoPost.GET(OrderImp."Order No.") OR (NOT FPCgenSetup."Post hist. Orders") THEN BEGIN
+      //E/p0456
+
+      //E/p0377
+        ErrorText := ErrorText + e014;
+        {
+        OrderImp."Update Error" := TRUE;
+        OrderImp."Update Fehler Text" := ErrorText;
+        OrderImp."Modified on" := CURRENTDATETIME;
+        OrderImp.MODIFY;
+        }
+        EXIT;
+      END;
+      ********p0456******}
+      //E/gob-mab/19.06.12/gob1.00
+      //mab: PrÅfung ob Order im System  (dynovus)
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type",SalesLine."Document Type"::Order);
+      SalesLine.SETRANGE("Document No.",OrderImp."Order No.");
+      SalesLine.SETRANGE(Type,SalesLine.Type::Item);
+      SalesLine.SETRANGE("No.",Item."No.");
+      SalesLine.SETRANGE("Dropship No.",COPYSTR(OrderImp."Dropship No.",1,MAXSTRLEN(SalesLine."Dropship No.")));
+      IF NOT SalesLine.FIND('-') THEN BEGIN
+        //S /P0608
+        //SalesLine.SETRANGE("Dropship No.",'');
+        SalesLine.SETRANGE("Dropship No.");
+        //E /P0608
+
+        IF NOT SalesLine.FIND('-') THEN BEGIN
+          ErrorText := ErrorText + STRSUBSTNO(E006,OrderImp.FIELDCAPTION("Order No."));
+          {
+          OrderImp."Update Error" := TRUE;
+          OrderImp."Update Fehler Text" := ErrorText;
+          OrderImp."Modified on" := CURRENTDATETIME;
+          OrderImp.MODIFY;
+          }
+          EXIT;
+        END;
+      END;
+      SalesHeader.GET(SalesLine."Document Type",SalesLine."Document No.");
+      //A/p0259
+      SalesLineCorr.RESET;
+      SalesLineCorr.SETRANGE("Document Type",SalesLineCorr."Document Type"::Order);
+      SalesLineCorr.SETRANGE("Document No.",OrderImp."Order No.");
+      SalesLineCorr.SETRANGE(Type,SalesLineCorr.Type::Item);
+      IF SalesLineCorr.FIND('-') THEN BEGIN
+        REPEAT
+          //H0170  22.01.13  ABR  +++++++++++++++++++++++++++++++++++++
+          IF SalesLineCorr."Quantity Shipped" <> SalesLineCorr.Quantity THEN BEGIN
+          //H0170  22.01.13  ABR  -------------------------------------
+          SalesLineCorr.VALIDATE("Qty. to Ship",0);
+          SalesLineCorr.MODIFY;
+          //H0170  22.01.13  ABR  +++++++++++++++++++++++++++++++++++++
+          END;
+          //H0170  22.01.13  ABR  -------------------------------------
+        UNTIL SalesLineCorr.NEXT = 0;
+      END;
+      //E/p0259
+
+      //A/gob-mab/25.06.12/gob1.00
+      counteritem := 0;
+      counterkanal2 := 0;
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type",SalesLine."Document Type"::Order);
+      SalesLine.SETRANGE("Document No.",OrderImp."Order No.");
+      SalesLine.SETRANGE(Type,SalesLine.Type::Item);
+      counteritem := SalesLine.COUNT;
+      SalesLine.SETRANGE("Purchasing Code",'GER-6');
+      counterkanal2 := SalesLine.COUNT;
+      //wenn alle Artikel aus Marketplace2 wird die Rechnung nicht hierÅber versendet, bei Mischrechnungen schon
+      //A/Ausschlusskriterien fÅr Verarbeitung
+      IF (counteritem = counterkanal2) AND (OrderImp."Shipping Status" <> 'CANCELED') THEN BEGIN
+        //A/p0230
+        SalesHeader."Dont Send EMail" := TRUE;
+        SalesHeader.MODIFY;
+        COMMIT;
+        //ErrorText := 'Alle Artikel aus MP2';
+        //EXIT;
+        //E/p0230
+      END;
+
+      //S/p0537
+      IF SalesHeader.Kommissionierung = FALSE THEN BEGIN
+        SalesHeader."Ignore Komm. Control" := TRUE;
+        SalesHeader."Cancel Without Interfaces" := TRUE;
+        SalesHeader.MODIFY;
+      END;
+      //E/p0537
+
+      //a/p0377
+      //A/p0456
+      //Code gelîscht... öbersichtlichkeit
+      IF (SalesHeader."Order Date" < 250512D) THEN BEGIN
+        //Keine hist. Buchung = Fehler
+        IF (FPCgenSetup."Post hist. Orders" = FALSE) THEN BEGIN
+          ErrorText := 'Auftragdsdatum < 25.05.2012';
+          EXIT;
+        END;
+        //S/p0533
+        //Hist. Buchung erlaubt, aber nicht in Orders to post = Fehler
+        //IF (FPCgenSetup."Post hist. Orders" = TRUE) AND (NOT LocOrderstoPost.GET(OrderImp."Order No.")) THEN BEGIN
+        //  ErrorText := 'Auftragdsdatum < 25.05.2012';
+        //  EXIT;
+        //END;
+        //E/p0533
+      END;
+      //E/p0456
+
+      IF LocInvoicesSent.GET(SalesHeader."No.") THEN BEGIN
+        //A/p0173/
+        //ErrorText := 'Rechnung bereits versendet';
+        //EXIT;
+        SalesHeader."Dont Send EMail" := TRUE;
+        SalesHeader.MODIFY;
+        COMMIT;
+        //E/p0173
+      END;
+
+      //A/p0456
+      //Code gelîscht... öbersichtlichkeit....
+      //S/p0533
+      //IF ((COPYSTR(SalesHeader."No.",1,2) = '17') OR (COPYSTR(SalesHeader."No.",1,2) = '22')) THEN BEGIN
+      IF (COPYSTR(SalesHeader."No.",1,2) = '22') THEN BEGIN
+        //Keine hist. Buchung = Fehler
+        ErrorText := 'Auftragsnr. beginnt mit 22';
+        EXIT;
+      END;
+        //Hist. Buchung erlaubt, aber nicht in Orders to post = Fehler
+        //IF (FPCgenSetup."Post hist. Orders" = TRUE) AND (NOT LocOrderstoPost.GET(OrderImp."Order No.")) THEN BEGIN
+        //  ErrorText := 'Auftragsnr. beginnt mit 17 | 22';
+        //  EXIT;
+        //END;
+      //END;
+      //E/p0456
+      //E/p0533
+
+      //A/p0377/08.10.12
+      //S/P0757/23.01.13
+      //IF (SalesHeader."VAT Country/Region Code" = 'FR') AND (SalesHeader."VAT Bus. Posting Group" = 'FR')
+      //   AND (SalesHeader."Order Date" <= 190612D) THEN BEGIN
+      //  ErrorText := 'VAT / FR';
+      //  EXIT;
+      //END;
+      //E/P0757/23.01.13
+
+      IF (STRLEN(OrderImp."Item No.") > 20) THEN BEGIN
+        ErrorText := 'Artikel Nr. zu lang';
+        EXIT;
+      END;
+
+      //E/p0377/08.10.12
+
+
+      //E/Ausschlusskriterien fÅr Verarbeitung
+
+      //muss fÅr Gutschriftsverbuchung und neu Freigabe gemacht werden, damit nicht in Komm. Fehler
+      IF OrderImp."Shipping Status" = 'CANCELED' THEN BEGIN
+        SalesHeader."Ignore Komm. Control" := TRUE;
+        //S/P0546
+        SalesHeader."Cancel Without Interfaces" := TRUE;
+        //E/P0546
+
+        SalesHeader.MODIFY;
+        COMMIT;
+      END;
+      //E/gob-mab/25.06.12/gob1.00
+
+      //A/gob-mab/20.06.12/gob1.00/
+      RemainingQty := OrderImp.Quantity;
+      REPEAT
+        ErrorText := '';
+
+        SalesLine.RESET;
+        SalesLine.SETRANGE("Document Type",SalesLine."Document Type"::Order);
+        SalesLine.SETRANGE("Document No.",OrderImp."Order No.");
+        SalesLine.SETRANGE(Type,SalesLine.Type::Item);
+        SalesLine.SETRANGE("No.",OrderImp."Item No.");
+        IF NOT SalesLine.FINDFIRST THEN BEGIN
+          ErrorText := STRSUBSTNO(E013,OrderImp."Order No.",OrderImp."Item No.");
+          //A/p0262
+          CLEAR(LocOrderImp);
+          LocOrderImp.GET(OrderImp."Entry No.");
+          LocOrderImp."Update Error" := TRUE;
+          LocOrderImp."Update Fehler Text" := ErrorText;
+          LocOrderImp."SL Status Updated" := FALSE;
+          LocOrderImp."Modified on" := CURRENTDATETIME;
+          LocOrderImp.MODIFY;
+          ErrorText := '';
+          EXIT;
+          //E/p0262
+        END;
+        //ZEILENWEISE UPDATE DER SALES LINES
+        IF SalesLine.COUNT > 1 THEN BEGIN  //mehr als eine Zeile pro Artikel?
+          REPEAT
+            IF ErrorText =  '' THEN
+              UpdateSalesLineStatusGOB(RemainingQty);
+          UNTIL (SalesLine.NEXT = 0) OR (RemainingQty = 0);
+        END ELSE BEGIN
+         IF ErrorText =  '' THEN
+           UpdateSalesLineStatusGOB(RemainingQty);
+        END;
+
+        //wenn alle Artikelzeilen eines AUftragsstorniert, muss auch die Ressource storniert werden
+        //A/p0273/deaktiviert
+        {*******CODE deaktiviert *****
+        IF OrderImp."Shipping Status" = 'CANCELED' THEN BEGIN
+          SalesLine3.RESET;
+          SalesLine3.SETRANGE("Document Type",SalesLine3."Document Type" :: Order);
+          SalesLine3.SETRANGE("Document No.",OrderImp."Order No.");
+          SalesLine3.SETRANGE(Type,SalesLine3.Type :: Resource);
+          IF NOT SalesLine3.ISEMPTY THEN BEGIN
+            SalesLine2.RESET;
+            SalesLine2.SETRANGE("Document Type",SalesLine2."Document Type" :: Order);
+            SalesLine2.SETRANGE("Document No.",OrderImp."Order No.");
+            SalesLine2.SETRANGE(Type,SalesLine2.Type :: Item);
+            counteritem2 := SalesLine2.COUNT;
+
+            SalesLine2.RESET;
+            SalesLine2.SETRANGE("Document Type",SalesLine2."Document Type" :: Order);
+            SalesLine2.SETRANGE("Document No.",OrderImp."Order No.");
+            SalesLine2.SETRANGE(Type,SalesLine2.Type :: Item);
+            SalesLine2.SETRANGE("Line Status",'CANCELED');
+            counteritemstorno := SalesLine2.COUNT;
+            IF counteritemstorno = counteritem THEN BEGIN
+              SalesLine3.FINDFIRST;
+              SalesLine3."Cancellation Reason Code" := 'MAGENTO';
+              SalesLine3.MODIFY;
+              SalesLine3.MagentoCancel(FALSE,FALSE);
+            END;
+          END;
+        END;
+        ***************************}
+        //E/p0273
+
+        ErrorText := DELCHR(ErrorText,'>',';');
+        IF ErrorText <> '' THEN BEGIN
+          //A/p0262
+          CLEAR(LocOrderImp);
+          LocOrderImp.GET(OrderImp."Entry No.");
+          LocOrderImp."Update Error" := TRUE;
+          LocOrderImp."Update Fehler Text" := ErrorText;
+          LocOrderImp."SL Status Updated" := FALSE;
+          LocOrderImp."Modified on" := CURRENTDATETIME;
+          LocOrderImp.MODIFY;
+          ErrorText := '';
+          EXIT
+          //E/p0262
+        END;
+        //A/gob-mab/20.06.12/gob1.00/ Buchung einbinden....
+
+        IF (OrderImp."Shipping Status" = 'SHIPPED') AND (NOT OrderImp."Update Error") THEN BEGIN
+          //Buchung pro Zeile
+          SalesHeader.Ship :=  TRUE;
+          SalesHeader.Invoice := FALSE;
+          SalesHeader."Ignore Komm. Control" := TRUE;
+          SalesHeader."Posting Date" := DT2DATE(OrderImp."Shipment Date");
+          SalesHeader."Document Date" := SalesHeader."Posting Date";
+          LocSalesSetup.GET;
+          IF LocSalesSetup."Posted Invoice Magento Nos." = '' THEN BEGIN
+            ErrorText := 'Mag. RG Buchungsnr. leer';
+            EXIT;
+          END ELSE
+            SalesHeader."Posting No. Series" := LocSalesSetup."Posted Invoice Magento Nos.";
+
+          SalesHeader.MODIFY(TRUE);
+          COMMIT;
+          IF NOT LC_SalesPost.RUN(SalesHeader) THEN BEGIN
+            //LC_SalesPost.RUN(SalesHeader);
+            //A/p0262
+            CLEAR(LocOrderImp);
+            LocOrderImp.GET(OrderImp."Entry No.");
+            LocOrderImp."Update Error" := TRUE;
+            LocOrderImp."Update Fehler Text" := ErrorText+  ' **BELEG NICHT GEBUCHT!';
+            LocOrderImp."SL Status Updated" := FALSE;
+            LocOrderImp."Modified on" := CURRENTDATETIME;
+            LocOrderImp.MODIFY;
+            ErrorText := '';
+            EXIT;
+            //OrderImp."Update Fehler Text" := ErrorText +  ' **BELEG NICHT GEBUCHT!';
+            //OrderImp."Update Error" := TRUE;
+            //OrderImp."SL Status Updated" := FALSE;
+            //OrderImp."Modified on" := CURRENTDATETIME;
+            //OrderImp.MODIFY;
+            //E/p0262
+
+          END;
+        END;
+
+      UNTIL (RemainingQty = 0); //OR (OrderImp.NEXT = 0);
+      counter := counter + 1;
+      IF counter = 100 THEN BEGIN
+        COMMIT;
+        counter := 0;
+      END;
+      //E/gob-mab/20.06.12/gob1.00
+
+      {****** gob-mab alles in neue Funktion ausgelagert (UpdateSalesLineStatusGOB) ****************************
+      // insert Dropshipnr.
+      IF SalesLine."Dropship No." = '' THEN BEGIN
+        SalesLine."Dropship No." := COPYSTR(OrderImp."Dropship No.",1,MAXSTRLEN(SalesLine."Dropship No."));
+        L_ModifySalesLine := TRUE;
+      END;
+
+      // insert shipment date
+      // chrmu > 02.01.1900  anstatt 0D
+      IF OrderImp."Shipment Date" > CREATEDATETIME(01011900D,0T) THEN BEGIN
+        SalesLine."Shipment Date (Exp./Real.)" := DT2DATE(OrderImp."Shipment Date");
+        L_ModifySalesLine := TRUE;
+      END;
+      IF OrderImp."Exp. Shipment Week" <> '' THEN BEGIN
+        EVALUATE(L_Week,COPYSTR(OrderImp."Exp. Shipment Week",STRPOS(OrderImp."Exp. Shipment Week",'-') + 1));
+        EVALUATE(L_Year,COPYSTR(OrderImp."Exp. Shipment Week",1,STRPOS(OrderImp."Exp. Shipment Week",'-') - 1));
+        SalesLine."Promised Delivery Date" := DWY2DATE(5,L_Week,L_Year);
+        IF OrderImp."Shipment Date" = 0DT THEN BEGIN
+          SalesLine."Shipment Date (Exp./Real.)" := DWY2DATE(5,L_Week,L_Year);
+          L_ModifySalesLine := TRUE;
+        END;
+      END;
+
+      IF L_ModifySalesLine THEN
+        SalesLine.MODIFY(TRUE);
+
+      // update status
+      // A/gob-lku/01.10.12/P0389
+      { ***** Wegen Zusammenlegung der Reason Codes auskommentiert
+      IF OrderImp."Shipping Status" = 'CANCELED' THEN BEGIN
+        LT_ReasonCode.SETRANGE(Code,OrderImp."Return Reason");
+        IF (OrderImp."Return Reason" = '') OR (NOT LT_ReasonCode.FINDFIRST) THEN BEGIN
+          ErrorText := ErrorText + E009;
+          EXIT;
+        END;
+        IF SalesLine."Quantity Shipped" > 0 THEN BEGIN
+          ErrorText := ErrorText + E010;
+          EXIT;
+        END;
+      }
+
+      IF OrderImp."Shipping Status" = 'CANCELED' THEN BEGIN
+        ReturnReason_l.SETRANGE(Code,OrderImp."Return Reason");
+        IF (OrderImp."Return Reason" = '') OR (NOT ReturnReason_l.FINDFIRST) THEN BEGIN
+          ErrorText := ErrorText + E009;
+          EXIT;
+        END;
+        IF SalesLine."Quantity Shipped" > 0 THEN BEGIN
+          ErrorText := ErrorText + E010;
+          EXIT;
+        END;
+      // E/gob-lku/01.10.12/P0389
+
+        SalesLine."Cancellation Reason Code" := LT_OrderImp."Return Reason";
+        // A/gob-lku/27.09.12/P0389
+        SalesLine."Return Reason Code" := LT_OrderImp."Return Reason";
+        // E/gob-lku/27.09.12/P0389
+        SalesLine."Qty. to Cancel" := SalesLine.Quantity - OrderImp.Quantity;
+        SalesLine.MODIFY;
+        LT_OrderImp.RESET;
+        LT_OrderImp.SETCURRENTKEY("Order No.","Imp. Type");
+        LT_OrderImp.SETRANGE("Order No.",OrderImp."Order No.");
+        LT_OrderImp.SETRANGE("Imp. Type",4);
+        LT_OrderImp.SETFILTER("Entry No.",'>%1',OrderImp."Entry No.");
+        LT_OrderImp.SETRANGE("Shipping Status",'CANCELED');
+        IF NOT LT_OrderImp.FINDFIRST THEN BEGIN
+          LT_SalesLine.RESET;
+          LT_SalesLine.SETRANGE("Document Type",SalesLine."Document Type");
+          LT_SalesLine.SETRANGE("Document No.",SalesLine."Document No.");
+          LT_SalesLine.SETRANGE(Type,LT_SalesLine.Type::Item);
+          LT_SalesLine.SETRANGE("Qty. to Cancel",0);
+          IF LT_SalesLine.FIND('-') THEN BEGIN  //menge zu stornieren eintragen und prÅfen
+            LT_SalesLine.SETFILTER("Qty. to Cancel",'<>0');
+            IF LT_SalesLine.FIND('-') THEN REPEAT
+              SalesLine.MagentoCancel(FALSE,FALSE);
+            UNTIL LT_SalesLine.NEXT = 0;
+          END ELSE BEGIN
+            SalesLine.MagentoCancel(TRUE,FALSE);
+          END;
+        END;
+      END;
+
+
+      // ship
+      IF OrderImp."Shipping Status" = 'SHIPPED' THEN BEGIN
+        IF SalesLine."Cancellation Qty." > 0 THEN BEGIN
+          ErrorText := ErrorText + E011;
+          EXIT;
+        END;
+        LT_OrderImp.RESET;
+        LT_OrderImp.SETCURRENTKEY("Order No.","Imp. Type");
+        LT_OrderImp.SETRANGE("Order No.",OrderImp."Order No.");
+        LT_OrderImp.SETRANGE("Imp. Type",4);
+        LT_OrderImp.SETRANGE("Shipping Status",'SHIPPED');
+        LT_OrderImp.SETRANGE("Shipment Date",OrderImp."Shipment Date");
+        LT_OrderImp.SETFILTER("Entry No.",'<%1',OrderImp."Entry No.");
+        IF NOT LT_OrderImp.FINDFIRST THEN BEGIN
+          LT_SalesLine.RESET;
+          LT_SalesLine.SETRANGE("Document Type",SalesLine."Document Type");
+          LT_SalesLine.SETRANGE("Document No.",SalesLine."Document No.");
+          IF LT_SalesLine.FIND('-') THEN REPEAT
+            LT_SalesLine.VALIDATE("Qty. to Ship",0);
+            LT_SalesLine.VALIDATE("Qty. to Invoice",0);
+          UNTIL LT_SalesLine.NEXT = 0;
+        END;
+        SalesLine.VALIDATE("Qty. to Ship",SalesLine.Quantity - SalesLine."Quantity Shipped");
+        SalesLine.MODIFY;
+        LT_OrderImp.SETFILTER("Entry No.",'>%1',OrderImp."Entry No.");
+        IF NOT LT_OrderImp.FINDFIRST THEN BEGIN
+          COMMIT;
+          SalesHeader.Receive := TRUE;
+          SalesHeader.Invoice := FALSE;
+          IF OrderImp."Shipment Date" <> 0DT THEN
+            SalesHeader."Posting Date" := DT2DATE(OrderImp."Shipment Date")
+          ELSE
+            SalesHeader."Posting Date" := WORKDATE;
+          SalesHeader."Document Date" := SalesHeader."Posting Date";
+          LC_SalesPost.RUN(SalesHeader);
+        END;
+      END;
+
+      {
+        Quantity := _Qty;
+        "Bill-to Titel" := _BillTitel;
+        "Bill-to First Name" := _BillFirstName;
+        "Bill-to Name" := _BillName;
+        "Bill-to Surname" := _BillSurname;
+        "Bill-to Address" := _BillAddr;
+        "Bill-to Post Code" := _BillPostCode;
+        "Bill-to City" := _BillCity;
+        "Bill-to Country/Region Code" := _BillCountry;
+        "Bill-to Phone No." := _BillPhone;
+
+        IF _Canceled THEN
+          "Shipping Status" := 'CANCELED'
+        ELSE
+          "Shipping Status" := _ShippingStatus;
+      }
+      ***********************************************gob-mab*****************************************}
+    END;
+
+    PROCEDURE UpdateOrderBatch@1000000001(VAR _OrderImp@1000000000 : Record 50001);
+    VAR
+      L_Window@1000000001 : Dialog;
+    BEGIN
+      IF _OrderImp.FIND('-') THEN BEGIN
+        PurchSetup.GET;
+        L_Window.OPEN('Auftrag/Retoure #1########## lfd.-Nr. #2##########');
+        PaymMethode.GET('AUTOAUSGL');
+        PaymMethode.TESTFIELD("Bal. Account Type",PaymMethode."Bal. Account Type"::"G/L Account");
+        PaymMethode.TESTFIELD("Bal. Account No.");
+        PaymMethode.TESTFIELD("Payment Terms Code");
+        REPEAT
+          IF _OrderImp."Imp. Type" = 3 THEN
+            L_Window.UPDATE(1,_OrderImp."Order No.")
+          ELSE
+            L_Window.UPDATE(1,_OrderImp."Retoure No.");
+          L_Window.UPDATE(2,_OrderImp."Entry No.");
+          IF (_OrderImp."Import Status" <> _OrderImp."Import Status"::Used) AND
+             (_OrderImp."Import Status" <> _OrderImp."Import Status"::Canceled) THEN BEGIN
+            IF _OrderImp."Imp. Type" = 1 THEN BEGIN
+              OrderImpHeader.RESET;
+              OrderImpHeader.SETCURRENTKEY("Order No.","Imp. Type");
+              OrderImpHeader.SETRANGE("Order No.",_OrderImp."Order No.");
+              OrderImpHeader.SETRANGE("Imp. Type",1);
+              OrderImpHeader.SETFILTER("Entry No.",'>%1',_OrderImp."Entry No.");
+              IF NOT OrderImpHeader.ISEMPTY THEN BEGIN
+                OrderImpHeader.FIND('+');
+                _OrderImp."Import Status" := _OrderImp."Import Status"::Canceled;
+                _OrderImp."Import Error Text" := '';
+                _OrderImp."Modified on" := CURRENTDATETIME;
+                _OrderImp.MODIFY;
+                IF (OrderImpHeader."Import Status" = OrderImpHeader."Import Status"::Inserted) OR
+                   (OrderImpHeader."Import Status" = OrderImpHeader."Import Status"::Corrected) THEN
+                  UpdateOrderBatch2(OrderImpHeader);
+              END ELSE BEGIN
+                UpdateOrderBatch2(_OrderImp);
+              END;
+            END ELSE
+              UpdateOrderBatch2(_OrderImp);
+          END;
+        UNTIL _OrderImp.NEXT = 0;
+        L_Window.CLOSE;
+      END;
+    END;
+
+    LOCAL PROCEDURE UpdateOrderBatch2@1000000009(VAR _OrderImp@1000000000 : Record 50001);
+    VAR
+      L_Window@1000000001 : Dialog;
+    BEGIN
+      IF CheckToUpdate(_OrderImp) THEN BEGIN
+        COMMIT;
+        CLEARLASTERROR;
+        CLEAR(CreateOrderMgt);
+        SetParameters(PaymMethode);
+        IF CreateOrderMgt.RUN(_OrderImp) THEN BEGIN
+          _OrderImp."Import Status" := _OrderImp."Import Status"::Used;
+          _OrderImp."Import Error Text" := '';
+        END ELSE BEGIN;
+          _OrderImp."Import Status" := _OrderImp."Import Status"::Error;
+          _OrderImp."Import Error Text" := COPYSTR(GETLASTERRORTEXT,1,MAXSTRLEN(_OrderImp."Import Error Text"));
+        END;
+      END ELSE BEGIN
+        _OrderImp."Import Status" := _OrderImp."Import Status"::Canceled;
+        _OrderImp."Import Error Text" := '';
+      END;
+      _OrderImp."Modified on" := CURRENTDATETIME;
+      _OrderImp.MODIFY;
+    END;
+
+    LOCAL PROCEDURE MakeDescription@1000000004(VAR _RestText@1000000000 : Text[250];VAR _SelectText@1000000005 : Text[250];_TextLenght@1000000002 : Integer);
+    VAR
+      i@1000000003 : Integer;
+    BEGIN
+      _SelectText := COPYSTR(_RestText,1,_TextLenght);
+      IF STRLEN(_RestText) < _TextLenght THEN BEGIN
+        _RestText := '';
+        EXIT;
+      END;
+      FOR i := _TextLenght DOWNTO 1 DO BEGIN
+        IF COPYSTR(_SelectText,i,1) IN [' ',',',';','-'] THEN BEGIN
+          _SelectText := DELCHR(COPYSTR(_SelectText,1,i),'>',' ');
+          _RestText := DELSTR(_RestText,1,i);
+          i := 0;
+        END;
+        IF i = 1 THEN BEGIN
+          _SelectText := DELCHR(COPYSTR(_SelectText,1,_TextLenght),'>',' ');
+          _RestText := DELSTR(_RestText,1,_TextLenght);
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE MakeBillAddress@1000000002();
+    VAR
+      L_TotalText@1000000001 : Text[250];
+    BEGIN
+      CLEAR(CustBill);
+      IF OrderImp."Bill-to Name" <> '' THEN BEGIN
+        L_TotalText := OrderImp."Bill-to Name";
+        MakeDescription(L_TotalText,CustBill.Name,MAXSTRLEN(CustBill.Name));
+        IF L_TotalText <> '' THEN
+          MakeDescription(L_TotalText,CustBill."Name 2",MAXSTRLEN(Customer."Name 2"));
+        CustBill.Contact := COPYSTR(OrderImp."Bill-to Titel" +' '+ OrderImp."Bill-to First Name" +' '+ OrderImp."Bill-to Surname",
+          1,MAXSTRLEN(CustBill.Contact));
+      END ELSE BEGIN
+        L_TotalText := OrderImp."Bill-to Titel" +' '+ OrderImp."Bill-to First Name" +' '+ OrderImp."Bill-to Surname";
+        MakeDescription(L_TotalText,CustBill.Name,MAXSTRLEN(Customer.Name));
+        IF L_TotalText <> '' THEN
+          MakeDescription(L_TotalText,CustBill."Name 2",MAXSTRLEN(Customer."Name 2"));
+      END;
+      L_TotalText := OrderImp."Bill-to Address";
+      MakeDescription(L_TotalText,CustBill.Address,MAXSTRLEN(Customer.Address));
+      IF L_TotalText <> '' THEN
+        MakeDescription(L_TotalText,CustBill."Address 2",MAXSTRLEN(CustBill."Address 2"));
+      CustBill.City := COPYSTR(OrderImp."Bill-to City",1,MAXSTRLEN(CustBill.City));
+      CustBill."Post Code" := COPYSTR(OrderImp."Bill-to Post Code",1,MAXSTRLEN(CustBill."Post Code"));
+      CustBill."Country/Region Code" := COPYSTR(OrderImp."Bill-to Country/Region Code",1,MAXSTRLEN(CustBill."Country/Region Code"));
+      CustBill."E-Mail" := COPYSTR(OrderImp."Sell-to E-Mail",1,MAXSTRLEN(CustBill."E-Mail"));
+      CustBill."Phone No." := COPYSTR(OrderImp."Bill-to Phone No.",1,MAXSTRLEN(CustBill."Phone No."));
+    END;
+
+    LOCAL PROCEDURE MakeSellAddress@1000000003() : Boolean;
+    VAR
+      L_TotalText@1000000001 : Text[250];
+      L_Descr@1000000000 : Text[50];
+    BEGIN
+      CLEAR(CustSell);
+      CustSell := CustBill;
+      IF ((OrderImp."Sell-to First Name" = '') OR (OrderImp."Sell-to First Name" = OrderImp."Bill-to First Name")) AND
+         ((OrderImp."Sell-to Surname" = '') OR (OrderImp."Sell-to Surname" = OrderImp."Bill-to Surname")) AND
+         (OrderImp."Sell-to Titel" = '') OR (OrderImp."Sell-to Titel" = OrderImp."Bill-to Titel") THEN
+        EXIT(FALSE);
+
+      IF OrderImp."Bill-to Name" <> '' THEN BEGIN
+        CustBill.Contact := COPYSTR(OrderImp."Sell-to Titel" +' '+ OrderImp."Sell-to First Name" +' '+ OrderImp."Sell-to Surname",
+          1,MAXSTRLEN(CustBill.Contact));
+      END ELSE BEGIN
+        L_TotalText := OrderImp."Sell-to Titel" +' '+ OrderImp."Sell-to First Name" +' '+ OrderImp."Sell-to Surname";
+        MakeDescription(L_TotalText,CustBill.Name,MAXSTRLEN(Customer.Name));
+        IF L_TotalText <> '' THEN
+          MakeDescription(L_TotalText,CustBill."Name 2",MAXSTRLEN(Customer."Name 2"));
+      END;
+      EXIT(TRUE);
+    END;
+
+    LOCAL PROCEDURE MakeShipAddress@1000000006();
+    VAR
+      L_TotalText@1000000000 : Text[250];
+    BEGIN
+      CLEAR(CustBill);
+      IF OrderImp."Ship-to Name" <> '' THEN BEGIN
+        L_TotalText := OrderImp."Ship-to Name";
+        MakeDescription(L_TotalText,CustBill.Name,MAXSTRLEN(CustBill.Name));
+        IF L_TotalText <> '' THEN
+          MakeDescription(L_TotalText,CustBill."Name 2",MAXSTRLEN(Customer."Name 2"));
+        CustBill.Contact := COPYSTR(OrderImp."Ship-to Titel" +' '+ OrderImp."Ship-to First Name" +' '+ OrderImp."Ship-to Surname",
+          1,MAXSTRLEN(CustBill.Contact));
+      END ELSE BEGIN
+        L_TotalText := OrderImp."Ship-to Titel" +' '+ OrderImp."Ship-to First Name" +' '+ OrderImp."Ship-to Surname";
+        MakeDescription(L_TotalText,CustBill.Name,MAXSTRLEN(Customer.Name));
+        IF L_TotalText <> '' THEN
+          MakeDescription(L_TotalText,CustBill."Name 2",MAXSTRLEN(Customer."Name 2"));
+      END;
+      L_TotalText := OrderImp."Ship-to Address";
+      MakeDescription(L_TotalText,CustBill.Address,MAXSTRLEN(Customer.Address));
+      IF L_TotalText <> '' THEN
+        MakeDescription(L_TotalText,CustBill."Address 2",MAXSTRLEN(CustBill."Address 2"));
+      CustBill.City := COPYSTR(OrderImp."Ship-to City",1,MAXSTRLEN(CustBill.City));
+      CustBill."Post Code" := COPYSTR(OrderImp."Ship-to Post Code",1,MAXSTRLEN(CustBill."Post Code"));
+      CustBill."Country/Region Code" := COPYSTR(OrderImp."Ship-to Country/Region Code",1,MAXSTRLEN(CustBill."Country/Region Code"));
+      CustBill."E-Mail" := COPYSTR(OrderImp."Sell-to E-Mail",1,MAXSTRLEN(CustBill."E-Mail"));
+      CustBill."Phone No." := COPYSTR(OrderImp."Ship-to Phone No.",1,MAXSTRLEN(CustBill."Phone No."));
+    END;
+
+    LOCAL PROCEDURE CheckToUpdate@1000000012(VAR _OrderImp@1000000000 : Record 50001) : Boolean;
+    VAR
+      L_CreateCom@1000000001 : Boolean;
+      L_NoOfItems@1000000002 : Integer;
+    BEGIN
+      L_CreateCom := FALSE;
+      L_NoOfItems := ROUND(STRLEN(PurchSetup."PrÑfix Item Market Place") / 2,1,'>');
+      CASE _OrderImp."Imp. Type" OF
+        1:
+          BEGIN
+            OrderImpLine.RESET;
+            OrderImpLine.SETCURRENTKEY("Order No.","Imp. Type");
+            OrderImpLine.SETRANGE("Order No.",_OrderImp."Order No.");
+            OrderImpLine.SETRANGE("Imp. Type",2);
+            IF OrderImpLine.FINDSET THEN REPEAT
+              FOR i := 1 TO L_NoOfItems DO BEGIN
+                IF COPYSTR(OrderImpLine."Item No.",1,1) = SELECTSTR(i,PurchSetup."PrÑfix Item Market Place") THEN BEGIN
+                  L_CreateCom := TRUE;
+                  _OrderImp."Order Date" := OrderImpLine."Order Date";
+                END;
+              END;
+            UNTIL (OrderImpLine.NEXT = 0) OR L_CreateCom;
+          END;
+        2:
+          BEGIN
+            FOR i := 1 TO L_NoOfItems DO BEGIN
+              IF COPYSTR(_OrderImp."Item No.",1,1) = SELECTSTR(i,PurchSetup."PrÑfix Item Market Place") THEN
+                L_CreateCom := TRUE;
+            END;
+          END;
+        3:
+          BEGIN
+            IF (UPPERCASE(_OrderImp."Return Type") = PurchSetup."Retoure Status") AND
+               (_OrderImp."Return Item Status" = PurchSetup."Status for Retoure Accepted") THEN
+              FOR i := 1 TO L_NoOfItems DO BEGIN
+                IF COPYSTR(_OrderImp."Item No.",1,1) = SELECTSTR(i,PurchSetup."PrÑfix Item Market Place") THEN
+                  L_CreateCom := TRUE;
+              END;
+          END;
+      END; //case
+      EXIT(L_CreateCom);
+    END;
+
+    PROCEDURE CheckItemLenght@1000000011();
+    VAR
+      LT_ItemImp@1000000000 : Record 50002;
+      L_NewItemNo@1000000004 : Code[20];
+      L_ItemFilter@1000000003 : Text[30];
+      L_StrPos@1000000002 : Integer;
+      L_StrLen@1000000001 : Integer;
+    BEGIN
+      IF STRLEN(OrderImp."Item No.") > MAXSTRLEN(Item."No.") THEN BEGIN
+        LT_ItemImp.RESET;
+        LT_ItemImp.SETCURRENTKEY("Item No.");
+        LT_ItemImp.SETRANGE("Item No.",OrderImp."Item No.");
+        IF LT_ItemImp.FINDLAST THEN BEGIN
+          L_NewItemNo := '';
+          L_StrPos := STRPOS(OrderImp."Item No.",LT_ItemImp."EAN Code" + '-');
+          L_StrLen := STRLEN(LT_ItemImp."EAN Code");
+          IF (L_StrPos > 0) AND (L_StrLen <> 0) THEN BEGIN
+            L_ItemFilter := PADSTR(COPYSTR(OrderImp."Item No.",1,L_StrPos - 1),L_StrPos + L_StrLen - 1,'?') +
+              COPYSTR(OrderImp."Item No.",L_StrPos + L_StrLen);
+            LT_ItemImp.RESET;
+            LT_ItemImp.SETCURRENTKEY("Item No.");
+            LT_ItemImp.FILTERGROUP(2);
+            LT_ItemImp.SETFILTER("Item No.",'%1',L_ItemFilter);
+            LT_ItemImp.FILTERGROUP(0);
+            LT_ItemImp.SETFILTER("Item No.",'<>%1',OrderImp."Item No.");
+            IF LT_ItemImp.ISEMPTY THEN
+              L_NewItemNo := DELSTR(OrderImp."Item No.",L_StrPos,L_StrLen + 1);
+          END;
+          IF L_NewItemNo <> '' THEN
+            OrderImp."Item No." := L_NewItemNo;
+        END;
+      END;
+      Item.GET(OrderImp."Item No.");
+    END;
+
+    PROCEDURE SetParameters@1000000008(VAR _PaymentMethode@1000000000 : Record 289);
+    BEGIN
+      PaymMethode := _PaymentMethode;
+    END;
+
+    PROCEDURE callorderupdatemabtest@1108200000(Rec@1108200000 : Record 50001);
+    VAR
+      LocOrderImp@1000000000 : Record 50001;
+    BEGIN
+      //A/gob-mab/19.06.12/gob1.00
+      //OrderImp.COPY(Rec);
+      //A/p0262
+      CLEAR(OrderImp);
+      CLEAR(LocOrderImp);
+      OrderImp.GET(Rec."Entry No.");
+      LocOrderImp.GET(Rec."Entry No.");
+      //E/p0262
+
+      ErrorText := '';
+
+      CASE OrderImp."Imp. Type" OF
+        4: UpdateSalesLineStatus;
+      END;
+
+      IF  ErrorText <> '' THEN BEGIN
+        LocOrderImp."Update Error" := TRUE;
+        LocOrderImp."Update Fehler Text" := ErrorText;
+        LocOrderImp."Modified on" := CURRENTDATETIME;
+        LocOrderImp.MODIFY;
+      END;
+
+      //E/gob-mab/19.06.12/gob1.00
+    END;
+
+    PROCEDURE UpdateSalesLineStatusGOB@1108200002(VAR RemainingQty@1108200011 : Decimal);
+    VAR
+      LT_OrderImp@1108200010 : Record 50001;
+      LT_ReasonCode@1108200009 : Record 50045;
+      LT_SalesLine@1108200008 : Record 37;
+      LC_SalesPost@1108200007 : Codeunit 80;
+      L_Week@1108200006 : Integer;
+      L_Year@1108200005 : Integer;
+      L_ModifySalesLine@1108200004 : Boolean;
+      L_ModifySalesHeader@1108200003 : Boolean;
+      L_Cancel@1108200002 : Boolean;
+      L_Ship@1108200001 : Boolean;
+      FPCSetup@1108200000 : Record 50055;
+      LocOrderImp@1000000000 : Record 50001;
+      ReturnReason_l@1000000001 : Record 6635;
+      LocOrderstoPost@1000000002 : Record 50096;
+    BEGIN
+      //A/gob-mab/19.06.12/gob1.00
+      // S/P0641 PrÅfung auf bereits Canceled oder Shipped
+      IF SalesLine."Line Status" = 'CANCELED' THEN BEGIN
+        ErrorText := ErrorText + ' Zeile bereits storniert';
+        EXIT;
+      END;
+      IF SalesLine.Quantity = SalesLine."Quantity Shipped" THEN BEGIN
+        ErrorText := ErrorText + ' Zeile bereits geliefert';
+        EXIT;
+      END;
+      // E/P0641
+
+      //mab: PRöFUNG A4 / A5
+      IF (OrderImp."Shipping Status" = 'DHL') OR (OrderImp."Shipping Status" = 'RHENUS') THEN
+        IF SalesLine."Dropship No." = '' THEN BEGIN
+          SalesLine."Dropship No." := COPYSTR(OrderImp."Dropship No.",1,MAXSTRLEN(SalesLine."Dropship No."));
+          L_ModifySalesLine := TRUE;
+          RemainingQty := RemainingQty - SalesLine.Quantity;
+        END;
+
+      // insert shipment date
+      // chrmu > 02.01.1900  anstatt 0D
+      IF OrderImp."Shipment Date" > CREATEDATETIME(01011900D,0T) THEN BEGIN
+        SalesLine."Shipment Date (Exp./Real.)" := DT2DATE(OrderImp."Shipment Date");
+        L_ModifySalesLine := TRUE;
+      END;
+
+      IF OrderImp."Exp. Shipment Week" <> '' THEN BEGIN
+        EVALUATE(L_Week,COPYSTR(OrderImp."Exp. Shipment Week",STRPOS(OrderImp."Exp. Shipment Week",'-') + 1));
+        EVALUATE(L_Year,COPYSTR(OrderImp."Exp. Shipment Week",1,STRPOS(OrderImp."Exp. Shipment Week",'-') - 1));
+        SalesLine."Promised Delivery Date" := DWY2DATE(5,L_Week,L_Year);
+        IF OrderImp."Shipment Date" = 0DT THEN BEGIN
+          SalesLine."Shipment Date (Exp./Real.)" := DWY2DATE(5,L_Week,L_Year);
+          L_ModifySalesLine := TRUE;
+        END;
+      END;
+
+      //A/gob-mab/19.06.12/gob1.00/
+      SalesLine.ShipmentTrigger := OrderImp."Shipment Trigger";
+      //E/gob-mab/19.06.12/gob1.00
+
+      IF L_ModifySalesLine THEN
+        SalesLine.MODIFY(TRUE);
+
+      // update status /mab Åberarbeitet ///STATUS CANCELED
+      IF (OrderImp."Shipping Status" = 'CANCELED') AND (SalesLine."Line Status" <> 'CANCELED') THEN BEGIN
+        LT_ReasonCode.SETRANGE(Code,OrderImp."Return Reason");
+        IF ((OrderImp."Return Reason" = '') OR (NOT LT_ReasonCode.FINDFIRST))
+        //mab:
+            AND NOT (OrderImp."Cancel Reason" = 'Sales Order Outdated') THEN BEGIN
+          //lt. Hr. Wallraff: Storno Grund: Magento
+          //ErrorText := ErrorText + E009;
+          //RemainingQty := RemainingQty - SalesLine.Quantity;
+          //EXIT;
+          IF NOT LT_ReasonCode.GET(LT_ReasonCode."Reason Type" :: Cancellation,'MAGENTO') THEN BEGIN
+            LT_ReasonCode.INIT;
+            LT_ReasonCode."Reason Type" := LT_ReasonCode."Reason Type" :: Cancellation;
+            LT_ReasonCode.Code := 'MAGENTO';
+            LT_ReasonCode.Description := 'Magento Cancel';
+            LT_ReasonCode.INSERT;
+          END;
+          //A/p0473/code gelîscht...
+          //E/p0473
+          //A/p0473/
+          //S/P0542/
+          //SalesLine.VALIDATE("Return Type",SalesLine."Return Type" :: Cancelation);
+          SalesLine."Return Type" := SalesLine."Return Type" :: Cancelation;
+
+          // A/gob-lku/27.09.12/P0389
+          //SalesLine.Validate("Return Reason Code",'MAGENTO');
+          SalesLine."Return Reason Code" := 'MAGENTO';
+          //E/P0542
+        END;
+          //E/p0473
+          // E/gob-lku/27.09.12/P0389
+
+
+        // A/gob-lku/27.09.12/P0389
+        //END;
+        // E/gob-lku/27.09.12/P0389
+
+        //A/gob-mab/19.06.12/gob1.00/RÅcksende Grund fÅr Outdated
+        IF OrderImp."Cancel Reason" = 'Sales Order Outdated' THEN BEGIN
+          IF NOT LT_ReasonCode.GET(LT_ReasonCode."Reason Type" :: Cancellation,'OUTDATED') THEN BEGIN
+            LT_ReasonCode.INIT;
+            LT_ReasonCode."Reason Type" := LT_ReasonCode."Reason Type" :: Cancellation;
+            LT_ReasonCode.Code := 'OUTDATED';
+            LT_ReasonCode.Description := 'Sales Order Outdated';
+            LT_ReasonCode.INSERT;
+          END;
+          //A/p0473/code gelîscht...
+          //E/p0473
+
+          //A/p0473
+          //S/p0542
+          //SalesLine.VALIDATE("Return Type",SalesLine."Return Type" :: Cancelation);
+          //SalesLine.VALIDATE("Return Reason Code",'OUTDATED');
+          SalesLine."Return Type" := SalesLine."Return Type" :: Cancelation;
+          SalesLine."Return Reason Code" := 'OUTDATED';
+          //E/p0542
+        END;
+        //E/gob-mab/19.06.12
+
+        IF SalesLine."Quantity Shipped" > 0 THEN BEGIN
+          ErrorText := ErrorText + E010;
+          RemainingQty := RemainingQty - SalesLine.Quantity;
+
+          EXIT;
+        END;
+
+        //A/gob-mab/19.06.12/gob1.00/Restliche RÅcksende GrÅnde...
+        //A/p0473
+        //IF (OrderImp."Cancel Reason" <> 'Sales Order Outdated') AND (SalesLine."Cancellation Reason Code" = '') THEN
+        //E/p0473
+        //E/gob-mab/19.06.12/gob1.00
+          //A/p0473
+          //SalesLine."Cancellation Reason Code" := LT_OrderImp."Return Reason";
+          //E/p0473
+
+        // A/gob-lku/27.09.12/P0389
+        //A/p0473
+        //IF (OrderImp."Cancel Reason" <> 'Sales Order Outdated') AND (SalesLine."Return Reason Code" = '') THEN
+        IF (OrderImp."Cancel Reason" <> 'Sales Order Outdated') AND (SalesLine."Return Reason Code" = '')
+        AND (SalesLine."Cancellation Reason Code" = '') AND (OrderImp."Return Reason" <> '') THEN BEGIN
+          //S/P0542
+          //SalesLine.VALIDATE("Return Type",SalesLine."Return Type" :: Cancelation);
+          //SalesLine.VALIDATE("Return Reason Code",LT_OrderImp."Return Reason");
+          SalesLine."Return Type" := SalesLine."Return Type" :: Cancelation;
+          SalesLine."Return Reason Code" := OrderImp."Return Reason";
+          //E/P0542
+        END;
+        // E/gob-lku/27.09.12/P0389
+
+
+        //A/gob-mab/20.06.12/gob1.00/
+        IF (RemainingQty > SalesLine.Quantity) AND (SalesLine.Quantity <> 0) THEN BEGIN
+          SalesLine."Qty. to Cancel" := SalesLine.Quantity;
+          RemainingQty := RemainingQty - SalesLine.Quantity;
+        END ELSE BEGIN
+          SalesLine."Qty. to Cancel" := RemainingQty;
+          RemainingQty := 0;
+        END;
+        FPCSetup.GET;
+        //S/P0757/23.01.13
+        //IF FPCSetup."Remove Drop Shipment 2012" THEN BEGIN
+        IF (FPCSetup."Remove Drop Shipment 2012") AND (DATE2DMY(DT2DATE(OrderImp."Shipment Date"),3) = 2012) THEN BEGIN
+        //E/P0757/23.01.13
+          IF SalesLine."Drop Shipment" THEN BEGIN
+            SalesLine."Drop Shipment" := FALSE;
+            SalesLine."Purchase Order No." := '';
+            SalesLine."Purch. Order Line No." := 0;
+          END;
+        END;
+
+        //E/gob-mab/20.06.12/gob1.00
+        SalesLine.MODIFY;
+        SalesLine.MagentoCancel(FALSE,FALSE);
+        SalesLine.MODIFY;
+        //A/p0262
+        CLEAR(LocOrderImp);
+        LocOrderImp.GET(OrderImp."Entry No.");
+        LocOrderImp."SL Status Updated" := TRUE;
+        LocOrderImp."Modified on" := CURRENTDATETIME;
+        LocOrderImp.MODIFY;
+        ErrorText := '';
+        //A/p0377/
+        IF LocOrderstoPost.GET(OrderImp."Order No.") THEN BEGIN
+          LocOrderstoPost.Processed := TRUE;
+          LocOrderstoPost.MODIFY;
+        END;
+        //E/p0377/
+
+        //OrderImp."SL Status Updated" := TRUE;
+        //OrderImp."Modified on" := CURRENTDATETIME;
+        //OrderImp.MODIFY;
+        EXIT;
+        //E/p0262
+
+      //STATUS CANCELED ENDE
+      END ELSE
+        IF (SalesLine."Line Status" = 'CANCELED') THEN BEGIN
+          //A/p0262
+          CLEAR(LocOrderImp);
+          LocOrderImp.GET(OrderImp."Entry No.");
+          LocOrderImp."SL Status Updated" := TRUE;
+          LocOrderImp."Modified on" := CURRENTDATETIME;
+          LocOrderImp.MODIFY;
+          RemainingQty := 0;
+          //A/p0377/
+          IF LocOrderstoPost.GET(OrderImp."Order No.") THEN BEGIN
+            LocOrderstoPost.Processed := TRUE;
+            LocOrderstoPost.MODIFY;
+          END;
+          //E/p0377/
+
+          //OrderImp."SL Status Updated" := TRUE;
+          //OrderImp."Modified on" := CURRENTDATETIME;
+          //OrderImp.MODIFY;
+          EXIT;
+          //E/p0262
+        END;
+
+
+
+      // STATUS SHIPPED
+      IF OrderImp."Shipping Status" = 'SHIPPED' THEN BEGIN
+
+        //A/gob-mab/19.06.12/gob1.00
+        IF OrderImp."Shipment Date" = 0DT THEN BEGIN
+          ErrorText := ErrorText + E012;
+          RemainingQty := RemainingQty - SalesLine.Quantity;
+
+          EXIT;
+        END;
+        //E/gob-mab/19.06.12/gob1.00
+
+        IF SalesLine."Cancellation Qty." > 0 THEN BEGIN
+          ErrorText := ErrorText + E011;
+          RemainingQty := RemainingQty - SalesLine.Quantity;
+
+          EXIT;
+        END;
+
+        //A/gob-mab/20.06.12/gob1.00
+        IF RemainingQty > SalesLine."Outstanding Quantity" THEN BEGIN
+          SalesLine.VALIDATE("Qty. to Ship",SalesLine."Outstanding Quantity");
+          SalesLine."Save Qty to Ship" := SalesLine."Outstanding Quantity";
+          RemainingQty := RemainingQty - SalesLine."Outstanding Quantity";
+        END ELSE BEGIN
+          SalesLine.VALIDATE("Qty. to Ship",RemainingQty);
+          SalesLine."Save Qty to Ship" := RemainingQty;
+          RemainingQty := 0;
+        END;
+
+        //A/DL/Dirketlieferung kennzeichen entfernen, da aktuell kein Ek in NAV, spÑter deaktivieren in Setup
+        FPCSetup.GET;
+        //S/P0757/23.01.13
+        //IF FPCSetup."Remove Drop Shipment 2012" THEN BEGIN
+        IF (FPCSetup."Remove Drop Shipment 2012") AND (DATE2DMY(DT2DATE(OrderImp."Shipment Date"),3) = 2012) THEN BEGIN
+        //E/P0757/23.01.13
+          IF SalesLine."Drop Shipment" THEN BEGIN
+            SalesLine."Drop Shipment" := FALSE;
+            SalesLine."Purchase Order No." := '';
+            SalesLine."Purch. Order Line No." := 0;
+          END;
+        END;
+        //E/DL
+        // S/P0636
+        SalesLine."Actual Delivery Date" := OrderImp."Shipment Date";
+        // E/P0636
+        SalesLine.MODIFY(TRUE);
+        //E/gob-mab/20.06.12/gob1.00
+
+      //ENDE STATUS SHIPPED
+      END;
+
+      //A/gob-mab/19.06.12/gob1.00
+      IF L_ModifySalesLine THEN BEGIN
+        //A/p0262
+        CLEAR(LocOrderImp);
+        LocOrderImp.GET(OrderImp."Entry No.");
+        LocOrderImp."SL Status Updated" := TRUE;
+        LocOrderImp."Modified on" := CURRENTDATETIME;
+        LocOrderImp.MODIFY;
+        //A/p0377/
+        IF LocOrderstoPost.GET(OrderImp."Order No.") THEN BEGIN
+          LocOrderstoPost.Processed := TRUE;
+          LocOrderstoPost.MODIFY;
+        END;
+        //E/p0377/
+
+        EXIT;
+        //OrderImp."SL Status Updated" := TRUE;
+        //OrderImp."Modified on" := CURRENTDATETIME;
+        //OrderImp.MODIFY;
+        //E/p0262
+      END;
+      //E/gob-mab/19.06.12/gob1.00
+    END;
+
+    PROCEDURE ErrorCorrected@1108200001(VAR Rec@1108200000 : Record 50001);
+    BEGIN
+      //A/gob-mab/21.06.12/gob1.00
+      OrderImp.COPY(Rec);
+
+      IF OrderImp.FIND('-') THEN BEGIN
+        REPEAT
+          OrderImp."Update Error" := FALSE;
+          OrderImp."Update Fehler Text" := '';
+          OrderImp.MODIFY;
+        UNTIL OrderImp.NEXT = 0;
+      END;
+
+      //E/gob-mab/21.06.12/gob1.00
+    END;
+
+    PROCEDURE GetPurchCodeV2@1000000030(WebShopCodeV@1000000006 : Code[10];VAR SalesLineV@1000000005 : Record 37);
+    VAR
+      Text001@1000000007 : TextConst 'ENU=Combination does not exist or inactive:\\Webshop: %1, Stock Location: %2, Transp. Type: %3';
+      Text002@1000000002 : TextConst 'ENU=Combination does not exist:\\Webshop: %1, Shipping Source: %2, Vendor: %3';
+      ItemL@1000000011 : Record 27;
+      VendL@1000000010 : Record 23;
+      VendorChannelsPerCountryL@1000000008 : Record 50094;
+      eBayNAVCWebshopPurchasingL@1000000000 : Record 50030;
+      FPCGenSetupL@1000000003 : Record 50055;
+      ChannelSelectionL@1000000004 : Record 50334;
+      PurchasingCodeL@1000000012 : Code[10];
+    BEGIN
+      // S/P1156
+      FPCGenSetupL.GET;
+      FPCGenSetupL.TESTFIELD("Purchasing Code FB CD-GER");
+      FPCGenSetupL.TESTFIELD("Purchasing Code FB CD-FRA");
+      FPCGenSetupL.TESTFIELD("Purchasing Code FB CD-NL");
+      FPCGenSetupL.TESTFIELD("Purchasing Code FB CD-AT");
+      FPCGenSetupL.TESTFIELD("Channel FB CD");
+      FPCGenSetupL.TESTFIELD("Purchasing Code GB CD-GER");
+      FPCGenSetupL.TESTFIELD("Purchasing Code GB CD-FRA");
+      FPCGenSetupL.TESTFIELD("Purchasing Code GB CD-NL");
+      FPCGenSetupL.TESTFIELD("Purchasing Code GB CD-AT");
+      FPCGenSetupL.TESTFIELD("Channel GB CD");
+      FPCGenSetupL.TESTFIELD("Purchasing Code 99 CD-GER");
+      FPCGenSetupL.TESTFIELD("Purchasing Code 99 CD-FRA");
+      FPCGenSetupL.TESTFIELD("Purchasing Code 99 CD-NL");
+      FPCGenSetupL.TESTFIELD("Purchasing Code 99 CD-AT");
+      FPCGenSetupL.TESTFIELD("Channel 99 CD");
+      // E/P1156
+      // S/P1194
+      FPCGenSetupL.TESTFIELD("Purchasing Code FB CD-CH");
+      FPCGenSetupL.TESTFIELD("Purchasing Code GB CD-CH");
+      FPCGenSetupL.TESTFIELD("Purchasing Code 99 CD-CH");
+      // E/P1194
+
+      //H1368 15.07.14 DMA +++++++++++++++++++++++++++++
+      FPCGenSetupL.TESTFIELD("Purchasing Code FB CD-BE");
+      FPCGenSetupL.TESTFIELD("Purchasing Code GB CD-BE");
+      FPCGenSetupL.TESTFIELD("Purchasing Code 99 CD-BE");
+      //H1368 15.07.14 DMA -----------------------------
+
+      ItemL.RESET;
+      VendL.RESET;
+      eBayNAVCWebshopPurchasingL.RESET;
+      VendorChannelsPerCountryL.RESET;
+
+      //H1636,H1575,H1464,H1410,H1368,P1136,H0498,P0892 19.12.14 MSL ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+      // Three digits
+      IF STRLEN(SalesLineV."Shipping Source") = 3 THEN
+        IF ChannelSelectionL.GET(WebShopCodeV, SalesLineV."Shipping Source", SalesLineV."Transp. Type") THEN
+          IF ChannelSelectionL.Active THEN
+            PurchasingCodeL := ChannelSelectionL."Purchasing Code"
+          ELSE
+            ERROR(TextHME001, WebShopCodeV, SalesLineV."Shipping Source", SalesLineV."Transp. Type");
+
+      // Five digits
+      IF STRLEN(SalesLineV."Shipping Source") = 5 THEN BEGIN
+        ItemL.GET(SalesLineV."No.");
+        IF VendL.GET(ItemL."Vendor No.") THEN BEGIN
+          IF SalesLineV."Transp. Type" = SalesLineV."Transp. Type"::"Furniture Shipping" THEN BEGIN
+            VendorChannelsPerCountryL.RESET;
+            VendorChannelsPerCountryL.SETRANGE("Vendor No.", VendL."No.");
+            VendorChannelsPerCountryL.SETRANGE("Webshop Code", WebShopCodeV);
+            IF VendorChannelsPerCountryL.FINDSET THEN
+              PurchasingCodeL := VendorChannelsPerCountryL."Purchasing Code";
+          END;
+
+          IF VendL."Partner Type" = VendL."Partner Type"::"Partner Programm 2.0" THEN BEGIN
+            IF VendL."Create DS Label" AND
+               (SalesLineV."Transp. Type" = SalesLineV."Transp. Type"::"Parcel Service")
+            THEN BEGIN
+              IF eBayNAVCWebshopPurchasingL.GET(WebShopCodeV,12) THEN
+                PurchasingCodeL := eBayNAVCWebshopPurchasingL."Purchasing Code"
+            END
+            ELSE BEGIN
+              IF eBayNAVCWebshopPurchasingL.GET(WebShopCodeV,13) THEN
+                PurchasingCodeL := eBayNAVCWebshopPurchasingL."Purchasing Code";
+            END;
+          END;
+
+          IF VendL."Partner Type" = VendL."Partner Type"::"Market Place Partner" THEN BEGIN
+            IF ItemL."Use Cross-Docking" THEN BEGIN
+              IF eBayNAVCWebshopPurchasingL.GET(WebShopCodeV,10198) THEN   // Crossdocking
+                PurchasingCodeL := eBayNAVCWebshopPurchasingL."Purchasing Code";
+            END
+            ELSE BEGIN
+              IF eBayNAVCWebshopPurchasingL.GET(WebShopCodeV,10199) THEN  // Dropshipment
+                PurchasingCodeL :=eBayNAVCWebshopPurchasingL."Purchasing Code";
+            END;
+          END;
+          // If no result and Parcel then Chanel 7, else Chanel 8
+          IF PurchasingCodeL = '' THEN BEGIN
+            IF VendL."Create DS Label" AND
+              (SalesLineV."Transp. Type" = SalesLineV."Transp. Type"::"Parcel Service")
+            THEN BEGIN
+              IF eBayNAVCWebshopPurchasingL.GET(WebShopCodeV,7) THEN
+                PurchasingCodeL := eBayNAVCWebshopPurchasingL."Purchasing Code";
+            END
+            ELSE BEGIN
+              IF eBayNAVCWebshopPurchasingL.GET(WebShopCodeV,8) THEN
+                PurchasingCodeL := eBayNAVCWebshopPurchasingL."Purchasing Code";
+            END;
+          END;
+        END;
+      END;
+
+      IF PurchasingCodeL <> '' THEN BEGIN
+        SalesLineV.VALIDATE("Purchasing Code",PurchasingCodeL);
+        SalesLineV."Purchasing Code NavConnect" := SalesLineV."Purchasing Code";
+        IF SalesLineV."Shipping Agent Code NavC" <> '' THEN
+          SalesLineV."Shipping Agent Code" := SalesLineV."Shipping Agent Code NavC"
+        ELSE
+          SalesLineV."Shipping Agent Code NavC" := SalesLineV."Shipping Agent Code";
+      END
+      ELSE
+        ERROR(TextHME002, WebShopCodeV, SalesLineV."Shipping Source");
+
+      //H1636,H1575,H1464,H1410,H1368,P1136,H0498,P0892 19.12.14 MSL --------------------------------------------------------------
+    END;
+
+    PROCEDURE CheckVendCountryDHLLabel@1000000014(ParVend@1000000000 : Record 23;ParWebShopCode@1000000001 : Code[10]) : Boolean;
+    VAR
+      VendorDHLID@1000000002 : Record 50161;
+      ebayNAVCWebshop@1000000003 : Record 5251553;
+    BEGIN
+      ebayNAVCWebshop.GET(ParWebShopCode);
+      IF VendorDHLID.GET(ParVend."No.", ebayNAVCWebshop."Country/Region Code NAV") THEN BEGIN
+        IF VendorDHLID."Create DHL Label" THEN
+          EXIT(TRUE)
+        ELSE
+          EXIT(FALSE);
+      END ELSE
+        EXIT(FALSE);
+    END;
+
+    BEGIN
+    {
+      1.00  25.06.11  eich object created
+      2.00  12.06.12  chrmu new function getPurchCode
+
+      gob1.00  P0039 gob-mab 18.06.12  Anpassungen neue Fkt: UpdateSalesLineStatusGOB, callorderupdatemabtest
+      gob1.01  p0173 gob-mab 14.08.12  bereits versendete Rechnungen mitbuchen, aber kein Email Versand (CU80)
+      gob1.02  P0199 gob-dst  15.08.2012  Anpassung Kanal 99
+      gob1.03  p0259 gob-mab 30.08.12  Menge zu liefern
+      gob1.04  p0262 gob-mab 31.08.12  Optimierungen
+      gob1.05  p0273 gob-mab 04.09.12  Ressourcen Storno raus, da bereits in Magento Cancel
+      GOB1.06  P0278 gob-rste 05.09.12  New Functions GetPurchCode
+      GOB1.07  P0329 gob-rste   14.09.12    Fill Purchasing Code NavConnect
+      GOB1.08  p0377 gob-mab    25.09.12    PrÅfung fÅr auftragsdatum und nr. ausgehebelt wenn nicht in "sicheren"
+                                            AuftrÑgen
+      GOB1.09  P0389 gob-lku    27.09.12    Zusammenlegung Storno- und ReklamationsgrÅnde
+      GOB1.10  P0377 gob-mab    08.10.12    neue PrÅfung fÅr VAT FR
+      GOB1.11  p0377 gob-mab    17.10.12    PrÅfung auf FPC setup
+      gob1.12  p0456 gob-mab    17.10.12    korrektur 377
+      gob1.13  P0468 gob-lku    19.10.12    Fix Return Reason Code
+      gob1.14  p0473 gob-mab    22.10.12    Fix Endlosschleife // FIX Cancel
+      gob1.15  p0533 gob-mab    30.10.12    freischalten vor 25.05
+      gob1.16  p0537 gob-mab    30.10.12    komm control deaktivieren fÅr nicht NAV Komm. AuftrÑge
+      GOB1.17  P0538 gob-rste   30.10.12    New Case GetPurchCode for Chanel GER-12 and GER-13
+      gob1.18  P0542 gob-mab    31.10.12    Cancellation Reason w/o validate
+      gob1.19  P0546 gob-mab    31.10.12    cancel without interfaces
+      gob1.20  P0608 gob-mab    26.11.12    ignore Dropship No.
+      gob1.21  P0636 gob-mab    04.12.12    actual delivery date in sales line schreiben
+      gob1.22  p0641 gob-mab    04.12.12    neue Fehlermeldungen
+      GOB1.23  P0642 gob-rste   04.12.12    Redesign getPurchCode international
+      GOB1.14  P0658 gob-rste   11.12.12    Redesign getPurchCode V2, Channel 11 International. deactivate old cases
+      GOB1.25  P0757 gob-mab    23.01.13    VAT FR PrÅfung deaktiviert (lt. Herrn Zemp), Remove Drop Ship auf 2012 beschrÑnkt
+      GOB1.26  P0892 gob-mab    18.04.13    Int. Dropshipping find Channel AT,NL,FR
+      GOB1.27  P0892 gob-mab    27.05.13    Abfrage Furniture Shipping Internationales Dropshipping
+      GOB1.29  P1136 gob-lku    28.10.13    New case for CH-channels
+      GOB1.30  P1156 gob-ael    25.11.13    Crossdocking variabler mit Feldern
+      GOB1.31  P1156 gob-ael    03.12.13    CD Erweiterung fÅr öbergangsphase
+      GOB1.32  P1194 gob-lku    05.02.14    CD Erweiterung fÅr CH
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      H0170       22.01.12  ABR       Check Qty. to Ship
+      H0498       09.08.13  FX        Integrate new stocklocation in NAV-Connector (->OOS Grevenbroich)
+      H0503       14.08.13  ABR       Correction Channel Selection for WebShop 3
+      H1368       15.07.14  DMA       Create channels for Belgium, CODECHANGE
+      H1410       08.08.14  DMA       Channel creation XX-14 and NAV-Connector adjustment, CODECHANGE
+      H1429       15.08.14  JM        new Field: Market Place Vendor: changed project planning
+      H1464       09.09.14  JM        new Field: Partner type : replaces Partner programm 2.0 ,remove fields from H1307, H1431
+      H1575       17.10.14  DMA       Italy - Order identification creation and commissioning _MASTER, CODECHANGE
+      H1636       19.12.14  MSL       Channel Finding redesign/cleanup: remvd H1464,H1410,P1136,H0498,P0892,P0642,P0199,P0538,P0269,P0329
+      H2099       17.03.15  MKR       WHMG/WHPO:Create Channel XX-16 XX-17, XX-18, XX-19, CODE NOT MOVED DUE REDEISGN OF CHANNEL IDENT.
+    }
+    END.
+  }
+}
+

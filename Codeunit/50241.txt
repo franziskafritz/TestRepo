@@ -1,0 +1,806 @@
+OBJECT Codeunit 50241 Sales Action Functions
+{
+  OBJECT-PROPERTIES
+  {
+    Date=20.01.15;
+    Time=00:03:04;
+    Modified=Yes;
+    Version List=HME1678,T0022;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+            //H1259 13.08.14 MSL +++++++++++++++++++++++++++++++++
+            //FPCGeneralSetup.GET;
+            //FPCGeneralSetup.TESTFIELD("Manual Actual Delivery Date");
+            //H1259 13.08.14 MSL ---------------------------------
+
+            IF NOT Archived THEN
+              ProcessLine
+            ELSE
+              ProcessLineArchive;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      TextHME001@1000000001 : TextConst 'ENU=Actual Delivery Date is manually filled';
+      TextHME002@1000000000 : TextConst 'ENU=Actual Delivery Date is filled with higher or equal priority';
+      FPCGeneralSetup@1000000002 : Record 50055;
+      BatchSalesAction@1000000004 : Record 50203;
+      BatchSalesActionArchive@1000000005 : Record 50204;
+      Archived@1000000003 : Boolean;
+      ReturnErrorText@1000000006 : Text[250];
+      TextHME003@1000000007 : TextConst 'ENU=Expected Delivery Date is filled with higher priority from the cons. group';
+      TextHME004@1000000008 : TextConst 'ENU=Expected Delivery Date is filled with higher or equal priority';
+      TextHME005@1000000009 : TextConst 'ENU=Date can not be earlier than order date';
+      TextHME006@1000000010 : TextConst 'ENU=Date can not be in the future';
+      FPCGeneralSetupRead@1000000012 : Boolean;
+      TextHME010@1000000011 : TextConst 'ENU=Cancel Without Interface, Line %1. %2';
+
+    PROCEDURE SetLine@1000000007(BatchSalesActionV@1000000000 : Record 50203);
+    BEGIN
+      Archived := FALSE;
+      BatchSalesAction := BatchSalesActionV;
+      ReturnErrorText := '';
+    END;
+
+    PROCEDURE SetLineArchive@1000000002(BatchSalesActionArchiveV@1000000000 : Record 50204);
+    BEGIN
+      Archived := TRUE;
+      BatchSalesActionArchive := BatchSalesActionArchiveV;
+      ReturnErrorText := '';
+    END;
+
+    PROCEDURE ProcessLine@1000000000();
+    VAR
+      SalesHeaderL@1000000004 : Record 36;
+      SalesLineL@1000000008 : Record 37;
+      BatchSalesActionL@1000000006 : Record 50203;
+      BatchSalesAction2L@1000000005 : Record 50203;
+      ManualADDL@1000000001 : Boolean;
+      PriorityL@1000000000 : Integer;
+      DateTimeL@1000000007 : DateTime;
+    BEGIN
+      //T0022,H0777 12.11.14 DMA ++++++++++++++++++++++++++++++++++++++++++
+
+      //H1540,H1259 07.10.14 MSL +++++++++++++++++++++++++++++++++
+      GetFPCGeneralSetup;
+      FPCGeneralSetup.TESTFIELD("Manual Actual Delivery Date");
+      //H1540,H1259 07.10.14 MSL ---------------------------------
+
+      WITH BatchSalesAction DO BEGIN
+
+        IF SalesLineL.GET("Document Type", "Document No.", "Line No.") THEN BEGIN
+          //H1341 09.07.14 MSL ++++++++++++++++++++++++++++++
+          SalesHeaderL.GET(SalesLineL."Document Type",SalesLineL."Document No.");
+          //T0011 25.07.14 tec-cs ++++++++++++++++++++++++++
+          IF "Date/Time" <> 0DT THEN BEGIN // Type::"Finish Return Order" does not have a "Date/Time"
+          //T0011 25.07.14 tec-cs --------------------------
+            IF ((DT2DATE("Date/Time") < SalesHeaderL."Order Date") AND
+                ("Sales Tracking Action Code" <> FPCGeneralSetup."Manual Expected Delivery Date"))
+            THEN  BEGIN
+              ReturnErrorText := TextHME005;
+              EXIT;
+            END;
+          //T0011 25.07.14 tec-cs ++++++++++++++++++++++++++
+          END;
+          //T0011 25.07.14 tec-cs --------------------------
+          //H1341 09.07.14 MSL ------------------------------
+          //H1258 19.06.14 MSL +++++++++++++++++++++++++++
+          CASE BatchSalesAction.Type OF
+
+            BatchSalesAction.Type::ADD:
+              BEGIN
+          //H1258 19.06.14 MSL --------------------------
+                ManualADDL := FALSE;
+                PriorityL := 0;
+                //H1341 09.07.14 MSL ++++++++++++++++++++++++++++++
+                IF DT2DATE("Date/Time") > WORKDATE THEN BEGIN
+                  ReturnErrorText := TextHME006;
+                  EXIT;
+                END;
+                //H1341 09.07.14 MSL ------------------------------
+                IF SalesLineL."Actual Delivery Date" <> 0DT THEN BEGIN
+                  IF BatchSalesAction2L.GET(
+                    "Document Type",
+                    "Document No.",
+                    "Line No.",
+                    FPCGeneralSetup."Manual Actual Delivery Date",
+                    Type)
+                  THEN
+                    ManualADDL := TRUE
+                  ELSE BEGIN
+                    //H1259,H1258 10.07.14 MSL ++++++++++++++++++++++++++++
+                    IF GetHighestPrioBatchSalesAction(BatchSalesAction,BatchSalesAction2L) THEN
+                    //H1259,H1258 10.07.14 MSL ----------------------------
+                      PriorityL := BatchSalesAction2L.Priority
+                    ELSE
+                      PriorityL := 10000;
+                  END;
+                END;
+
+                IF ((Priority < PriorityL) AND NOT ManualADDL) OR (SalesLineL."Actual Delivery Date" = 0DT) THEN BEGIN
+                  SalesLineL.VALIDATE("Actual Delivery Date", "Date/Time");
+                  SalesLineL.MODIFY;
+                END ELSE BEGIN
+                  IF ManualADDL THEN
+                    ReturnErrorText := TextHME001
+                  ELSE
+                    ReturnErrorText := TextHME002;
+                END;
+
+          //H1258 18.06.14 MSL  ++++++++++++++++++++++++++
+              END;
+            //H1258 18.06.14 MSL ++++++++++++++++++++++++++
+            BatchSalesAction.Type::"First Scan":
+              BEGIN
+                //H1341 09.07.14 MSL ++++++++++++++++++++++++++++++
+                IF DT2DATE("Date/Time") > WORKDATE THEN BEGIN
+                  ReturnErrorText := TextHME006;
+                  EXIT;
+                END;
+                //H1341 09.07.14 MSL ------------------------------
+                //H1259 10.07.14 MSL ++++++++++++++++++++++++++++
+                IF GetHighestPrioBatchSalesAction(BatchSalesAction,BatchSalesAction2L) THEN BEGIN
+                  PriorityL := BatchSalesAction2L.Priority;
+                END ELSE
+                  PriorityL := 10000;
+                IF (Priority < PriorityL) OR ((Priority = PriorityL) AND ("Date/Time" < SalesLineL."First Scan")) THEN BEGIN
+                //H1259 10.07.14 MSL ----------------------------
+                  SalesLineL.VALIDATE("First Scan", "Date/Time");
+                  SalesLineL.MODIFY;
+                END;
+              END;
+            //H1258 18.06.14 MSL --------------------------
+
+            //H1540,H1547,H1259 01.10.14 MSL ++++++++++++++++++++++++++
+            BatchSalesAction.Type::EDD:
+              BEGIN
+                IF BatchSalesAction."Tracking Consolidation Group" <> '' THEN   BEGIN
+                  IF GetMaxSuccessEDDEntryInConsGrp(BatchSalesAction, BatchSalesAction2L) THEN BEGIN
+                    PriorityL := BatchSalesAction2L.Priority;
+                    DateTimeL := BatchSalesAction2L."Date/Time";
+                  END
+                  ELSE
+                    PriorityL := 10000;
+                END
+                ELSE
+                  IF GetHighestPrioBatchSalesAction(BatchSalesAction,BatchSalesAction2L) THEN BEGIN
+                    PriorityL := BatchSalesAction2L.Priority;
+                    DateTimeL := BatchSalesAction2L."Date/Time";
+                  END
+                  ELSE
+                    PriorityL := 100000;
+
+                IF ((Priority < PriorityL) OR
+                   ((Priority = PriorityL) AND
+                   (("Date/Time" > DateTimeL) OR
+                   (("Date/Time" < DateTimeL) AND (DT2DATE(DateTimeL) <> SalesLineL."Expected Delivery Date")))))
+                THEN BEGIN
+                  IF BatchSalesAction."Tracking Consolidation Group" <> '' THEN   BEGIN
+                  // cluster validation
+                    IF "Sales Tracking Action Code" = FPCGeneralSetup."Manual Expected Delivery Date" THEN BEGIN
+                      // cluster validate manual entry
+                      IF (Priority < PriorityL) OR ("Date/Time" > DateTimeL) THEN
+                        ValidateAllEDDInConsGrpManual(BatchSalesAction,SalesLineL)
+                      ELSE BEGIN
+                        IF NOT BatchSalesActionL.GET(
+                                 "Document Type","Document No.","Line No.",
+                                 FPCGeneralSetup."Manual Expected Delivery Date",
+                                 BatchSalesActionL.Type::"EDD Consolidation")
+                        THEN    // no cluster entry = was cluster max
+                          ValidateAllEDDInConsGrpManual(BatchSalesAction2L,SalesLineL)
+                      END;
+                    END
+                    ELSE BEGIN
+                      // cluster validate autom entry
+                      IF (("Date/Time" < DateTimeL) AND (DT2DATE(DateTimeL) <> SalesLineL."Expected Delivery Date"))
+                      THEN BEGIN
+                        SalesLineL.GET(
+                          BatchSalesAction2L."Document Type",
+                          BatchSalesAction2L."Document No.",
+                          BatchSalesAction2L."Line No.");
+                        ValidateAllEDDInConsGroup(BatchSalesAction2L,SalesLineL);
+                      END
+                      ELSE
+                        ValidateAllEDDInConsGroup(BatchSalesAction,SalesLineL);
+                    END;
+                  END
+                  ELSE BEGIN
+                    SalesLineL."Expected Delivery Date" := DT2DATE("Date/Time");
+                    SalesLineL.MODIFY;
+                  END;
+                END
+                ELSE BEGIN  //no validation
+                  IF ((BatchSalesAction2L."Line No." = "Line No.") OR ("Tracking Consolidation Group" = '')) THEN
+                    ReturnErrorText := TextHME004
+                  ELSE
+                    IF (BatchSalesAction2L."Date/Time" <> "Date/Time")  THEN
+                      ReturnErrorText := TextHME003;
+                END;
+              END;
+            //H1540,H1547,H1259 01.10.14 MSL --------------------------
+
+            BatchSalesAction.Type::"Finish Return Status":
+              BEGIN
+                FinishRetOrdStatus_SalesLine(BatchSalesAction, SalesLineL);
+              END;
+
+            //T0022 12.11.14 DMA ++++++++++++++++++++++++++++++++++++++++++
+            BatchSalesAction.Type::"Cancel successful":
+              BEGIN
+                ConfirmCancelOfSalesLine(BatchSalesAction, SalesLineL);
+              END;
+            BatchSalesAction.Type::"Cancel Aborted":
+              BEGIN
+                AbortCancelOfSalesLine(BatchSalesAction, SalesLineL);
+              END;
+            //T0022 12.11.14 DMA ------------------------------------------
+
+          END;
+          //H1258 18.06.14 MSL  --------------------------
+        END;
+      END;
+      //T0022,H0777 12.11.14 DMA ------------------------------------------
+    END;
+
+    PROCEDURE ProcessLineArchive@1000000001();
+    VAR
+      SalesHeaderArchL@1000000004 : Record 5107;
+      SalesLineArchiveL@1000000007 : Record 5108;
+      BatchSalesActionArchive2L@1000000003 : Record 50204;
+      ManualADDL@1000000001 : Boolean;
+      PriorityL@1000000000 : Integer;
+      DateTimeL@1000000002 : DateTime;
+    BEGIN
+      //T0022 12.11.14 DMA ++++++++++++++++++++++++++++++++++++++++++
+      //H1540,H1259 07.10.14 MSL +++++++++++++++++++++++++++++++++
+      GetFPCGeneralSetup;
+      FPCGeneralSetup.TESTFIELD("Manual Actual Delivery Date");
+      //H1540,H1259 07.10.14 MSL ---------------------------------
+
+      WITH BatchSalesActionArchive DO BEGIN
+
+        IF SalesLineArchiveL.GET("Document Type", "Document No.", "Doc. No. Occurrence", "Version No.", "Line No.") THEN BEGIN
+          //H1341 09.07.14 MSL ++++++++++++++++++++++++++++++
+          SalesHeaderArchL.GET(
+            SalesLineArchiveL."Document Type",
+            SalesLineArchiveL."Document No.",
+            SalesLineArchiveL."Doc. No. Occurrence",
+            SalesLineArchiveL."Version No.");
+          //T0011 28.07.14 tec-cs ++++++++++++++++++++++++++
+          IF "Date/Time" <> 0DT THEN BEGIN // Type::"Finish Return Order" does not have a "Date/Time"
+          //T0011 28.07.14 tec-cs --------------------------
+            IF DT2DATE("Date/Time") < SalesHeaderArchL."Order Date" THEN  BEGIN
+              ReturnErrorText := TextHME005;
+              EXIT;
+            END;
+            IF DT2DATE("Date/Time") > WORKDATE THEN BEGIN
+              ReturnErrorText := TextHME006;
+              EXIT;
+            END;
+          //T0011 28.07.14 tec-cs ++++++++++++++++++++++++++
+          END;
+          //T0011 28.07.14 tec-cs --------------------------
+          //H1341 09.07.14 MSL ------------------------------
+          //H1258 18.06.14 MSL  ++++++++++++++++++++++++++
+          CASE BatchSalesActionArchive.Type OF
+
+            BatchSalesActionArchive.Type::ADD:
+              BEGIN
+          //H1258 18.06.14 MSL  --------------------------
+                ManualADDL := FALSE;
+                PriorityL := 0;
+                IF SalesLineArchiveL."Actual Delivery Date" <> 0DT THEN BEGIN
+                  IF BatchSalesActionArchive2L.GET("Document Type", "Document No.", "Line No.", "Doc. No. Occurrence", "Version No.",
+                                                  FPCGeneralSetup."Manual Actual Delivery Date", Type)
+                  THEN
+                    ManualADDL := TRUE
+                  ELSE BEGIN
+                    //H1540,H1258 08.10.14 MSL ++++++++++++++++++++++++++++
+                    BatchSalesActionArchive2L.SETCURRENTKEY(Priority,"Date/Time",Status,"Planned Processing Date");
+                    //H1540,H1258 08.10.14 MSL ----------------------------
+                    BatchSalesActionArchive2L.SETRANGE("Document Type", "Document Type");
+                    BatchSalesActionArchive2L.SETRANGE("Document No.", "Document No.");
+                    BatchSalesActionArchive2L.SETRANGE("Line No.", "Line No.");
+                    BatchSalesActionArchive2L.SETRANGE("Doc. No. Occurrence", "Doc. No. Occurrence");
+                    BatchSalesActionArchive2L.SETRANGE("Version No.", "Version No.");
+                    BatchSalesActionArchive2L.SETRANGE(Type, Type);
+                    BatchSalesActionArchive2L.SETRANGE(Status, BatchSalesActionArchive2L.Status::Success);
+                    IF BatchSalesActionArchive2L.FINDFIRST THEN
+                      PriorityL := BatchSalesActionArchive2L.Priority
+                    ELSE
+                      PriorityL := 10000;
+                  END;
+                END;
+
+                IF ((Priority < PriorityL) AND NOT ManualADDL) OR (SalesLineArchiveL."Actual Delivery Date" = 0DT ) THEN BEGIN
+                  SalesLineArchiveL.VALIDATE("Actual Delivery Date", "Date/Time");
+                  SalesLineArchiveL.MODIFY;
+                END ELSE BEGIN
+                  IF ManualADDL THEN
+                    ReturnErrorText := TextHME001
+                  ELSE
+                    ReturnErrorText := TextHME002;
+                END;
+          //H1258 18.06.14 MSL  ++++++++++++++++++++++++++
+              END;
+
+            //H1540,H1259,H1258 08.10.14 MSL ++++++++++++++++++++++++++
+            BatchSalesAction.Type::"First Scan":
+              BEGIN
+                BatchSalesActionArchive2L.SETCURRENTKEY(Priority,"Date/Time",Status,"Planned Processing Date");
+                BatchSalesActionArchive2L.SETRANGE("Document Type", "Document Type");
+                BatchSalesActionArchive2L.SETRANGE("Document No.", "Document No.");
+                BatchSalesActionArchive2L.SETRANGE("Line No.", "Line No.");
+                BatchSalesActionArchive2L.SETRANGE("Doc. No. Occurrence", "Doc. No. Occurrence");
+                BatchSalesActionArchive2L.SETRANGE("Version No.", "Version No.");
+                BatchSalesActionArchive2L.SETRANGE(Type, Type);
+                BatchSalesActionArchive2L.SETRANGE(Status, BatchSalesActionArchive2L.Status::Success);
+                IF BatchSalesActionArchive2L.FINDFIRST THEN BEGIN
+                  PriorityL := BatchSalesActionArchive2L.Priority;
+                END ELSE
+                  PriorityL := 10000;
+                IF (Priority < PriorityL)  OR ((Priority = PriorityL) AND ("Date/Time" < SalesLineArchiveL."First Scan")) THEN BEGIN
+                  SalesLineArchiveL.VALIDATE("First Scan", "Date/Time");
+                  SalesLineArchiveL.MODIFY;
+                END;
+              END;
+            //H1540,H1259,H1258 08.10.14 MSLL --------------------------
+
+            BatchSalesActionArchive.Type::"Finish Return Status":
+              BEGIN
+                FinishRetOrdStatus_SalesLineAr(BatchSalesActionArchive, SalesLineArchiveL);
+              END;
+
+          END;
+          //H1258 18.06.14 MSL  --------------------------
+        END;
+      END;
+      //T0022 12.11.14 DMA ------------------------------------------
+    END;
+
+    PROCEDURE GetReturnErrorText@1000000003() : Text[250];
+    BEGIN
+      EXIT(ReturnErrorText);
+    END;
+
+    PROCEDURE FinishRetOrdStatus_SalesLine@1000000011(BatchSalesActionV@1000000000 : Record 50203;VAR SalesLineR@1000000001 : Record 37);
+    VAR
+      ReturnSalesHeaderL@1000000002 : Record 36;
+      ReturnSalesLineL@1000000003 : Record 37;
+      BatchSalesPostHeaderL@1000000005 : Record 50225;
+      BatchSalesPostLineL@1000000004 : Record 50226;
+    BEGIN
+      //T0022,T0011 12.11.14 DMA ++++++++++++++++++++++++++++++++++++++++++
+      // first: update the status of the sales line
+      SalesLineR.VALIDATE("Status Return Order", SalesLineR."Status Return Order"::finished);
+      SalesLineR.MODIFY;
+
+      ReturnSalesHeaderL.LOCKTABLE;
+      IF ReturnSalesHeaderL.GET(SalesLineR."Document Type", SalesLineR."Document No.") THEN BEGIN
+
+        // check, wether all lines have "Status return order" "finished" and update the sales header
+        ReturnSalesLineL.RESET;
+        ReturnSalesLineL.SETRANGE("Document Type", ReturnSalesHeaderL."Document Type");
+        ReturnSalesLineL.SETRANGE("Document No.", ReturnSalesHeaderL."No.");
+        ReturnSalesLineL.SETFILTER("Status Return Order", '<>%1', ReturnSalesLineL."Status Return Order"::finished);
+        ReturnSalesLineL.SETRANGE(Type, ReturnSalesLineL.Type::Item);
+        ReturnSalesLineL.SETFILTER(Quantity, '<>0');
+
+        IF ReturnSalesLineL.ISEMPTY THEN BEGIN
+          // no lines <>finished present:
+          // no validate to be able to sent our own "condition"
+          ReturnSalesHeaderL."Status Return Order" := ReturnSalesHeaderL."Status Return Order"::finished;
+
+          // post shipping
+          ReturnSalesHeaderL.InitiateBatchPosting(
+            TODAY,
+            BatchSalesPostHeaderL."Posting Type"::"Receive+Invoice",
+            BatchSalesPostLineL."Triggered By"::"Finish Return Order", // Triggered by
+            BatchSalesActionV."Sales Tracking Action Code", // TriggerCondition
+            ''); // TriggerCondition2
+
+        END ELSE BEGIN
+          ReturnSalesHeaderL.VALIDATE(
+            "Status Return Order",
+            ReturnSalesHeaderL."Status Return Order"::various);
+        END;
+
+        ReturnSalesHeaderL."Last Date Modified" := TODAY;
+        ReturnSalesHeaderL."Last Modified User" := USERID;
+        ReturnSalesHeaderL.MODIFY;
+      END;
+      //T0022,T0011 12.11.14 DMA ------------------------------------------
+    END;
+
+    PROCEDURE FinishRetOrdStatus_SalesLineAr@1000000012(VAR SalesActionBatchArchiveR@1000000000 : Record 50204;VAR SalesLineArchiveR@1000000001 : Record 5108);
+    VAR
+      ReturnSalesHeaderArchiveL@1000000002 : Record 5107;
+      ReturnSalesLineArchiveL@1000000003 : Record 5108;
+    BEGIN
+      //T0022.T0011 12.11.14 DMA ++++++++++++++++++++++++++++++++++++++++++
+      // first: update the status of the sales line
+      SalesLineArchiveR.VALIDATE("Status Return Order", SalesLineArchiveR."Status Return Order"::finished);
+      SalesLineArchiveR.MODIFY;
+
+      // check, wether all lines have "Status return order" "finished" and update the sales header
+      ReturnSalesHeaderArchiveL.LOCKTABLE;
+      IF ReturnSalesHeaderArchiveL.GET(
+        SalesLineArchiveR."Document Type",
+        SalesLineArchiveR."Document No.",
+        SalesLineArchiveR."Doc. No. Occurrence",
+        SalesLineArchiveR."Version No.") THEN
+      BEGIN
+        ReturnSalesLineArchiveL.RESET;
+        ReturnSalesLineArchiveL.SETRANGE("Document Type", ReturnSalesHeaderArchiveL."Document Type");
+        ReturnSalesLineArchiveL.SETRANGE("Document No.", ReturnSalesHeaderArchiveL."No.");
+        ReturnSalesLineArchiveL.SETRANGE("Doc. No. Occurrence", ReturnSalesHeaderArchiveL."Doc. No. Occurrence");
+        ReturnSalesLineArchiveL.SETRANGE("Version No.", ReturnSalesHeaderArchiveL."Version No.");
+        ReturnSalesLineArchiveL.SETFILTER("Status Return Order", '<>%1', ReturnSalesLineArchiveL."Status Return Order"::finished);
+        ReturnSalesLineArchiveL.SETRANGE(Type, ReturnSalesLineArchiveL.Type::Item);
+
+        IF ReturnSalesLineArchiveL.ISEMPTY THEN BEGIN
+          // no lines <>finished present:
+          ReturnSalesHeaderArchiveL.VALIDATE(
+            "Status Return Order",
+            ReturnSalesHeaderArchiveL."Status Return Order"::finished);
+
+          // do not initiate posting for archived lines
+        END ELSE BEGIN
+          ReturnSalesHeaderArchiveL.VALIDATE("Status Return Order", ReturnSalesHeaderArchiveL."Status Return Order"::various);
+        END;
+
+        ReturnSalesHeaderArchiveL."Last Date Modified" := TODAY;
+        ReturnSalesHeaderArchiveL."Last Modified User" := USERID;
+        ReturnSalesHeaderArchiveL.MODIFY;
+      END;
+      //T0022,T0011 12.11.14 DMA ------------------------------------------
+    END;
+
+    PROCEDURE GetHighestPrioBatchSalesAction@1000000004(BatchSalesActionV@1000000000 : Record 50203;VAR HighestPrioBatchSalesActionR@1000000001 : Record 50203) : Boolean;
+    BEGIN
+      //T0022,H1540,H1259 12.11.14 DMA ++++++++++++++++++++++++++++++++++++++++++
+      HighestPrioBatchSalesActionR.RESET;
+      HighestPrioBatchSalesActionR.SETCURRENTKEY(Priority,"Date/Time",Status,"Planned Processing Date");
+      HighestPrioBatchSalesActionR.SETRANGE("Document Type", BatchSalesActionV."Document Type");
+      HighestPrioBatchSalesActionR.SETRANGE("Document No.", BatchSalesActionV."Document No.");
+      HighestPrioBatchSalesActionR.SETRANGE("Line No.", BatchSalesActionV."Line No.");
+      HighestPrioBatchSalesActionR.SETRANGE(Type, BatchSalesActionV.Type);
+      HighestPrioBatchSalesActionR.SETRANGE(Status, HighestPrioBatchSalesActionR.Status::Success);
+      EXIT(HighestPrioBatchSalesActionR.FINDFIRST);
+      //T0022,H1540,H1259 12.11.14 DMA ------------------------------------------
+    END;
+
+    PROCEDURE GetMaxSuccessEDDEntryInConsGrp@1000000009(BatchSalesActionV@1000000000 : Record 50203;VAR MaxBatchSalesActioInConsGroupR@1000000002 : Record 50203) : Boolean;
+    VAR
+      FillSalesDatesL@1000000001 : Record 50203;
+    BEGIN
+      //T0022,H1540,H1259 12.11.14 DMA ++++++++++++++++++++++++++++++++++++++++++
+      MaxBatchSalesActioInConsGroupR.RESET;
+      MaxBatchSalesActioInConsGroupR.SETCURRENTKEY(Priority,"Date/Time",Status,"Planned Processing Date");
+      MaxBatchSalesActioInConsGroupR.SETRANGE("Document Type",BatchSalesActionV."Document Type");
+      MaxBatchSalesActioInConsGroupR.SETRANGE("Document No.",BatchSalesActionV."Document No.");
+      MaxBatchSalesActioInConsGroupR.SETRANGE("Tracking Consolidation Group",BatchSalesActionV."Tracking Consolidation Group");
+      MaxBatchSalesActioInConsGroupR.SETRANGE(Type, BatchSalesActionV.Type);
+      MaxBatchSalesActioInConsGroupR.SETRANGE(Status, MaxBatchSalesActioInConsGroupR.Status::Success);
+      MaxBatchSalesActioInConsGroupR.SETFILTER("Date/Time",'<>%1',0DT);
+      IF MaxBatchSalesActioInConsGroupR.FINDFIRST THEN BEGIN   //highest priority
+        MaxBatchSalesActioInConsGroupR.SETRANGE(Priority, MaxBatchSalesActioInConsGroupR.Priority);
+        MaxBatchSalesActioInConsGroupR.ASCENDING(FALSE);
+        EXIT(MaxBatchSalesActioInConsGroupR.FINDFIRST);        //highest prio, latest date
+      END;
+      EXIT(FALSE);
+      //T0022,H1540,H1259 12.11.14 DMA ------------------------------------------
+    END;
+
+    PROCEDURE ValidateAllEDDInConsGroup@1000000005(ClusterMaxBatchSalesActionV@1000000000 : Record 50203;CurrSalesLineR@1000000004 : Record 37);
+    VAR
+      SalesLineL@1000000005 : Record 37;
+      SalesTrackingL@1000000006 : Record 50200;
+      PurchasingL@1000000003 : Record 5721;
+      BatchSalesActionL@1000000002 : Record 50203;
+      BatchSalesAction2L@1000000008 : Record 50203;
+      CurrSalesLineConsGroupL@1000000001 : Code[10];
+      ClusterEntryExistsL@1000000007 : Boolean;
+      ClusterByVendorNoL@1000000009 : Boolean;
+    BEGIN
+      //T0022,H1259 22.07.14 DMA +++++++++++++++++++++++++++++
+      IF PurchasingL.GET(CurrSalesLineR."Purchasing Code") THEN BEGIN
+        IF PurchasingL."Sales Tracking Code" <> '' THEN BEGIN
+          IF SalesTrackingL.GET(PurchasingL."Sales Tracking Code") THEN
+            CurrSalesLineConsGroupL := SalesTrackingL."Tracking Consolidation Group";
+        END;
+      END;
+
+      IF PurchasingL."Drop Shipment" THEN
+        ClusterByVendorNoL := TRUE;
+
+      SalesLineL.SETRANGE("Document Type",CurrSalesLineR."Document Type");
+      SalesLineL.SETRANGE("Document No.",CurrSalesLineR."Document No.");
+      IF SalesLineL.FINDSET THEN
+        REPEAT
+          IF SalesLineL."Line No." <> CurrSalesLineR."Line No." THEN BEGIN
+            IF PurchasingL.GET(SalesLineL."Purchasing Code") THEN BEGIN
+              IF PurchasingL."Sales Tracking Code" <> '' THEN  BEGIN
+                IF SalesTrackingL.GET(PurchasingL."Sales Tracking Code") THEN BEGIN
+                  IF (SalesTrackingL."Tracking Consolidation Group" = CurrSalesLineConsGroupL) AND
+                     (NOT ClusterByVendorNoL OR (ClusterByVendorNoL AND (CurrSalesLineR."Vendor No." = SalesLineL."Vendor No.")))
+                  THEN BEGIN
+                    //H1540 01.10.14 MSL ++++++++++++++
+                    SalesLineL."Expected Delivery Date" := DT2DATE(ClusterMaxBatchSalesActionV."Date/Time");
+                    //H1540 01.10.14 MSL --------------
+                    SalesLineL.MODIFY;
+
+                    ClusterEntryExistsL := FALSE;
+                    IF BatchSalesActionL.GET(
+                       SalesLineL."Document Type",
+                       SalesLineL."Document No.",
+                       SalesLineL."Line No.",
+                       ClusterMaxBatchSalesActionV."Sales Tracking Action Code",
+                       BatchSalesActionL.Type::"EDD Consolidation")
+                    THEN
+                      ClusterEntryExistsL := TRUE;
+                     // insert cluster entry for transparency
+                    IF NOT  ClusterEntryExistsL THEN BEGIN
+                      BatchSalesActionL :=  ClusterMaxBatchSalesActionV;
+                      BatchSalesActionL.Type := BatchSalesActionL.Type::"EDD Consolidation";
+                      BatchSalesActionL."Line No." := SalesLineL."Line No.";
+                      BatchSalesActionL.Status := BatchSalesActionL.Status::Success;
+                    END
+                    ELSE
+                      BatchSalesActionL."Date/Time" := ClusterMaxBatchSalesActionV."Date/Time";
+
+                    //H1678 10.12.14 MSL ++++++++++++++++++++++++++++++++
+                    BatchSalesActionL."Error Text" := '';
+                    BatchSalesActionL."No. of tries" := 0;
+                    //H1678 10.12.14 MSL --------------------------------
+                    BatchSalesActionL."Planned Processing Date" := WORKDATE;
+                    BatchSalesActionL."Actual Processing Date/Time" :=  CURRENTDATETIME;
+                    BatchSalesActionL."Creation Date/Time" :=  CURRENTDATETIME;
+
+                    IF NOT  ClusterEntryExistsL THEN
+                      BatchSalesActionL.INSERT
+                    ELSE
+                      BatchSalesActionL.MODIFY;
+
+                    IF BatchSalesAction2L.GET(
+                         ClusterMaxBatchSalesActionV."Document Type",
+                         ClusterMaxBatchSalesActionV."Document No.",
+                         ClusterMaxBatchSalesActionV."Line No.",
+                         ClusterMaxBatchSalesActionV."Sales Tracking Action Code",
+                         BatchSalesAction2L.Type::"EDD Consolidation")
+                    THEN
+                      BatchSalesAction2L.DELETE;
+
+                  END;
+                END;
+              END;
+            END;
+          END;
+        UNTIL SalesLineL.NEXT = 0;
+      //H1540 01.10.14 MSL +++++++++++++++++++
+      CurrSalesLineR."Expected Delivery Date" := DT2DATE(ClusterMaxBatchSalesActionV."Date/Time");
+      //H1540 01.10.14 MSL -------------------
+      CurrSalesLineR.MODIFY;
+      //T0022,H1259 12.11.14 DMA -----------------------------
+    END;
+
+    PROCEDURE ValidateAllEDDInConsGrpManual@1000000006(ClusterMaxBatchSalesActionV@1000000001 : Record 50203;CurrSalesLineR@1000000000 : Record 37);
+    VAR
+      SalesLineL@1000000009 : Record 37;
+      SalesLineClusterMaxL@1000000002 : Record 37;
+      SalesTrackingL@1000000008 : Record 50200;
+      PurchasingL@1000000007 : Record 5721;
+      BatchSalesActionL@1000000006 : Record 50203;
+      BatchSalesAction2L@1000000003 : Record 50203;
+      CurrSalesLineConsGroupL@1000000005 : Code[10];
+      ClusterEntryExistsL@1000000004 : Boolean;
+      ClusterByVendorNoL@1000000010 : Boolean;
+    BEGIN
+      //T0022,H1259 12.11.14 DMA +++++++++++++++++++++++++++++
+      IF PurchasingL.GET(CurrSalesLineR."Purchasing Code") THEN BEGIN
+        IF PurchasingL."Sales Tracking Code" <> '' THEN BEGIN
+          IF SalesTrackingL.GET(PurchasingL."Sales Tracking Code") THEN
+            CurrSalesLineConsGroupL := SalesTrackingL."Tracking Consolidation Group";
+        END;
+      END;
+      SalesLineClusterMaxL.GET(
+        ClusterMaxBatchSalesActionV."Document Type",
+        ClusterMaxBatchSalesActionV."Document No.",
+        ClusterMaxBatchSalesActionV."Line No.");
+
+      IF PurchasingL."Drop Shipment" THEN
+        ClusterByVendorNoL := TRUE;
+
+      //delete current cluster entry
+      IF BatchSalesAction2L.GET(
+           ClusterMaxBatchSalesActionV."Document Type",
+           ClusterMaxBatchSalesActionV."Document No.",
+           ClusterMaxBatchSalesActionV."Line No.",
+           ClusterMaxBatchSalesActionV."Sales Tracking Action Code",
+           BatchSalesAction2L.Type::"EDD Consolidation")
+      THEN
+        BatchSalesAction2L.DELETE;
+
+      SalesLineL.SETRANGE("Document Type",CurrSalesLineR."Document Type");
+      SalesLineL.SETRANGE("Document No.",CurrSalesLineR."Document No.");
+      IF SalesLineL.FINDSET THEN
+        REPEAT
+          IF (SalesLineL."Line No." <> CurrSalesLineR."Line No.")  THEN BEGIN
+            IF PurchasingL.GET(SalesLineL."Purchasing Code") THEN BEGIN
+              IF PurchasingL."Sales Tracking Code" <> '' THEN  BEGIN
+                IF SalesTrackingL.GET(PurchasingL."Sales Tracking Code") THEN BEGIN
+                  IF (SalesTrackingL."Tracking Consolidation Group" = CurrSalesLineConsGroupL) AND
+                     (NOT ClusterByVendorNoL OR (ClusterByVendorNoL AND (CurrSalesLineR."Vendor No." = SalesLineL."Vendor No.")))
+                  THEN BEGIN
+                    //H1540 01.10.14 MSL ++++++++++++++
+                    SalesLineL."Expected Delivery Date" := DT2DATE(ClusterMaxBatchSalesActionV."Date/Time");
+                    //H1540 01.10.14 MSL --------------
+                    SalesLineL.MODIFY;
+
+                    IF (SalesLineL."Line No." <> SalesLineClusterMaxL."Line No.") THEN BEGIN
+                      //insert cluster entries for all non current and non max
+                      ClusterEntryExistsL := FALSE;
+                      IF BatchSalesActionL.GET(
+                         SalesLineL."Document Type",
+                         SalesLineL."Document No.",
+                         SalesLineL."Line No.",
+                         ClusterMaxBatchSalesActionV."Sales Tracking Action Code",
+                         BatchSalesActionL.Type::"EDD Consolidation")
+                      THEN
+                        ClusterEntryExistsL := TRUE;
+
+                      IF NOT  ClusterEntryExistsL THEN BEGIN
+                        BatchSalesActionL :=  ClusterMaxBatchSalesActionV;
+                        BatchSalesActionL.Type := BatchSalesActionL.Type::"EDD Consolidation";
+                        BatchSalesActionL."Line No." := SalesLineL."Line No.";
+                        BatchSalesActionL.Status := BatchSalesActionL.Status::Success;
+                      END
+                      ELSE
+                        BatchSalesActionL."Date/Time" := ClusterMaxBatchSalesActionV."Date/Time";
+
+                      //H1678 10.12.14 MSL ++++++++++++++++++++++++++++++++
+                      BatchSalesActionL."Error Text" := '';
+                      BatchSalesActionL."No. of tries" := 0;
+                      //H1678 10.12.14 MSL --------------------------------
+                      BatchSalesActionL."Planned Processing Date" := WORKDATE;
+                      BatchSalesActionL."Actual Processing Date/Time" :=  CURRENTDATETIME;
+                      BatchSalesActionL."Creation Date/Time" :=  CURRENTDATETIME;
+
+                      IF NOT  ClusterEntryExistsL THEN
+                        BatchSalesActionL.INSERT
+                      ELSE
+                        BatchSalesActionL.MODIFY;
+                    END;
+
+                  END;
+                END;
+              END;
+            END;
+          END;
+        UNTIL SalesLineL.NEXT = 0;
+
+      //if current isn't cluster max insert cluster entry
+      IF CurrSalesLineR."Line No." <>   SalesLineClusterMaxL."Line No." THEN BEGIN
+        BatchSalesActionL :=  ClusterMaxBatchSalesActionV;
+        BatchSalesActionL.Type := BatchSalesActionL.Type::"EDD Consolidation";
+        BatchSalesActionL."Line No." := CurrSalesLineR."Line No.";
+        BatchSalesActionL.Status := BatchSalesActionL.Status::Success;
+        BatchSalesActionL."Planned Processing Date" := WORKDATE;
+        BatchSalesActionL."Actual Processing Date/Time" :=  CURRENTDATETIME;
+        BatchSalesActionL."Creation Date/Time" :=  CURRENTDATETIME;
+        BatchSalesActionL.INSERT
+      END;
+      //T0022,H1259 12.11.14 DMA -----------------------------
+    END;
+
+    PROCEDURE GetFPCGeneralSetup@1000000008();
+    BEGIN
+      //T0022,H1540 12.11.14 DMA +++++++++++++++++++++++++++++
+      IF NOT FPCGeneralSetupRead THEN BEGIN
+        FPCGeneralSetup.GET;
+        FPCGeneralSetupRead := TRUE;
+      END;
+      //T0022,H1540 12.11.14 DMA -----------------------------
+    END;
+
+    PROCEDURE ConfirmCancelOfSalesLine@1000000015(SalesActionBatchV@1000000001 : Record 50203;VAR SalesLineR@1000000000 : Record 37);
+    VAR
+      SalesHeaderL@1000000002 : Record 36;
+      CommentLineL@1000000003 : Record 97;
+      FPCManagementL@1000000005 : Codeunit 50003;
+      CancellationModeL@1000000004 : ' ,ManualRequestCancel,ManualConfirmCancel';
+    BEGIN
+      //T0022 12.11.14 DMA ++++++++++++++++++++++++++++++++++++++++
+      SalesHeaderL.GET(SalesLineR."Document Type",SalesLineR."Document No.");
+      SalesHeaderL."Cancel Without Interfaces" := TRUE;
+      SalesHeaderL.MODIFY;
+      COMMIT;
+
+      FPCManagementL.InitCancelWithoutInterfaces(SalesLineR."Document No.",SalesLineR."Line No.");
+      FPCManagementL.SetCancellationMode(CancellationModeL::ManualConfirmCancel);
+      CLEARLASTERROR;
+
+      IF NOT FPCManagementL.RUN THEN BEGIN
+        SalesHeaderL.RESET;
+        SalesHeaderL.GET(SalesLineR."Document Type",SalesLineR."Document No.");
+        SalesHeaderL."Cancel Without Interfaces" := FALSE;
+        SalesHeaderL.MODIFY;
+        COMMIT;
+        ERROR(GETLASTERRORTEXT);
+      END;
+
+      SalesHeaderL.RESET;
+      SalesHeaderL.GET(SalesLineR."Document Type",SalesLineR."Document No.");
+      SalesHeaderL."Cancel Without Interfaces" := FALSE;
+      SalesHeaderL.MODIFY;
+      CommentLineL.InsertOrderHistory(SalesLineR."Document No.",
+                                     'CANCNOINTF',
+                                     STRSUBSTNO(TextHME010,SalesLineR."Line No.",CURRENTDATETIME));
+      //T0022 12.11.14 DMA ----------------------------------------
+    END;
+
+    PROCEDURE AbortCancelOfSalesLine@1000000010(SalesActionBatchV@1000000001 : Record 50203;VAR SalesLineR@1000000000 : Record 37);
+    VAR
+      SIIFillLogL@1000000002 : Codeunit 50123;
+      ErrorMessageL@1000000003 : Text[250];
+    BEGIN
+      //T0022 12.11.14 DMA ++++++++++++++++++++++++++++++++++++++++
+      CLEARLASTERROR;
+      SIIFillLogL.Triggered_CancelAborted(SalesLineR);
+      ErrorMessageL := GETLASTERRORTEXT;
+      IF ErrorMessageL <> '' THEN
+        ERROR(ErrorMessageL);
+
+      IF (SalesLineR."Transp. Type" =  SalesLineR."Transp. Type"::"Furniture Shipping") OR
+         (SalesLineR."Transp. Type" =  SalesLineR."Transp. Type"::"Shipping Company") THEN
+         SalesLineR."Status Return Order" := SalesLineR."Status Return Order"::open
+      ELSE
+        SalesLineR."Status Return Order" := SalesLineR."Status Return Order"::aborted;
+
+      SalesLineR.MODIFY;
+      //T0022 12.11.14 DMA ----------------------------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation Tectura & Home24 NAV Team  |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+
+      T0011       17.06.14  tec-cs    FTTC Phase 2: Return tracking
+                                      - support new type for updating Status of return orders
+
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      H0777       21.01.14  MBY       New object
+      H0859       18.02.14  MBY       Small improvements
+      H1258       19.06.14  MSL       ERP Performance: First Scan Redesign
+      H1259       07.07.14  MSL       ERP Performance: EDDM Redesign
+      H1341       09.07.14  MSL       Unrealistic Autom. calculated dates check
+      H1547       16.09.14  MSL       EDDM Redesign: delayed date/time in the future
+      H1540       30.09.14  MSL       EDDM Redesign Activation - func. added "GetFPCGeneralSetup"
+      T0022       12.11.14  DMA       FTTC 3 - Phase 5 - Stornoprozess - Storno Tracking,CODECLEANUP,RENAME
+      H1678       09.12.14  MSL       Fill Sales Dates Service: add "Number of tries" and "automatic retry"
+    }
+    END.
+  }
+}
+

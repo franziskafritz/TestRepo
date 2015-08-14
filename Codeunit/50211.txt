@@ -1,0 +1,280 @@
+OBJECT Codeunit 50211 Purchase Quote
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02.09.13;
+    Time=14:59:54;
+    Version List=HME0513;
+  }
+  PROPERTIES
+  {
+    Subtype=Test;
+    OnRun=BEGIN
+            IsInitialized := FALSE;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Assert@1002 : Codeunit 50200;
+      IsInitialized@1000 : Boolean;
+      VATAmountErrorMessage@1004 : TextConst 'ENU=%1 must be %2 in %3.';
+      FieldError@1005 : TextConst 'ENU=%1 not updated correctly.';
+
+    LOCAL PROCEDURE Initialize@12();
+    VAR
+      BackupManagement@1000 : Codeunit 50201;
+      LibraryFinance@1102601000 : Codeunit 50207;
+    BEGIN
+      RANDOMIZE(1);  // Seed RANDOM function.
+      IF IsInitialized THEN
+        EXIT;
+
+      BackupManagement.DefaultFixture;
+      LibraryFinance.InitializeVATPostingSetup;
+
+      IsInitialized := TRUE;
+      COMMIT;
+    END;
+
+    [Test]
+    PROCEDURE PurchaseQuoteCreation@3();
+    VAR
+      PurchaseHeader@1001 : Record 38;
+      PurchaseLine@1000 : Record 39;
+    BEGIN
+      // Verify the Creation of Purchase Quote.
+
+      // Setup.
+      Initialize;
+
+      // Exercise: Create Purchase Quote.
+      CreatePurchaseQuote(PurchaseHeader,PurchaseLine);
+
+      // Verify: Verify that Correct Purchase Quote created.
+      PurchaseHeader.GET(PurchaseHeader."Document Type"::Quote,PurchaseHeader."No.");
+      PurchaseLine.GET(PurchaseLine."Document Type"::Quote,PurchaseLine."Document No.",PurchaseLine."Line No.");
+    END;
+
+    [Test]
+    PROCEDURE VATAmountOnPurchaseQuote@4();
+    VAR
+      PurchaseHeader@1002 : Record 38;
+      PurchaseLine@1001 : Record 39;
+      GeneralLedgerSetup@1006 : Record 98;
+      VATAmountLine@1005 : Record 290;
+      ReleasePurchaseDocument@1000 : Codeunit 415;
+      QtyType@1003 : 'General,Invoicing,Shipping';
+    BEGIN
+      // Verify the VAT Amount after creating Purchase Quote.
+
+      // Setup: Create a Purchase Quote.
+      Initialize;
+      CreatePurchaseQuote(PurchaseHeader,PurchaseLine);
+
+      // Exercise: Calculate VAT Amount on VAT Amount Line from Purchase Line.
+      PurchaseLine.CalcVATAmountLines(QtyType::Invoicing,PurchaseHeader,PurchaseLine,VATAmountLine);
+
+      // Verify: Verify VAT Amount on Purchase Quote.
+      GeneralLedgerSetup.GET;
+      ReleasePurchaseDocument.PerformManualRelease(PurchaseHeader);
+      PurchaseHeader.CALCFIELDS(Amount);
+      Assert.AreNearlyEqual(
+        PurchaseHeader.Amount * PurchaseLine."VAT %" / 100,VATAmountLine."VAT Amount",GeneralLedgerSetup."Amount Rounding Precision",
+        STRSUBSTNO(VATAmountErrorMessage,VATAmountLine.FIELDCAPTION("VAT Amount"),PurchaseHeader.Amount * PurchaseLine."VAT %" / 100,
+          VATAmountLine.TABLECAPTION));
+    END;
+
+    [Test]
+    PROCEDURE PurchaseQuoteReport@5();
+    VAR
+      PurchaseHeader@1004 : Record 38;
+      PurchaseLine@1003 : Record 39;
+      PurchaseQuote@1002 : Report 404;
+      LibraryUtility@1001 : Codeunit 50206;
+      FilePath@1000 : Text[1024];
+    BEGIN
+      // Verify that Purchase Quote Report contains some data after generating it from Purchase Quote Created.
+
+      // Setup: Create a Purchase Quote.
+      Initialize;
+      CreatePurchaseQuote(PurchaseHeader,PurchaseLine);
+
+      // Exercise: Generate Purchase Quote Report and save it as external file.
+      PurchaseHeader.SETRANGE("Document Type",PurchaseHeader."Document Type"::Quote);
+      PurchaseHeader.SETRANGE("No.",PurchaseHeader."No.");
+      PurchaseQuote.SETTABLEVIEW(PurchaseHeader);
+      IF ISSERVICETIER THEN BEGIN
+        FilePath := TEMPORARYPATH + FORMAT(PurchaseHeader."Document Type") + PurchaseHeader."No." + '.xls';
+        PurchaseQuote.SAVEASEXCEL(FilePath);
+      END ELSE BEGIN
+        FilePath := TEMPORARYPATH + FORMAT(PurchaseHeader."Document Type") + PurchaseHeader."No." + '.xml';
+        PurchaseQuote.SAVEASXML(FilePath);
+      END;
+
+      // Verify: Verify that saved files have some data.
+      LibraryUtility.CheckFileNotEmpty(FilePath);
+    END;
+
+    [Test]
+    PROCEDURE PurchaseOrderFromPurchaseQuote@6();
+    VAR
+      PurchaseHeader@1001 : Record 38;
+      PurchaseLine@1000 : Record 39;
+      LineCount@1002 : Integer;
+    BEGIN
+      // Verify that Purchase Order created successfully from Purchase Quote.
+
+      // Setup: Create Purchase Quote and save the line count into a variable.
+      Initialize;
+      CreatePurchaseQuote(PurchaseHeader,PurchaseLine);
+      PurchaseLine.SETRANGE("Document Type",PurchaseLine."Document Type"::Quote);
+      PurchaseLine.SETRANGE("Document No.",PurchaseHeader."No.");
+      LineCount := PurchaseLine.COUNT;
+
+      // Exercise: Create Purchase Order form Purchase Quote.
+      CODEUNIT.RUN(CODEUNIT::"Purch.-Quote to Order",PurchaseHeader);
+
+      // Verify: Verify that New Purchase Order created from Purchase Quote and No. of Lines are equal to Purchase Quote Lines.
+      PurchaseHeader.SETRANGE("Quote No.",PurchaseHeader."No.");
+      PurchaseHeader.FINDFIRST;
+      PurchaseLine.SETRANGE("Document Type",PurchaseLine."Document Type"::Order);
+      PurchaseLine.SETRANGE("Document No.",PurchaseHeader."No.");
+      Assert.AreEqual(LineCount,PurchaseLine.COUNT,'No. of Lines must be Equal.');
+    END;
+
+    [Test]
+    PROCEDURE PurchaseQuoteForContact@7();
+    VAR
+      PurchaseHeader@1001 : Record 38;
+      ContactBusinessRelation@1000 : Record 5054;
+    BEGIN
+      // Verify that Purchase Quote has been created for a Contact.
+
+      // Setup:  Find a Contact Business Relation.
+      Initialize;
+      ContactBusinessRelation.SETRANGE("Link to Table",ContactBusinessRelation."Link to Table"::Vendor);
+      ContactBusinessRelation.FINDFIRST;
+
+      // Exercise: Create a Purchase Quote for the Contact.
+      PurchaseHeader.INIT;
+      PurchaseHeader.VALIDATE("Buy-from Contact No.",ContactBusinessRelation."Contact No.");
+      PurchaseHeader.INSERT(TRUE);
+
+      // Verify: Verify that the Purchase Header Contains the correct Contact.
+      Assert.AreEqual(
+        ContactBusinessRelation."Contact No.",
+        PurchaseHeader."Buy-from Contact No.",STRSUBSTNO(FieldError,PurchaseHeader.FIELDCAPTION("Buy-from Contact No.")));
+    END;
+
+    [Test]
+    [HandlerFunctions(ConfirmHandler,MessageHandler)]
+    PROCEDURE ChangeVendorOnPurchaseQuote@8();
+    VAR
+      PurchaseHeader@1003 : Record 38;
+      PurchaseLine@1002 : Record 39;
+    BEGIN
+      // Verify that Correct Buy From Vendor No. updated in Purchase Quote after changing Buy From Vendor No.
+
+      // Setup: Create a Purchase Quote.
+      Initialize;
+      CreatePurchaseQuote(PurchaseHeader,PurchaseLine);
+
+      // Exercise: Change the Buy From Vendor No. of Purchase Quote.
+      PurchaseHeader.VALIDATE("Buy-from Vendor No.",CreateVendor);
+      PurchaseHeader.MODIFY(TRUE);
+
+      // Verify: Verify that correct Buy From Vendor No. updated in Purchase Line table.
+      PurchaseLine.GET(PurchaseLine."Document Type",PurchaseLine."Document No.",PurchaseLine."Line No.");
+      Assert.AreEqual(
+        PurchaseHeader."Buy-from Vendor No.",PurchaseLine."Buy-from Vendor No.",
+        STRSUBSTNO(FieldError,PurchaseLine.FIELDCAPTION("Buy-from Vendor No.")));
+
+      // Force execution of message handler
+      MESSAGE('')
+    END;
+
+    LOCAL PROCEDURE FindVATPostingSetup@13(VAR VATPostingSetup@1000 : Record 325);
+    BEGIN
+      VATPostingSetup.SETFILTER("VAT Bus. Posting Group",'<>''''');
+      VATPostingSetup.SETFILTER("VAT Prod. Posting Group",'<>''''');
+      VATPostingSetup.SETRANGE("VAT Calculation Type",VATPostingSetup."VAT Calculation Type"::"Normal VAT");
+      VATPostingSetup.SETFILTER("VAT %",'>0');
+      VATPostingSetup.FINDFIRST;
+    END;
+
+    LOCAL PROCEDURE CreateItem@10() : Code[20];
+    VAR
+      Item@1001 : Record 27;
+      VATPostingSetup@1002 : Record 325;
+      InventorySetup@1004 : Record 313;
+      LibraryUtility@1003 : Codeunit 50206;
+      LibrarySCM@1000 : Codeunit 50210;
+    BEGIN
+      // Modify Item No. Series in Inventory setup.
+      FindVATPostingSetup(VATPostingSetup);
+      InventorySetup.GET;
+      InventorySetup.VALIDATE("Item Nos.",LibraryUtility.GetNoSeriesCode);
+      InventorySetup.MODIFY(TRUE);
+      LibrarySCM.CreateItem(Item);
+      Item.VALIDATE("VAT Prod. Posting Group",VATPostingSetup."VAT Prod. Posting Group");
+      Item.MODIFY(TRUE);
+      EXIT(Item."No.");
+    END;
+
+    LOCAL PROCEDURE CreateVendor@15() : Code[20];
+    VAR
+      Vendor@1000 : Record 23;
+      VATPostingSetup@1003 : Record 325;
+      LibrarySCM@1004 : Codeunit 50210;
+    BEGIN
+      FindVATPostingSetup(VATPostingSetup);
+      LibrarySCM.CreateVendor(Vendor);
+      Vendor.VALIDATE("Gen. Bus. Posting Group",VATPostingSetup."VAT Bus. Posting Group");
+      Vendor.MODIFY(TRUE);
+      EXIT(Vendor."No.");
+    END;
+
+    LOCAL PROCEDURE CreatePurchaseQuote@11(VAR PurchaseHeader@1002 : Record 38;VAR PurchaseLine@1000 : Record 39);
+    VAR
+      LibrarySCM@1001 : Codeunit 50210;
+    BEGIN
+      LibrarySCM.CreatePurchaseHeader(PurchaseHeader,PurchaseHeader."Document Type"::Quote,CreateVendor);
+      PurchaseHeader.VALIDATE("Vendor Invoice No.",PurchaseHeader."No.");
+      PurchaseHeader.MODIFY(TRUE);
+
+      // Create Purchase Quote Line with Random Quantity and Direct Unit Cost. Take Unit Cost in multiple of 100 (Standard Value).
+      LibrarySCM.CreatePurchaseLine(
+        PurchaseHeader,PurchaseLine,PurchaseLine.Type::Item,CreateItem,RANDOM(10));
+      PurchaseLine.VALIDATE("Direct Unit Cost",100 * RANDOM(10));
+      PurchaseLine.MODIFY(TRUE);
+    END;
+
+    [ConfirmHandler]
+    [HandlerFunctions(MessageHandler)]
+    PROCEDURE ConfirmHandler@78(Question@1000 : Text[1024];VAR Reply@1001 : Boolean);
+    BEGIN
+      // Handler for confirmation messages, always send positive reply.
+      Reply := TRUE;
+    END;
+
+    [MessageHandler]
+    PROCEDURE MessageHandler@1102601000(Msg@1102601000 : Text[1024]);
+    BEGIN
+    END;
+
+    BEGIN
+    {
+      Create and Verify various functionalities of Purchase Quote.
+        1. Test that a Purchase Quote Header and Lines exist after Purchase Quote creation.
+        2. Test VAT Amount calculated correctly on Purchase Quote.
+        3. Test that a Report generated from Purchase Quote.
+        4. Test that a Purchase Order created from Purchase Quote.
+        5. Test that a Purchase Quote can be created for a Contact.
+        6. Test the Buy From Vendor No. after changing it on Purchase Quote.
+    }
+    END.
+  }
+}
+

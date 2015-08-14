@@ -1,0 +1,159 @@
+OBJECT Codeunit 50081 WebShop Stock Import
+{
+  OBJECT-PROPERTIES
+  {
+    Date=17.07.13;
+    Time=09:26:55;
+    Modified=Yes;
+    Version List=HME0458;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=VAR
+            FPCGeneralSetup@1000000000 : Record 50014;
+            "**HME*************************"@1000000001 : Integer;
+            FTPFunctionsL@1000000002 : Codeunit 50100;
+          BEGIN
+            IF FPCGeneralSetup.GET('WEBSTOCK') THEN BEGIN
+            //H0458 12.07.13 ARI +++++++++++++++++++++++++++++
+              FTPFunctionsL.FTPDownload('WEBSTOCK');
+            //H0458 12.07.13 ARI -----------------------------
+            END;
+            ImportFile;
+          END;
+
+  }
+  CODE
+  {
+
+    PROCEDURE ImportFile@1000000000();
+    VAR
+      MyFile@1000000000 : File;
+      MyFileRec@1000000001 : Record 2000000022;
+      StringToImport@1000000002 : Text[1024];
+      FPCGeneralSetup@1000000003 : Record 50014;
+      ImportParanmeter@1000000004 : ARRAY [6] OF Text[1024];
+      StockImport@1000000005 : Record 50132;
+      WebShopID@1000000006 : Integer;
+    BEGIN
+      CLEAR(StringToImport);
+      IF FPCGeneralSetup.GET('WEBSTOCK') THEN BEGIN
+        FPCGeneralSetup.TESTFIELD("Import Folder");
+        FPCGeneralSetup.TESTFIELD("Archive Root Folder");
+
+        MyFileRec.SETRANGE(Path,FPCGeneralSetup."Import Folder");
+        MyFileRec.SETRANGE("Is a file",TRUE);
+        IF MyFileRec.FIND('-') THEN BEGIN
+
+          MyFile.TEXTMODE(TRUE);
+          MyFile.WRITEMODE(FALSE);
+          MyFile.OPEN(MyFileRec.Path+MyFileRec.Name);
+          REPEAT
+            MyFile.READ(StringToImport);
+            //1. WebShop ID
+            ImportParanmeter[1] := COPYSTR(StringToImport,1,STRPOS(StringToImport,',')-1);
+            //2. Item No.
+            StringToImport := COPYSTR(StringToImport,STRPOS(StringToImport,',')+1,1024);
+            ImportParanmeter[2] := COPYSTR(StringToImport,1,STRPOS(StringToImport,',')-1);
+            //3. Location
+            StringToImport := COPYSTR(StringToImport,STRPOS(StringToImport,',')+1,1024);
+            ImportParanmeter[3] := COPYSTR(StringToImport,1,STRPOS(StringToImport,',')-1);
+            //4. Delivery Time
+            StringToImport := COPYSTR(StringToImport,STRPOS(StringToImport,',')+1,1024);
+            ImportParanmeter[4] := COPYSTR(StringToImport,1,STRPOS(StringToImport,',')-1);
+            //5. Inventory
+            StringToImport := COPYSTR(StringToImport,STRPOS(StringToImport,',')+1,1024);
+            ImportParanmeter[5] := COPYSTR(StringToImport,1,STRPOS(StringToImport,',')-1);
+            //6. Reserve Quantity
+            ImportParanmeter[6] := COPYSTR(StringToImport,STRPOS(StringToImport,',')+1,1024);
+            EVALUATE(WebShopID,ImportParanmeter[1]);
+            //Item no. can only be 20 lange
+            IF STRLEN(ImportParanmeter[2]) <= 20 THEN BEGIN
+            //Control
+              IF NOT StockImport.GET(WebShopID,COPYSTR(ImportParanmeter[2],1,20),ImportParanmeter[3]) THEN BEGIN
+                StockImport.INIT;
+                  StockImport."Website No." := WebShopID;
+                  StockImport."Item No." := COPYSTR(ImportParanmeter[2],1,20);
+                  StockImport."Stock Location" := ImportParanmeter[3];
+                  IF EVALUATE(StockImport."Lead Time Calculation",ImportParanmeter[4]+'D') THEN BEGIN
+                    EVALUATE(StockImport."Lead Time Calculation",ImportParanmeter[4]+'D');
+                  END ELSE BEGIN
+                    EVALUATE(StockImport."Lead Time Calculation",'0D')
+                  END;
+                  IF EVALUATE(StockImport.Inventory,ImportParanmeter[5]) THEN BEGIN
+                    EVALUATE(StockImport.Inventory,ImportParanmeter[5]);
+                    StockImport."Never out of Stock":= FALSE;
+                  END ELSE BEGIN
+                    StockImport.Inventory := 0;
+                    StockImport."Never out of Stock":= TRUE;
+                  END;
+                  EVALUATE(StockImport."Reserve Quantity",ImportParanmeter[6]);
+                  //H0334  07.05.2013  PAD  ++++++++++++++++++++++++++++++++++++++++++++++++
+                  StockImport.TimeStamp := CURRENTDATETIME;
+                  //H0334  07.05.2013  PAD  ++++++++++++++++++++++++++++++++++++++++++++++++
+                StockImport.INSERT;
+              END ELSE BEGIN
+                IF EVALUATE(StockImport."Lead Time Calculation",ImportParanmeter[4]+'D') THEN BEGIN
+                  EVALUATE(StockImport."Lead Time Calculation",ImportParanmeter[4]+'D');
+                END ELSE BEGIN
+                  EVALUATE(StockImport."Lead Time Calculation",'0D')
+                END;
+                IF EVALUATE(StockImport.Inventory,ImportParanmeter[5]) THEN BEGIN
+                  EVALUATE(StockImport.Inventory,ImportParanmeter[5]);
+                  StockImport."Never out of Stock":= FALSE;
+                END ELSE BEGIN
+                  StockImport.Inventory := 0;
+                  StockImport."Never out of Stock":= TRUE;
+                END;
+                EVALUATE(StockImport."Reserve Quantity",ImportParanmeter[6]);
+                //H0334  07.05.2013  PAD  ++++++++++++++++++++++++++++++++++++++++++++++++
+                StockImport.TimeStamp := CURRENTDATETIME;
+                //H0334  07.05.2013  PAD  ++++++++++++++++++++++++++++++++++++++++++++++++
+
+                StockImport.MODIFY;
+              END;
+            END;//end controling
+          UNTIL MyFile.POS = MyFile.LEN;
+          MyFile.CLOSE;
+          COPY(MyFileRec.Path+MyFileRec.Name,FPCGeneralSetup."Archive Root Folder"+
+          CONVERTSTR(FORMAT(TODAY),'.','-')+'_'+
+          CONVERTSTR(FORMAT(TIME),':','-')+MyFileRec.Name);
+        END;
+      END;
+      //H0458 17.07.13 ARI +++++++++++++++++++++++++++++
+      IF MyFileRec.Name <> '' THEN BEGIN
+      //H0458 17.07.13 ARI -----------------------------
+        //H0322 29.04.13 PAU+++++++++++++++++++++++++++++++++++++++++
+        //SLEEP(20*60000);
+        ERASE(FPCGeneralSetup."Import Folder"+MyFileRec.Name);
+        CLEAR(MyFileRec);
+        //H0322 29.04.13 PAU-----------------------------------------
+      //H0458 17.07.13 ARI +++++++++++++++++++++++++++++
+      END;
+      //H0458 17.07.13 ARI -----------------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+
+      H0273       26.03.13 PAU       Item - WebShop Stock Import
+      H0322       27.04.13 PAU       Chenge for file - canït delete file
+      H0334       07.05.13 PAU       TimeStamp for Import and Insert lines
+      H0458       16.07.13 ARI       Change FTP Function to General FTP Functions
+                                      Delete OldFunctions: DownloadFiles, EraseFilesOnImportFolder, PrepareDownloadFiles
+                                      Delete File only if MyFileRec.Name <> ''
+    }
+    END.
+  }
+}
+

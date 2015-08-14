@@ -1,0 +1,267 @@
+OBJECT Codeunit 50124 SII Process Log
+{
+  OBJECT-PROPERTIES
+  {
+    Date=14.02.14;
+    Time=18:15:00;
+    Modified=Yes;
+    Version List=SII,HME0822;
+  }
+  PROPERTIES
+  {
+    OnRun=VAR
+            SIILog@1000000000 : Record 50146;
+            i@1000000001 : Integer;
+          BEGIN
+            CASE GlobalRunType OF
+              GlobalRunType::ProcessLog :
+                BEGIN
+                  SIILog.GET(GlobalEntryNo);
+                  ProcessSIILog(SIILog);
+                END;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      GlobalRunType@1000000001 : 'None,ProcessLog';
+      GlobalEntryNo@1000000000 : Integer;
+      GlobalErrorSource@1000000002 : Code[30];
+
+    PROCEDURE InitProcessLog@1000000001(p_EntryNo@1000000000 : Integer);
+    VAR
+      WshShellL@1000000002 : Automation "{F935DC20-1CF0-11D0-ADB9-00C04FD58A0B} 1.0:{72C24DD5-D70A-438B-8A42-98424B88AFB8}:'Windows Script Host Object Model'.WshShell";
+      UserSetupL@1000000003 : Record 91;
+      DefaultPrinterL@1000000001 : Text[250];
+    BEGIN
+      ClearAllGlobals;
+      GlobalRunType := GlobalRunType::ProcessLog;
+      GlobalEntryNo := p_EntryNo;
+
+      //H0822  14.02.2014  MBY  +++++++++++++++++++++++++
+      IF ISCLEAR(WshShellL) THEN
+        CREATE(WshShellL);
+
+      DefaultPrinterL := WshShellL.RegRead('HKEY_CURRENT_USER\Software\Microsoft\Windows NT\CurrentVersion\Windows\Device');
+      DefaultPrinterL := COPYSTR(DefaultPrinterL, 1, STRPOS(DefaultPrinterL, ',winspool') -1 );
+
+      UserSetupL.GET(USERID);
+      IF UserSetupL."PDF Creator" <> DefaultPrinterL THEN
+        WshShellL.Exec('rundll32 printui.dll,PrintUIEntry /y /n "' + UserSetupL."PDF Creator" + '"');
+
+      CLEAR(WshShellL);
+      //H0822  14.02.2014  MBY  -------------------------
+    END;
+
+    PROCEDURE ProcessSIILog@1000000000(VAR p_SIILog_Var@1000000005 : Record 50146);
+    VAR
+      SIIXMLServives@1000000001 : Codeunit 50122;
+      TempBlob@1000000002 : TEMPORARY Record 99008535;
+      SIIOutgoingWSConnection@1000000003 : Codeunit 50121;
+      TempBlob2@1000000004 : TEMPORARY Record 99008535;
+      SIISalesOrderLastMessage@1000000000 : Record 50157;
+    BEGIN
+      IF p_SIILog_Var.MessageMode IN [p_SIILog_Var.MessageMode::"Test Offline",
+         p_SIILog_Var.MessageMode::"Test Online",
+         p_SIILog_Var.MessageMode::Active]
+      THEN BEGIN
+        CLEAR(SIIXMLServives);
+        TempBlob.DELETEALL;
+        TempBlob2.DELETEALL;
+        SIIXMLServives.CreateXMLFileForLog(p_SIILog_Var,TempBlob);
+        p_SIILog_Var."Last Successful Step" := p_SIILog_Var."Last Successful Step"::CreateXML;
+
+        // End for Test Offline
+        IF p_SIILog_Var.MessageMode = p_SIILog_Var.MessageMode::"Test Offline" THEN BEGIN
+          p_SIILog_Var."Processed At" := CURRENTDATETIME;
+          p_SIILog_Var."Commited At" := CURRENTDATETIME;
+          p_SIILog_Var.Status := p_SIILog_Var.Status::Processed;
+        END;
+
+        p_SIILog_Var.MODIFY;
+        COMMIT;
+      END;
+
+      IF p_SIILog_Var.MessageMode IN [p_SIILog_Var.MessageMode::"Test Online",p_SIILog_Var.MessageMode::Active] THEN BEGIN
+        CLEAR(SIIOutgoingWSConnection);
+        IF NOT SIIOutgoingWSConnection.RUN(p_SIILog_Var) THEN BEGIN
+          GlobalErrorSource := SIIOutgoingWSConnection.GetErrorSource;
+          ERROR(GETLASTERRORTEXT);
+        END;
+        p_SIILog_Var.Status := p_SIILog_Var.Status::Processed;
+        p_SIILog_Var.MODIFY;
+        COMMIT;
+      END;
+
+      //A/P0923
+      //S/P1057
+      //IF p_SIILog_Var.MessageMode = p_SIILog_Var.MessageMode::Active THEN BEGIN
+      //E/P1057
+      CLEAR(SIISalesOrderLastMessage);
+      SIISalesOrderLastMessage.UpdateInsertLastMsgSIILog(p_SIILog_Var);
+      //S/P1057
+      //END;
+      //E/P1057
+      //E/P0923
+
+      p_SIILog_Var."Last Successful Step" := p_SIILog_Var."Last Successful Step"::Done;
+      p_SIILog_Var.MODIFY;
+      ArchiveAndDeleteSIILog(p_SIILog_Var);
+    END;
+
+    PROCEDURE ArchiveAndDeleteSIILog@1000000003(VAR p_SIILog_Var@1000000004 : Record 50146);
+    VAR
+      SIILogArchive@1000000000 : Record 50147;
+      SIILineLog@1000000006 : Record 50154;
+      SIILineLogArchive@1000000001 : Record 50150;
+      SIILogActions@1000000007 : Record 50153;
+      SIILogActionsArchive@1000000002 : Record 50136;
+      SIIXMLLog@1000000008 : Record 50145;
+      SIIXMLLogArchive@1000000003 : Record 50134;
+    BEGIN
+      // Archive Log
+      SIILogArchive.INIT;
+      SIILogArchive.TRANSFERFIELDS(p_SIILog_Var);
+      SIILogArchive.INSERT;
+
+      // Archive Line Log
+      SIILineLog.RESET;
+      SIILineLog.SETRANGE("Entry No.",p_SIILog_Var."Entry No.");
+      IF SIILineLog.FINDSET THEN BEGIN
+        REPEAT
+          SIILineLogArchive.INIT;
+          SIILineLogArchive.TRANSFERFIELDS(SIILineLog);
+          SIILineLogArchive.INSERT;
+        UNTIL SIILineLog.NEXT = 0;
+      END;
+
+      // Archive Log Actions
+      SIILogActions.RESET;
+      SIILogActions.SETRANGE("Log Entry No.",p_SIILog_Var."Entry No.");
+      IF SIILogActions.FINDSET THEN BEGIN
+        REPEAT
+          SIILogActionsArchive.INIT;
+          SIILogActionsArchive.TRANSFERFIELDS(SIILogActions);
+          SIILogActionsArchive.INSERT;
+        UNTIL SIILogActions.NEXT = 0;
+      END;
+
+      // Archive XML Log
+      SIIXMLLog.RESET;
+      SIIXMLLog.SETRANGE("Attached to Entry No.",p_SIILog_Var."Entry No.");
+      //H0651  20.11.2013  MBY  +++++++++++++++++++++++++
+      SIIXMLLog.SETRANGE(Type,SIIXMLLog.Type::" ");
+      //H0651  20.11.2013  MBY  -------------------------
+      IF SIIXMLLog.FINDSET THEN BEGIN
+        REPEAT
+          SIIXMLLogArchive.INIT;
+          SIIXMLLogArchive.TRANSFERFIELDS(SIIXMLLog);
+          SIIXMLLog.CALCFIELDS("Request Document","Response Document");
+          SIIXMLLogArchive."Request Document" := SIIXMLLog."Request Document";
+          SIIXMLLogArchive."Response Document" := SIIXMLLog."Response Document";
+          SIIXMLLogArchive.INSERT;
+        UNTIL SIIXMLLog.NEXT = 0;
+      END;
+
+      // Delete active Log
+      p_SIILog_Var.DELETE(TRUE);
+
+      COMMIT;
+    END;
+
+    PROCEDURE ClearAllGlobals@1000000007();
+    BEGIN
+      GlobalRunType := GlobalRunType::None;
+      GlobalEntryNo := 0;
+    END;
+
+    PROCEDURE RecreateLog@1000000002(VAR p_SIILogArchive_Var@1000000000 : Record 50147);
+    VAR
+      SIILog@1000000008 : Record 50146;
+      SIILineLog@1000000007 : Record 50154;
+      SIILineLogArchive@1000000006 : Record 50150;
+      SIILogActions@1000000005 : Record 50153;
+      SIILogActionsArchive@1000000004 : Record 50136;
+      SIIXMLLog@1000000003 : Record 50145;
+      SIIXMLLogArchive@1000000002 : Record 50134;
+      ArchiveNextEntryNo@1000000001 : Integer;
+    BEGIN
+      SIILog.INIT;
+      SIILog.TRANSFERFIELDS(p_SIILogArchive_Var);
+      SIILog.Status := SIILog.Status::Unprocessed;
+      SIILog."Entry No." := SIILog.GetNextEntryNo(TRUE);
+      SIILog."Created At" := CURRENTDATETIME;
+      SIILog."Processed At" := 0DT;
+      SIILog."Commited At" := 0DT;
+      //S/P1057
+      SIILog."Shop Queue ID" := 0;
+      //E/P1057
+      SIILog.INSERT;
+
+      SIILineLogArchive.RESET;
+      SIILineLogArchive.SETRANGE("Entry No.",p_SIILogArchive_Var."Entry No.");
+      IF SIILineLogArchive.FINDSET THEN BEGIN
+        REPEAT
+          SIILineLog.INIT;
+          SIILineLog.TRANSFERFIELDS(SIILineLogArchive);
+          SIILineLog."Entry No." := SIILog."Entry No.";
+          SIILineLog.INSERT;
+        UNTIL SIILineLogArchive.NEXT = 0;
+      END;
+
+      SIILogActionsArchive.RESET;
+      SIILogActionsArchive.SETRANGE("Log Entry No.",p_SIILogArchive_Var."Entry No.");
+      IF SIILogActionsArchive.FINDSET THEN BEGIN
+        REPEAT
+          SIILogActions.INIT;
+          SIILogActions.TRANSFERFIELDS(SIILogActionsArchive);
+          SIILogActions."Log Entry No." := SIILog."Entry No.";
+          SIILogActions.INSERT;
+        UNTIL SIILogActionsArchive.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE GetErrorSource@1000000006() : Code[30];
+    BEGIN
+      EXIT(GlobalErrorSource);
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation GOB & Home24 NAV Team      |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+
+      *** Module: SII Shop Interaction Interface ***
+      P0879       26.03.13  gob-rste  Object Created
+
+      *** Module: FTTC Face to the Customer ***
+      P1057       31.07.13  gob-rste  Clear Shop Queue ID RecreateLog; Always Fill Last Msg.
+
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+
+      *** Module: Mailing Transition to shop ***
+      H0651       20.11.13 MBY       Don't archive attached documents
+      H0822       14.02.14 MBY       Set the default printer to PDF Creator
+    }
+    END.
+  }
+}
+

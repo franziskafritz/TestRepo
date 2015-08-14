@@ -1,0 +1,657 @@
+OBJECT Codeunit 50110 Inbound EDI Parcel Information
+{
+  OBJECT-PROPERTIES
+  {
+    Date=06.11.13;
+    Time=21:44:46;
+    Modified=Yes;
+    Version List=VIR,GOB;
+  }
+  PROPERTIES
+  {
+    OnRun=VAR
+            rEDIParcelImportHeader@1000000000 : Record 50122;
+          BEGIN
+            //InsertDHLParcelHistoryTable(Rec);
+            IF gHistory THEN BEGIN
+              rEDIParcelImportHeader.SETFILTER("Process Status",'%1|%2',rEDIParcelImportHeader."Process Status"::New,
+                                                                        rEDIParcelImportHeader."Process Status"::Error);
+            END ELSE
+              rEDIParcelImportHeader.SETRANGE("Process Status",rEDIParcelImportHeader."Process Status"::New);
+            IF rEDIParcelImportHeader.FINDFIRST THEN BEGIN
+              REPEAT
+                InsertDHLParcelHistoryTable(rEDIParcelImportHeader);
+              UNTIL rEDIParcelImportHeader.NEXT = 0;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      gHistory@1000000000 : Boolean;
+      RecRef@1000000001 : RecordRef;
+      CUParcelStatusHistoryMgmt@1000000002 : Codeunit 80011;
+      FPCGeneralSetup@1000000003 : Record 50055;
+
+    PROCEDURE InsertDHLParcelHistoryTable@1000000000(pEDIParcelImportHeader@1000000000 : Record 50122);
+    VAR
+      rSalesHeader@1000000001 : Record 36;
+      rSalesLine@1000000010 : Record 37;
+      rDHLParcelsStatusHistory@1000000014 : Record 50021;
+      rEDIParcelImportLine@1000000003 : Record 50123;
+      "***P0983 local***"@1000000002 : Integer;
+      lPurchasing@1000000004 : Record 5721;
+      lFilterstring@1000000005 : Text[250];
+    BEGIN
+      //S/P1133
+      FPCGeneralSetup.GET;
+      //E/P1133
+
+      IF IsProcessed(pEDIParcelImportHeader."External Document No.") THEN BEGIN
+        pEDIParcelImportHeader."Process Status" := pEDIParcelImportHeader."Process Status"::Error;
+        pEDIParcelImportHeader."Error Reason" := 'This file has been already processed.';
+        pEDIParcelImportHeader.MODIFY;
+        EXIT;
+      END;
+
+      rEDIParcelImportLine.SETRANGE("Entry No.",pEDIParcelImportHeader."Entry No.");
+      IF rEDIParcelImportLine.FINDFIRST THEN BEGIN
+        IF rSalesHeader.GET(rSalesHeader."Document Type"::Order,pEDIParcelImportHeader."Sales Header No.") THEN BEGIN
+          rSalesLine.SETRANGE("Document Type",rSalesLine."Document Type"::Order);
+          rSalesLine.SETRANGE("Document No.",rSalesHeader."No.");
+          rSalesLine.SETRANGE(Type,rSalesLine.Type::Item);
+          // S/P0983
+          CLEAR(lFilterstring);
+          lPurchasing.RESET;
+          lPurchasing.SETRANGE("VIR-Tracking",TRUE);
+          lPurchasing.FINDSET; // muss fÅr VIR gepflegt sein!
+          REPEAT
+            rSalesLine.SETRANGE("Purchasing Code",lPurchasing.Code);
+            IF NOT rSalesLine.ISEMPTY THEN BEGIN
+              lFilterstring += '|' + lPurchasing.Code;
+              // zugehîrige Codes auch mit beachten
+              IF (lPurchasing."Complemental VIR-Tracking" <> '') THEN
+                lFilterstring += '|' + lPurchasing."Complemental VIR-Tracking";
+            END;
+          UNTIL (lPurchasing.NEXT = 0);
+          lFilterstring := DELSTR(lFilterstring,1,1);
+          IF (lFilterstring = '') THEN
+            EXIT; // *** EXIT ***
+          rSalesLine.SETFILTER("Purchasing Code",lFilterstring);
+          // E/P0983
+          IF rSalesLine.FIND('-') THEN BEGIN
+            REPEAT
+              //S/P1117
+              //S/P1133
+              IF FPCGeneralSetup."Active Parcel Status History" IN
+                [FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+                FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+                FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New"]
+              THEN BEGIN
+              //E/P1133
+                rDHLParcelsStatusHistory.INIT;
+                rDHLParcelsStatusHistory."Entry No." := 0;
+                rDHLParcelsStatusHistory."Document No." := rSalesHeader."No.";
+                rDHLParcelsStatusHistory."Document Line No." := rSalesLine."Line No.";
+                rDHLParcelsStatusHistory."Document Type" := rDHLParcelsStatusHistory."Document Type"::Order;
+                rDHLParcelsStatusHistory."Status Event" := rEDIParcelImportLine."Event Code";
+                rDHLParcelsStatusHistory."Status Code" := rEDIParcelImportLine."RIC Code";
+                rDHLParcelsStatusHistory."VIR Status Comment" := rEDIParcelImportLine."Delivery Comment";
+                CASE rEDIParcelImportLine."Shipping Agent" OF
+                  rEDIParcelImportLine."Shipping Agent"::VIR :
+                    rDHLParcelsStatusHistory."Shipping Agent" := 'VIR';
+                END;
+                IF pEDIParcelImportHeader."Delivery Date" <> 0D THEN
+                  rDHLParcelsStatusHistory."Time Stamp" := CREATEDATETIME(pEDIParcelImportHeader."Delivery Date",0T)
+                ELSE
+                  rDHLParcelsStatusHistory."Time Stamp" := CREATEDATETIME(TODAY,0T);
+                rDHLParcelsStatusHistory."Import Time Stamp" := CURRENTDATETIME;
+                rDHLParcelsStatusHistory.INSERT;
+              //S/P1133
+              END;
+
+              IF FPCGeneralSetup."Active Parcel Status History" IN
+                [FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+                FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+                FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History"]
+              THEN BEGIN
+              //E/P1133
+                CLEAR(CUParcelStatusHistoryMgmt);
+                RecRef.GETTABLE(rSalesLine);
+                IF pEDIParcelImportHeader."Delivery Date" <> 0D THEN
+                  CUParcelStatusHistoryMgmt.SetDateTimeGlobal(CREATEDATETIME(pEDIParcelImportHeader."Delivery Date",0T))
+                ELSE
+                  CUParcelStatusHistoryMgmt.SetDateTimeGlobal(CREATEDATETIME(TODAY,0T));
+                CUParcelStatusHistoryMgmt.FillHistoryByDocLine(
+                  RecRef,                                   // Rec
+                  1,                                        // p_Command
+                  0,                                        // p_InfoDirection::  Incoming,Outgoing
+                  1,                                        // p_UsedInterface::  ,EDI,DHL,DocData,Drop Shipment,Rhenus,UPS
+                  'VIR',                                    // p_ShippingAgentCode
+                  '',                                       // p_TrackingCode
+                  '',                                       // p_PieceCode
+                  rEDIParcelImportLine."Event Code",        // p_StatusCode
+                  rEDIParcelImportLine."RIC Code",          // p_StatusRICCode
+                  rEDIParcelImportLine."Delivery Comment",  // p_Comment
+                  0);                                       // p_HowToHandleStatusDescription
+              //S/P1133
+              END;
+              //E/P1133
+              //E/P1117
+            UNTIL rSalesLine.NEXT = 0;
+            pEDIParcelImportHeader."Process Status" := pEDIParcelImportHeader."Process Status"::Processed;
+            pEDIParcelImportHeader.MODIFY;
+          END ELSE BEGIN
+            pEDIParcelImportHeader."Process Status" := pEDIParcelImportHeader."Process Status"::Error;
+            pEDIParcelImportHeader."Error Reason" := 'No Sales Lines found.';
+            pEDIParcelImportHeader.MODIFY;
+          END;
+        END ELSE BEGIN
+          IF rSalesHeader.GET(rSalesHeader."Document Type"::Order,
+          COPYSTR(pEDIParcelImportHeader."Sales Header No.",1,STRLEN(pEDIParcelImportHeader."Sales Header No.") - 3)) THEN BEGIN
+            rSalesLine.SETRANGE("Document Type",rSalesLine."Document Type"::Order);
+            rSalesLine.SETRANGE("Document No.",rSalesHeader."No.");
+            rSalesLine.SETRANGE(Type,rSalesLine.Type::Item);
+            // S/P0983
+            CLEAR(lFilterstring);
+            lPurchasing.RESET;
+            lPurchasing.SETRANGE("VIR-Tracking",TRUE);
+            lPurchasing.FINDSET; // muss fÅr VIR gepflegt sein!
+            REPEAT
+              rSalesLine.SETRANGE("Purchasing Code",lPurchasing.Code);
+              IF NOT rSalesLine.ISEMPTY THEN BEGIN
+                lFilterstring += '|' + lPurchasing.Code;
+                // zugehîrige Codes auch mit beachten
+                IF (lPurchasing."Complemental VIR-Tracking" <> '') THEN
+                  lFilterstring += '|' + lPurchasing."Complemental VIR-Tracking";
+              END;
+            UNTIL (lPurchasing.NEXT = 0);
+            lFilterstring := DELSTR(lFilterstring,1,1);
+            IF (lFilterstring = '') THEN
+              EXIT; // *** EXIT ***
+            rSalesLine.SETFILTER("Purchasing Code",lFilterstring);
+            // E/P0983
+            IF rSalesLine.FIND('-') THEN BEGIN
+              REPEAT
+                IF CheckRhenusChangeLog(rSalesLine."Document No.",
+                                        rSalesLine."Line No.",
+                                        pEDIParcelImportHeader."Sales Header No.") THEN BEGIN
+                  //S/P1117
+                  //S/P1133
+                  IF FPCGeneralSetup."Active Parcel Status History" IN
+                    [FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+                    FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+                    FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New"]
+                  THEN BEGIN
+                  //E/P1133
+                    rDHLParcelsStatusHistory.INIT;
+                    rDHLParcelsStatusHistory."Entry No." := 0;
+                    rDHLParcelsStatusHistory."Document No." := rSalesHeader."No.";
+                    rDHLParcelsStatusHistory."Document Line No." := rSalesLine."Line No.";
+                    rDHLParcelsStatusHistory."Document Type" := rDHLParcelsStatusHistory."Document Type"::Order;
+                    rDHLParcelsStatusHistory."Status Event" := rEDIParcelImportLine."Event Code";
+                    rDHLParcelsStatusHistory."Status Code" := rEDIParcelImportLine."RIC Code";
+                    rDHLParcelsStatusHistory."VIR Status Comment" := rEDIParcelImportLine."Delivery Comment";
+                    CASE rEDIParcelImportLine."Shipping Agent" OF
+                      rEDIParcelImportLine."Shipping Agent"::VIR :
+                        rDHLParcelsStatusHistory."Shipping Agent" := 'VIR';
+                    END;
+                    IF pEDIParcelImportHeader."Delivery Date" <> 0D THEN
+                      rDHLParcelsStatusHistory."Time Stamp" := CREATEDATETIME(pEDIParcelImportHeader."Delivery Date",0T)
+                    ELSE
+                      rDHLParcelsStatusHistory."Time Stamp" := CREATEDATETIME(TODAY,0T);
+                    rDHLParcelsStatusHistory."Import Time Stamp" := CURRENTDATETIME;
+                    rDHLParcelsStatusHistory.INSERT;
+                  //S/P1133
+                  END;
+
+                  IF FPCGeneralSetup."Active Parcel Status History" IN
+                    [FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+                    FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+                    FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History"]
+                  THEN BEGIN
+                  //E/P1133
+                    CLEAR(CUParcelStatusHistoryMgmt);
+                    RecRef.GETTABLE(rSalesLine);
+                    IF pEDIParcelImportHeader."Delivery Date" <> 0D THEN
+                      CUParcelStatusHistoryMgmt.SetDateTimeGlobal(CREATEDATETIME(pEDIParcelImportHeader."Delivery Date",0T))
+                    ELSE
+                      CUParcelStatusHistoryMgmt.SetDateTimeGlobal(CREATEDATETIME(TODAY,0T));
+                    CUParcelStatusHistoryMgmt.FillHistoryByDocLine(
+                      RecRef,                                   // Rec
+                      1,                                        // p_Command
+                      0,                                        // p_InfoDirection::  Incoming,Outgoing
+                      1,                                        // p_UsedInterface::  ,EDI,DHL,DocData,Drop Shipment,Rhenus,UPS
+                      'VIR',                                    // p_ShippingAgentCode
+                      '',                                       // p_TrackingCode
+                      '',                                       // p_PieceCode
+                      rEDIParcelImportLine."Event Code",        // p_StatusCode
+                      rEDIParcelImportLine."RIC Code",          // p_StatusRICCode
+                      rEDIParcelImportLine."Delivery Comment",  // p_Comment
+                      0);                                       // p_HowToHandleStatusDescription
+                  //S/P1133
+                  END;
+                  //E/P1133
+                  //E/P1117
+                END;
+              UNTIL rSalesLine.NEXT = 0;
+              pEDIParcelImportHeader."Process Status" := pEDIParcelImportHeader."Process Status"::Processed;
+              pEDIParcelImportHeader.MODIFY;
+            END ELSE BEGIN
+              pEDIParcelImportHeader."Process Status" := pEDIParcelImportHeader."Process Status"::Error;
+              pEDIParcelImportHeader."Error Reason" := 'No Sales Lines found.';
+              pEDIParcelImportHeader.MODIFY;
+            END;
+          END ELSE BEGIN
+            // S/P0983-2
+            IF InsertDHLParcelHistoryTable2(pEDIParcelImportHeader) THEN
+              EXIT; // *** EXIT ***
+            // E/P0983-2
+            pEDIParcelImportHeader."Process Status" := pEDIParcelImportHeader."Process Status"::Error;
+            pEDIParcelImportHeader."Error Reason" := 'No Sales Header found.';
+            pEDIParcelImportHeader.MODIFY;
+          END;
+        END;
+      END ELSE BEGIN
+        pEDIParcelImportHeader."Process Status" := pEDIParcelImportHeader."Process Status"::Error;
+        pEDIParcelImportHeader."Error Reason" := 'No Sales Header found.';
+        pEDIParcelImportHeader.MODIFY;
+      END;
+    END;
+
+    PROCEDURE "***P0983 Fct***"@1000000006();
+    BEGIN
+    END;
+
+    PROCEDURE DeleteWrongStatus@1000000007();
+    VAR
+      lDHLParcelsStatusHistory@1000000004 : Record 50021;
+    BEGIN
+      //S/P1117/++S+++++++
+      // OMA-"Where Used" -> Nowhere
+      WITH lDHLParcelsStatusHistory DO BEGIN
+        SETRANGE("Shipping Agent",'VIR');
+        FIND('-');
+        REPEAT
+          DeleteWrongStatus2(lDHLParcelsStatusHistory);
+        UNTIL (lDHLParcelsStatusHistory.NEXT = 0);
+      END;
+      //E/P1117/--E-------
+    END;
+
+    PROCEDURE DeleteWrongStatus2@1000000001(pDHLParcelsStatusHistory@1000000003 : Record 50021);
+    VAR
+      lSalesLine@1000000000 : Record 37;
+      lSalesLine2@1000000004 : Record 37;
+      lDHLParcelsStatusHistory2@1000000002 : Record 50021;
+      lPurchasing@1000000001 : Record 5721;
+      lFilterstring@1000000005 : Text[250];
+      lSalesLineArchive@1000000006 : Record 5108;
+      lSalesLineArchive2@1000000007 : Record 5108;
+    BEGIN
+      //S/P1117/++S+++++++
+      // See DeleteWrongStatus()
+      WITH pDHLParcelsStatusHistory DO BEGIN
+      //E/P1117/--E-------
+        IF lSalesLine.GET(lSalesLine."Document Type"::Order,"Document No.","Document Line No.") THEN BEGIN
+          lPurchasing.GET(lSalesLine."Purchasing Code");
+          IF NOT lPurchasing."VIR-Tracking" THEN BEGIN
+            // Filterstring nur fÅr KomplementÑr bauen
+            lSalesLine2.SETRANGE("Document Type",lSalesLine2."Document Type"::Order);
+            lSalesLine2.SETRANGE("Document No.",lSalesLine."Document No.");
+            CLEAR(lFilterstring);
+            lPurchasing.RESET;
+            lPurchasing.SETRANGE("VIR-Tracking",TRUE);
+            lPurchasing.FINDSET; // muss fÅr VIR gepflegt sein!
+            REPEAT
+              // gibt es diesen Code im Auftrag?
+              lSalesLine2.SETRANGE("Purchasing Code",lPurchasing.Code);
+              IF NOT lSalesLine2.ISEMPTY THEN BEGIN
+                IF (lPurchasing."Complemental VIR-Tracking" <> '') THEN
+                  lFilterstring += '|' + lPurchasing."Complemental VIR-Tracking";
+              END;
+            UNTIL (lPurchasing.NEXT = 0);
+            lFilterstring := DELSTR(lFilterstring,1,1);
+            // liegt die Zeile im Filterstring?
+            lSalesLine2.SETRANGE("Line No.",lSalesLine."Line No.");
+            lSalesLine2.SETFILTER("Purchasing Code",lFilterstring);
+            IF (NOT lSalesLine2.ISEMPTY) AND
+               (lFilterstring <> '') THEN
+              EXIT;
+
+            //S/P1117/++S+++++++
+            lDHLParcelsStatusHistory2.GET("Entry No.");
+            lDHLParcelsStatusHistory2.DELETE(TRUE);
+            //E/P1117/--E-------
+          END;
+        // S/P0983-1
+        END ELSE BEGIN  // fÅr archivierte
+          lSalesLineArchive.SETRANGE("Document Type",lSalesLineArchive."Document Type"::Order);
+          lSalesLineArchive.SETRANGE("Document No.","Document No.");
+          lSalesLineArchive.SETRANGE("Line No.","Document Line No.");
+          IF lSalesLineArchive.FINDLAST THEN BEGIN // fÅr letzte Version
+            lPurchasing.GET(lSalesLineArchive."Purchasing Code");
+            IF NOT lPurchasing."VIR-Tracking" THEN BEGIN
+              // Filterstring nur fÅr KomplementÑr bauen
+              lSalesLineArchive2.SETRANGE("Document Type",lSalesLineArchive."Document Type"::Order);
+              lSalesLineArchive2.SETRANGE("Document No.","Document No.");
+              lSalesLineArchive2.SETRANGE("Version No.",lSalesLineArchive."Version No.");
+              CLEAR(lFilterstring);
+              lPurchasing.RESET;
+              lPurchasing.SETRANGE("VIR-Tracking",TRUE);
+              lPurchasing.FINDSET; // muss fÅr VIR gepflegt sein!
+              REPEAT
+                // gibt es diesen Code im Auftrag?
+                lSalesLineArchive2.SETRANGE("Purchasing Code",lPurchasing.Code);
+                IF NOT lSalesLineArchive2.ISEMPTY THEN BEGIN
+                  IF (lPurchasing."Complemental VIR-Tracking" <> '') THEN
+                    lFilterstring += '|' + lPurchasing."Complemental VIR-Tracking";
+                END;
+              UNTIL (lPurchasing.NEXT = 0);
+              lFilterstring := DELSTR(lFilterstring,1,1);
+              // liegt die Zeile im Filterstring?
+              lSalesLineArchive2.SETRANGE("Line No.",lSalesLineArchive."Line No.");
+              lSalesLineArchive2.SETFILTER("Purchasing Code",lFilterstring);
+              IF (NOT lSalesLineArchive2.ISEMPTY) AND
+                 (lFilterstring <> '') THEN
+                EXIT;
+
+              //S/P1117/++S+++++++
+              lDHLParcelsStatusHistory2.GET("Entry No.");
+              lDHLParcelsStatusHistory2.DELETE(TRUE);
+              //E/P1117/--E-------
+            END;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE InsertDHLParcelHistoryTable2@1000000002(pEDIParcelImportHeader@1000000000 : Record 50122) : Boolean;
+    VAR
+      rSalesHeader@1000000001 : Record 5107;
+      rSalesLine@1000000010 : Record 5108;
+      rDHLParcelsStatusHistory@1000000014 : Record 50021;
+      rEDIParcelImportLine@1000000003 : Record 50123;
+      lPurchasing@1000000004 : Record 5721;
+      lFilterstring@1000000005 : Text[250];
+    BEGIN
+      rEDIParcelImportLine.SETRANGE("Entry No.",pEDIParcelImportHeader."Entry No.");
+      IF rEDIParcelImportLine.FINDFIRST THEN BEGIN
+        //IF rSalesHeader.GET(rSalesHeader."Document Type"::Order,pEDIParcelImportHeader."Sales Header No.") THEN BEGIN
+        // Hier fÅr ARCHIVIERTE AuftrÑge
+        rSalesHeader.SETRANGE("Document Type",rSalesHeader."Document Type"::Order);
+        rSalesHeader.SETRANGE("No.",pEDIParcelImportHeader."Sales Header No.");
+        IF rSalesHeader.FINDLAST THEN BEGIN
+          rSalesLine.SETRANGE("Document Type",rSalesLine."Document Type"::Order);
+          rSalesLine.SETRANGE("Document No.",rSalesHeader."No.");
+          // Hier fÅr ARCHIVIERTE AuftrÑge
+          rSalesLine.SETRANGE("Version No.",rSalesHeader."Version No.");
+          rSalesLine.SETRANGE(Type,rSalesLine.Type::Item);
+          CLEAR(lFilterstring);
+          lPurchasing.RESET;
+          lPurchasing.SETRANGE("VIR-Tracking",TRUE);
+          lPurchasing.FINDSET; // muss fÅr VIR gepflegt sein!
+          REPEAT
+            rSalesLine.SETRANGE("Purchasing Code",lPurchasing.Code);
+            IF NOT rSalesLine.ISEMPTY THEN BEGIN
+              lFilterstring += '|' + lPurchasing.Code;
+              // zugehîrige Codes auch mit beachten
+              IF (lPurchasing."Complemental VIR-Tracking" <> '') THEN
+                lFilterstring += '|' + lPurchasing."Complemental VIR-Tracking";
+            END;
+          UNTIL (lPurchasing.NEXT = 0);
+          lFilterstring := DELSTR(lFilterstring,1,1);
+          IF (lFilterstring = '') THEN
+            EXIT(FALSE); // *** EXIT ***
+          rSalesLine.SETFILTER("Purchasing Code",lFilterstring);
+          IF rSalesLine.FIND('-') THEN BEGIN
+            REPEAT
+              //S/P1117
+              //S/P1133
+              IF FPCGeneralSetup."Active Parcel Status History" IN
+                [FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+                FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+                FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New"]
+              THEN BEGIN
+              //E/P1133
+                rDHLParcelsStatusHistory.INIT;
+                rDHLParcelsStatusHistory."Entry No." := 0;
+                rDHLParcelsStatusHistory."Document No." := rSalesHeader."No.";
+                rDHLParcelsStatusHistory."Document Line No." := rSalesLine."Line No.";
+                rDHLParcelsStatusHistory."Document Type" := rDHLParcelsStatusHistory."Document Type"::Order;
+                rDHLParcelsStatusHistory."Status Event" := rEDIParcelImportLine."Event Code";
+                rDHLParcelsStatusHistory."Status Code" := rEDIParcelImportLine."RIC Code";
+                rDHLParcelsStatusHistory."VIR Status Comment" := rEDIParcelImportLine."Delivery Comment";
+                CASE rEDIParcelImportLine."Shipping Agent" OF
+                  rEDIParcelImportLine."Shipping Agent"::VIR :
+                    rDHLParcelsStatusHistory."Shipping Agent" := 'VIR';
+                END;
+                IF pEDIParcelImportHeader."Delivery Date" <> 0D THEN
+                  rDHLParcelsStatusHistory."Time Stamp" := CREATEDATETIME(pEDIParcelImportHeader."Delivery Date",0T)
+                ELSE
+                  rDHLParcelsStatusHistory."Time Stamp" := CREATEDATETIME(TODAY,0T);
+                rDHLParcelsStatusHistory."Import Time Stamp" := CURRENTDATETIME;
+                rDHLParcelsStatusHistory.INSERT(TRUE);
+              //S/P1133
+              END;
+
+              IF FPCGeneralSetup."Active Parcel Status History" IN
+                [FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+                FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+                FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History"]
+              THEN BEGIN
+              //E/P1133
+                CLEAR(CUParcelStatusHistoryMgmt);
+                RecRef.GETTABLE(rSalesLine);
+                IF pEDIParcelImportHeader."Delivery Date" <> 0D THEN
+                  CUParcelStatusHistoryMgmt.SetDateTimeGlobal(CREATEDATETIME(pEDIParcelImportHeader."Delivery Date",0T))
+                ELSE
+                  CUParcelStatusHistoryMgmt.SetDateTimeGlobal(CREATEDATETIME(TODAY,0T));
+                CUParcelStatusHistoryMgmt.FillHistoryByDocLine(
+                  RecRef,                                   // Rec
+                  1,                                        // p_Command
+                  0,                                        // p_InfoDirection::  Incoming,Outgoing
+                  1,                                        // p_UsedInterface::  ,EDI,DHL,DocData,Drop Shipment,Rhenus,UPS
+                  'VIR',                                    // p_ShippingAgentCode
+                  '',                                       // p_TrackingCode
+                  '',                                       // p_PieceCode
+                  rEDIParcelImportLine."Event Code",        // p_StatusCode
+                  rEDIParcelImportLine."RIC Code",          // p_StatusRICCode
+                  rEDIParcelImportLine."Delivery Comment",  // p_Comment
+                  0);
+                //S/P1129
+                CUParcelStatusHistoryMgmt.MoveParcelInfosToArchive(
+                  1,                            // p_Command::All,SalesDoc,PurchDoc,Date,EntryNo
+                  rSalesLine."Document No.",    // p_DocNo
+                  0,                            // p_LineNo
+                  rSalesLine."Document Type",   // p_DocType
+                  '',                           // p_DateFilterString
+                  0);                           // p_EntryNo
+                //E/P1129
+              //S/P1133
+              END;
+              //E/P1133
+              //E/P1117
+            UNTIL rSalesLine.NEXT = 0;
+            pEDIParcelImportHeader."Process Status" := pEDIParcelImportHeader."Process Status"::Processed;
+            pEDIParcelImportHeader.MODIFY;
+          END ELSE BEGIN
+            pEDIParcelImportHeader."Process Status" := pEDIParcelImportHeader."Process Status"::Error;
+            pEDIParcelImportHeader."Error Reason" := 'No Sales Lines found.';
+            pEDIParcelImportHeader.MODIFY;
+          END;
+          EXIT(TRUE);
+        END ELSE BEGIN
+          // Hier fÅr ARCHIVIERTE AuftrÑge
+          rSalesHeader.SETRANGE("Document Type",rSalesHeader."Document Type"::Order);
+          rSalesHeader.SETRANGE("No.",
+                              COPYSTR(pEDIParcelImportHeader."Sales Header No.",1,STRLEN(pEDIParcelImportHeader."Sales Header No.") - 3)
+      );
+          IF rSalesHeader.FINDLAST THEN BEGIN
+          //IF rSalesHeader.GET(rSalesHeader."Document Type"::Order,
+          //COPYSTR(pEDIParcelImportHeader."Sales Header No.",1,STRLEN(pEDIParcelImportHeader."Sales Header No.") - 3)) THEN BEGIN
+            rSalesLine.SETRANGE("Document Type",rSalesLine."Document Type"::Order);
+            rSalesLine.SETRANGE("Document No.",rSalesHeader."No.");
+            // Hier fÅr ARCHIVIERTE AuftrÑge
+            rSalesLine.SETRANGE("Version No.",rSalesHeader."Version No.");
+            rSalesLine.SETRANGE(Type,rSalesLine.Type::Item);
+            CLEAR(lFilterstring);
+            lPurchasing.RESET;
+            lPurchasing.SETRANGE("VIR-Tracking",TRUE);
+            lPurchasing.FINDSET; // muss fÅr VIR gepflegt sein!
+            REPEAT
+              rSalesLine.SETRANGE("Purchasing Code",lPurchasing.Code);
+              IF NOT rSalesLine.ISEMPTY THEN BEGIN
+                lFilterstring += '|' + lPurchasing.Code;
+                // zugehîrige Codes auch mit beachten
+                IF (lPurchasing."Complemental VIR-Tracking" <> '') THEN
+                  lFilterstring += '|' + lPurchasing."Complemental VIR-Tracking";
+              END;
+            UNTIL (lPurchasing.NEXT = 0);
+            lFilterstring := DELSTR(lFilterstring,1,1);
+            IF (lFilterstring = '') THEN
+              EXIT(FALSE); // *** EXIT ***
+            rSalesLine.SETFILTER("Purchasing Code",lFilterstring);
+            IF rSalesLine.FIND('-') THEN BEGIN
+              REPEAT
+                //S/P1117
+                //S/P1133
+                IF FPCGeneralSetup."Active Parcel Status History" IN
+                  [FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+                  FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+                  FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New"]
+                THEN BEGIN
+                //E/P1133
+                  IF CheckRhenusChangeLog(rSalesLine."Document No.",
+                                          rSalesLine."Line No.",
+                                          pEDIParcelImportHeader."Sales Header No.") THEN BEGIN
+                    rDHLParcelsStatusHistory.INIT;
+                    rDHLParcelsStatusHistory."Entry No." := 0;
+                    rDHLParcelsStatusHistory."Document No." := rSalesHeader."No.";
+                    rDHLParcelsStatusHistory."Document Line No." := rSalesLine."Line No.";
+                    rDHLParcelsStatusHistory."Document Type" := rDHLParcelsStatusHistory."Document Type"::Order;
+                    rDHLParcelsStatusHistory."Status Event" := rEDIParcelImportLine."Event Code";
+                    rDHLParcelsStatusHistory."Status Code" := rEDIParcelImportLine."RIC Code";
+                    rDHLParcelsStatusHistory."VIR Status Comment" := rEDIParcelImportLine."Delivery Comment";
+                    CASE rEDIParcelImportLine."Shipping Agent" OF
+                      rEDIParcelImportLine."Shipping Agent"::VIR :
+                        rDHLParcelsStatusHistory."Shipping Agent" := 'VIR';
+                    END;
+                    IF pEDIParcelImportHeader."Delivery Date" <> 0D THEN
+                      rDHLParcelsStatusHistory."Time Stamp" := CREATEDATETIME(pEDIParcelImportHeader."Delivery Date",0T)
+                    ELSE
+                      rDHLParcelsStatusHistory."Time Stamp" := CREATEDATETIME(TODAY,0T);
+                    rDHLParcelsStatusHistory."Import Time Stamp" := CURRENTDATETIME;
+                    rDHLParcelsStatusHistory.INSERT(TRUE);
+                  END;
+                //S/P1133
+                END;
+
+                IF FPCGeneralSetup."Active Parcel Status History" IN
+                  [FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+                  FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+                  FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History"]
+                THEN BEGIN
+                //E/P1133
+                  CLEAR(CUParcelStatusHistoryMgmt);
+                  RecRef.GETTABLE(rSalesLine);
+                  IF pEDIParcelImportHeader."Delivery Date" <> 0D THEN
+                    CUParcelStatusHistoryMgmt.SetDateTimeGlobal(CREATEDATETIME(pEDIParcelImportHeader."Delivery Date",0T))
+                  ELSE
+                    CUParcelStatusHistoryMgmt.SetDateTimeGlobal(CREATEDATETIME(TODAY,0T));
+                  CUParcelStatusHistoryMgmt.FillHistoryByDocLine(
+                    RecRef,                                   // Rec
+                    1,                                        // p_Command
+                    0,                                        // p_InfoDirection::  Incoming,Outgoing
+                    1,                                        // p_UsedInterface::  ,EDI,DHL,DocData,Drop Shipment,Rhenus,UPS
+                    'VIR',                                    // p_ShippingAgentCode
+                    '',                                       // p_TrackingCode
+                    '',                                       // p_PieceCode
+                    rEDIParcelImportLine."Event Code",        // p_StatusCode
+                    rEDIParcelImportLine."RIC Code",          // p_StatusRICCode
+                    rEDIParcelImportLine."Delivery Comment",  // p_Comment
+                    0);
+                  //S/P1129
+                  CUParcelStatusHistoryMgmt.MoveParcelInfosToArchive(
+                    1,                          // p_Command::All,SalesDoc,PurchDoc,Date,EntryNo
+                    rSalesLine."Document No.",  // p_DocNo
+                    0,                          // p_LineNo
+                    rSalesLine."Document Type", // p_DocType
+                    '',                         // p_DateFilterString
+                    0);                         // p_EntryNo
+                  //E/P1129
+                //S/P1133
+                END;
+                //E/P1133
+                //E/P1117
+              UNTIL rSalesLine.NEXT = 0;
+              pEDIParcelImportHeader."Process Status" := pEDIParcelImportHeader."Process Status"::Processed;
+              pEDIParcelImportHeader.MODIFY;
+            END ELSE BEGIN
+              pEDIParcelImportHeader."Process Status" := pEDIParcelImportHeader."Process Status"::Error;
+              pEDIParcelImportHeader."Error Reason" := 'No Sales Lines found.';
+              pEDIParcelImportHeader.MODIFY;
+            END;
+            EXIT(TRUE);
+          END;
+        END;
+      END;
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE CheckRhenusChangeLog@1000000003(pSalesOrderNo@1000000000 : Code[20];pLineNo@1000000001 : Integer;pLongOrderNo@1000000002 : Code[30]) : Boolean;
+    VAR
+      lRhenusChangeLog@1000000003 : Record 50070;
+    BEGIN
+      lRhenusChangeLog.SETRANGE("Source Type",lRhenusChangeLog."Source Type"::Sales);
+      lRhenusChangeLog.SETRANGE("Document Type",lRhenusChangeLog."Document Type"::Order);
+      lRhenusChangeLog.SETRANGE("Document No.",pSalesOrderNo);
+      lRhenusChangeLog.SETRANGE("Line No.",pLineNo);
+      lRhenusChangeLog.SETRANGE(Processed,TRUE);
+      IF lRhenusChangeLog.FINDLAST THEN BEGIN
+        IF ((lRhenusChangeLog."Document No." + lRhenusChangeLog."Seq. Code") = pLongOrderNo) THEN
+          EXIT(TRUE);
+      END;
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE IsProcessed@1000000004(pExtNo@1000000001 : Text[30]) : Boolean;
+    VAR
+      lEDIParcelImpHeader@1000000000 : Record 50122;
+    BEGIN
+      lEDIParcelImpHeader.SETRANGE("External Document No.",pExtNo);
+      lEDIParcelImpHeader.SETRANGE("Process Status",lEDIParcelImpHeader."Process Status"::Processed);
+      EXIT(NOT lEDIParcelImpHeader.ISEMPTY);
+    END;
+
+    PROCEDURE TryProcessingHistory@1000000005();
+    BEGIN
+      gHistory := TRUE;
+    END;
+
+    BEGIN
+    {
+      Rec = EDI Parcel Import Header
+      P0983   20.06.2013    gob-sil   statt Sequenz nun auf Purchasing Code prÅfen
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation GOB & Home24 NAV Team      |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      P1117       10.07.13  gob-mlan  - Redesign of "DHL Parcel Status History"
+                                      - Code within with //S/P1117/++S+++++++ and //E/P1117/--E-------
+                                        will be replaced by the new code and/or it will be deactivated
+      P1129       21.10.13  gob-mlan  - Redesign of "DHL Parcel Status History" Phase 2
+      P1133       06.11.13  gob-mlan  - Redesign of "DHL Parcel Status History"
+    }
+    END.
+  }
+}
+

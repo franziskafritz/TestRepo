@@ -1,0 +1,851 @@
+OBJECT Codeunit 50039 Import Payment Details
+{
+  OBJECT-PROPERTIES
+  {
+    Date=15.10.13;
+    Time=18:32:56;
+    Modified=Yes;
+    Version List=DN(1),GOB1.00;
+  }
+  PROPERTIES
+  {
+    OnRun=VAR
+            eBayHost@1119423000 : Record 5095832;
+            eBayImportPayPal@1119423001 : Record 5095913;
+          BEGIN
+            //CreateBankAccReconciliations('BILLPAY',2);
+            //CreateBankAccReconciliations('PAYONE',2);
+            CreateBankAccReconciliations('PAYPAL',1);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      BillPaySetup@1000000003 : Record 50000;
+      eBaySetup@1000000010 : Record 5095800;
+      eBayHost@1000000011 : Record 5095832;
+      GenLedgerSetup@1000000009 : Record 98;
+      ImportPaymAcc@1000000006 : Record 5095913;
+      ImportPaymAcc2@1000000020 : Record 5095913;
+      BankAccount@1000000014 : Record 270;
+      BankAccReconciliation@1000000013 : Record 273;
+      CustLedgEntry@1000000000 : Record 21;
+      SalesHeader@1000000004 : Record 36;
+      SalesArchHeader@1000000001 : Record 5107;
+      SalesLine@1000000005 : Record 37;
+      SalesArchLine@1000000002 : Record 5108;
+      TotalLinesToImport@1000000017 : Integer;
+      AmtLinesTotal@1000000015 : Integer;
+      CostLinesTotal@1000000016 : Integer;
+      AmtTotal@1000000018 : Decimal;
+      CostsTotal@1000000019 : Decimal;
+      LastDate@1000000021 : Date;
+      Window@1119423003 : Dialog;
+      Text000@1000000008 : TextConst 'DEU=Erstelle Bankkontoabstimmungszeilen\@1@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@;ENU=Create Bank Acc. Reconciliation lines\@1@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
+      Text001@1000000007 : TextConst 'DEU=%1 Zahlungszeilen und %2 Kostenzeilen erstellt!;ENU=%1 payment lines and %2 costs lines created!';
+      i@1000000012 : Integer;
+      ebaySalesHeader@1000000022 : Record 5251571;
+      JnlDim@1000000024 : Record 356;
+      LedgDim@1000000025 : Record 355;
+      BankReconLine@1000000023 : Record 274;
+      JnlDim2@1000000026 : Record 356;
+      DocDim@1000000027 : Record 357;
+      OrderNoL@1000000028 : Code[20];
+      DimensionValueL@1000000029 : Record 349;
+
+    PROCEDURE CreateBankAccReconciliations@1119423035(_AccountCode@1119423001 : Code[20];_AccountType@1000000000 : Integer) : Boolean;
+    VAR
+      LT_TempCurrency@1119423003 : TEMPORARY Record 4;
+    BEGIN
+      IF _AccountCode = '' THEN
+        EXIT;
+
+      ImportPaymAcc.RESET;
+      ImportPaymAcc.SETCURRENTKEY("Account Code",Currency,"Bank Statement created");
+      ImportPaymAcc.SETRANGE("Account Code",_AccountCode);
+      ImportPaymAcc.SETRANGE("Bank Statement created",FALSE);
+      IF NOT ImportPaymAcc.FIND('-') THEN
+        EXIT;
+
+      IF GUIALLOWED THEN
+        Window.OPEN(Text000);
+
+      TotalLinesToImport := ImportPaymAcc.COUNT;
+      REPEAT
+        LT_TempCurrency.Code := ImportPaymAcc.Currency;
+        IF LT_TempCurrency.INSERT THEN;
+      UNTIL ImportPaymAcc.NEXT = 0;
+
+      eBaySetup.GET;
+      GenLedgerSetup.GET;
+      eBayHost.GET(_AccountCode,_AccountType);
+      LT_TempCurrency.FIND('-');
+      REPEAT
+        CreateBankAccReconciliation(LT_TempCurrency.Code);
+      UNTIL LT_TempCurrency.NEXT = 0;
+
+      IF GUIALLOWED THEN BEGIN
+        Window.CLOSE;
+        MESSAGE(Text001,AmtLinesTotal,CostLinesTotal);
+      END;
+      EXIT(TRUE);
+    END;
+
+    LOCAL PROCEDURE CreateBankAccReconciliation@1119423026(_CurrencyCode@1119423002 : Code[10]);
+    VAR
+      LT_BankAccReconciliation@1000000001 : Record 273;
+      L_CostAmt@1000000000 : Decimal;
+    BEGIN
+      ImportPaymAcc.RESET;
+      ImportPaymAcc.SETCURRENTKEY("Account Code",Currency,"Bank Statement created");
+      ImportPaymAcc.SETRANGE("Account Code",eBayHost.Code);
+      ImportPaymAcc.SETRANGE(Currency,_CurrencyCode);
+      ImportPaymAcc.SETRANGE("Bank Statement created",FALSE);
+      IF NOT ImportPaymAcc.FIND('-') THEN
+        EXIT;
+
+      BankAccount.RESET();
+      IF ImportPaymAcc.Currency <> GenLedgerSetup."LCY Code" THEN
+        BankAccount.SETFILTER("Currency Code",'%1',ImportPaymAcc.Currency)
+      ELSE
+        BankAccount.SETFILTER("Currency Code",'%1','');
+      IF eBayHost.Type = eBayHost.Type::PayPal THEN BEGIN
+        BankAccount.SETFILTER("Search PayPal-E-Mail",CONVERTSTR(ImportPaymAcc."Bank PayPal-E-Mail",'@','?'));
+        BankAccount.SETRANGE("PayPal Account",TRUE);
+      END ELSE BEGIN
+        BillPaySetup.GET;
+        IF eBayHost.Code = 'BILLPAY' THEN
+          BankAccount.SETRANGE("No.",BillPaySetup."Paym. Bank Account")
+        ELSE
+          BankAccount.SETRANGE("No.",BillPaySetup."Concardis Bank Account");
+      END;
+      BankAccount.FIND('-');
+
+      AmtTotal := 0;
+      CostsTotal := 0;
+      CLEAR(BankAccReconciliation);
+      BankAccReconciliation.INIT;
+      //09.01.2013    nas >>>
+      BankAccReconciliation."Statement No." := '';
+      //09.01.2013    nas <<<
+      BankAccReconciliation.VALIDATE("Statement Date",TODAY);
+      BankAccReconciliation.VALIDATE("Bank Account No.",BankAccount."No.");
+      IF (ImportPaymAcc.Currency = BankAccount."Currency Code") OR
+         ((ImportPaymAcc.Currency = GenLedgerSetup."LCY Code") AND (BankAccount."Currency Code" = '')) THEN
+        BankAccReconciliation."Statement Ending Balance" := eBayHost."PayPal Balance";
+      BankAccReconciliation.INSERT(TRUE);
+
+      LastDate := 0D;
+      REPEAT
+        i := i + 1;
+        IF GUIALLOWED THEN
+          IF i MOD 20 = 0 THEN
+            Window.UPDATE(1,i * 9999 DIV TotalLinesToImport);
+        IF CreateAmountLine THEN
+          AmtLinesTotal += 1;
+        IF eBaySetup."PayPal Costs" = eBaySetup."PayPal Costs"::SingleLedgerEntry THEN
+          IF CreateAmountCostsLine THEN
+            CostLinesTotal += 1;
+        L_CostAmt := L_CostAmt + ImportPaymAcc."Amount (Costs)";
+        IF LastDate < DT2DATE(ImportPaymAcc."Payed at") THEN
+          LastDate := DT2DATE(ImportPaymAcc."Payed at");
+      UNTIL ImportPaymAcc.NEXT = 0;
+      IF LastDate = 0D THEN
+        LastDate := WORKDATE;
+
+      IF eBaySetup."PayPal Costs" = eBaySetup."PayPal Costs"::TotalLedgerEntry THEN
+        IF CreateAmountTotalCostsLine(L_CostAmt) THEN
+          CostLinesTotal += 1;
+
+      IF eBayHost.Code = 'BILLPAY' THEN
+        CreateAmountVATLine(CostsTotal);
+
+      IF eBayHost.Code = 'PAYPAL' THEN BEGIN
+        LT_BankAccReconciliation.RESET;
+        LT_BankAccReconciliation.SETRANGE("Bank Account No.",BankAccReconciliation."Bank Account No.");
+        LT_BankAccReconciliation.SETFILTER("Statement No.",'<%1',BankAccReconciliation."Statement No.");
+        LT_BankAccReconciliation.SETRANGE("Currency Code",BankAccReconciliation."Currency Code");
+        IF LT_BankAccReconciliation.FINDLAST THEN
+          BankAccReconciliation."Balance Last Statement" := LT_BankAccReconciliation."Statement Ending Balance";
+      END ELSE
+        BankAccReconciliation."Balance Last Statement" := 0;
+      BankAccReconciliation."Statement Date" := LastDate;
+      BankAccReconciliation."Statement Ending Balance" := BankAccReconciliation."Balance Last Statement" + AmtTotal + CostsTotal;
+      BankAccReconciliation.MODIFY;
+    END;
+
+    LOCAL PROCEDURE CreateAmountLine@1000000034() : Boolean;
+    VAR
+      LT_BankAccReconciliationLine@1000000004 : Record 274;
+      L_LineNo@1000000003 : Integer;
+      ImportPayPalSTL@1100409000 : Codeunit 50038;
+    BEGIN
+      IF ImportPaymAcc."Amount (Gross)" = 0 THEN
+        EXIT(FALSE);
+
+      WITH LT_BankAccReconciliationLine DO BEGIN
+        SETRANGE("Bank Account No.",BankAccReconciliation."Bank Account No.");
+        SETRANGE("Statement No.",BankAccReconciliation."Statement No.");
+        IF FIND('+') THEN
+          L_LineNo := ROUND("Statement Line No.",10000,'>') + 10000
+        ELSE
+          L_LineNo := 10000;
+
+        INIT;
+        "Bank Account No." := BankAccReconciliation."Bank Account No.";
+        "Statement No." := BankAccReconciliation."Statement No.";
+        "Statement Line No.":= L_LineNo;
+        VALIDATE("Transaction Date",DT2DATE(ImportPaymAcc."Payed at"));
+        VALIDATE("Value Date",DT2DATE(ImportPaymAcc."Payed at"));
+        INSERT(TRUE);
+        IF ImportPaymAcc.Currency <> GenLedgerSetup."LCY Code" THEN
+          VALIDATE("Currency Code",ImportPaymAcc.Currency);
+        VALIDATE("Document No.",ImportPaymAcc."Import/Document No." +'-'+ ImportPaymAcc."Line No.");
+        VALIDATE("Statement Amount",ImportPaymAcc."Amount (Gross)");
+        IF ImportPaymAcc."Amount (Gross)" < 0 THEN
+          VALIDATE("Document Type","Document Type"::Refund);
+        "PayPal Import" := TRUE;
+        IF ImportPayPalSTL.IsReserveTransaction(ImportPaymAcc) THEN BEGIN
+          eBaySetup.TESTFIELD("Account for PayPal Reserve");
+          VALIDATE("Bal. Account Type","Bal. Account Type"::"G/L Account");
+          VALIDATE("Bal. Account No.",eBaySetup."Account for PayPal Reserve");
+        END ELSE BEGIN
+          FindApplExtDoc(LT_BankAccReconciliationLine,ImportPaymAcc);
+          FindApplPaymTrans(LT_BankAccReconciliationLine,ImportPaymAcc,ImportPaymAcc.InvoiceID);
+          FindApplPaymTrans(LT_BankAccReconciliationLine,ImportPaymAcc,ImportPaymAcc."Transaction Code");
+          FindApplOrder(LT_BankAccReconciliationLine,ImportPaymAcc,ImportPaymAcc."Transaction Code");
+          FindApplOrder(LT_BankAccReconciliationLine,ImportPaymAcc,ImportPaymAcc.InvoiceID);
+          //A/gob-ko/24102012/P0509
+          FindApplNAVConnector(LT_BankAccReconciliationLine,ImportPaymAcc,ImportPaymAcc."Transaction Code");
+          //E/gob-ko/24102012/P0509
+          //A/gob-ko/130913/P1105
+          FindApplNAVConnector(LT_BankAccReconciliationLine,ImportPaymAcc,ImportPaymAcc.InvoiceID);
+
+          //A/gob-ko/P1123/07.10.2013
+          {
+          IF (LT_BankAccReconciliationLine."Applies-to Doc. Type" = LT_BankAccReconciliationLine."Applies-to Doc. Type"::Order) AND
+              (LT_BankAccReconciliationLine."Applies-to Doc. No." <> '') THEN
+               LT_BankAccReconciliationLine.ValidateShortcutDimCode(3,LT_BankAccReconciliationLine."Applies-to Doc. No.");
+          }
+          IF (LT_BankAccReconciliationLine."Applies-to Doc. Type" = LT_BankAccReconciliationLine."Applies-to Doc. Type"::Order) AND
+              (LT_BankAccReconciliationLine."Applies-to Doc. No." <> '') THEN BEGIN
+
+            DocDim.RESET;
+            DocDim.SETRANGE("Table ID",36);
+            DocDim.SETRANGE(DocDim."Document Type",DocDim."Document Type"::Order);
+            DocDim.SETRANGE("Document No.",BankReconLine."Applies-to Doc. No.");
+            DocDim.SETRANGE("Dimension Code",'AUFTRAG');
+            IF DocDim.FINDFIRST THEN BEGIN
+               LT_BankAccReconciliationLine.ValidateShortcutDimCode(3,LT_BankAccReconciliationLine."Applies-to Doc. No.");
+
+
+           END;
+          END;
+          //
+          IF STRLEN(COPYSTR
+            (LT_BankAccReconciliationLine.Description,STRPOS(LT_BankAccReconciliationLine.Description,':')+1)) <= 20 THEN BEGIN
+            OrderNoL := COPYSTR(LT_BankAccReconciliationLine.Description,STRPOS(LT_BankAccReconciliationLine.Description,':')+1);
+            DimensionValueL.SETRANGE("Dimension Code",'AUFTRAG');
+            DimensionValueL.SETRANGE(Code,OrderNoL);
+            IF DimensionValueL.FIND('-') THEN BEGIN
+              LT_BankAccReconciliationLine.ValidateShortcutDimCode(3,OrderNoL);
+
+            END;
+           END;
+          //
+          //E/gob-ko/P1123/07.10.2013
+          LT_BankAccReconciliationLine.MODIFY;
+          //E/gob-ko/130913/P1105
+
+        END;
+        IF (ImportPaymAcc."Account Code" = 'PAYPAL') AND (Description = '') THEN
+          Description := ImportPaymAcc.InvoiceID;
+        IF (ImportPaymAcc."Account Code" = 'PAYPAL') AND (Description <> '') THEN
+          Description := COPYSTR(Description +' / '+ ImportPaymAcc.Name,1,MAXSTRLEN(Description))
+        ELSE
+          Description := COPYSTR(ImportPaymAcc.Name,1,MAXSTRLEN(Description));
+        Comment := ImportPaymAcc."Transaction Code";
+        //A/gob-ko/P0741/11.01.2013
+        IF LT_BankAccReconciliationLine."Applies-to Doc. No." <> '' THEN BEGIN
+           CustLedgEntry.RESET;
+           CustLedgEntry.SETCURRENTKEY("Document No.","Document Type","Customer No.");
+           CustLedgEntry.SETRANGE(CustLedgEntry."Document No.",LT_BankAccReconciliationLine."Applies-to Doc. No.");
+            IF CustLedgEntry.FINDLAST THEN BEGIN
+              //BankReconLine := Rec;
+              //IF BankReconLine.NEXT <> 0 THEN BEGIN
+
+                  LedgDim.RESET;
+                  LedgDim.SETRANGE("Table ID",DATABASE::"Cust. Ledger Entry");
+                  LedgDim.SETRANGE("Entry No.",CustLedgEntry."Entry No.");
+                  IF LedgDim.FIND('-') THEN
+                    REPEAT
+                      JnlDim.INIT;
+                      JnlDim."Table ID" := DATABASE::"Bank Acc. Reconciliation Line";
+                      JnlDim."Journal Template Name" := LT_BankAccReconciliationLine."Bank Account No.";
+                      JnlDim."Journal Batch Name" := LT_BankAccReconciliationLine."Statement No.";
+                      JnlDim."Journal Line No." := LT_BankAccReconciliationLine."Statement Line No.";
+                      JnlDim."Dimension Code" := LedgDim."Dimension Code";
+                      JnlDim."Dimension Value Code" := LedgDim."Dimension Value Code";
+                      IF JnlDim.INSERT THEN;
+                    UNTIL LedgDim.NEXT = 0;
+
+              //END;
+            END;
+
+        END;
+        //E/gob-ko/P0741/11.01.2013
+        //P1123
+        IF STRLEN(COPYSTR
+          (LT_BankAccReconciliationLine.Description,STRPOS(LT_BankAccReconciliationLine.Description,':')+1)) <= 20 THEN BEGIN
+          OrderNoL := COPYSTR(LT_BankAccReconciliationLine.Description,STRPOS(LT_BankAccReconciliationLine.Description,':')+1);
+          DimensionValueL.SETRANGE("Dimension Code",'AUFTRAG');
+          DimensionValueL.SETRANGE(Code,OrderNoL);
+          IF DimensionValueL.FIND('-') THEN BEGIN
+            LT_BankAccReconciliationLine.ValidateShortcutDimCode(3,OrderNoL);
+
+          END;
+        END;
+       //P1123
+
+        MODIFY;
+
+        AmtTotal := AmtTotal + "Statement Amount";
+
+        ImportPaymAcc2 := ImportPaymAcc;
+        ImportPaymAcc2.FIND;
+        ImportPaymAcc2."Bank Statement created" := TRUE;
+        ImportPaymAcc2."Bank Account No." := "Bank Account No.";
+        ImportPaymAcc2."Statement No." := "Statement No.";
+        ImportPaymAcc2."Statement Line No." := "Statement Line No.";
+        ImportPaymAcc2.MODIFY;
+      END;
+      EXIT(TRUE);
+    END;
+
+    LOCAL PROCEDURE CreateAmountCostsLine@1000000000() : Boolean;
+    VAR
+      LT_BankAccReconciliationLine@1119423005 : Record 274;
+      L_LineNo@1000000003 : Integer;
+    BEGIN
+      IF ImportPaymAcc."Amount (Costs)" = 0 THEN
+        EXIT(FALSE);
+      IF eBaySetup."PayPal Costs Import" = eBaySetup."PayPal Costs Import"::No THEN
+        EXIT(FALSE);
+
+      WITH LT_BankAccReconciliationLine DO BEGIN
+        SETRANGE("Bank Account No.",BankAccReconciliation."Bank Account No.");
+        SETRANGE("Statement No.",BankAccReconciliation."Statement No.");
+        IF FIND('+') THEN
+          L_LineNo := ROUND("Statement Line No.",10000,'>') + 10000
+        ELSE
+          L_LineNo := 10000;
+
+        INIT;
+        "Bank Account No." := BankAccReconciliation."Bank Account No.";
+        "Statement No." := BankAccReconciliation."Statement No.";
+        "Statement Line No.":= L_LineNo;
+        VALIDATE("Transaction Date",DT2DATE(ImportPaymAcc."Payed at"));
+        VALIDATE("Value Date",DT2DATE(ImportPaymAcc."Payed at"));
+        INSERT(TRUE);
+        IF ImportPaymAcc.Currency <> GenLedgerSetup."LCY Code" THEN
+          VALIDATE("Currency Code",ImportPaymAcc.Currency);
+        VALIDATE("Document No.",ImportPaymAcc."Import/Document No." +'-'+ ImportPaymAcc."Line No.");
+        VALIDATE("Bal. Account Type","Bal. Account Type"::"G/L Account");
+        IF ImportPaymAcc."Account Code" = 'BILLPAY' THEN
+          VALIDATE("Bal. Account No.",BillPaySetup."Payment Fee Account No.")
+        ELSE
+          IF ImportPaymAcc."Account Code" = 'PAYONE' THEN
+            VALIDATE("Bal. Account No.",BillPaySetup."Concardis Fee Account No.")
+          ELSE
+            VALIDATE("Bal. Account No.", eBaySetup."Account for PayPal Costs");
+        Description := COPYSTR(ImportPaymAcc.Name,1,MAXSTRLEN(Description));
+        VALIDATE("Statement Amount",ImportPaymAcc."Amount (Costs)");
+        "Apply completed" := TRUE;
+        "PayPal Costs" := TRUE;
+        Comment := ImportPaymAcc."Transaction Code";
+        //A/gob-ko/P0741/11.01.2013
+        BankReconLine.RESET;
+        BankReconLine.SETRANGE(BankReconLine."Bank Account No.",LT_BankAccReconciliationLine."Bank Account No.");
+        BankReconLine.SETRANGE("Statement No.",LT_BankAccReconciliationLine."Statement No.");
+        BankReconLine.SETRANGE("Statement Line No.",1,LT_BankAccReconciliationLine."Statement Line No."-1);
+        IF BankReconLine.FINDLAST THEN BEGIN
+              //A/gob-czi/P0994/24.06.2013
+              IF Description = BankReconLine.Description THEN BEGIN
+              //E/gob-czi/P0994/24.06.2013
+                JnlDim2.RESET;
+                JnlDim2.SETRANGE("Table ID",DATABASE::"Bank Acc. Reconciliation Line");
+                JnlDim2.SETRANGE("Journal Template Name",BankReconLine."Bank Account No.");
+                JnlDim2.SETRANGE("Journal Batch Name",BankReconLine."Statement No.");
+                JnlDim2.SETRANGE("Journal Line No.",BankReconLine."Statement Line No.");
+
+              IF JnlDim2.FIND('-') THEN
+                    REPEAT
+                      JnlDim.INIT;
+                      JnlDim."Table ID" := DATABASE::"Bank Acc. Reconciliation Line";
+                      JnlDim."Journal Template Name" := LT_BankAccReconciliationLine."Bank Account No.";
+                      JnlDim."Journal Batch Name" := LT_BankAccReconciliationLine."Statement No.";
+                      JnlDim."Journal Line No." := LT_BankAccReconciliationLine."Statement Line No.";
+                      JnlDim."Dimension Code" := JnlDim2."Dimension Code";
+                      JnlDim."Dimension Value Code" := JnlDim2."Dimension Value Code";
+                      IF JnlDim.INSERT THEN;
+                    UNTIL JnlDim2.NEXT = 0;
+               //A/gob-czi/P0994/24.06.2013
+               END;
+               //E/gob-czi/P0994/24.06.2013
+
+        END;
+        //E/gob-ko/P0741/11.01.2013
+
+        MODIFY;
+        CostsTotal := CostsTotal + "Statement Amount";
+      END;
+
+      ImportPaymAcc2 := ImportPaymAcc;
+      ImportPaymAcc2.FIND;
+      ImportPaymAcc2."Bank Statement (Costs) created" := TRUE;
+      IF ImportPaymAcc."Amount (Gross)" = 0 THEN
+        ImportPaymAcc2."Bank Statement created" := TRUE;
+      ImportPaymAcc2.MODIFY;
+      EXIT(TRUE);
+    END;
+
+    LOCAL PROCEDURE CreateAmountTotalCostsLine@1119423016(_TotalCosts@1119423003 : Decimal) : Boolean;
+    VAR
+      LT_BankAccReconciliationLine@1119423005 : Record 274;
+      L_LineNo@1000000003 : Integer;
+      TEXT001@1119423006 : TextConst 'DEU=PayPal-GebÅhren;ENU=PayPal-Costs';
+    BEGIN
+      IF _TotalCosts = 0 THEN
+        EXIT(FALSE);
+      IF eBaySetup."PayPal Costs Import" = eBaySetup."PayPal Costs Import"::No THEN
+        EXIT(FALSE);
+
+      WITH LT_BankAccReconciliationLine DO BEGIN
+        SETRANGE("Bank Account No.",BankAccReconciliation."Bank Account No.");
+        SETRANGE("Statement No.",BankAccReconciliation."Statement No.");
+        IF FIND('+') THEN
+          L_LineNo := ROUND("Statement Line No.",10000,'>') + 10000
+        ELSE
+          L_LineNo := 10000;
+
+        INIT;
+        "Bank Account No." := BankAccReconciliation."Bank Account No.";
+        "Statement No." := BankAccReconciliation."Statement No.";
+        "Statement Line No.":= L_LineNo;
+        VALIDATE("Transaction Date",LastDate);
+        VALIDATE("Value Date",LastDate);
+        INSERT(TRUE);
+        IF ImportPaymAcc.Currency <> GenLedgerSetup."LCY Code" THEN
+          VALIDATE("Currency Code",ImportPaymAcc.Currency);
+        VALIDATE("Document No.",ImportPaymAcc."Import/Document No." + '-PP');
+        VALIDATE("Bal. Account Type","Bal. Account Type"::"G/L Account");
+        VALIDATE("Bal. Account No.",eBaySetup."Account for PayPal Costs");
+        VALIDATE(Description,COPYSTR(TEXT001,1,MAXSTRLEN(Description)));
+        VALIDATE("Statement Amount",_TotalCosts);
+        "Apply completed" := TRUE;
+        "PayPal Costs" := TRUE;
+        //A/gob-ko/P0741/11.01.2013
+        BankReconLine.RESET;
+        BankReconLine.SETRANGE(BankReconLine."Bank Account No.",LT_BankAccReconciliationLine."Bank Account No.");
+        BankReconLine.SETRANGE("Statement No.",LT_BankAccReconciliationLine."Statement No.");
+        BankReconLine.SETRANGE("Statement Line No.",1,LT_BankAccReconciliationLine."Statement Line No."-1);
+        IF BankReconLine.FINDLAST THEN BEGIN
+
+              JnlDim2.RESET;
+              JnlDim2.SETRANGE("Table ID",DATABASE::"Bank Acc. Reconciliation Line");
+              JnlDim2.SETRANGE("Journal Template Name",BankReconLine."Bank Account No.");
+              JnlDim2.SETRANGE("Journal Batch Name",BankReconLine."Statement No.");
+              JnlDim2.SETRANGE("Journal Line No.",BankReconLine."Statement Line No.");
+
+              IF JnlDim2.FIND('-') THEN
+                    REPEAT
+                      JnlDim.INIT;
+                      JnlDim."Table ID" := DATABASE::"Bank Acc. Reconciliation Line";
+                      JnlDim."Journal Template Name" := LT_BankAccReconciliationLine."Bank Account No.";
+                      JnlDim."Journal Batch Name" := LT_BankAccReconciliationLine."Statement No.";
+                      JnlDim."Journal Line No." := LT_BankAccReconciliationLine."Statement Line No.";
+                      JnlDim."Dimension Code" := JnlDim2."Dimension Code";
+                      JnlDim."Dimension Value Code" := JnlDim2."Dimension Value Code";
+                      IF JnlDim.INSERT THEN;
+                    UNTIL JnlDim2.NEXT = 0;
+
+
+
+
+        END;
+        //E/gob-ko/P0741/11.01.2013
+
+        MODIFY(TRUE);
+        CostsTotal := CostsTotal + "Statement Amount";
+      END;
+
+      ImportPaymAcc2.RESET;
+      ImportPaymAcc2.SETRANGE("Import/Document No.",ImportPaymAcc."Import/Document No.");
+      ImportPaymAcc2.SETRANGE(Currency,ImportPaymAcc.Currency);
+      ImportPaymAcc2.MODIFYALL("Bank Statement (Costs) created",TRUE);
+      EXIT(TRUE);
+    END;
+
+    LOCAL PROCEDURE CreateAmountVATLine@1000000011(_TotalCosts@1119423003 : Decimal) : Boolean;
+    VAR
+      LT_BankAccReconciliationLine@1119423005 : Record 274;
+      LT_VATPostingSetup@1000000000 : Record 325;
+      L_LineNo@1000000003 : Integer;
+      TEXT001@1119423006 : TextConst 'DEU=Billpay Ref.: VSt. GebÅhren;ENU=Billpay Ref.: VSt. GebÅhren';
+    BEGIN
+      IF _TotalCosts = 0 THEN
+        EXIT(FALSE);
+      BillPaySetup.TESTFIELD("Paym. VAT Account");
+
+      WITH LT_BankAccReconciliationLine DO BEGIN
+        SETRANGE("Bank Account No.",BankAccReconciliation."Bank Account No.");
+        SETRANGE("Statement No.",BankAccReconciliation."Statement No.");
+        IF FIND('+') THEN
+          L_LineNo := ROUND("Statement Line No.",10000,'>') + 10000
+        ELSE
+          L_LineNo := 10000;
+
+        INIT;
+        "Bank Account No." := BankAccReconciliation."Bank Account No.";
+        "Statement No." := BankAccReconciliation."Statement No.";
+        "Statement Line No.":= L_LineNo;
+        VALIDATE("Transaction Date",LastDate);
+        VALIDATE("Value Date",LastDate);
+        INSERT(TRUE);
+        IF ImportPaymAcc.Currency <> GenLedgerSetup."LCY Code" THEN
+          VALIDATE("Currency Code",ImportPaymAcc.Currency);
+        VALIDATE("Document No.",ImportPaymAcc."Import/Document No." + '-BP');
+        VALIDATE("Bal. Account Type","Bal. Account Type"::"G/L Account");
+        VALIDATE("Bal. Account No.",BillPaySetup."Paym. VAT Account");
+        VALIDATE(Description,COPYSTR(TEXT001,1,MAXSTRLEN(Description)));
+        LT_VATPostingSetup.GET("Bal. VAT Bus. Posting Group","Bal. VAT Prod. Posting Group");
+        VALIDATE("Statement Amount",ROUND(_TotalCosts * LT_VATPostingSetup."VAT %" / 100));
+        "PayPal Costs" := TRUE;
+        //A/gob-ko/P0741/11.01.2013
+        BankReconLine.RESET;
+        BankReconLine.SETRANGE(BankReconLine."Bank Account No.",LT_BankAccReconciliationLine."Bank Account No.");
+        BankReconLine.SETRANGE("Statement No.",LT_BankAccReconciliationLine."Statement No.");
+        BankReconLine.SETRANGE("Statement Line No.",1,LT_BankAccReconciliationLine."Statement Line No."-1);
+        IF BankReconLine.FINDLAST THEN BEGIN
+
+              JnlDim2.RESET;
+              JnlDim2.SETRANGE("Table ID",DATABASE::"Bank Acc. Reconciliation Line");
+              JnlDim2.SETRANGE("Journal Template Name",BankReconLine."Bank Account No.");
+              JnlDim2.SETRANGE("Journal Batch Name",BankReconLine."Statement No.");
+              JnlDim2.SETRANGE("Journal Line No.",BankReconLine."Statement Line No.");
+
+              IF JnlDim2.FIND('-') THEN
+                    REPEAT
+                      JnlDim.INIT;
+                      JnlDim."Table ID" := DATABASE::"Bank Acc. Reconciliation Line";
+                      JnlDim."Journal Template Name" := LT_BankAccReconciliationLine."Bank Account No.";
+                      JnlDim."Journal Batch Name" := LT_BankAccReconciliationLine."Statement No.";
+                      JnlDim."Journal Line No." := LT_BankAccReconciliationLine."Statement Line No.";
+                      JnlDim."Dimension Code" := JnlDim2."Dimension Code";
+                      JnlDim."Dimension Value Code" := JnlDim2."Dimension Value Code";
+                      IF JnlDim.INSERT THEN;
+                    UNTIL JnlDim2.NEXT = 0;
+
+
+
+
+        END;
+        //E/gob-ko/P0741/11.01.2013
+
+        MODIFY(TRUE);
+        CostsTotal := CostsTotal + "Statement Amount";
+      END;
+    END;
+
+    PROCEDURE FindApplExtDoc@1000000001(VAR _BankAccReconLine@1000000000 : Record 274;_eBayImportLine@1000000001 : Record 5095913);
+    VAR
+      L_Positiv@1000000002 : Boolean;
+    BEGIN
+      IF (_eBayImportLine.InvoiceID = '') OR (_BankAccReconLine."Applies-to Doc. No." <> '') THEN
+        EXIT;
+
+      L_Positiv := _eBayImportLine."Amount (Gross)" > 0;
+      CustLedgEntry.RESET;
+      CustLedgEntry.SETCURRENTKEY("External Document No.");
+      CustLedgEntry.SETRANGE("External Document No.",_eBayImportLine.InvoiceID);
+      IF _BankAccReconLine."Applies-to Doc. No." <> '' THEN
+        CustLedgEntry.SETRANGE("Customer No.",_BankAccReconLine."Applies-to Doc. No.");
+      CustLedgEntry.SETRANGE(Open,TRUE);
+      CustLedgEntry.SETRANGE(Positive,L_Positiv);
+      IF CustLedgEntry.FINDSET THEN BEGIN
+        _BankAccReconLine.VALIDATE("Bal. Account Type",_BankAccReconLine."Bal. Account Type"::Customer);
+        _BankAccReconLine.VALIDATE("Bal. Account No.",CustLedgEntry."Customer No.");
+        REPEAT
+          CustLedgEntry.CALCFIELDS("Remaining Amt. (LCY)");
+          IF CustLedgEntry."Remaining Amt. (LCY)" = _eBayImportLine."Amount (Gross)" THEN BEGIN
+            _BankAccReconLine.VALIDATE("Applies-to Doc. Type",CustLedgEntry."Document Type");
+            _BankAccReconLine.VALIDATE("Applies-to Doc. No.",CustLedgEntry."Document No.");
+            _BankAccReconLine.Description := CustLedgEntry."External Document No.";
+          END;
+        UNTIL (CustLedgEntry.NEXT = 0) OR (_BankAccReconLine."Applies-to Doc. No." <> '');
+      END;
+    END;
+
+    PROCEDURE FindApplPaymTrans@1000000003(VAR _BankAccReconLine@1000000000 : Record 274;_eBayImportLine@1000000001 : Record 5095913;_ApplyNo@1000000003 : Text[50]);
+    VAR
+      L_Positiv@1000000002 : Boolean;
+    BEGIN
+      IF (_ApplyNo = '') OR ((_BankAccReconLine."Applies-to Doc. No." <> '') AND
+         (_BankAccReconLine."Applies-to Doc. Type" <> _BankAccReconLine."Applies-to Doc. Type"::Order)) THEN
+        EXIT;
+
+      L_Positiv := _eBayImportLine."Amount (Gross)" > 0;
+      SalesLine.RESET;
+      //A/gob-ko/130913/P1105
+      SalesLine.SETCURRENTKEY("Payment Transaction No.");
+      //E/gob-ko/130913/P1105
+
+      SalesLine.SETRANGE("Payment Transaction No.",_ApplyNo);
+      IF SalesLine.FINDSET THEN BEGIN
+        SalesHeader.GET(SalesLine."Document Type",SalesLine."Document No.");
+        IF _BankAccReconLine."Bal. Account No." = '' THEN BEGIN
+          _BankAccReconLine.VALIDATE("Bal. Account Type",_BankAccReconLine."Bal. Account Type"::Customer);
+          _BankAccReconLine.VALIDATE("Bal. Account No.",SalesHeader."Bill-to Customer No.");
+        END;
+        REPEAT
+          CustLedgEntry.RESET;
+          CustLedgEntry.SETCURRENTKEY("External Document No.");
+          CustLedgEntry.SETRANGE("External Document No.",SalesLine."Document No.");
+          CustLedgEntry.SETRANGE("Customer No.",_BankAccReconLine."Bal. Account No.");
+          CustLedgEntry.SETRANGE(Open,TRUE);
+          CustLedgEntry.SETRANGE(Positive,L_Positiv);
+          IF CustLedgEntry.FINDFIRST THEN REPEAT
+            CustLedgEntry.CALCFIELDS("Remaining Amt. (LCY)");
+            IF CustLedgEntry."Remaining Amt. (LCY)" = _eBayImportLine."Amount (Gross)" THEN BEGIN
+              _BankAccReconLine.VALIDATE("Applies-to Doc. Type",CustLedgEntry."Document Type");
+              _BankAccReconLine.VALIDATE("Applies-to Doc. No.",CustLedgEntry."Document No.");
+              _BankAccReconLine.Description := CustLedgEntry."External Document No.";
+            END;
+          UNTIL (CustLedgEntry.NEXT = 0) OR (_BankAccReconLine."Applies-to Doc. No." <> '');
+        UNTIL (SalesLine.NEXT = 0) OR (_BankAccReconLine."Applies-to Doc. No." <> '');
+      END ELSE BEGIN
+      //A/gob-ko/24102012/P0509
+      //  {################
+      //E/gob-ko/24102012/P0509
+        SalesArchLine.RESET;
+        //A/gob-ko/130913/P1105
+        SalesArchLine.SETCURRENTKEY("Payment Transaction No.");
+        //E/gob-ko/130913/P1105
+
+        SalesArchLine.SETRANGE("Payment Transaction No.",_ApplyNo);
+        IF SalesArchLine.FINDSET THEN BEGIN
+          //A/gob-ko/08112012/P0567
+          //SalesArchHeader.GET(SalesArchLine."Document Type",SalesArchLine."Document No.");
+          SalesArchHeader.RESET;
+          SalesArchHeader.SETRANGE(SalesArchHeader."No.",SalesArchLine."Document No.");
+          IF SalesArchHeader.FINDLAST THEN;
+          //E/gob-ko/08112012/P0567
+          _BankAccReconLine.VALIDATE("Bal. Account Type",_BankAccReconLine."Bal. Account Type"::Customer);
+          _BankAccReconLine.VALIDATE("Bal. Account No.",SalesArchHeader."Bill-to Customer No.");
+          REPEAT
+            CustLedgEntry.RESET;
+            CustLedgEntry.SETCURRENTKEY("Document No.","Document Type","Customer No.");
+            CustLedgEntry.SETRANGE("Document No.",SalesArchLine."Document No.");
+            CustLedgEntry.SETRANGE("Customer No.",SalesArchHeader."Bill-to Customer No.");
+            CustLedgEntry.SETRANGE(Open,TRUE);
+            CustLedgEntry.SETRANGE(Positive,L_Positiv);
+            IF CustLedgEntry.FINDFIRST THEN REPEAT
+              CustLedgEntry.CALCFIELDS("Remaining Amt. (LCY)");
+              IF CustLedgEntry."Remaining Amt. (LCY)" = _eBayImportLine."Amount (Gross)" THEN BEGIN
+                _BankAccReconLine.VALIDATE("Applies-to Doc. Type",CustLedgEntry."Document Type");
+                _BankAccReconLine.VALIDATE("Applies-to Doc. No.",CustLedgEntry."Document No.");
+                _BankAccReconLine.Description := CustLedgEntry."External Document No.";
+              END;
+            UNTIL (CustLedgEntry.NEXT = 0) OR (_BankAccReconLine."Applies-to Doc. No." <> '');
+          UNTIL (SalesLine.NEXT = 0) OR (_BankAccReconLine."Applies-to Doc. No." <> '');
+        END;
+      //A/gob-ko/24102012/P0509
+      //  ##############}
+      //E/gob-ko/24102012/P0509
+      END;
+    END;
+
+    PROCEDURE FindApplOrder@1000000004(VAR _BankAccReconLine@1000000000 : Record 274;_eBayImportLine@1000000001 : Record 5095913;_ApplyNo@1000000003 : Text[50]);
+    VAR
+      L_Positiv@1000000002 : Boolean;
+    BEGIN
+      IF (_ApplyNo = '') OR (_BankAccReconLine."Applies-to Doc. No." <> '') THEN
+        EXIT;
+
+      IF _eBayImportLine.InvoiceID = _ApplyNo THEN BEGIN
+        SalesHeader.RESET;
+        //A/gob-ko/130913/P1105
+        SalesHeader.SETCURRENTKEY(SalesHeader."External Document No.",SalesHeader."Document Type",SalesHeader."Bill-to Customer No.");
+        //E/gob-ko/130913/P1105
+
+        SalesHeader.SETRANGE("External Document No.",_ApplyNo);
+        SalesHeader.SETRANGE("Document Type",SalesHeader."Document Type"::Order);
+        IF _BankAccReconLine."Bal. Account No." <> '' THEN
+          SalesHeader.SETRANGE("Bill-to Customer No.",_BankAccReconLine."Bal. Account No.");
+        IF SalesHeader.FINDFIRST THEN BEGIN
+          _BankAccReconLine.VALIDATE("Bal. Account Type",_BankAccReconLine."Bal. Account Type"::Customer);
+          _BankAccReconLine.VALIDATE("Bal. Account No.",SalesHeader."Bill-to Customer No.");
+          IF _eBayImportLine."Amount (Gross)" > 0 THEN BEGIN
+            _BankAccReconLine.VALIDATE("Applies-to Doc. Type",_BankAccReconLine."Applies-to Doc. Type"::Order);
+            _BankAccReconLine.VALIDATE("Applies-to Doc. No.",SalesHeader."No.");
+          END;
+          _BankAccReconLine.Description := SalesHeader."External Document No.";
+        END;
+      END;
+      IF _BankAccReconLine."Applies-to Doc. No." = '' THEN BEGIN
+        SalesLine.RESET;
+        //A/gob-ko/130913/P1105
+        SalesLine.SETCURRENTKEY("Payment Transaction No.");
+        //E/gob-ko/130913/P1105
+
+        SalesLine.SETRANGE("Payment Transaction No.",_ApplyNo);
+        SalesLine.SETRANGE("Document Type",SalesLine."Document Type"::Order);
+        IF SalesLine.FINDFIRST AND SalesHeader.GET(SalesLine."Document Type",SalesLine."Document No.") THEN BEGIN
+          IF (_BankAccReconLine."Bal. Account No." <> '') OR
+             (_BankAccReconLine."Bank Account No." = SalesHeader."Bill-to Customer No.") THEN BEGIN
+            _BankAccReconLine.VALIDATE("Bal. Account Type",_BankAccReconLine."Bal. Account Type"::Customer);
+            _BankAccReconLine.VALIDATE("Bal. Account No.",SalesHeader."Bill-to Customer No.");
+            IF _eBayImportLine."Amount (Gross)" > 0 THEN BEGIN
+              _BankAccReconLine.VALIDATE("Applies-to Doc. Type",_BankAccReconLine."Applies-to Doc. Type"::Order);
+              _BankAccReconLine.VALIDATE("Applies-to Doc. No.",SalesHeader."No.");
+            END;
+            _BankAccReconLine.Description := SalesHeader."External Document No.";
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE FindApplNAVConnector@1000000005(VAR _BankAccReconLine@1000000000 : Record 274;_eBayImportLine@1000000001 : Record 5095913;_ApplyNo@1000000003 : Text[50]);
+    VAR
+      L_Positiv@1000000002 : Boolean;
+      L_Orderno@1000000004 : Code[20];
+    BEGIN
+      //A/gob-ko/P0509/24102012
+      IF (_ApplyNo = '') OR ((_BankAccReconLine."Applies-to Doc. No." <> '') AND
+         (_BankAccReconLine."Applies-to Doc. Type" <> _BankAccReconLine."Applies-to Doc. Type"::Order)) THEN
+        EXIT;
+      L_Orderno := '';
+      L_Positiv := _eBayImportLine."Amount (Gross)" > 0;
+      ebaySalesHeader.RESET;
+      //A/gob-ko/130913/P1105
+      ebaySalesHeader.SETCURRENTKEY(ebaySalesHeader."Payment Transaction No.");
+      //E/gob-ko/130913/P1105
+      ebaySalesHeader.SETRANGE("Payment Transaction No.",_ApplyNo);
+      IF ebaySalesHeader.FINDSET THEN BEGIN
+        //A/gob-ko/08112012/P0567
+        SalesArchHeader.RESET;
+        SalesArchHeader.SETRANGE("No.",ebaySalesHeader."No.");
+
+
+        //IF NOT SalesArchHeader.GET(SalesLine."Document Type",ebaySalesHeader."No.") THEN BEGIN
+        IF NOT SalesArchHeader.FINDLAST THEN BEGIN
+        //E/gob-ko/08112012/P0567
+            IF NOT SalesHeader.GET(SalesLine."Document Type",ebaySalesHeader."No.") THEN
+               EXIT;
+            L_Orderno := SalesHeader."No.";
+            IF _BankAccReconLine."Bal. Account No." = '' THEN BEGIN
+              _BankAccReconLine.VALIDATE("Bal. Account Type",_BankAccReconLine."Bal. Account Type"::Customer);
+              _BankAccReconLine.VALIDATE("Bal. Account No.",SalesHeader."Bill-to Customer No.");
+            END;
+
+        END ELSE BEGIN
+             L_Orderno := SalesArchHeader."No.";
+            IF _BankAccReconLine."Bal. Account No." = '' THEN BEGIN
+              _BankAccReconLine.VALIDATE("Bal. Account Type",_BankAccReconLine."Bal. Account Type"::Customer);
+              _BankAccReconLine.VALIDATE("Bal. Account No.",SalesArchHeader."Bill-to Customer No.");
+            END;
+
+        END;
+        IF _BankAccReconLine."Bal. Account No." = '' THEN BEGIN
+          _BankAccReconLine.VALIDATE("Bal. Account Type",_BankAccReconLine."Bal. Account Type"::Customer);
+          _BankAccReconLine.VALIDATE("Bal. Account No.",SalesArchHeader."Bill-to Customer No.");
+        END;
+        REPEAT
+          CustLedgEntry.RESET;
+          CustLedgEntry.SETCURRENTKEY("External Document No.");
+          CustLedgEntry.SETRANGE("External Document No.",L_Orderno);
+          CustLedgEntry.SETRANGE("Customer No.",_BankAccReconLine."Bal. Account No.");
+          CustLedgEntry.SETRANGE(Open,TRUE);
+          CustLedgEntry.SETRANGE(Positive,L_Positiv);
+          IF CustLedgEntry.FINDFIRST THEN REPEAT
+            CustLedgEntry.CALCFIELDS("Remaining Amt. (LCY)");
+            IF CustLedgEntry."Remaining Amt. (LCY)" = _eBayImportLine."Amount (Gross)" THEN BEGIN
+              _BankAccReconLine.VALIDATE("Applies-to Doc. Type",CustLedgEntry."Document Type");
+              _BankAccReconLine.VALIDATE("Applies-to Doc. No.",CustLedgEntry."Document No.");
+              _BankAccReconLine.Description := CustLedgEntry."External Document No.";
+            END;
+          UNTIL (CustLedgEntry.NEXT = 0) OR (_BankAccReconLine."Applies-to Doc. No." <> '');
+        UNTIL (ebaySalesHeader.NEXT = 0) OR (_BankAccReconLine."Applies-to Doc. No." <> '');
+      //A/gob-ko/130913/P1108
+      //END;
+      END ELSE BEGIN
+        ebaySalesHeader.RESET;
+
+        ebaySalesHeader.SETRANGE(ebaySalesHeader."No.",_ApplyNo);
+        IF ebaySalesHeader.FINDSET THEN BEGIN
+          //A/gob-ko/08112012/P0567
+          SalesArchHeader.RESET;
+          SalesArchHeader.SETRANGE("No.",ebaySalesHeader."No.");
+
+
+          //IF NOT SalesArchHeader.GET(SalesLine."Document Type",ebaySalesHeader."No.") THEN BEGIN
+          IF NOT SalesArchHeader.FINDLAST THEN BEGIN
+          //E/gob-ko/08112012/P0567
+              IF NOT SalesHeader.GET(SalesLine."Document Type",ebaySalesHeader."No.") THEN
+                 EXIT;
+              L_Orderno := SalesHeader."No.";
+              IF _BankAccReconLine."Bal. Account No." = '' THEN BEGIN
+                _BankAccReconLine.VALIDATE("Bal. Account Type",_BankAccReconLine."Bal. Account Type"::Customer);
+                _BankAccReconLine.VALIDATE("Bal. Account No.",SalesHeader."Bill-to Customer No.");
+              END;
+
+          END ELSE BEGIN
+               L_Orderno := SalesArchHeader."No.";
+              IF _BankAccReconLine."Bal. Account No." = '' THEN BEGIN
+                _BankAccReconLine.VALIDATE("Bal. Account Type",_BankAccReconLine."Bal. Account Type"::Customer);
+                _BankAccReconLine.VALIDATE("Bal. Account No.",SalesArchHeader."Bill-to Customer No.");
+              END;
+
+          END;
+          IF _BankAccReconLine."Bal. Account No." = '' THEN BEGIN
+            _BankAccReconLine.VALIDATE("Bal. Account Type",_BankAccReconLine."Bal. Account Type"::Customer);
+            _BankAccReconLine.VALIDATE("Bal. Account No.",SalesArchHeader."Bill-to Customer No.");
+          END;
+          REPEAT
+            CustLedgEntry.RESET;
+            CustLedgEntry.SETCURRENTKEY("External Document No.");
+            CustLedgEntry.SETRANGE("External Document No.",L_Orderno);
+            CustLedgEntry.SETRANGE("Customer No.",_BankAccReconLine."Bal. Account No.");
+            CustLedgEntry.SETRANGE(Open,TRUE);
+            CustLedgEntry.SETRANGE(Positive,L_Positiv);
+            IF CustLedgEntry.FINDFIRST THEN REPEAT
+              CustLedgEntry.CALCFIELDS("Remaining Amt. (LCY)");
+              IF CustLedgEntry."Remaining Amt. (LCY)" = _eBayImportLine."Amount (Gross)" THEN BEGIN
+                _BankAccReconLine.VALIDATE("Applies-to Doc. Type",CustLedgEntry."Document Type");
+                _BankAccReconLine.VALIDATE("Applies-to Doc. No.",CustLedgEntry."Document No.");
+                _BankAccReconLine.Description := CustLedgEntry."External Document No.";
+              END;
+            UNTIL (CustLedgEntry.NEXT = 0) OR (_BankAccReconLine."Applies-to Doc. No." <> '');
+          UNTIL (ebaySalesHeader.NEXT = 0) OR (_BankAccReconLine."Applies-to Doc. No." <> '');
+
+        END;
+      END;
+      //E/gob-ko/130913/P1108
+      //E/gob-ko/P0509/24102012
+    END;
+
+    BEGIN
+    {
+      P0509   24.10.2012    gob-ko      ZusÑtzliche Suche Åber Importtabelle Navconnector
+      P0567   08.11.2012    gob-ko      énderung Fehlermeldung
+      P0741   11.01.2013    gob-ko      BugFix Dimensionen
+              09.01.2013    nas         Bugfix
+      P0994   24.06.2013    gob-czi     Dimension paypal cost line
+      P1105   13.09.13      gob-ko      ƒnderung f¸r Trefferquote
+      P1123   07.10.13      gob-ko      Fill DocDimension
+    }
+    END.
+  }
+}
+

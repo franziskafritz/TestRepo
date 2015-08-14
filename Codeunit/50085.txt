@@ -1,0 +1,444 @@
+OBJECT Codeunit 50085 Fill DHL Proactive Analysis
+{
+  OBJECT-PROPERTIES
+  {
+    Date=05.11.13;
+    Time=19:33:41;
+    Modified=Yes;
+    Version List=GOB;
+  }
+  PROPERTIES
+  {
+    OnRun=VAR
+            Vendor_l@1000000007 : Record 23;
+            DHLParcelsStatusHistory@1000000006 : Record 50021;
+            FromDate@1000000005 : Date;
+            ToDate@1000000004 : Date;
+            TheDate@1000000003 : Date;
+            LineNo@1000000002 : Integer;
+            AccNo1@1000000001 : Text[40];
+            AccNo2@1000000000 : Text[40];
+          BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      FPCGeneralSetup@1000000000 : Record 50055;
+
+    PROCEDURE FillPurchasingCode@1000000000();
+    VAR
+      Purchasing@1000000000 : Record 5721;
+      DHLProactiveAnalysisAccount@1000000001 : Record 50098;
+    BEGIN
+      Purchasing.SETFILTER("Shipment through",'<>%1',Purchasing."Shipment through"::" ");
+      Purchasing.FINDSET;
+      REPEAT
+        IF Purchasing."Shipment through" <> Purchasing."Shipment through"::DHL THEN BEGIN
+          DHLProactiveAnalysisAccount.INIT;
+          DHLProactiveAnalysisAccount."Purchase Code" := Purchasing.Code;
+          IF DHLProactiveAnalysisAccount.INSERT THEN;
+        END;
+      UNTIL Purchasing.NEXT = 0;
+    END;
+
+    PROCEDURE FillAccounts@1000000003();
+    VAR
+      DHLParcelsStatusHistory@1000000000 : Record 50021;
+      DHLProactiveAnalysisAccount@1000000003 : Record 50098;
+      SalesLine@1000000008 : Record 37;
+      SalesLineArchive@1000000009 : Record 5108;
+      Vendor@1000000011 : Record 23;
+      Window@1000000001 : Dialog;
+      Text001@1000000002 : TextConst 'DEU=Soll die Datenermittlung am Anfang gestartet werden? Andernfalls wird mit Lfd. Nr. %1 begonnen.';
+      StartEntryNo@1000000004 : Integer;
+      WindowText@1000000005 : TextConst 'DEU=DHL Parcel History Lfd. Nr.: #1######\Fortschritt:           @2@@@@@@@@@@@@';
+      iCounter@1000000010 : Integer;
+      ParcelStatusHistory@1000000006 : Record 80013;
+    BEGIN
+      //S/P1133
+      FPCGeneralSetup.GET;
+      //E/P1133
+
+      //Wo soll die Datenermittlung starten. Am Anfang oder an der letzten gefundenen Stelle.
+      DHLProactiveAnalysisAccount.SETCURRENTKEY("Found at Entry No.");
+      DHLProactiveAnalysisAccount.FINDLAST;
+
+      IF CONFIRM(STRSUBSTNO(Text001,DHLProactiveAnalysisAccount."Found at Entry No."),FALSE) THEN
+        StartEntryNo := 0
+      ELSE
+        StartEntryNo := DHLProactiveAnalysisAccount."Found at Entry No.";
+
+      //Kreditoren einfÅgen
+      Vendor.SETRANGE("Create DS Label",TRUE);
+      Vendor.FIND('-');
+      REPEAT
+        DHLProactiveAnalysisAccount.INIT;
+        DHLProactiveAnalysisAccount."Purchase Code" := 'GER-7';
+        DHLProactiveAnalysisAccount."DHL Account Number" := Vendor."DHL Client ID";
+        DHLProactiveAnalysisAccount."Vendor No." := Vendor."No.";
+        IF DHLProactiveAnalysisAccount.INSERT THEN;
+      UNTIL Vendor.NEXT = 0;
+
+      //S/P1133
+      CASE FPCGeneralSetup."Active Parcel Status History" OF
+        FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old":
+          BEGIN
+      //E/P1133
+            //Parcel History prÅfen auf weitere Client IDs
+            DHLParcelsStatusHistory.SETFILTER("Entry No.",'%1..',StartEntryNo);
+            DHLParcelsStatusHistory.SETFILTER("DHL Shipment Code",'<>%1','');
+            DHLParcelsStatusHistory.FIND('-');
+
+            Window.OPEN(WindowText);
+
+            REPEAT
+              iCounter += 1;
+              Window.UPDATE(1,DHLParcelsStatusHistory."Entry No.");
+              Window.UPDATE(2,ROUND(iCounter / DHLParcelsStatusHistory.COUNT * 10000,1,'='));
+
+              //Verkaufszeiler ermitteln
+              IF SalesLine.GET(DHLParcelsStatusHistory."Document Type",DHLParcelsStatusHistory."Document No.",
+                DHLParcelsStatusHistory."Document Line No.") THEN BEGIN
+                  IF SalesLine."Purchasing Code" = 'GER-7' THEN BEGIN
+
+                    DHLProactiveAnalysisAccount.INIT;
+                    DHLProactiveAnalysisAccount."Purchase Code" := SalesLine."Purchasing Code";
+                    DHLProactiveAnalysisAccount."DHL Account Number" := COPYSTR(DHLParcelsStatusHistory."DHL Shipment Code",1,7);
+                    DHLProactiveAnalysisAccount."Vendor No." := SalesLine."Vendor No.";
+                    DHLProactiveAnalysisAccount."Found at Entry No." := DHLParcelsStatusHistory."Entry No.";
+                    IF DHLProactiveAnalysisAccount.INSERT THEN;
+                  END;
+              END ELSE
+                //archivierte Verkaufszeile ermitteln
+                IF SalesLineArchive.GET(DHLParcelsStatusHistory."Document Type",DHLParcelsStatusHistory."Document No.",
+                  DHLParcelsStatusHistory."Document Line No.") THEN
+                    IF SalesLineArchive."Purchasing Code" = 'GER-7' THEN BEGIN
+
+                     DHLProactiveAnalysisAccount.INIT;
+                      DHLProactiveAnalysisAccount."Purchase Code" := SalesLineArchive."Purchasing Code";
+                      DHLProactiveAnalysisAccount."DHL Account Number" := COPYSTR(DHLParcelsStatusHistory."DHL Shipment Code",1,7);
+                      DHLProactiveAnalysisAccount."Vendor No." := SalesLineArchive."Vendor No.";
+                      DHLProactiveAnalysisAccount."Found at Entry No." := DHLParcelsStatusHistory."Entry No.";
+                      IF DHLProactiveAnalysisAccount.INSERT THEN;
+                  END;
+
+              COMMIT;
+            UNTIL DHLParcelsStatusHistory.NEXT = 0;
+      //S/P1133
+          END;
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+        FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History":
+          BEGIN
+            ParcelStatusHistory.SETFILTER("Entry No.",'%1..',StartEntryNo);
+            ParcelStatusHistory.SETFILTER("Tracking Code",'<>%1','');
+            ParcelStatusHistory.FIND('-');
+
+            Window.OPEN(WindowText);
+
+            REPEAT
+              iCounter += 1;
+              Window.UPDATE(1,ParcelStatusHistory."Entry No.");
+              Window.UPDATE(2,ROUND(iCounter / ParcelStatusHistory.COUNT * 10000,1,'='));
+
+              IF SalesLine.GET(
+                   ParcelStatusHistory."Document Type",
+                   ParcelStatusHistory."Document No.",
+                   ParcelStatusHistory."Document Line No.")
+              THEN BEGIN
+                IF SalesLine."Purchasing Code" = 'GER-7' THEN BEGIN
+                  DHLProactiveAnalysisAccount.INIT;
+                  DHLProactiveAnalysisAccount."Purchase Code" := SalesLine."Purchasing Code";
+                  DHLProactiveAnalysisAccount."DHL Account Number" := COPYSTR(ParcelStatusHistory."Tracking Code",1,7);
+                  DHLProactiveAnalysisAccount."Vendor No." := SalesLine."Vendor No.";
+                  DHLProactiveAnalysisAccount."Found at Entry No." := ParcelStatusHistory."Entry No.";
+                  IF DHLProactiveAnalysisAccount.INSERT THEN;
+                END;
+              END ELSE BEGIN
+                SalesLineArchive.RESET;
+                SalesLineArchive.SETRANGE("Document Type",ParcelStatusHistory."Document Type");
+                SalesLineArchive.SETRANGE("Document No.",ParcelStatusHistory."Document No.");
+                SalesLineArchive.SETRANGE("Line No.",ParcelStatusHistory."Document Line No.");
+                IF SalesLineArchive.FINDLAST THEN BEGIN
+                    IF SalesLineArchive."Purchasing Code" = 'GER-7' THEN BEGIN
+                     DHLProactiveAnalysisAccount.INIT;
+                      DHLProactiveAnalysisAccount."Purchase Code" := SalesLineArchive."Purchasing Code";
+                      DHLProactiveAnalysisAccount."DHL Account Number" := COPYSTR(ParcelStatusHistory."Tracking Code",1,7);
+                      DHLProactiveAnalysisAccount."Vendor No." := SalesLineArchive."Vendor No.";
+                      DHLProactiveAnalysisAccount."Found at Entry No." := ParcelStatusHistory."Entry No.";
+                      IF DHLProactiveAnalysisAccount.INSERT THEN;
+                  END;
+                END;
+              END;
+              COMMIT;
+            UNTIL ParcelStatusHistory.NEXT = 0;
+          END;
+      END;
+      //E/P1133
+    END;
+
+    PROCEDURE FillResponseCount@1000000002();
+    VAR
+      DHLParcelsStatusHistory@1000000000 : Record 50021;
+      DHLProactiveAnalysisAccount@1000000007 : Record 50098;
+      DHLProactiveAnalysisDate@1000000006 : Record 50100;
+      SalesLine@1000000004 : Record 37;
+      SalesLineArchive@1000000005 : Record 5108;
+      Window@1000000002 : Dialog;
+      iCounter@1000000001 : Integer;
+      WindowText@1000000003 : TextConst 'DEU=DHL Parcel History Lfd. Nr.: #1######\Fortschritt:           @2@@@@@@@@@@@@';
+      ParcelStatusHistory@1000000008 : Record 80013;
+    BEGIN
+      //S/P1133
+      FPCGeneralSetup.GET;
+      //E/P1133
+
+      Window.OPEN(WindowText);
+
+      //S/P1133
+      CASE FPCGeneralSetup."Active Parcel Status History" OF
+        FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old":
+          BEGIN
+      //E/P1133
+            //DatensÑtze der Parcel History zÑhlen
+            DHLParcelsStatusHistory.FIND('-');
+            REPEAT
+              iCounter += 1;
+              Window.UPDATE(1,DHLParcelsStatusHistory."Entry No.");
+              Window.UPDATE(2,ROUND(iCounter / DHLParcelsStatusHistory.COUNT * 10000,1,'='));
+
+              //Verkaufszeiler ermitteln
+              IF SalesLine.GET(DHLParcelsStatusHistory."Document Type",DHLParcelsStatusHistory."Document No.",
+                DHLParcelsStatusHistory."Document Line No.") THEN BEGIN
+
+                  // A/gob-lku/19.09.12/P0353
+                  IF SalesLine."Purchasing Code" = 'GER-7' THEN BEGIN
+                  // E/gob-lku/19.09.12/P0353
+
+                    IF DHLProactiveAnalysisAccount.GET(SalesLine."Purchasing Code",SalesLine."Vendor No.",
+                      COPYSTR(DHLParcelsStatusHistory."DHL Shipment Code",1,7)) THEN BEGIN
+
+                      DHLProactiveAnalysisDate.INIT;
+                      DHLProactiveAnalysisDate."Purchase Code" := SalesLine."Purchasing Code";
+                      DHLProactiveAnalysisDate."DHL Account Number" := COPYSTR(DHLParcelsStatusHistory."DHL Shipment Code",1,7);
+                      DHLProactiveAnalysisDate."Response Date" := DT2DATE(DHLParcelsStatusHistory."Time Stamp");
+                      DHLProactiveAnalysisDate."Vendor No." := SalesLine."Vendor No.";
+                      DHLProactiveAnalysisDate."Responded Sales Lines" := 1;
+                      //IF NOT DHLParcelsStatusHistory.INSERT THEN BEGIN
+                      IF NOT DHLProactiveAnalysisDate.INSERT THEN BEGIN
+                        IF DHLProactiveAnalysisDate.GET(SalesLine."Purchasing Code",
+                          COPYSTR(DHLParcelsStatusHistory."DHL Shipment Code",1,7),
+                          DHLParcelsStatusHistory."Commit at Date") THEN;
+                        DHLProactiveAnalysisDate."Responded Sales Lines" += 1;
+                        DHLProactiveAnalysisDate.MODIFY;
+                      END;
+                    END;
+
+                  // A/gob-lku/19.09.12/P0353
+                  END ELSE
+                    IF DHLProactiveAnalysisAccount.GET(SalesLine."Purchasing Code",'',
+                      COPYSTR(DHLParcelsStatusHistory."DHL Shipment Code",1,7)) THEN BEGIN
+
+                        DHLProactiveAnalysisDate.INIT;
+                        DHLProactiveAnalysisDate."Purchase Code" := SalesLine."Purchasing Code";
+                        DHLProactiveAnalysisDate."DHL Account Number" := COPYSTR(DHLParcelsStatusHistory."DHL Shipment Code",1,7);
+                        DHLProactiveAnalysisDate."Response Date" := DT2DATE(DHLParcelsStatusHistory."Time Stamp");
+                        DHLProactiveAnalysisDate."Vendor No." := '';
+                        DHLProactiveAnalysisDate."Responded Sales Lines" := 1;
+                        IF NOT DHLProactiveAnalysisDate.INSERT THEN BEGIN
+                          IF DHLProactiveAnalysisDate.GET(SalesLine."Purchasing Code",
+                            COPYSTR(DHLParcelsStatusHistory."DHL Shipment Code",1,7),
+                            DHLParcelsStatusHistory."Commit at Date") THEN;
+                          DHLProactiveAnalysisDate."Responded Sales Lines" += 1;
+                          DHLProactiveAnalysisDate.MODIFY;
+                        END;
+                    END;
+                  // E/gob-lku/19.09.12/P0353
+
+              END ELSE
+                //archivierte Verkaufszeile ermitteln
+                IF SalesLineArchive.GET(DHLParcelsStatusHistory."Document Type",DHLParcelsStatusHistory."Document No.",
+                  DHLParcelsStatusHistory."Document Line No.") THEN
+
+                  // A/gob-lku/19.09.12/P0353
+                  IF SalesLine."Purchasing Code" = 'GER-7' THEN BEGIN
+                  // E/gob-lku/19.09.12/P0353
+
+                   IF DHLProactiveAnalysisAccount.GET(SalesLineArchive."Purchasing Code",SalesLineArchive."Vendor No.",
+                      COPYSTR(DHLParcelsStatusHistory."DHL Shipment Code",1,7)) THEN BEGIN
+
+                      DHLProactiveAnalysisDate.INIT;
+                      DHLProactiveAnalysisDate."Purchase Code" := SalesLineArchive."Purchasing Code";
+                      DHLProactiveAnalysisDate."DHL Account Number" := COPYSTR(DHLParcelsStatusHistory."DHL Shipment Code",1,7);
+                      DHLProactiveAnalysisDate."Response Date" := DT2DATE(DHLParcelsStatusHistory."Time Stamp");
+                      DHLProactiveAnalysisDate."Vendor No." := SalesLine."Vendor No.";
+                      DHLProactiveAnalysisDate."Responded Sales Lines" := 1;
+                      //IF NOT DHLParcelsStatusHistory.INSERT THEN BEGIN
+                      IF NOT DHLProactiveAnalysisDate.INSERT THEN BEGIN
+                        IF DHLProactiveAnalysisDate.GET(SalesLineArchive."Purchasing Code",
+                          COPYSTR(DHLParcelsStatusHistory."DHL Shipment Code",1,7),
+                          DHLParcelsStatusHistory."Commit at Date") THEN;
+                        DHLProactiveAnalysisDate."Responded Sales Lines" += 1;
+                        DHLProactiveAnalysisDate.MODIFY;
+                      END;
+                    END;
+
+                  // A/gob-lku/19.09.12/P0353
+                  END ELSE
+                    IF DHLProactiveAnalysisAccount.GET(SalesLineArchive."Purchasing Code",'',
+                      COPYSTR(DHLParcelsStatusHistory."DHL Shipment Code",1,7)) THEN BEGIN
+
+                        DHLProactiveAnalysisDate.INIT;
+                        DHLProactiveAnalysisDate."Purchase Code" := SalesLine."Purchasing Code";
+                        DHLProactiveAnalysisDate."DHL Account Number" := COPYSTR(DHLParcelsStatusHistory."DHL Shipment Code",1,7);
+                        DHLProactiveAnalysisDate."Response Date" := DT2DATE(DHLParcelsStatusHistory."Time Stamp");
+                        DHLProactiveAnalysisDate."Vendor No." := '';
+                        DHLProactiveAnalysisDate."Responded Sales Lines" := 1;
+                        IF NOT DHLProactiveAnalysisDate.INSERT THEN BEGIN
+                          IF DHLProactiveAnalysisDate.GET(SalesLine."Purchasing Code",
+                          COPYSTR(DHLParcelsStatusHistory."DHL Shipment Code",1,7),
+                            DHLParcelsStatusHistory."Commit at Date") THEN;
+                          DHLProactiveAnalysisDate."Responded Sales Lines" += 1;
+                          DHLProactiveAnalysisDate.MODIFY;
+                        END;
+                    END;
+                  // E/gob-lku/19.09.12/P0353
+
+              COMMIT;
+            UNTIL DHLParcelsStatusHistory.NEXT = 0;
+      //S/P1133
+          END;
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+        FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History":
+          BEGIN
+            ParcelStatusHistory.FIND('-');
+            REPEAT
+              iCounter += 1;
+              Window.UPDATE(1,ParcelStatusHistory."Entry No.");
+              Window.UPDATE(2,ROUND(iCounter / ParcelStatusHistory.COUNT * 10000,1,'='));
+              IF SalesLine.GET(
+                   ParcelStatusHistory."Document Type",
+                   ParcelStatusHistory."Document No.",
+                   ParcelStatusHistory."Document Line No.")
+              THEN BEGIN
+                IF SalesLine."Purchasing Code" = 'GER-7' THEN BEGIN
+                  IF DHLProactiveAnalysisAccount.GET(
+                       SalesLine."Purchasing Code",
+                       SalesLine."Vendor No.",
+                       COPYSTR(ParcelStatusHistory."Tracking Code",1,7))
+                  THEN BEGIN
+                    DHLProactiveAnalysisDate.INIT;
+                    DHLProactiveAnalysisDate."Purchase Code" := SalesLine."Purchasing Code";
+                    DHLProactiveAnalysisDate."DHL Account Number" := COPYSTR(ParcelStatusHistory."Tracking Code",1,7);
+                    DHLProactiveAnalysisDate."Response Date" := DT2DATE(ParcelStatusHistory."Timestamp Insert");
+                    DHLProactiveAnalysisDate."Vendor No." := SalesLine."Vendor No.";
+                    DHLProactiveAnalysisDate."Responded Sales Lines" := 1;
+                    IF NOT DHLProactiveAnalysisDate.INSERT THEN BEGIN
+                      IF DHLProactiveAnalysisDate.GET(
+                           SalesLine."Purchasing Code",
+                           COPYSTR(ParcelStatusHistory."Tracking Code",1,7),
+                           ParcelStatusHistory."Date Commit")
+                      THEN;
+                      DHLProactiveAnalysisDate."Responded Sales Lines" += 1;
+                      DHLProactiveAnalysisDate.MODIFY;
+                    END;
+                  END;
+                END ELSE
+                  IF DHLProactiveAnalysisAccount.GET(
+                       SalesLine."Purchasing Code",'',
+                      COPYSTR(ParcelStatusHistory."Tracking Code",1,7))
+                  THEN BEGIN
+                    DHLProactiveAnalysisDate.INIT;
+                    DHLProactiveAnalysisDate."Purchase Code" := SalesLine."Purchasing Code";
+                    DHLProactiveAnalysisDate."DHL Account Number" := COPYSTR(ParcelStatusHistory."Tracking Code",1,7);
+                    DHLProactiveAnalysisDate."Response Date" := DT2DATE(ParcelStatusHistory."Timestamp Insert");
+                    DHLProactiveAnalysisDate."Vendor No." := '';
+                    DHLProactiveAnalysisDate."Responded Sales Lines" := 1;
+                    IF NOT DHLProactiveAnalysisDate.INSERT THEN BEGIN
+                      IF DHLProactiveAnalysisDate.GET(
+                           SalesLine."Purchasing Code",
+                           COPYSTR(ParcelStatusHistory."Tracking Code",1,7),
+                           ParcelStatusHistory."Date Commit")
+                      THEN;
+                      DHLProactiveAnalysisDate."Responded Sales Lines" += 1;
+                      DHLProactiveAnalysisDate.MODIFY;
+                    END;
+                  END;
+              END ELSE BEGIN
+                SalesLineArchive.RESET;
+                SalesLineArchive.SETRANGE("Document Type",ParcelStatusHistory."Document Type");
+                SalesLineArchive.SETRANGE("Document No.",ParcelStatusHistory."Document No.");
+                SalesLineArchive.SETRANGE("Line No.",ParcelStatusHistory."Document Line No.");
+                IF SalesLineArchive.FINDLAST THEN
+                  IF SalesLineArchive."Purchasing Code" = 'GER-7' THEN BEGIN
+                    IF DHLProactiveAnalysisAccount.GET(
+                         SalesLineArchive."Purchasing Code",
+                         SalesLineArchive."Vendor No.",
+                         COPYSTR(ParcelStatusHistory."Tracking Code",1,7))
+                    THEN BEGIN
+                      DHLProactiveAnalysisDate.INIT;
+                      DHLProactiveAnalysisDate."Purchase Code" := SalesLineArchive."Purchasing Code";
+                      DHLProactiveAnalysisDate."DHL Account Number" := COPYSTR(ParcelStatusHistory."Tracking Code",1,7);
+                      DHLProactiveAnalysisDate."Response Date" := DT2DATE(ParcelStatusHistory."Timestamp Insert");
+                      DHLProactiveAnalysisDate."Vendor No." := SalesLine."Vendor No.";
+                      DHLProactiveAnalysisDate."Responded Sales Lines" := 1;
+                      IF NOT DHLProactiveAnalysisDate.INSERT THEN BEGIN
+                        IF DHLProactiveAnalysisDate.GET(
+                             SalesLineArchive."Purchasing Code",
+                             COPYSTR(ParcelStatusHistory."Tracking Code",1,7),
+                             ParcelStatusHistory."Date Commit")
+                        THEN;
+                        DHLProactiveAnalysisDate."Responded Sales Lines" += 1;
+                        DHLProactiveAnalysisDate.MODIFY;
+                      END;
+                    END;
+                  END ELSE
+                    IF DHLProactiveAnalysisAccount.GET(
+                         SalesLineArchive."Purchasing Code",'',
+                         COPYSTR(ParcelStatusHistory."Tracking Code",1,7))
+                    THEN BEGIN
+                      DHLProactiveAnalysisDate.INIT;
+                      DHLProactiveAnalysisDate."Purchase Code" := SalesLine."Purchasing Code";
+                      DHLProactiveAnalysisDate."DHL Account Number" := COPYSTR(ParcelStatusHistory."Tracking Code",1,7);
+                      DHLProactiveAnalysisDate."Response Date" := DT2DATE(ParcelStatusHistory."Timestamp Insert");
+                      DHLProactiveAnalysisDate."Vendor No." := '';
+                      DHLProactiveAnalysisDate."Responded Sales Lines" := 1;
+                      IF NOT DHLProactiveAnalysisDate.INSERT THEN BEGIN
+                        IF DHLProactiveAnalysisDate.GET(
+                             SalesLine."Purchasing Code",
+                             COPYSTR(ParcelStatusHistory."Tracking Code",1,7),
+                             ParcelStatusHistory."Date Commit")
+                        THEN;
+                        DHLProactiveAnalysisDate."Responded Sales Lines" += 1;
+                        DHLProactiveAnalysisDate.MODIFY;
+                      END;
+                    END;
+              END;
+              COMMIT;
+            UNTIL DHLParcelsStatusHistory.NEXT = 0;
+          END;
+      END;
+      //E/P1133
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation GOB & Home24 NAV Team      |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      P0353                 gob-lku 19.09.12  Filter Vendor dependend on Purchasing Code
+      P1133       05.11.13  gob-mlan  - Redesign of "DHL Parcel Status History"
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,1898 @@
+OBJECT Codeunit 50715 Sales Process - Helper
+{
+  OBJECT-PROPERTIES
+  {
+    Date=29.05.15;
+    Time=15:40:18;
+    Modified=Yes;
+    Version List=#HME3886;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Assert@1000000006 : Codeunit 50200;
+      LibrarySales@1000000005 : Codeunit 50701;
+      RHDInterfaceHelper@1000000000 : Codeunit 50716;
+      MaxOrdersCount@1000000003 : Integer;
+      TemplatePathTxt@1000000002 : TextConst 'ENU=\\FPC-DC01\share\erp-nav\999 Quality Assurance\Automated Testing\Templates\';
+      NoProperOrdersErr@1000000014 : TextConst 'ENU=There are no Sales Orders match to the filter.';
+      DocumentErr@1000000013 : TextConst 'ENU=The document %1 was not found.';
+      NoInvoiceErr@1000000012 : TextConst 'ENU=No Invoices were posted for Sales Order %1.';
+      NoRerurnOrderErr@1000000011 : TextConst 'ENU=No Return Order was created for Sales Order %1.';
+      AmountErr@1000000010 : TextConst 'ENU=Wrong amount in Order %1.';
+      InvoiceDiscountErr@1000000009 : TextConst 'ENU=Invoice Discount shoud be >0 for Order %1.';
+      QuantityMustBeZeroErr@1000000008 : TextConst 'ENU=Quantity Shipped must be 0';
+      EntryNotFoundErr@1000000007 : TextConst 'ENU=There is no %1 Entry for the Document %2.';
+
+    PROCEDURE InitializeHelper@1000000060(MaxCount@1000000000 : Integer);
+    BEGIN
+      MaxOrdersCount := MaxCount;
+    END;
+
+    PROCEDURE PaymentReceived@1000000007(DocumentNo@1000000002 : Code[20]);
+    VAR
+      SalesHeader@1000000000 : Record 36;
+    BEGIN
+      IF SalesHeader.GET(SalesHeader."Document Type"::Order,DocumentNo) THEN
+        IF NOT SalesHeader."Payment received" THEN BEGIN
+          SalesHeader.ManagePaymentReceived(TRUE);
+          SalesHeader.MODIFY(TRUE);
+
+          SalesHeader.ManagePaymentReceived(TRUE);
+          SalesHeader.MODIFY(TRUE);
+        END;
+    END;
+
+    [Test]
+    PROCEDURE CreateSOVerifyDim@1000000074(ChannelCode@1000000000 : Code[10]);
+    VAR
+      TestBuff@1000000003 : Record 80008;
+      SalesHeader@1000000002 : Record 36;
+      OrderCount@1000000001 : Integer;
+    BEGIN
+      OrderCount := 0;
+      SetTestBufferFilter(TestBuff,TestBuff."Entry Type"::SalesOrder);
+      IF TestBuff.FINDSET THEN
+        REPEAT
+          IF SalesHeader.GET(SalesHeader."Document Type"::Order,TestBuff."Entry Value Code") THEN
+            IF CheckSalesHeader(SalesHeader,ChannelCode,SalesHeader."Payment Method Code",FALSE,FALSE) THEN BEGIN
+              // Check Status.
+              LibrarySales.CheckReleaseSalesOrder(SalesHeader);
+
+              // Verify: Header and Line Dimentions.
+              VerifyOrderDimentions(SalesHeader."No.",'AUFTRAG',SalesHeader."No.");
+              VerifyOrderDimentions(SalesHeader."No.",'LAND',SalesHeader."VAT Country/Region Code");
+              VerifyLineDimentions(SalesHeader."No.",'AUFTRAG',SalesHeader."No.");
+              VerifyLineDimentions(SalesHeader."No.",'LAND',SalesHeader."VAT Country/Region Code");
+              OrderCount += 1;
+            END;
+        UNTIL (TestBuff.NEXT = 0) OR (OrderCount = MaxOrdersCount);
+
+      IF OrderCount = 0 THEN
+        Assert.Fail(NoProperOrdersErr);
+    END;
+
+    [Test]
+    PROCEDURE CreatePurchOrder@1000000004(ChannelCode@1000000004 : Code[10]);
+    VAR
+      TestBuff@1000000002 : Record 80008;
+      SalesHeader@1000000001 : Record 36;
+      OrderCount@1000000000 : Integer;
+      PurchOrderNo@1000000003 : Code[20];
+    BEGIN
+      // SO -> Create Purchase Order.
+      OrderCount := 0;
+      SetTestBufferFilter(TestBuff,TestBuff."Entry Type"::SalesOrder);
+      IF TestBuff.FINDSET THEN
+        REPEAT
+          IF SalesHeader.GET(SalesHeader."Document Type"::Order,TestBuff."Entry Value Code") THEN
+            IF CheckSalesHeader(SalesHeader,ChannelCode,SalesHeader."Payment Method Code",FALSE,FALSE) THEN BEGIN
+              // Check Status.
+              LibrarySales.CheckReleaseSalesOrder(SalesHeader);
+
+              // Create Purchase Order.
+              // H3886  19.03.15  MM +++++++++++++++
+              LibrarySales.CreatePurchDocument(SalesHeader);
+              PurchOrderNo := LibrarySales.GetFirstPurchOrderNo(SalesHeader."No.");
+              // H3886  19.03.15  MM ---------------
+
+              // Verify:
+              // - Purch Order is created;
+              // - Batch-Post Document Entry.
+              VerifyPurchOrderExistence(PurchOrderNo);
+              OrderCount += 1;
+            END;
+        UNTIL (TestBuff.NEXT = 0) OR (OrderCount = MaxOrdersCount);
+
+      IF OrderCount = 0 THEN
+        Assert.Fail(NoProperOrdersErr);
+    END;
+
+    [Test]
+    [HandlerFunctions(ReportHandler)]
+    PROCEDURE CreateDHLLableForPO@1000000013(ChannelCode@1000000004 : Code[10]);
+    VAR
+      TestBuff@1000000003 : Record 80008;
+      SalesHeader@1000000002 : Record 36;
+      OrderCount@1000000001 : Integer;
+      PurchOrderNo@1000000000 : Code[20];
+    BEGIN
+      // SO -> Create Purchase Order -> Send Purch. Email
+      OrderCount := 0;
+      SetTestBufferFilter(TestBuff,TestBuff."Entry Type"::SalesOrder);
+      IF TestBuff.FINDSET THEN
+        REPEAT
+          IF SalesHeader.GET(SalesHeader."Document Type"::Order,TestBuff."Entry Value Code") THEN
+            IF CheckSalesHeader(SalesHeader,ChannelCode,SalesHeader."Payment Method Code",FALSE,FALSE) THEN BEGIN
+              // Check Status.
+              LibrarySales.CheckReleaseSalesOrder(SalesHeader);
+
+              // Create Purchase Order, send Purch. Email.
+              // H3886  19.03.15  MM +++++++++++++++
+              LibrarySales.CreatePurchDocument(SalesHeader);
+              PurchOrderNo := LibrarySales.GetFirstPurchOrderNo(SalesHeader."No.");
+              // H3886  19.03.15  MM ---------------
+              // PrintPDF(SalesHeader,PurchOrderNo); //TODO!!
+              LibrarySales.SendPurchEmail(PurchOrderNo);
+
+              // Verify: DHL Parcels History Entry;
+              // VerifyDHLParcelsHistoryEntry(SalesHeader."No.",10000,PurchOrderNo,'LABELSEND');
+              OrderCount += 1;
+            END;
+        UNTIL (TestBuff.NEXT = 0) OR (OrderCount = MaxOrdersCount);
+
+      IF OrderCount = 0 THEN
+        Assert.Fail(NoProperOrdersErr);
+    END;
+
+    [Test]
+    PROCEDURE InvoiceSingleLineSO@1000000006(ChannelCode@1000000000 : Code[10]);
+    BEGIN
+      InvoiceSalesOrder(ChannelCode,FALSE,FALSE);
+    END;
+
+    [Test]
+    PROCEDURE InvoiceMultiLineSO@1000000014(ChannelCode@1000000000 : Code[10]);
+    BEGIN
+      InvoiceSalesOrder(ChannelCode,TRUE,FALSE);
+    END;
+
+    [Test]
+    PROCEDURE InvoiceSOWithResource@1000000028(ChannelCode@1000000000 : Code[10]);
+    BEGIN
+      // SO -> Create Purchase Order -> Ship & Invoice SO.
+      InvoiceSalesOrder(ChannelCode,FALSE,TRUE);
+    END;
+
+    LOCAL PROCEDURE InvoiceSalesOrder@1000000015(ChannelCode@1000000006 : Code[10];IsMultiLine@1000000003 : Boolean;HasResourceLine@1000000004 : Boolean);
+    VAR
+      TestBuff@1000000002 : Record 80008;
+      SalesHeader@1000000001 : Record 36;
+      TotalAmt@1000000005 : Decimal;
+      OrderCount@1000000000 : Integer;
+    BEGIN
+      // SO -> Create Purchase Order -> Ship & Invoice SO.
+      OrderCount := 0;
+      SetTestBufferFilter(TestBuff,TestBuff."Entry Type"::SalesOrder);
+      IF TestBuff.FINDSET THEN
+        REPEAT
+          IF SalesHeader.GET(SalesHeader."Document Type"::Order,TestBuff."Entry Value Code") THEN
+            IF CheckSalesHeader(SalesHeader,ChannelCode,SalesHeader."Payment Method Code",IsMultiLine,HasResourceLine) THEN BEGIN
+              // Check Status.
+              LibrarySales.CheckReleaseSalesOrder(SalesHeader);
+              SalesHeader.CALCFIELDS("Amount Including VAT");
+              TotalAmt := SalesHeader."Amount Including VAT";
+
+              // Create Purchase Order.
+              LibrarySales.CreatePurchDocument(SalesHeader);
+
+              // Ship & Invoice Sales Order.
+              LibrarySales.PostSalesDocument(SalesHeader);
+
+              // Verify: Sales Invoice is posted, Cust. Ledger Enries are correct.
+              VerifyPostedSalesInvoice(SalesHeader."No.",TotalAmt);
+              VerifyCustLedgerEntries(SalesHeader."No.",SalesHeader."Document Date",TotalAmt);
+              OrderCount += 1;
+            END;
+        UNTIL (TestBuff.NEXT = 0) OR (OrderCount = MaxOrdersCount);
+
+      IF OrderCount = 0 THEN
+        Assert.Fail(NoProperOrdersErr);
+    END;
+
+    [Test]
+    PROCEDURE InvoiceSalesOrderKK@1000000027(ChannelCode@1000000000 : Code[10]);
+    BEGIN
+      InvoiceSOWithPaymenMethod(ChannelCode,'KK');
+    END;
+
+    [Test]
+    PROCEDURE InvoiceSalesOrderVORK@1000000020(ChannelCode@1000000000 : Code[10]);
+    BEGIN
+      InvoiceSOWithPaymenMethod(ChannelCode,'VORK');
+    END;
+
+    [Test]
+    PROCEDURE InvoiceSalesOrderPP@1000000029(ChannelCode@1000000000 : Code[10]);
+    BEGIN
+      InvoiceSOWithPaymenMethod(ChannelCode,'PP');
+    END;
+
+    [Test]
+    PROCEDURE InvoiceSalesOrderRECHNUNG@1000000031(ChannelCode@1000000000 : Code[10]);
+    BEGIN
+      InvoiceSOWithPaymenMethod(ChannelCode,'RECHNUNG');
+    END;
+
+    LOCAL PROCEDURE InvoiceSOWithPaymenMethod@1000000021(ChannelCode@1000000005 : Code[10];PaymentMethodCode@1000000003 : Code[10]);
+    VAR
+      TestBuff@1000000002 : Record 80008;
+      SalesHeader@1000000001 : Record 36;
+      OrderCount@1000000000 : Integer;
+      TotalAmount@1000000004 : Decimal;
+    BEGIN
+      // SO -> Create Purchase Order -> Ship & Invoice SO.
+      OrderCount := 0;
+      SetTestBufferFilter(TestBuff,TestBuff."Entry Type"::SalesOrder);
+      IF TestBuff.FINDSET THEN
+        REPEAT
+          IF SalesHeader.GET(SalesHeader."Document Type"::Order,TestBuff."Entry Value Code") THEN
+            IF CheckSalesHeader(SalesHeader,ChannelCode,PaymentMethodCode,FALSE,FALSE) THEN BEGIN
+              // Check Status.
+              LibrarySales.CheckReleaseSalesOrder(SalesHeader);
+              SalesHeader.CALCFIELDS("Amount Including VAT");
+              TotalAmount := SalesHeader."Amount Including VAT";
+
+              // Create Purchase Order.
+              LibrarySales.CreatePurchDocument(SalesHeader);
+
+              // Ship & Invoice Sales Order.
+              LibrarySales.PostSalesDocument(SalesHeader);
+
+              // Verify: Sales Invoice is posted, Cust. Ledger Enries are correct.
+              VerifyPostedDocuments(SalesHeader."No.",PaymentMethodCode,SalesHeader."Document Date",TotalAmount);
+              OrderCount += 1;
+            END;
+        UNTIL (TestBuff.NEXT = 0) OR (OrderCount = MaxOrdersCount);
+
+      IF OrderCount = 0 THEN
+        Assert.Fail(NoProperOrdersErr);
+    END;
+
+    [Test]
+    [HandlerFunctions(MessageHandler)]
+    PROCEDURE CreateReturnOrder@1000000023(ChannelCode@1000000003 : Code[10]);
+    VAR
+      TestBuff@1000000002 : Record 80008;
+      SalesHeader@1000000001 : Record 36;
+      OrderCount@1000000000 : Integer;
+    BEGIN
+      // SO -> Create Purchase Order -> Ship & Invoice SO -> Create Return Order.
+      OrderCount := 0;
+      SetTestBufferFilter(TestBuff,TestBuff."Entry Type"::SalesOrder);
+      IF TestBuff.FINDSET THEN
+        REPEAT
+          IF SalesHeader.GET(SalesHeader."Document Type"::Order,TestBuff."Entry Value Code") THEN
+            IF CheckSalesHeader(SalesHeader,ChannelCode,SalesHeader."Payment Method Code",FALSE,FALSE) THEN BEGIN
+              // Check Status.
+              LibrarySales.CheckReleaseSalesOrder(SalesHeader);
+              SalesHeader.CALCFIELDS("Amount Including VAT");
+
+              // Create Purchase Order.
+              LibrarySales.CreatePurchDocument(SalesHeader);
+
+              // Ship & Invoice Sales Order.
+              LibrarySales.PostSalesDocument(SalesHeader);
+
+              // Create Return Order.
+              LibrarySales.CreateReturnOrderFromArchived(SalesHeader."No.");
+
+              // Verify.
+              // TODO: DHL Parcels History Table entry.
+              VerifyReturnOrderCreated(SalesHeader."No.");
+              OrderCount += 1;
+            END;
+        UNTIL (TestBuff.NEXT = 0) OR (OrderCount = MaxOrdersCount);
+
+      IF OrderCount = 0 THEN
+        Assert.Fail(NoProperOrdersErr);
+    END;
+
+    [Test]
+    [HandlerFunctions(MessageHandler)]
+    PROCEDURE PostReturnOrder@1000000052(ChannelCode@1000000000 : Code[10]);
+    BEGIN
+      PostReturnDocument(ChannelCode,FALSE);
+    END;
+
+    [Test]
+    [HandlerFunctions(MessageHandler)]
+    PROCEDURE PostReturnOrderWithRes@1000000033(ChannelCode@1000000000 : Code[10]);
+    BEGIN
+      PostReturnDocument(ChannelCode,TRUE);
+    END;
+
+    LOCAL PROCEDURE PostReturnDocument@1000000039(ChannelCode@1000000005 : Code[10];HasResourceLine@1000000004 : Boolean);
+    VAR
+      TestBuff@1000000002 : Record 80008;
+      SalesHeader@1000000001 : Record 36;
+      TotalAmount@1000000003 : Decimal;
+      OrderCount@1000000000 : Integer;
+    BEGIN
+      // SO -> Create Purchase Order -> Ship & Invoice SO -> Create Return Order.
+      OrderCount := 0;
+      SetTestBufferFilter(TestBuff,TestBuff."Entry Type"::SalesOrder);
+      IF TestBuff.FINDSET THEN
+        REPEAT
+          IF SalesHeader.GET(SalesHeader."Document Type"::Order,TestBuff."Entry Value Code") THEN
+            IF CheckSalesHeader(SalesHeader,ChannelCode,SalesHeader."Payment Method Code",FALSE,HasResourceLine) THEN BEGIN
+              // Check Status.
+              LibrarySales.CheckReleaseSalesOrder(SalesHeader);
+              SalesHeader.CALCFIELDS("Amount Including VAT");
+              TotalAmount := SalesHeader."Amount Including VAT";
+
+              // Create Purchase Order.
+              LibrarySales.CreatePurchDocument(SalesHeader);
+
+              // Ship & Invoice Sales Order.
+              LibrarySales.PostSalesDocument(SalesHeader);
+
+              // Create Return Order.
+              LibrarySales.CreateReturnOrderFromArchived(SalesHeader."No.");
+
+              // Post Return Order.
+              LibrarySales.PostSalesReturnDocument(SalesHeader."No.");
+
+              // Verify:
+              // - Return Order is posted, Cust. Ledger Enries are correct;
+              // - Credit Memo EMail.
+              VerifyPostedCreditMemo(SalesHeader."No.",TotalAmount);
+              OrderCount += 1;
+            END;
+        UNTIL (TestBuff.NEXT = 0) OR (OrderCount = MaxOrdersCount);
+
+      IF OrderCount = 0 THEN
+        Assert.Fail(NoProperOrdersErr);
+    END;
+
+    [Test]
+    PROCEDURE ReturnWithDiscount@1000000030(ChannelCode@1000000006 : Code[10]);
+    VAR
+      TestBuff@1000000003 : Record 80008;
+      SalesHeader@1000000002 : Record 36;
+      SalesLine@1000000005 : Record 37;
+      TotalAmount@1000000001 : Decimal;
+      DiscPct@1000000004 : Decimal;
+      OrderCount@1000000000 : Integer;
+    BEGIN
+      // SO -> Create Purchase Order -> Set Prevention Discount -> Create Return Order.
+      OrderCount := 0;
+      SetTestBufferFilter(TestBuff,TestBuff."Entry Type"::SalesOrder);
+      IF TestBuff.FINDSET THEN
+        REPEAT
+          IF SalesHeader.GET(SalesHeader."Document Type"::Order,TestBuff."Entry Value Code") THEN
+            IF CheckSalesHeader(SalesHeader,ChannelCode,SalesHeader."Payment Method Code",FALSE,FALSE) THEN BEGIN
+              // Check Status.
+              LibrarySales.CheckReleaseSalesOrder(SalesHeader);
+              SalesHeader.CALCFIELDS("Amount Including VAT");
+              TotalAmount := SalesHeader."Amount Including VAT";
+
+              // Create Purchase Order.
+              LibrarySales.CreatePurchDocument(SalesHeader);
+
+              // Set prevention to the Sales Line.
+              DiscPct := SetPrevnDiscToSalesLine(SalesHeader."No.",SalesLine."Return Type"::Cancelation);
+
+              // Create Return Order, refresh PayoutSheet.
+              LibrarySales.CreateReturnOrderFromOpen(SalesHeader."No.");
+
+              SetReturnStatus(SalesHeader,SalesHeader."Status Return Order"::finished);
+              //LibrarySales.RefreshPayoutSheet; TODO!
+
+              // Verify: Charge (Item) line, Payout Sheet entry.
+              VerifyItemCharge(SalesHeader."No.",TotalAmount,DiscPct);
+              // VerifyPayoutSheetEntry(SalesHeader."No.",TotalAmount,DiscPct); TODO!
+              OrderCount += 1;
+            END;
+        UNTIL (TestBuff.NEXT = 0) OR (OrderCount = MaxOrdersCount);
+
+      IF OrderCount = 0 THEN
+        Assert.Fail(NoProperOrdersErr);
+    END;
+
+    [Test]
+    [HandlerFunctions(MessageHandler)]
+    PROCEDURE ReturnOrderWithoutPrev@1000000040(ChannelCode@1000000005 : Code[10]);
+    VAR
+      TestBuff@1000000004 : Record 80008;
+      SalesHeader@1000000003 : Record 36;
+      SalesLine@1000000001 : Record 37;
+      TotalAmount@1000000002 : Decimal;
+      OrderCount@1000000000 : Integer;
+    BEGIN
+      // SO -> Create Purchase Order -> Ship -> Modify Line -> Create Return Order -> Post Return Order.
+      OrderCount := 0;
+      SetTestBufferFilter(TestBuff,TestBuff."Entry Type"::SalesOrder);
+      IF TestBuff.FINDSET THEN
+        REPEAT
+          IF SalesHeader.GET(SalesHeader."Document Type"::Order,TestBuff."Entry Value Code") THEN
+            IF CheckSalesHeader(SalesHeader,ChannelCode,SalesHeader."Payment Method Code",FALSE,FALSE) THEN BEGIN
+              // Check Status.
+              LibrarySales.CheckReleaseSalesOrder(SalesHeader);
+              SalesHeader.CALCFIELDS("Amount Including VAT");
+              TotalAmount := SalesHeader."Amount Including VAT";
+
+              // Create Purchase Order.
+              LibrarySales.CreatePurchDocument(SalesHeader);
+
+              // Ship Sales Order.
+              LibrarySales.ShipSalesDocument(SalesHeader);
+
+              // Set Return Type to the Sales Line.
+              SetReturnTypeToLine(SalesHeader."No.",SalesLine."Return Type"::Return);
+
+              // Create Return Order.
+              LibrarySales.CreateReturnOrderFromOpen(SalesHeader."No.");
+              SetReturnStatusToReturnOrder(SalesHeader."No.",SalesHeader."Status Return Order"::finished);
+
+              // Post Return Order, refresh PayoutSheet.
+              LibrarySales.PostSalesReturnDocument(SalesHeader."No.");
+              // LibrarySales.RefreshPayoutSheet; TODO: outcommented!
+
+              // Verify: Payout Sheet entry.
+              // VerifyPayoutSheetEntry(GetCrMemoNo(SalesHeader."No."),TotalAmount,0); TODO: outcommented!
+              OrderCount += 1;
+            END;
+        UNTIL (TestBuff.NEXT = 0) OR (OrderCount = MaxOrdersCount);
+
+      IF OrderCount = 0 THEN
+        Assert.Fail(NoProperOrdersErr);
+    END;
+
+    [Test]
+    [HandlerFunctions(MessageHandler)]
+    PROCEDURE ReturnOrderWithPrev@1000000046(ChannelCode@1000000006 : Code[10]);
+    VAR
+      TestBuff@1000000004 : Record 80008;
+      SalesHeader@1000000003 : Record 36;
+      SalesLine@1000000002 : Record 37;
+      TotalAmount@1000000001 : Decimal;
+      OrderCount@1000000000 : Integer;
+      DiscPct@1000000005 : Decimal;
+    BEGIN
+      // SO -> Create Purchase Order -> Ship -> Modify Line -> Create Return Order -> Post Return Order.
+      OrderCount := 0;
+      SetTestBufferFilter(TestBuff,TestBuff."Entry Type"::SalesOrder);
+      IF TestBuff.FINDSET THEN
+        REPEAT
+          IF SalesHeader.GET(SalesHeader."Document Type"::Order,TestBuff."Entry Value Code") THEN
+            IF CheckSalesHeader(SalesHeader,ChannelCode,SalesHeader."Payment Method Code",FALSE,FALSE) THEN BEGIN
+              // Check Status.
+              LibrarySales.CheckReleaseSalesOrder(SalesHeader);
+              SalesHeader.CALCFIELDS("Amount Including VAT");
+              TotalAmount := SalesHeader."Amount Including VAT";
+
+              // Create Purchase Order.
+              LibrarySales.CreatePurchDocument(SalesHeader);
+
+              // Ship Sales Order.
+              LibrarySales.ShipSalesDocument(SalesHeader);
+
+              // Set prevention to the Sales Line.
+              DiscPct := SetPrevnDiscToSalesLine(SalesHeader."No.",SalesLine."Return Type"::Return);
+
+              // Create Return Order.
+              LibrarySales.CreateReturnOrderFromOpen(SalesHeader."No.");
+
+              // Refresh PayoutSheet.
+              // SetReturnStatusToReturnOrder(SalesHeader."No.",SalesHeader."Status Return Order"::finished);
+              // LibrarySales.PostSalesReturnDocument(SalesHeader."No.");
+              // LibrarySales.RefreshPayoutSheet; TODO: outcommented!
+
+              // Verify: Payout Sheet entry.
+              // VerifyPayoutSheetEntry(GetCrMemoNo(SalesHeader."No."),TotalAmount,DiscPct); TODO: outcommented!
+              OrderCount += 1;
+            END;
+        UNTIL (TestBuff.NEXT = 0) OR (OrderCount = MaxOrdersCount);
+
+      IF OrderCount = 0 THEN
+        Assert.Fail(NoProperOrdersErr);
+    END;
+
+    [Test]
+    [HandlerFunctions(MessageHandler)]
+    PROCEDURE ChangeOfGoods@1000000047(ChannelCode@1000000001 : Code[10]);
+    VAR
+      TestBuff@1000000004 : Record 80008;
+      SalesHeader@1000000003 : Record 36;
+      SalesLine@1000000002 : Record 37;
+      OrderCount@1000000000 : Integer;
+    BEGIN
+      // SO -> Create Purchase Order -> Ship -> Modify Line -> Create Return Order -> Create Follow-on Order.
+      OrderCount := 0;
+      SetTestBufferFilter(TestBuff,TestBuff."Entry Type"::SalesOrder);
+      IF TestBuff.FINDSET THEN
+        REPEAT
+          IF SalesHeader.GET(SalesHeader."Document Type"::Order,TestBuff."Entry Value Code") THEN
+            IF CheckSalesHeader(SalesHeader,ChannelCode,SalesHeader."Payment Method Code",FALSE,FALSE) THEN BEGIN
+              // Check Status.
+              LibrarySales.CheckReleaseSalesOrder(SalesHeader);
+
+              // Create Purchase Order.
+              LibrarySales.CreatePurchDocument(SalesHeader);
+
+              // Ship Sales Order.
+              LibrarySales.ShipSalesDocument(SalesHeader);
+
+              // Create Return Order, Create Follow-on Order.
+              SetReturnTypeToLine(SalesHeader."No.",SalesLine."Return Type"::Change);
+              LibrarySales.CreateReturnOrderFromOpen(SalesHeader."No.");
+              LibrarySales.CreateReturnFollowOnOrder(SalesHeader."No.");
+
+              // Verify: Follow-on Order is created.
+              VerifyFollowOnSalesOrder(SalesHeader."No.");
+              OrderCount += 1;
+            END;
+        UNTIL (TestBuff.NEXT = 0) OR (OrderCount = MaxOrdersCount);
+
+      IF OrderCount = 0 THEN
+        Assert.Fail(NoProperOrdersErr);
+    END;
+
+    [Test]
+    [HandlerFunctions(MessageHandler)]
+    PROCEDURE SparePartOfGoods@1000000064(ChannelCode@1000000001 : Code[10]);
+    VAR
+      TestBuff@1000000004 : Record 80008;
+      SalesHeader@1000000003 : Record 36;
+      SalesLine@1000000002 : Record 37;
+      OrderCount@1000000000 : Integer;
+    BEGIN
+      // SO -> Create Purchase Order -> Ship -> Modify Line -> Create Return Order.
+      OrderCount := 0;
+      SetTestBufferFilter(TestBuff,TestBuff."Entry Type"::SalesOrder);
+      IF TestBuff.FINDSET THEN
+        REPEAT
+          IF SalesHeader.GET(SalesHeader."Document Type"::Order,TestBuff."Entry Value Code") THEN
+            IF CheckSalesHeader(SalesHeader,ChannelCode,SalesHeader."Payment Method Code",FALSE,FALSE) THEN BEGIN
+              // Check Status.
+              LibrarySales.CheckReleaseSalesOrder(SalesHeader);
+
+              // Create Purchase Order.
+              LibrarySales.CreatePurchDocument(SalesHeader);
+
+              // Ship Sales Order.
+              LibrarySales.ShipSalesDocument(SalesHeader);
+
+              // Create Return Order.
+              SetReturnTypeToLine(SalesHeader."No.",SalesLine."Return Type"::"Spare Part");
+              LibrarySales.CreateReturnOrderFromOpen(SalesHeader."No.");
+
+              // Verify: Return Order is created.
+              VerifyReturnOrderCreated(SalesHeader."No.");
+              OrderCount += 1;
+            END;
+        UNTIL (TestBuff.NEXT = 0) OR (OrderCount = MaxOrdersCount);
+
+      IF OrderCount = 0 THEN
+        Assert.Fail(NoProperOrdersErr);
+    END;
+
+    [Test]
+    PROCEDURE CancelSalesLine@1000000049(ChannelCode@1000000001 : Code[10]);
+    VAR
+      TestBuff@1000000004 : Record 80008;
+      SalesHeader@1000000003 : Record 36;
+      SalesLine@1000000002 : Record 37;
+      OrderCount@1000000000 : Integer;
+    BEGIN
+      // SO -> Create Purchase Order -> Modify Line -> Create Return Order -> Cancel Sales Line.
+      OrderCount := 0;
+      SetTestBufferFilter(TestBuff,TestBuff."Entry Type"::SalesOrder);
+      IF TestBuff.FINDSET THEN
+        REPEAT
+          IF SalesHeader.GET(SalesHeader."Document Type"::Order,TestBuff."Entry Value Code") THEN
+            IF CheckSalesHeader(SalesHeader,ChannelCode,SalesHeader."Payment Method Code",TRUE,FALSE) THEN BEGIN
+              // Check Status.
+              LibrarySales.CheckReleaseSalesOrder(SalesHeader);
+
+              // Create Purchase Order.
+              LibrarySales.CreatePurchDocument(SalesHeader);
+
+              // Create Return Order.
+              SetReturnTypeToLine(SalesHeader."No.",SalesLine."Return Type"::Cancelation);
+              LibrarySales.CreateReturnOrderFromOpen(SalesHeader."No.");
+              LibrarySales.CancelSalesLine(SalesHeader."No.",10000);
+
+              // Verify: Sales Line is canceled.
+              VerifyCanceledLine(SalesHeader."No.",10000);
+              OrderCount += 1;
+            END;
+        UNTIL (TestBuff.NEXT = 0) OR (OrderCount = MaxOrdersCount);
+
+      IF OrderCount = 0 THEN
+        Assert.Fail(NoProperOrdersErr);
+    END;
+
+    [Test]
+    PROCEDURE CancelSalesOrder@1000000066(ChannelCode@1000000000 : Code[10]);
+    BEGIN
+      CancelSalesDocument(ChannelCode,FALSE);
+    END;
+
+    [Test]
+    PROCEDURE CancelSOWithResource@1000000051(ChannelCode@1000000000 : Code[10]);
+    BEGIN
+      CancelSalesDocument(ChannelCode,TRUE);
+    END;
+
+    LOCAL PROCEDURE CancelSalesDocument@1000000050(ChannelCode@1000000006 : Code[10];HasResourceLine@1000000005 : Boolean);
+    VAR
+      TestBuff@1000000004 : Record 80008;
+      SalesHeader@1000000003 : Record 36;
+      SalesLine@1000000002 : Record 37;
+      TotalAmount@1000000001 : Decimal;
+      OrderCount@1000000000 : Integer;
+    BEGIN
+      // SO -> Create Purchase Order -> Modify Line -> Cancel Sales Order.
+      OrderCount := 0;
+      SetTestBufferFilter(TestBuff,TestBuff."Entry Type"::SalesOrder);
+      IF TestBuff.FINDSET THEN
+        REPEAT
+          IF SalesHeader.GET(SalesHeader."Document Type"::Order,TestBuff."Entry Value Code") THEN
+            IF CheckSalesHeader(SalesHeader,ChannelCode,SalesHeader."Payment Method Code",FALSE,HasResourceLine) THEN BEGIN
+              // Check Status.
+              LibrarySales.CheckReleaseSalesOrder(SalesHeader);
+              SalesHeader.CALCFIELDS("Amount Including VAT");
+              TotalAmount := SalesHeader."Amount Including VAT";
+
+              // Create Purchase Order.
+              LibrarySales.CreatePurchDocument(SalesHeader);
+
+              // Create Return Order, Cancel Sales Order, refresh Payout Sheet.
+              SetReturnTypeToLine(SalesHeader."No.",SalesLine."Return Type"::Cancelation);
+              LibrarySales.CreateReturnOrderFromOpen(SalesHeader."No.");
+              LibrarySales.CancelSalesOrder(SalesHeader."No.");
+              SetReturnStatus(SalesHeader,SalesHeader."Status Return Order"::finished);
+              // LibrarySales.RefreshPayoutSheet; TODO!
+
+              // Verify: Sales Line is canceled.
+              VerifyCanceledLine(SalesHeader."No.",10000);
+              // VerifyPayoutSheetEntry(SalesHeader."No.",TotalAmount,0);
+              VerifyCanceledLinePO(SalesHeader."No.",10000);
+              OrderCount += 1;
+            END;
+        UNTIL (TestBuff.NEXT = 0) OR (OrderCount = MaxOrdersCount);
+
+      IF OrderCount = 0 THEN
+        Assert.Fail(NoProperOrdersErr);
+    END;
+
+    [Test]
+    PROCEDURE CancelShippedSalesLine@1000000053(ChannelCode@1000000002 : Code[10]);
+    VAR
+      TestBuff@1000000004 : Record 80008;
+      SalesHeader@1000000003 : Record 36;
+      SalesLine@1000000001 : Record 37;
+      OrderCount@1000000000 : Integer;
+    BEGIN
+      // SO -> Create Purchase Order -> Ship -> Modify Line ->Cancel Sales Line.
+      OrderCount := 0;
+      SetTestBufferFilter(TestBuff,TestBuff."Entry Type"::SalesOrder);
+      IF TestBuff.FINDSET THEN
+        REPEAT
+          IF SalesHeader.GET(SalesHeader."Document Type"::Order,TestBuff."Entry Value Code") THEN
+            IF CheckSalesHeader(SalesHeader,ChannelCode,SalesHeader."Payment Method Code",TRUE,FALSE) THEN BEGIN
+              // Check Status.
+              LibrarySales.CheckReleaseSalesOrder(SalesHeader);
+
+              // Create Purchase Order.
+              LibrarySales.CreatePurchDocument(SalesHeader);
+
+              // Ship Sales Order, Cancel Sales Line.
+              LibrarySales.ShipSalesDocument(SalesHeader);
+              SetReturnTypeToLine(SalesHeader."No.",SalesLine."Return Type"::Cancelation);
+              ASSERTERROR LibrarySales.CancelSalesLine(SalesHeader."No.",10000);
+
+              // Verify: Error message.
+              Assert.IsTrue(STRPOS(GETLASTERRORTEXT,QuantityMustBeZeroErr) > 0,QuantityMustBeZeroErr);
+              OrderCount += 1;
+            END;
+        UNTIL (TestBuff.NEXT = 0) OR (OrderCount = MaxOrdersCount);
+
+      IF OrderCount = 0 THEN
+        Assert.Fail(NoProperOrdersErr);
+    END;
+
+    [Test]
+    PROCEDURE CancelPurchOrderDifVend@1000000056(ChannelCode@1000000005 : Code[10]);
+    VAR
+      TestBuff@1000000003 : Record 80008;
+      SalesHeader@1000000002 : Record 36;
+      SalesLine@1000000001 : Record 37;
+      OrderCount@1000000000 : Integer;
+      LineNo@1000000004 : Integer;
+    BEGIN
+      // SO (multi-line) -> Create Purchase Order -> Modify Line -> Cancel 1st Line.
+      OrderCount := 0;
+      SetTestBufferFilter(TestBuff,TestBuff."Entry Type"::SalesOrder);
+      IF TestBuff.FINDSET THEN
+        REPEAT
+          IF SalesHeader.GET(SalesHeader."Document Type"::Order,TestBuff."Entry Value Code") THEN
+            IF CheckSalesHeader(SalesHeader,ChannelCode,SalesHeader."Payment Method Code",TRUE,FALSE) AND
+               CheckMoreThanOneVendor(SalesHeader."No.",LineNo)
+            THEN BEGIN
+              // Check Status.
+              LibrarySales.CheckReleaseSalesOrder(SalesHeader);
+
+              // Create Purchase Order.
+              LibrarySales.CreatePurchDocument(SalesHeader);
+
+              // Ship Sales Order, Cancel Sales Line.
+              SetReturnTypeToLine(SalesHeader."No.",SalesLine."Return Type"::Cancelation);
+              LibrarySales.CancelSalesLine(SalesHeader."No.",10000);
+
+              // Verify: Error message.
+              VerifyCanceledLinePO(SalesHeader."No.",10000);
+              ASSERTERROR VerifyCanceledLinePO(SalesHeader."No.",LineNo);
+              OrderCount += 1;
+            END;
+        UNTIL (TestBuff.NEXT = 0) OR (OrderCount = MaxOrdersCount);
+
+      IF OrderCount = 0 THEN
+        Assert.Fail(NoProperOrdersErr);
+    END;
+
+    PROCEDURE ImportDHLProactivFileSRTD@1000000089(ChannelCode@1000000000 : Code[10]);
+    VAR
+      TestBuff@1000000005 : Record 80008;
+      SalesHeader@1000000004 : Record 36;
+      StatusCode@1000000003 : Code[20];
+      StatusSubCode@1000000001 : Code[20];
+      OrderCount@1000000002 : Integer;
+    BEGIN
+      OrderCount := 0;
+      StatusCode := 'SRTED';
+      StatusSubCode := 'NRQRD';
+      SetTestBufferFilter(TestBuff,TestBuff."Entry Type"::SalesOrder);
+      IF TestBuff.FINDSET THEN
+        REPEAT
+          IF SalesHeader.GET(SalesHeader."Document Type"::Order,TestBuff."Entry Value Code") THEN
+            IF CheckSalesHeader(SalesHeader,ChannelCode,SalesHeader."Payment Method Code",FALSE,FALSE) THEN BEGIN
+              // Check Status.
+              LibrarySales.CheckReleaseSalesOrder(SalesHeader);
+
+              // Create KAD, import STA Files, import DHL Status.
+              RHDInterfaceHelper.CreateRHDKADFile(SalesHeader);
+              RHDInterfaceHelper.ImportRHDSTAFile(SalesHeader,'0');
+              RHDInterfaceHelper.ImportRHDSTAFile(SalesHeader,'50');
+              ImportDHLProactivFile(SalesHeader,StatusCode,StatusSubCode);
+
+              // Verify: .
+              VerifyDHLParcelStatusEntry(SalesHeader."No.",StatusCode,StatusSubCode);
+
+              OrderCount += 1;
+            END;
+        UNTIL (TestBuff.NEXT = 0) OR (OrderCount = MaxOrdersCount);
+
+      IF OrderCount = 0 THEN
+        Assert.Fail(NoProperOrdersErr);
+    END;
+
+    PROCEDURE ImportDHLProactivFileDLVRD@1000000091(ChannelCode@1000000000 : Code[10]);
+    VAR
+      TestBuff@1000000005 : Record 80008;
+      SalesHeader@1000000004 : Record 36;
+      StatusCode@1000000003 : Code[20];
+      StatusSubCode@1000000001 : Code[20];
+      OrderCount@1000000002 : Integer;
+    BEGIN
+      OrderCount := 0;
+      StatusCode := 'DLVRD';
+      StatusSubCode := 'ACCPT';
+      SetTestBufferFilter(TestBuff,TestBuff."Entry Type"::SalesOrder);
+      IF TestBuff.FINDSET THEN
+        REPEAT
+          IF SalesHeader.GET(SalesHeader."Document Type"::Order,TestBuff."Entry Value Code") THEN
+            IF CheckSalesHeader(SalesHeader,ChannelCode,SalesHeader."Payment Method Code",FALSE,FALSE) THEN BEGIN
+              // Check Status.
+              LibrarySales.CheckReleaseSalesOrder(SalesHeader);
+
+              // Create KAD, import STA Files, import DHL Status.
+              RHDInterfaceHelper.ProcessRHDInterface(SalesHeader,'0');
+              ImportDHLProactivFile(SalesHeader,StatusCode,StatusSubCode);
+              FillSalesDateChangeDate(SalesHeader."No.");
+              RunJobQueueWithCleanup(50240,SalesHeader."No.");
+
+              // Verify: .
+              VerifyDHLParcelStatusEntry(SalesHeader."No.",StatusCode,StatusSubCode);
+              VerifyFillSalesDatesEntryState(SalesHeader."No.");
+
+              OrderCount += 1;
+            END;
+        UNTIL (TestBuff.NEXT = 0) OR (OrderCount = MaxOrdersCount);
+
+      IF OrderCount = 0 THEN
+        Assert.Fail(NoProperOrdersErr);
+    END;
+
+    PROCEDURE ImportDHLProactivFileShipInv@1000000093(ChannelCode@1000000000 : Code[10]);
+    VAR
+      TestBuff@1000000005 : Record 80008;
+      SalesHeader@1000000004 : Record 36;
+      StatusCode@1000000003 : Code[20];
+      StatusSubCode@1000000001 : Code[20];
+      TotalAmt@1000000006 : Decimal;
+      OrderCount@1000000002 : Integer;
+    BEGIN
+      OrderCount := 0;
+      StatusCode := 'DLVRD';
+      StatusSubCode := 'ACCPT';
+      SetTestBufferFilter(TestBuff,TestBuff."Entry Type"::SalesOrder);
+      IF TestBuff.FINDSET THEN
+        REPEAT
+          IF SalesHeader.GET(SalesHeader."Document Type"::Order,TestBuff."Entry Value Code") THEN
+            IF CheckSalesHeader(SalesHeader,ChannelCode,SalesHeader."Payment Method Code",FALSE,FALSE) THEN BEGIN
+              // Check Status.
+              LibrarySales.CheckReleaseSalesOrder(SalesHeader);
+              SalesHeader.CALCFIELDS("Amount Including VAT");
+              TotalAmt := SalesHeader."Amount Including VAT";
+
+              // Create KAD, import STA Files, import DHL Status.
+              RHDInterfaceHelper.CreateRHDKADFile(SalesHeader);
+              RHDInterfaceHelper.ImportRHDSTAFile(SalesHeader,'0');
+              RHDInterfaceHelper.ImportRHDSTAFile(SalesHeader,'50');
+              BatchSalesPostChangeDate(SalesHeader."No.",0);
+              RunJobQueueWithCleanup(50266,SalesHeader."No.");
+
+              ImportDHLProactivFile(SalesHeader,StatusCode,StatusSubCode);
+              FillSalesDateChangeDate(SalesHeader."No.");
+              RunJobQueueWithCleanup(50240,SalesHeader."No.");
+
+              BatchSalesPostChangeDate(SalesHeader."No.",1);
+              RunJobQueueWithCleanup(50267,SalesHeader."No.");
+
+              // Verify: .
+              VerifyDHLParcelStatusArchEntry(SalesHeader."No.",StatusCode,StatusSubCode);
+              VerifyPostedSalesInvoice(SalesHeader."No.",TotalAmt);
+              VerifyCustLedgerEntries(SalesHeader."No.",SalesHeader."Document Date",TotalAmt);
+              VerifyBatchSalesPostArchEntry(SalesHeader."No.",0,2); // 0 - Ship; 2 - Success.
+              VerifyBatchSalesPostArchEntry(SalesHeader."No.",1,2); // 1 - Invoice; 2 - Success.
+
+              OrderCount += 1;
+            END;
+        UNTIL (TestBuff.NEXT = 0) OR (OrderCount = MaxOrdersCount);
+
+      IF OrderCount = 0 THEN
+        Assert.Fail(NoProperOrdersErr);
+    END;
+
+    PROCEDURE ChangeChannelVerifyDim@1000000044(ChannelCode@1000000000 : Code[10];NewChannelCode@1000000001 : Code[10];MultiLine@1000000003 : Boolean);
+    VAR
+      TestBuff@1000000007 : Record 80008;
+      SalesHeader@1000000006 : Record 36;
+      OrderCount@1000000002 : Integer;
+    BEGIN
+      OrderCount := 0;
+      SetTestBufferFilter(TestBuff,TestBuff."Entry Type"::SalesOrder);
+      IF TestBuff.FINDSET THEN
+        REPEAT
+          IF SalesHeader.GET(SalesHeader."Document Type"::Order,TestBuff."Entry Value Code") THEN
+            IF CheckSalesHeader(SalesHeader,ChannelCode,SalesHeader."Payment Method Code",MultiLine,FALSE) THEN BEGIN
+              // Check Status.
+              LibrarySales.CheckReleaseSalesOrder(SalesHeader);
+              PaymentReceived(SalesHeader."No.");
+
+              // Change Channel.
+              LibrarySales.ChangeChannel(SalesHeader,ChannelCode,NewChannelCode);
+
+              // Verify: .
+              VerifyOrderDimentions(SalesHeader."No.",'AUFTRAG',SalesHeader."No.");
+              VerifyOrderDimentions(SalesHeader."No.",'LAND',SalesHeader."VAT Country/Region Code");
+              VerifyLineDimentions(SalesHeader."No.",'AUFTRAG',SalesHeader."No.");
+              VerifyLineDimentions(SalesHeader."No.",'LAND',SalesHeader."VAT Country/Region Code");
+
+              OrderCount += 1;
+            END;
+        UNTIL (TestBuff.NEXT = 0) OR (OrderCount = MaxOrdersCount);
+
+      IF OrderCount = 0 THEN
+        Assert.Fail(NoProperOrdersErr);
+    END;
+
+    PROCEDURE SetTestBufferFilter@1000000025(VAR TestBuffer@1000000000 : Record 80008;EntryType@1000000001 : Option);
+    BEGIN
+      TestBuffer.SETRANGE("Entry Type",EntryType);
+      TestBuffer.SETRANGE("Use for Test",TRUE);
+    END;
+
+    LOCAL PROCEDURE SetBatchPostDocFilter@1000000032(VAR BatchPostDoc@1000000000 : Record 50043;DocumentNo@1000000001 : Code[20];ActionType@1000000002 : Option);
+    BEGIN
+      BatchPostDoc.SETRANGE("Document No.",DocumentNo);
+      BatchPostDoc.SETRANGE("Action Type",ActionType);
+    END;
+
+    LOCAL PROCEDURE SetPrevnDiscToSalesLine@1000000026(DocumentNo@1000000000 : Code[20];ReturnType@1000000003 : Option) : Decimal;
+    VAR
+      SalesLineL@1000000001 : Record 37;
+      PreventionDiscount@1000000002 : Record 50068;
+    BEGIN
+      FindDiscPct(PreventionDiscount,ReturnType);
+      LibrarySales.FillSalesLineWithReturn(
+        DocumentNo,ReturnType,SalesLineL."Customer Prevention"::Accepted,PreventionDiscount."Prevention Discount %");
+
+      EXIT(PreventionDiscount."Prevention Discount %");
+    END;
+
+    PROCEDURE SetReturnTypeToLine@1000000048(DocumentNo@1000000001 : Code[20];ReturnType@1000000000 : Option);
+    VAR
+      SalesLineL@1000000002 : Record 37;
+    BEGIN
+      LibrarySales.FillSalesLineWithReturn(
+        DocumentNo,ReturnType,SalesLineL."Customer Prevention"::Declined,0);
+    END;
+
+    LOCAL PROCEDURE SetReturnStatus@1000000037(VAR SalesHeader@1000000000 : Record 36;ReturnStatus@1000000001 : Option);
+    BEGIN
+      SalesHeader.FIND;
+      SalesHeader.VALIDATE("Status Return Order",ReturnStatus);
+      SalesHeader.MODIFY(TRUE);
+    END;
+
+    PROCEDURE SetReturnStatusToReturnOrder@1000000054(DocumentNo@1000000000 : Code[20];ReturnStatus@1000000001 : Option);
+    VAR
+      SalesHeader@1000000002 : Record 36;
+    BEGIN
+      WITH SalesHeader DO BEGIN
+        SETRANGE("Document Type","Document Type"::"Return Order");
+        SETRANGE("External Document No.",DocumentNo);
+        FINDFIRST;
+
+        VALIDATE("Status Return Order",ReturnStatus);
+        MODIFY(TRUE);
+      END
+    END;
+
+    PROCEDURE CheckSalesHeader@1000000002(SalesHeader@1000000000 : Record 36;Channel@1000000001 : Code[10];PaymentMethod@1000000003 : Code[10];IsMultiLine@1000000004 : Boolean;HasResourse@1000000002 : Boolean) : Boolean;
+    BEGIN
+      IF SalesHeader.Status = SalesHeader.Status::Canceled THEN
+        EXIT(FALSE);
+
+      IF NOT SalesHeader.Kommissionierung THEN
+        EXIT(FALSE);
+
+      IF PaymentMethod <> SalesHeader."Payment Method Code" THEN
+        EXIT(FALSE);
+
+      IF NOT CheckChannel(SalesHeader."No.",Channel) THEN
+        EXIT(FALSE);
+
+      IF IsMultiLineOrder(SalesHeader."No.") XOR IsMultiLine THEN
+        EXIT(FALSE);
+
+      IF CheckResource(SalesHeader."No.") XOR HasResourse THEN
+        EXIT(FALSE);
+
+      IF CheckReleatedDocuments(SalesHeader."No.") THEN
+        EXIT(FALSE);
+
+      IF CheckParcelStatusHistory(SalesHeader."No.") THEN
+        EXIT(FALSE);
+
+      EXIT(TRUE);
+    END;
+
+    LOCAL PROCEDURE CheckReleatedDocuments@1000000009(DocumentNo@1000000000 : Code[20]) : Boolean;
+    VAR
+      SalesShipmentHeader@1000000001 : Record 110;
+      SalesLine@1000000003 : Record 37;
+    BEGIN
+      // Check Shipments exist.
+      SalesShipmentHeader.SETRANGE("External Document No.",DocumentNo);
+      IF SalesShipmentHeader.FINDFIRST THEN
+        EXIT(TRUE);
+
+      // Check Purchase Orders exist.
+      WITH SalesLine DO BEGIN
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("Document No.",DocumentNo);
+        IF FINDSET THEN
+          REPEAT
+            IF ("Org Purchase Order No." <> '') OR ("Org Special Order Purchase No." <> '') THEN
+              EXIT(TRUE);
+          UNTIL NEXT = 0;
+      END;
+
+      EXIT(FALSE);
+    END;
+
+    LOCAL PROCEDURE CheckResource@1000000018(DocumentNo@1000000000 : Code[20]) : Boolean;
+    VAR
+      SalesLine@1000000001 : Record 37;
+    BEGIN
+      // Check Sales Order contains Resource or Item Charge.
+      WITH SalesLine DO BEGIN
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("Document No.",DocumentNo);
+        SETFILTER(Type,'%1|%2',Type::"Charge (Item)",Type::Resource);
+        IF NOT ISEMPTY THEN
+          EXIT(TRUE);
+
+        EXIT(FALSE);
+      END;
+    END;
+
+    PROCEDURE CheckResourceType@1000000000(DocumentNo@1000000000 : Code[20];ResourceType@1000000002 : Option) : Boolean;
+    VAR
+      SalesLine@1000000001 : Record 37;
+    BEGIN
+      WITH SalesLine DO BEGIN
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("Document No.",DocumentNo);
+        SETFILTER(Type,'%1|%2',Type::"Charge (Item)",Type::Resource);
+        SETRANGE("Resource Type",ResourceType);
+        IF NOT ISEMPTY THEN
+          EXIT(TRUE);
+
+        EXIT(FALSE);
+      END;
+    END;
+
+    LOCAL PROCEDURE CheckChannel@1000000010(DocumentNo@1000000000 : Code[20];PurchasingCode@1000000003 : Code[10]) : Boolean;
+    VAR
+      SalesLine@1000000001 : Record 37;
+    BEGIN
+      WITH SalesLine DO BEGIN
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("Document No.",DocumentNo);
+        SETRANGE(Type,Type::Item);
+        SETFILTER("Return Type",'%1',"Return Type"::" ");
+        IF FINDSET THEN
+          REPEAT
+            IF "Purchasing Code" <> PurchasingCode THEN
+              EXIT(FALSE);
+          UNTIL NEXT = 0
+        ELSE
+          EXIT(FALSE);
+
+        EXIT(TRUE);
+      END;
+    END;
+
+    LOCAL PROCEDURE CheckMoreThanOneVendor@1000000061(DocumentNo@1000000000 : Code[20];VAR LineNo@1000000003 : Integer) : Boolean;
+    VAR
+      SalesLine@1000000001 : Record 37;
+      VendorCode@1000000002 : Code[20];
+    BEGIN
+      WITH SalesLine DO BEGIN
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("Document No.",DocumentNo);
+        SETRANGE(Type,Type::Item);
+        FINDSET;
+        REPEAT
+          IF VendorCode = '' THEN
+            VendorCode := GetVendorNo("No.")
+          ELSE
+            IF GetVendorNo("No.") <> VendorCode THEN BEGIN
+              LineNo := "Line No.";
+              EXIT(TRUE);
+            END;
+        UNTIL NEXT = 0;
+
+        EXIT(FALSE);
+      END;
+    END;
+
+    LOCAL PROCEDURE CheckParcelStatusHistory@1000000067(DocumentNo@1000000001 : Code[20]) : Boolean;
+    VAR
+      ParcelStatusHistory@1000000000 : Record 80013;
+    BEGIN
+      ParcelStatusHistory.SETRANGE("Document Type",ParcelStatusHistory."Document Type"::Order);
+      ParcelStatusHistory.SETRANGE("Document No.",DocumentNo);
+      IF ParcelStatusHistory.FINDFIRST THEN
+        EXIT(TRUE);
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE CheckPaymentReceived@1000000011(DocumentNo@1000000000 : Code[20]) : Boolean;
+    VAR
+      SalesHeader@1000000001 : Record 36;
+    BEGIN
+      SalesHeader.GET(DocumentNo);
+      EXIT(SalesHeader."Payment received");
+    END;
+
+    LOCAL PROCEDURE GetVendorNo@1000000012(ItemNo@1000000003 : Code[20]) : Code[20];
+    VAR
+      Item@1000000000 : Record 27;
+    BEGIN
+      Item.GET(ItemNo);
+      EXIT(Item."Vendor No.");
+    END;
+
+    LOCAL PROCEDURE GetCrMemoNo@1000000045(DocumentNo@1000000000 : Code[20]) : Code[20];
+    VAR
+      SalesCrMemoHeader@1000000001 : Record 114;
+    BEGIN
+      SalesCrMemoHeader.SETRANGE("External Document No.",DocumentNo);
+      SalesCrMemoHeader.SETRANGE("Prepayment Credit Memo",FALSE);
+      SalesCrMemoHeader.FINDLAST;
+
+      EXIT(SalesCrMemoHeader."No.");
+    END;
+
+    PROCEDURE GetSalesOrderNoSeries@1000000057() : Code[10];
+    VAR
+      SalesRecievablesSetup@1000000001 : Record 311;
+    BEGIN
+      SalesRecievablesSetup.GET;
+      EXIT(SalesRecievablesSetup."Order Nos.");
+    END;
+
+    PROCEDURE GetSalesTrackingActionShiftDay@1000000063(FillSalesDates@1000000001 : Record 50203) : Integer;
+    VAR
+      SalesTrackingAction@1000000000 : Record 50201;
+      SalesLine@1000000002 : Record 37;
+      Purchasing@1000000003 : Record 5721;
+    BEGIN
+      SalesLine.SETRANGE("Document Type",FillSalesDates."Document Type");
+      SalesLine.SETRANGE("Document No.",FillSalesDates."Document No.");
+      SalesLine.FINDFIRST;
+
+      Purchasing.GET(SalesLine."Purchasing Code");
+      SalesTrackingAction.GET(
+        Purchasing."Sales Tracking Code",FillSalesDates."Sales Tracking Action Code",SalesTrackingAction.Type::ADD);
+      EXIT(SalesTrackingAction."Shift Days");
+    END;
+
+    LOCAL PROCEDURE IsMultiLineOrder@1000000003(DocumentNo@1000000000 : Code[20]) : Boolean;
+    VAR
+      SalesLine@1000000001 : Record 37;
+    BEGIN
+      WITH SalesLine DO BEGIN
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("Document No.",DocumentNo);
+        SETRANGE(Type,Type::Item);
+        SETFILTER("Return Type",'%1',"Return Type"::" ");
+        IF COUNT > 1 THEN
+          EXIT(TRUE);
+
+        EXIT(FALSE);
+      END;
+    END;
+
+    LOCAL PROCEDURE FindDiscPct@1000000035(VAR PreventionDiscount@1000000001 : Record 50068;ReturnType@1000000000 : Option);
+    BEGIN
+      PreventionDiscount.SETRANGE("Prevention Type",ReturnType);
+      PreventionDiscount.NEXT(RANDOM(PreventionDiscount.COUNT));
+    END;
+
+    PROCEDURE ImportDHLProactivFile@1000000090(VAR SalesHeader@1000000000 : Record 36;StatusCode@1000000001 : Code[20];StatusCode2@1000000002 : Code[20]);
+    BEGIN
+      LibrarySales.CreateDHLProactiveFile(SalesHeader,StatusCode,StatusCode2);
+      RunJobQueue(50033,'');
+      RunJobQueue(50033,'MANUALIMPORT');
+    END;
+
+    PROCEDURE ImportDPDScanInfoFile@1000000062(StatusCode@1000000001 : Code[20];TrackingNo@1000000002 : Code[14]);
+    BEGIN
+      // H1921  12.03.15  MM +++++++++++++++
+      LibrarySales.CreateDPDScanInfoFile(StatusCode,TrackingNo);
+      RunJobQueue(50273,'IMPORT_SCANINFO');
+      RunJobQueue(50273,'PROCESS_SCANINFO');
+      // H1921  12.03.15  MM ---------------
+    END;
+
+    PROCEDURE RunJobQueueWithCleanup@1000000080(JobQueueID@1000000001 : Integer;ParamString@1000000000 : Text[250]);
+    BEGIN
+      CreateJobQueueEntry(JobQueueID,ParamString);
+      RunJobQueue(JobQueueID,ParamString);
+      DeleteJobQueueEntry(JobQueueID,ParamString);
+    END;
+
+    PROCEDURE RunJobQueue@1000000001(JobQueueID@1000000001 : Integer;ParamString@1000000002 : Text[250]);
+    VAR
+      JobQueueEntry@1000000000 : Record 472;
+    BEGIN
+      JobQueueEntry.SETRANGE("Object Type to Run",JobQueueEntry."Object Type to Run"::Codeunit);
+      JobQueueEntry.SETRANGE("Object ID to Run",JobQueueID);
+      JobQueueEntry.SETRANGE("Parameter String",ParamString);
+      JobQueueEntry.FINDFIRST;
+      COMMIT;
+      CODEUNIT.RUN(JobQueueEntry."Object ID to Run",JobQueueEntry);
+    END;
+
+    PROCEDURE CreateJobQueueEntry@1000000077(JobQueueID@1000000002 : Integer;ParamString@1000000001 : Text[250]);
+    VAR
+      JobQueueEntry@1000000000 : Record 472;
+    BEGIN
+      JobQueueEntry.INIT;
+      JobQueueEntry."Object Type to Run" := JobQueueEntry."Object Type to Run"::Codeunit;
+      JobQueueEntry."Object ID to Run" := JobQueueID;
+      JobQueueEntry."Parameter String" := ParamString;
+      JobQueueEntry.INSERT(TRUE);
+    END;
+
+    PROCEDURE DeleteJobQueueEntry@1000000078(JobQueueID@1000000001 : Integer;ParamString@1000000000 : Text[250]);
+    VAR
+      JobQueueEntry@1000000002 : Record 472;
+    BEGIN
+      JobQueueEntry.SETRANGE("Object Type to Run",JobQueueEntry."Object Type to Run"::Codeunit);
+      JobQueueEntry.SETRANGE("Object ID to Run",JobQueueID);
+      JobQueueEntry.SETRANGE("Parameter String",ParamString);
+      IF JobQueueEntry.FINDFIRST THEN
+        JobQueueEntry.DELETE(TRUE);
+    END;
+
+    PROCEDURE BatchSalesPostChangeDate@1000000081(DocumentNo@1000000002 : Code[20];PostingType@1000000001 : Option);
+    VAR
+      BatchSalesPostHeader@1000000000 : Record 50225;
+    BEGIN
+      WITH BatchSalesPostHeader DO BEGIN
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("Document No.",DocumentNo);
+        SETRANGE("Posting Type",PostingType);
+        FINDFIRST;
+
+        VALIDATE("Planned Processing Date",TODAY);
+        MODIFY(TRUE);
+      END
+    END;
+
+    PROCEDURE ImportSalesOrderTemplate@1000000065(TemplateName@1000000006 : Text[50];ImportPayment@1000000009 : Boolean) : Code[20];
+    BEGIN
+      EXIT(ImportSOTemplateWithOrderDate(TemplateName,CURRENTDATETIME,ImportPayment));
+    END;
+
+    PROCEDURE ImportSOTemplateWithOrderDate@1000000079(TemplateName@1000000006 : Text[50];OrderDate@1000000010 : DateTime;ImportPayment@1000000009 : Boolean) : Code[20];
+    VAR
+      UserSetup@1000000005 : Record 91;
+      TestFunctions@1000000008 : Codeunit 50231;
+      RequestMessage@1000000003 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{88D96A05-F192-11D4-A65F-0040963251E5}:'Microsoft XML, v6.0'.DOMDocument60";
+      ResponseMessage@1000000002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{88D96A05-F192-11D4-A65F-0040963251E5}:'Microsoft XML, v6.0'.DOMDocument60";
+      SalesOrderNo@1000000007 : Code[20];
+      FileName@1000000000 : Text[250];
+    BEGIN
+      CREATE(RequestMessage);
+      CREATE(ResponseMessage);
+
+      UserSetup.GET(USERID);
+
+      // Import Customer.
+      FileName := TemplatePathTxt + TemplateName + 'Cust.xml';
+      RequestMessage.load(FileName);
+      TestFunctions.ProcessXMLRequest(RequestMessage,ResponseMessage);
+
+      // Import Order.
+      FileName := ModifyOrderTemplate(TemplatePathTxt,TemplateName + '.xml',OrderDate);
+      RequestMessage.load(FileName);
+      SalesOrderNo := TestFunctions.ProcessXMLRequest(RequestMessage,ResponseMessage);
+      FILE.ERASE(FileName);
+
+      // Import Payment.
+      FileName := TemplatePathTxt + TemplateName + 'Pay.xml';
+      IF ImportPayment AND FILE.EXISTS(FileName) THEN BEGIN
+        FileName := ModifyPaymentTemplate(TemplatePathTxt,TemplateName + 'Pay.xml',SalesOrderNo);
+        RequestMessage.load(FileName);
+        TestFunctions.ProcessXMLRequest(RequestMessage,ResponseMessage);
+        FILE.ERASE(FileName);
+      END;
+
+      EXIT(SalesOrderNo);
+    END;
+
+    LOCAL PROCEDURE ModifyOrderTemplate@1000000087(FolderPath@1000000006 : Text[250];TemplateName@1000000007 : Text[50];OrderDate@1000000004 : DateTime) : Text[250];
+    VAR
+      XMLDocument@1000000003 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v6.0'.DOMDocument";
+      XMLNode@1000000001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";
+      NoSeriesMgt@1000000000 : Codeunit 396;
+    BEGIN
+      CREATE(XMLDocument);
+      XMLDocument.async(FALSE);
+      XMLDocument.load(FolderPath + TemplateName);
+
+      // Change Order No.
+      XMLNode := XMLDocument.selectSingleNode('Transfer/Body/CreateDocumentRequest/Document/ExternalDocumentNo');
+      XMLNode.text := XMLNode.text + NoSeriesMgt.GetNextNo('TEST',WORKDATE,TRUE);
+
+      // Change Order Date.
+      XMLNode := XMLDocument.selectSingleNode('Transfer/Body/CreateDocumentRequest/Document/OrderDate');
+      XMLNode.text := FORMAT(OrderDate,0,'<year4>-<month,2>-<day,2> <Hours24,2>:<Minutes,2>:<Seconds,2>');
+
+      FolderPath :=
+        TEMPORARYPATH +
+        FORMAT(CURRENTDATETIME,0,'<Year4><Month,2><Day,2><Hours24,2><Minutes,2><Seconds,2><Thousands,3>') + '.xml';
+      SaveXMLtoFile(XMLDocument,FolderPath);
+
+      // Create Webshop Item if needed.
+      CreateWebshopItems(XMLDocument);
+      EXIT(FolderPath);
+    END;
+
+    LOCAL PROCEDURE ModifyPaymentTemplate@1000000069(FolderPath@1000000006 : Text[250];TemplateName@1000000007 : Text[50];OrderNo@1000000004 : Code[20]) : Text[250];
+    VAR
+      XMLDocument@1000000003 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v6.0'.DOMDocument";
+      XMLNode@1000000001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";
+    BEGIN
+      CREATE(XMLDocument);
+      XMLDocument.async(FALSE);
+      XMLDocument.load(FolderPath + TemplateName);
+
+      // Change Order No.
+      XMLNode := XMLDocument.selectSingleNode('Transfer/Body/PaymentUpdateRequest/Payment/OrderNo');
+      XMLNode.text := FORMAT(OrderNo);
+
+      // Change Order Date.
+      XMLNode := XMLDocument.selectSingleNode('Transfer/Body/PaymentUpdateRequest/Payment/UpdateDate');
+      XMLNode.text := FORMAT(CURRENTDATETIME,0,'<year4>-<month,2>-<day,2> <Hours24,2>:<Minutes,2>:<Seconds,2>');
+
+      FolderPath :=
+        TEMPORARYPATH +
+        FORMAT(CURRENTDATETIME,0,'<Year4><Month,2><Day,2><Hours24,2><Minutes,2><Seconds,2><Thousands,3>') + '.xml';
+      SaveXMLtoFile(XMLDocument,FolderPath);
+      EXIT(FolderPath);
+    END;
+
+    PROCEDURE CreateWebshopItems@1000000068(XMLDocument@1000000002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v6.0'.DOMDocument");
+    VAR
+      XMLNodeList@1000000001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF82-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNodeList";
+      XMLNode@1000000000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";
+      XMLNodeChild@1000000003 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";
+      AppDom@1000000005 : Code[10];
+      SKU@1000000004 : Code[20];
+    BEGIN
+      AppDom := GetAppDom(XMLDocument);
+      XMLNodeList := XMLDocument.getElementsByTagName('Line');
+      XMLNode := XMLNodeList.item(0);
+      WHILE NOT ISCLEAR(XMLNode) DO BEGIN
+        XMLNodeChild := XMLNode.selectSingleNode('SKU');
+        EVALUATE(SKU,XMLNodeChild.text);
+        CreateWebshopItem(SKU,AppDom);
+        XMLNode := XMLNodeList.nextNode;
+      END;
+    END;
+
+    LOCAL PROCEDURE CreateWebshopItem@1000000070(ItemNo@1000000000 : Code[20];WebshopNo@1000000003 : Code[10]);
+    VAR
+      eBayNavCWebshopItem@1000000002 : Record 5251566;
+    BEGIN
+      eBayNavCWebshopItem.SETRANGE("Webshop Code",WebshopNo);
+      eBayNavCWebshopItem.SETRANGE(SKU,ItemNo);
+      IF eBayNavCWebshopItem.ISEMPTY THEN BEGIN
+        eBayNavCWebshopItem.INIT;
+        eBayNavCWebshopItem."Webshop Code" := WebshopNo;
+        eBayNavCWebshopItem.SKU := ItemNo;
+        eBayNavCWebshopItem."Item No." := ItemNo;
+        eBayNavCWebshopItem.INSERT(TRUE);
+        UpdateItemUoMCode(ItemNo,WebshopNo);
+      END;
+    END;
+
+    LOCAL PROCEDURE GetAppDom@1000000086(XMLDocument@1000000000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v6.0'.DOMDocument") AppDom : Code[10];
+    VAR
+      XMLNode@1000000003 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";
+      XMLAttrList@1000000002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF83-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNamedNodeMap";
+      XMLAttr@1000000001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF85-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMAttribute";
+    BEGIN
+      XMLNode := XMLDocument.selectSingleNode('Transfer/Header');
+      XMLAttrList := XMLNode.attributes;
+      XMLAttr := XMLAttrList.getNamedItem('AppDom');
+      EVALUATE(AppDom,XMLAttr.text);
+      EXIT(AppDom);
+    END;
+
+    LOCAL PROCEDURE UpdateItemUoMCode@1000000100(ItemNo@1000000000 : Code[20];WebshopNo@1000000002 : Code[10]);
+    VAR
+      eBayNavCWebshopItem@1000000001 : Record 5251566;
+    BEGIN
+      CreateItemUOM(ItemNo);
+
+      eBayNavCWebshopItem.GET(WebshopNo,ItemNo);
+      eBayNavCWebshopItem.VALIDATE("Item Unit of Measure Code",'STK');
+      eBayNavCWebshopItem.MODIFY(TRUE);
+    END;
+
+    LOCAL PROCEDURE CreateItemUOM@1000000092(ItemNo@1000000001 : Code[20]);
+    VAR
+      ItemUoM@1000000000 : Record 5404;
+    BEGIN
+      IF NOT ItemUoM.GET(ItemNo,'STK') THEN BEGIN
+        ItemUoM.INIT;
+        ItemUoM.VALIDATE("Item No.",ItemNo);
+        ItemUoM.VALIDATE(Code,'STK');
+        ItemUoM.INSERT(TRUE);
+      END;
+    END;
+
+    PROCEDURE FillSalesDateChangeDate@1000000085(DocumentNo@1000000002 : Code[20]);
+    VAR
+      FillSalesDates@1000000000 : Record 50203;
+    BEGIN
+      WITH FillSalesDates DO BEGIN
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("Document No.",DocumentNo);
+        SETRANGE(Type,Type::ADD);
+        FINDFIRST;
+
+        VALIDATE("Date/Time",CURRENTDATETIME);
+        VALIDATE("Planned Processing Date",TODAY);
+        MODIFY(TRUE);
+      END
+    END;
+
+    PROCEDURE SaveXMLtoFile@1000000072(DOMDocument@1000000000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v6.0'.DOMDocument";Path@1000000001 : Text[250]);
+    VAR
+      TempBlobRequest@1000000004 : TEMPORARY Record 99008535;
+      OutStream@1000000003 : OutStream;
+    BEGIN
+      TempBlobRequest.INSERT;
+      TempBlobRequest.Blob.CREATEOUTSTREAM(OutStream);
+      DOMDocument.save(OutStream);
+      TempBlobRequest.MODIFY;
+      TempBlobRequest.Blob.EXPORT(Path);
+    END;
+
+    LOCAL PROCEDURE VerifyDHLParcelsHistoryEntry@1000000016(DocumentNo@1000000000 : Code[20];StatusCode@1000000004 : Code[20]);
+    VAR
+      DHLParcelsStatusHistory@1000000001 : Record 50021;
+    BEGIN
+      WITH DHLParcelsStatusHistory DO BEGIN
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("Document No.",DocumentNo);
+        SETRANGE("Shipment through","Shipment through"::Rhenus);
+        FINDSET;
+        REPEAT
+          TESTFIELD("Status Code",StatusCode);
+        UNTIL NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE VerifyDHLParcelStatusEntry@1000000094(DocumentNo@1000000004 : Code[20];StatusCode@1000000002 : Code[20];StatusSubCode@1000000001 : Code[20]);
+    VAR
+      ParcelStatusHistory@1000000000 : Record 80013;
+    BEGIN
+      VerifyParcelStatusHistoryEntry(
+        DocumentNo,ParcelStatusHistory."Used Interface"::DHL,StatusCode,StatusSubCode);
+    END;
+
+    LOCAL PROCEDURE VerifyParcelStatusHistoryEntry@1000000034(DocumentNo@1000000002 : Code[20];UsedInterface@1000000003 : Option;StatusCode@1000000001 : Code[20];StatusSubCode@1000000004 : Code[20]);
+    VAR
+      ParcelStatusHistory@1000000000 : Record 80013;
+    BEGIN
+      WITH ParcelStatusHistory DO BEGIN
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("Document No.",DocumentNo);
+        SETRANGE("Used Interface",UsedInterface);
+        FINDLAST;
+
+        TESTFIELD("Status Code",StatusCode);
+        TESTFIELD("Status Sub Code",StatusSubCode);
+      END;
+    END;
+
+    LOCAL PROCEDURE VerifyDHLParcelStatusArchEntry@1000000098(DocumentNo@1000000004 : Code[20];StatusCode@1000000002 : Code[20];StatusSubCode@1000000001 : Code[20]);
+    VAR
+      ParcelStatusHistory@1000000000 : Record 80013;
+    BEGIN
+      VerifyParcelStatHistArchEntry(
+        DocumentNo,ParcelStatusHistory."Used Interface"::DHL,StatusCode,StatusSubCode);
+    END;
+
+    LOCAL PROCEDURE VerifyParcelStatHistArchEntry@1000000095(DocumentNo@1000000002 : Code[20];UsedInterface@1000000003 : Option;StatusCode@1000000001 : Code[20];StatusSubCode@1000000004 : Code[20]);
+    VAR
+      ParcelStatusHistoryArchive@1000000000 : Record 50187;
+    BEGIN
+      // TODO: combine this function and the one above with RecRef
+      WITH ParcelStatusHistoryArchive DO BEGIN
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("Document No.",DocumentNo);
+        SETRANGE("Used Interface",UsedInterface);
+        FINDLAST;
+
+        TESTFIELD("Status Code",StatusCode);
+        TESTFIELD("Status Sub Code",StatusSubCode);
+      END;
+    END;
+
+    LOCAL PROCEDURE VerifyPurchOrderExistence@1000000017(DocumentNo@1000000000 : Code[20]);
+    VAR
+      PurchHeader@1000000001 : Record 38;
+      BatchPostDoc@1000000002 : Record 50043;
+    BEGIN
+      PurchHeader.SETRANGE("Document Type",PurchHeader."Document Type"::Order);
+      PurchHeader.SETRANGE("No.",DocumentNo);
+      Assert.IsTrue(PurchHeader.FINDLAST,STRSUBSTNO(DocumentErr,DocumentNo));
+
+      SetBatchPostDocFilter(
+        BatchPostDoc,DocumentNo,BatchPostDoc."Action Type"::"Purch. EMail");
+      Assert.IsTrue(BatchPostDoc.FINDLAST,STRSUBSTNO(EntryNotFoundErr,BatchPostDoc.TABLECAPTION,DocumentNo));
+    END;
+
+    LOCAL PROCEDURE VerifyPostedCreditMemo@1000000024(DocumentNo@1000000000 : Code[20];ExpectedAmt@1000000003 : Decimal);
+    VAR
+      SalesCrMemoHeader@1000000001 : Record 114;
+      GLSetup@1000000004 : Record 98;
+    BEGIN
+      WITH SalesCrMemoHeader DO BEGIN
+        GLSetup.GET;
+        SETRANGE("External Document No.",DocumentNo);
+        SETRANGE("Prepayment Credit Memo",FALSE);
+        Assert.IsTrue(FINDLAST,STRSUBSTNO(DocumentErr,DocumentNo));
+
+        CALCFIELDS("Amount Including VAT");
+        Assert.AreNearlyEqual(
+          ExpectedAmt,"Amount Including VAT",GLSetup."Amount Rounding Precision",
+          STRSUBSTNO(AmountErr,DocumentNo));
+
+        // Don't send out Cr. Memo Emails with Batch-Post anymore.
+        // SetBatchPostDocFilter(
+        //  BatchPostDoc,"No.",BatchPostDoc."Action Type"::"Sales EMail");
+        // Assert.IsTrue(BatchPostDoc.FINDLAST,STRSUBSTNO(EntryNotFoundErr,BatchPostDoc.TABLECAPTION,"No."));
+      END;
+    END;
+
+    LOCAL PROCEDURE VerifyPostedDocuments@1000000038(DocumentNo@1000000000 : Code[20];PaymentMethodCode@1000000001 : Code[10];DocumentDate@1000000003 : Date;ExpectedAmt@1000000002 : Decimal);
+    BEGIN
+      IF PaymentMethodCode IN ['KK','PP','VORK'] THEN BEGIN
+        VerifyPrepmtInvoice(DocumentNo,ExpectedAmt);
+        VerifyPrepmtCrMemo(DocumentNo,ExpectedAmt);
+      END;
+
+      IF PaymentMethodCode = 'VORK' THEN
+        VerifyInvoiceDiscount(DocumentNo);
+
+      VerifyPostedSalesInvoice(DocumentNo,ExpectedAmt);
+      VerifyCustLedgerEntries(DocumentNo,DocumentDate,ExpectedAmt);
+    END;
+
+    LOCAL PROCEDURE VerifyPostedSalesInvoice@1000000008(DocumentNo@1000000000 : Code[20];ExpectedAmt@1000000002 : Decimal);
+    VAR
+      SalesInvoiceHeader@1000000001 : Record 112;
+      GLSetup@1000000003 : Record 98;
+    BEGIN
+      WITH SalesInvoiceHeader DO BEGIN
+        GLSetup.GET;
+        SETRANGE("External Document No.",DocumentNo);
+        SETRANGE("Prepayment Invoice",FALSE);
+        Assert.IsTrue(FINDFIRST,STRSUBSTNO(NoInvoiceErr,DocumentNo));
+
+        CALCFIELDS("Amount Including VAT");
+        Assert.AreNearlyEqual(ExpectedAmt,"Amount Including VAT",GLSetup."Amount Rounding Precision",STRSUBSTNO(AmountErr,DocumentNo));
+      END;
+    END;
+
+    LOCAL PROCEDURE VerifyPrepmtInvoice@1000000019(DocumentNo@1000000000 : Code[20];ExpectedAmt@1000000002 : Decimal);
+    VAR
+      SalesInvoiceHeader@1000000001 : Record 112;
+      GLSetup@1000000003 : Record 98;
+    BEGIN
+      WITH SalesInvoiceHeader DO BEGIN
+        GLSetup.GET;
+        SETRANGE("External Document No.",DocumentNo);
+        SETRANGE("Prepayment Invoice",TRUE);
+        Assert.IsTrue(FINDFIRST,STRSUBSTNO(NoInvoiceErr,DocumentNo));
+
+        CALCFIELDS("Amount Including VAT");
+        Assert.AreNearlyEqual(ExpectedAmt,"Amount Including VAT",GLSetup."Amount Rounding Precision",STRSUBSTNO(AmountErr,DocumentNo));
+      END;
+    END;
+
+    LOCAL PROCEDURE VerifyPrepmtCrMemo@1000000022(DocumentNo@1000000000 : Code[20];ExpectedAmt@1000000002 : Decimal);
+    VAR
+      SalesCrMemoHeader@1000000001 : Record 114;
+      GLSetup@1000000003 : Record 98;
+    BEGIN
+      WITH SalesCrMemoHeader DO BEGIN
+        GLSetup.GET;
+        SETRANGE("External Document No.",DocumentNo);
+        SETRANGE("Prepayment Credit Memo",TRUE);
+        Assert.IsTrue(FINDFIRST,STRSUBSTNO(NoInvoiceErr,DocumentNo));
+
+        CALCFIELDS("Amount Including VAT");
+        Assert.AreNearlyEqual(ExpectedAmt,"Amount Including VAT",GLSetup."Amount Rounding Precision",AmountErr);
+      END;
+    END;
+
+    LOCAL PROCEDURE VerifyCustLedgerEntries@1000000005(DocumentNo@1000000007 : Code[20];DocumentDate@1000000006 : Date;OrderAmount@1000000005 : Decimal);
+    VAR
+      CustLedgerEntry@1000000003 : Record 21;
+      GLSetup@1000000002 : Record 98;
+      AmountLCY@1000000004 : Decimal;
+    BEGIN
+      WITH CustLedgerEntry DO BEGIN
+        GLSetup.GET;
+        SETRANGE("External Document No.",DocumentNo);
+        FINDSET;
+        REPEAT
+          CALCFIELDS("Amount (LCY)");
+          AmountLCY += "Amount (LCY)";
+        UNTIL NEXT = 0;
+
+        Assert.AreNearlyEqual(
+          LibrarySales.ConvertCurrency(OrderAmount,"Currency Code",'',DocumentDate),
+          AmountLCY,GLSetup."Amount Rounding Precision",STRSUBSTNO(AmountErr,DocumentNo));
+      END;
+    END;
+
+    LOCAL PROCEDURE VerifyReturnOrderCreated@1000000036(DocumentNo@1000000001 : Code[20]);
+    VAR
+      SalesHeaderReturn@1000000000 : Record 36;
+    BEGIN
+      WITH SalesHeaderReturn DO BEGIN
+        SETRANGE("Document Type","Document Type"::"Return Order");
+        SETRANGE("External Document No.",DocumentNo);
+        Assert.IsTrue(FINDFIRST,STRSUBSTNO(NoRerurnOrderErr,DocumentNo));
+      END;
+    END;
+
+    LOCAL PROCEDURE VerifyInvoiceDiscount@1000000041(DocumentNo@1000000000 : Code[20]);
+    VAR
+      SalesHeaderArchive@1000000001 : Record 5107;
+    BEGIN
+      WITH SalesHeaderArchive DO BEGIN
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("No.",DocumentNo);
+        FINDFIRST;
+        Assert.IsTrue("Invoice Discount Value" > 0,STRSUBSTNO(InvoiceDiscountErr,DocumentNo));
+      END;
+    END;
+
+    LOCAL PROCEDURE VerifyItemCharge@1000000042(DocumentNo@1000000000 : Code[20];TotalAmt@1000000001 : Decimal;DiscPct@1000000002 : Decimal);
+    VAR
+      GLSetup@1000000003 : Record 98;
+      SalesLine@1000000004 : Record 37;
+    BEGIN
+      WITH SalesLine DO BEGIN
+        GLSetup.GET;
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("Document No.",DocumentNo);
+        SETRANGE(Type,Type::"Charge (Item)");
+        FINDFIRST;
+
+        Assert.AreNearlyEqual(
+          -ROUND(TotalAmt * DiscPct / 100,GLSetup."Amount Rounding Precision"),
+          "Amount Including VAT",
+          GLSetup."Amount Rounding Precision",AmountErr);
+      END;
+    END;
+
+    LOCAL PROCEDURE VerifyPayoutSheetEntry@1000000043(DocumentNo@1000000001 : Code[20];TotalAmt@1000000003 : Decimal;DiscPct@1000000002 : Decimal);
+    VAR
+      GLSetup@1000000004 : Record 98;
+      NAVPayoutSheet@1000000000 : Record 50078;
+      ExpectedAmt@1000000005 : Decimal;
+    BEGIN
+      WITH NAVPayoutSheet DO BEGIN
+        GLSetup.GET;
+        // SETRANGE(Type,DocType);
+        SETRANGE("No.",DocumentNo);
+        FINDFIRST;
+        IF DiscPct > 0 THEN
+          ExpectedAmt := ROUND(TotalAmt * DiscPct / 100,GLSetup."Amount Rounding Precision")
+        ELSE
+          ExpectedAmt := TotalAmt;
+
+        Assert.AreNearlyEqual(
+          ExpectedAmt,
+          "Amount Including VAT",GLSetup."Amount Rounding Precision",AmountErr);
+      END;
+    END;
+
+    LOCAL PROCEDURE VerifyFollowOnSalesOrder@1000000055(DocumentNo@1000000000 : Code[20]);
+    VAR
+      SalesHeader@1000000001 : Record 36;
+    BEGIN
+      WITH SalesHeader DO BEGIN
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("External Document No.",DocumentNo);
+        SETRANGE("No. Series",GetSalesOrderNoSeries);
+        Assert.IsTrue(FINDFIRST,DocumentErr);
+      END
+    END;
+
+    LOCAL PROCEDURE VerifyCanceledLine@1000000058(DocumentNo@1000000000 : Code[20];LineNo@1000000001 : Integer);
+    VAR
+      SalesLine@1000000002 : Record 37;
+    BEGIN
+      WITH SalesLine DO BEGIN
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("Document No.",DocumentNo);
+        SETRANGE("Line No.",LineNo);
+        FINDFIRST;
+        TESTFIELD(Quantity,0);
+      END;
+    END;
+
+    LOCAL PROCEDURE VerifyCanceledLinePO@1000000059(DocumentNo@1000000000 : Code[20];LineNo@1000000002 : Integer);
+    VAR
+      PurchLine@1000000001 : Record 39;
+    BEGIN
+      IF NOT LibrarySales.PurchOrderRequired(DocumentNo) THEN
+        EXIT;
+
+      WITH PurchLine DO BEGIN
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("Document No.",LibrarySales.GetPurchOrderNoByLine(DocumentNo,LineNo));
+        FINDSET;
+        REPEAT
+          TESTFIELD("Order Status Code",'60'); // canceled.
+        UNTIL NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE VerifyOrderDimentions@1000000084(DocNo@1000000002 : Code[20];DimCode@1000000001 : Code[20];Value@1000000000 : Code[20]);
+    BEGIN
+      VerifyDimentions(DocNo,0,DimCode,Value);
+    END;
+
+    LOCAL PROCEDURE VerifyLineDimentions@1000000082(DocNo@1000000002 : Code[20];DimCode@1000000001 : Code[20];Value@1000000000 : Code[20]);
+    VAR
+      SalesLine@1000000003 : Record 37;
+    BEGIN
+      WITH SalesLine DO BEGIN
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("Document No.",DocNo);
+        FINDSET;
+        REPEAT
+          VerifyDimentions(DocNo,"Line No.",DimCode,Value);
+          VerifyDimentions(DocNo,"Line No.",'KTR',"No.");
+          VerifyDimentions(DocNo,"Line No.",'KANAL',"Purchasing Code");
+        UNTIL NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE VerifyDimentions@1000000071(DocNo@1000000001 : Code[20];LineNo@1000000004 : Integer;DimCode@1000000002 : Code[20];Value@1000000003 : Code[20]);
+    VAR
+      DocumentDim@1000000000 : Record 357;
+    BEGIN
+      WITH DocumentDim DO BEGIN
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("Document No.",DocNo);
+        SETRANGE("Line No.",LineNo);
+        SETRANGE("Dimension Code",DimCode);
+        FINDFIRST;
+
+        TESTFIELD("Dimension Value Code",Value);
+      END;
+    END;
+
+    LOCAL PROCEDURE VerifyBatchSalesPostNoEntry@1000000083(DocumentNo@1000000001 : Code[20];PostingType@1000000002 : Option);
+    VAR
+      BatchSalesPostHeader@1000000000 : Record 50225;
+    BEGIN
+      BatchSalesPostHeader.SETRANGE("Document Type",BatchSalesPostHeader."Document Type"::Order);
+      BatchSalesPostHeader.SETRANGE("Document No.",DocumentNo);
+      BatchSalesPostHeader.SETRANGE("Posting Type",PostingType);
+      ASSERTERROR BatchSalesPostHeader.FINDFIRST;
+    END;
+
+    LOCAL PROCEDURE VerifyBatchSalesPostArchEntry@1000000088(DocumentNo@1000000001 : Code[20];PostingType@1000000002 : Option;StatusCode@1000000003 : Option);
+    VAR
+      BatchSalesPostHeaderArch@1000000000 : Record 50227;
+    BEGIN
+      BatchSalesPostHeaderArch.SETRANGE("Document Type",BatchSalesPostHeaderArch."Document Type"::Order);
+      BatchSalesPostHeaderArch.SETRANGE("Document No.",DocumentNo);
+      BatchSalesPostHeaderArch.SETRANGE("Posting Type",PostingType);
+      BatchSalesPostHeaderArch.FINDFIRST;
+      BatchSalesPostHeaderArch.TESTFIELD(Status,StatusCode);
+
+      VerifyBatchSalesPostNoEntry(DocumentNo,0);  // Ship.
+      VerifyBatchSalesPostNoEntry(DocumentNo,1);  // Invoice.
+    END;
+
+    LOCAL PROCEDURE VerifyFillSalesDatesEntryState@1000000076(DocumentNo@1000000001 : Code[20]);
+    VAR
+      FillSalesDates@1000000000 : Record 50203;
+      SalesLine@1000000002 : Record 37;
+    BEGIN
+      FillSalesDates.SETRANGE("Document Type",FillSalesDates."Document Type"::Order);
+      FillSalesDates.SETRANGE("Document No.",DocumentNo);
+      FillSalesDates.SETRANGE(Type,FillSalesDates.Type::ADD);
+      FillSalesDates.FINDSET;
+      REPEAT
+        FillSalesDates.TESTFIELD(Status,FillSalesDates.Status::Success);
+
+        SalesLine.SETRANGE("Document Type",FillSalesDates."Document Type");
+        SalesLine.SETRANGE("Document No.",DocumentNo);
+        SalesLine.FINDFIRST;
+        SalesLine.TESTFIELD("Actual Delivery Date",FillSalesDates."Date/Time");
+      UNTIL FillSalesDates.NEXT = 0;
+    END;
+
+    PROCEDURE VerifyOrderBatchSalesActions@1000000073(DocumentNoV@1000000000 : Code[20];SalesTrackingActionTypeV@1000000001 : Option;StatusV@1000000005 : Option);
+    VAR
+      SalesLineL@1000000004 : Record 37;
+      BatchSalesActionL@1000000003 : Record 50203;
+    ;
+    BEGIN
+      //H4273
+      SalesLineL.SETRANGE("Document Type",SalesLineL."Document Type"::Order);
+      SalesLineL.SETRANGE("Document No.",DocumentNoV);
+      SalesLineL.FINDSET;
+      REPEAT
+        GetBatchSalesAction(BatchSalesActionL,DocumentNoV,SalesLineL."Line No.",SalesTrackingActionTypeV);
+        BatchSalesActionL.TESTFIELD(Status,StatusV);
+      UNTIL SalesLineL.NEXT = 0;
+      //H4273
+    END;
+
+    PROCEDURE VerifyBatchSalesActNotExists@1000000075(DocumentNoV@1000000000 : Code[20];LineNoV@1000000004 : Integer;SalesTrackingActionTypeV@1000000001 : Option);
+    VAR
+      BatchSalesActionL@1000000003 : Record 50203;
+    ;
+    BEGIN
+      //H4273
+      ASSERTERROR GetBatchSalesAction(BatchSalesActionL,DocumentNoV,LineNoV,SalesTrackingActionTypeV);
+      //H4273
+    END;
+
+    PROCEDURE VerifySalesLineDateFieldValue@1000000096(DocumentNoV@1000000000 : Code[20];SalesTrackingActionTypeV@1000000004 : Option);
+    VAR
+      BatchSalesActionL@1000000003 : Record 50203;
+      SalesLineL@1000000002 : Record 37;
+    BEGIN
+      //H4273
+      BatchSalesActionL.SETRANGE("Document Type",BatchSalesActionL."Document Type"::Order);
+      BatchSalesActionL.SETRANGE("Document No.",DocumentNoV);
+      BatchSalesActionL.SETRANGE(BatchSalesActionL.Type,SalesTrackingActionTypeV);
+      BatchSalesActionL.FINDSET;
+      REPEAT
+        SalesLineL.GET(SalesLineL."Document Type"::Order,BatchSalesActionL."Document No.",BatchSalesActionL."Line No.");
+        CASE BatchSalesActionL.Type OF
+          BatchSalesActionL.Type::"First Scan":
+            SalesLineL.TESTFIELD("First Scan", BatchSalesActionL."Date/Time")
+        END;
+      UNTIL BatchSalesActionL.NEXT = 0;
+      //H4273
+    END;
+
+    PROCEDURE GetBatchSalesAction@1000000097(VAR BatchSalesActionR@1000000005 : Record 50203;DocumentNoV@1000000000 : Code[20];LineNoV@1000000004 : Integer;SalesTrackingActionTypeV@1000000001 : Option);
+    VAR
+      BatchSalesActionL@1000000003 : Record 50203;
+    ;
+    BEGIN
+      //H4273
+      BatchSalesActionR.SETRANGE("Document Type",BatchSalesActionL."Document Type"::Order);
+      BatchSalesActionR.SETRANGE("Document No.",DocumentNoV);
+      BatchSalesActionR.SETRANGE("Line No.",LineNoV);
+      BatchSalesActionR.SETRANGE(Type,SalesTrackingActionTypeV);
+      BatchSalesActionR.FINDFIRST;
+      //H4273
+    END;
+
+    PROCEDURE GetDateTimeValue@1000000099();
+    BEGIN
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      H0939       14.03.14  MM        Testautomation: Main business cases - Channel 3
+      H0587       22.07.14 HCN        Function "ReturnWithDiscount": call of LibrarySales.SetSalesReceivablesSetup removed
+      H1276       04.09.14  MM        Testautomation: Main business cases - Channel 11
+      H1541       28.11.14  MM        Testautomation: Cover Rhenus Interface
+      H1917       11.12.14  MM        Testing: Add Channel Change to the RHD Interface
+      H1918       23.12.14  MM        Testing: Extend RHD Interface to all counties
+      H2170       23.02.15  MM        AutoTesting: Change Order import approach
+      H1921       12.03.15  MM        Testing: Cover WHS LF
+      H3886       19.03.15  MM        Automated tests fails when we have order with different Vendors
+    }
+    END.
+  }
+}
+

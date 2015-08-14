@@ -1,0 +1,1753 @@
+OBJECT Codeunit 50321 InvH24 Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=28.07.15;
+    Time=15:21:34;
+    Modified=Yes;
+    Version List=HME4480;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=BEGIN
+            // Job Queue Entry
+            //H4480       24.07.15 JM ++++++
+            //UpdateEntriesBatch;
+            UpdateEntriesBatch(TRUE);
+            //H4480       24.07.15 JM -----
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      OnHoldCode@1000000001 : Code[3];
+      ReturnReasonCode@1000000002 : Code[10];
+      ItemNo@1000000003 : Code[20];
+      Description@1000000004 : Text[50];
+      SetPermissions@1000000000 : Codeunit 50262;
+      PaymentTermsCode@1000000005 : Code[10];
+      PaymentMethodCode@1000000006 : Code[10];
+      CWLastCustomerInfo@1000000009 : Text[10];
+      StatusReturnOrder@1000000008 : ' ,open,requested,Label sent,received,finished,aborted,Customer response open,various';
+      NoOfNotExpiredEntries@1000000007 : Integer;
+      Window@1000000010 : Dialog;
+      HMEText001@1000000012 : TextConst 'DEU=Assign Invoices;ENU=Assign Invoices';
+      HMEText002@1000000011 : TextConst 'DEU=Delete Closed Entries;ENU=Delete Closed Entries';
+      HMEText003@1000000013 : TextConst 'ENU=Clear Expired Entries';
+      IsBatch@1000000014 : Boolean;
+      HMEText004@1000000015 : TextConst 'ENU=No foreign Currency %1 supported';
+      IBANError@1000000016 : Boolean;
+      GeneralLedgerSetup@1000000017 : Record 98;
+      HMEText005@1000000018 : TextConst 'ENU=the %1 must be filled with the Sales Order No.';
+      HMEText006@1000000019 : TextConst 'ENU=Set the %1 to expired date, if you want to clear the On Hold Code for Entry %2 %3';
+      HMEText007@1000000020 : TextConst 'ENU=%1 is not expired';
+      CommitCounter@1000000021 : Integer;
+      LanguageCode@1000000022 : Code[10];
+
+    PROCEDURE CheckPaymentMethod@1000000009(DocumentNoV@1000000000 : Code[20]) Home24InvoiceO : Boolean;
+    VAR
+      SalesHeaderL@1000000001 : Record 36;
+      PaymentMethodL@1000000002 : Record 289;
+      SalesHeaderArchiveL@1000000003 : Record 5107;
+    BEGIN
+      PaymentTermsCode := '';
+      PaymentMethodCode := '';
+      // H4445       13.07.15 JM ++++
+      LanguageCode := '';
+      // H4445       13.07.15 JM ----
+      IF SalesHeaderL.GET(SalesHeaderL."Document Type"::Order,DocumentNoV) THEN BEGIN
+        IF PaymentMethodL.GET(SalesHeaderL."Payment Method Code") THEN BEGIN
+          PaymentTermsCode := SalesHeaderL."Payment Terms Code";
+          PaymentMethodCode := SalesHeaderL."Payment Method Code";
+          // H4073       17.04.15 JM +++++++++
+          IF PaymentTermsCode = '' THEN
+            PaymentTermsCode := PaymentMethodL."Payment Terms Code";
+          // H4073       17.04.15 JM ---------
+          // H4445       13.07.15 JM ++++
+          LanguageCode := SalesHeaderL."Language Code";
+          // H4445       13.07.15 JM ----
+          EXIT(PaymentMethodL."Manual Reminder Process");
+        END;
+      END ELSE BEGIN // Order in Archive
+        IF SalesHeaderArchiveL.GET(SalesHeaderArchiveL."Document Type"::Order,DocumentNoV,1,1) THEN BEGIN
+          // H4073       17.04.15 JM +++++++++
+          IF PaymentMethodL.GET(SalesHeaderArchiveL."Payment Method Code") THEN BEGIN
+          // H4073       17.04.15 JM ---------
+            PaymentTermsCode := SalesHeaderArchiveL."Payment Terms Code";
+            // H4403       02.07.15 JM +++++++++
+            PaymentMethodCode := SalesHeaderArchiveL."Payment Method Code";
+            // H4403       02.07.15 JM ---------
+            // H4073       17.04.15 JM +++++++++
+            IF PaymentTermsCode = '' THEN
+              PaymentTermsCode := PaymentMethodL."Payment Terms Code";
+            // H4445       13.07.15 JM ++++
+            LanguageCode := SalesHeaderArchiveL."Language Code";
+            // H4445       13.07.15 JM ----
+            // H4073       17.04.15 JM ---------
+            EXIT(PaymentMethodL."Manual Reminder Process");
+            // H4073       17.04.15 JM +++++++++
+          END;
+          // H4073       17.04.15 JM ---------
+        END;
+      END;
+    END;
+
+    PROCEDURE CheckReturnReason@1000000000(ReturnReasonCodeV@1000000000 : Code[10]) CanSetOnHoldO : Boolean;
+    VAR
+      ReturnReasonL@1000000001 : Record 6635;
+    BEGIN
+      OnHoldCode := '';
+      IF NOT ReturnReasonL.GET(ReturnReasonCodeV) THEN
+        EXIT(FALSE);
+
+      OnHoldCode := ReturnReasonL."On Hold Code";
+
+      IF ReturnReasonL."On Hold Code" <> '' THEN
+        EXIT(TRUE);
+    END;
+
+    PROCEDURE GetSalesLines@1000000015(DunningEntryV@1000000001 : Record 50320;VAR ReturnReasonCodeR@1000000004 : Code[10];VAR ItemR@1000000005 : Code[20];VAR DescriptionR@1000000006 : Text[50];VAR CWLastCustomerInfoR@1000000000 : Text[10];VAR StatusReturnOrderR@1000000007 : ' ,open,requested,Label sent,received,finished,aborted,Customer response open,various');
+    VAR
+      SalesLineL@1000000002 : Record 37;
+      SalesLineArchiveL@1000000003 : Record 5108;
+    BEGIN
+      ReturnReasonCodeR := '';
+      ItemR := '';
+      DescriptionR := '';
+      CWLastCustomerInfoR := '';
+      StatusReturnOrderR := 0;
+
+      DunningEntryV.CALCFIELDS(OrderIsArchived);
+
+      IF NOT DunningEntryV.OrderIsArchived THEN
+
+        IF SalesLineL.GET(SalesLineL."Document Type"::Order,
+          DunningEntryV."Sales Order No.",DunningEntryV."Sales Order Line No.")
+        THEN BEGIN
+          IF DunningEntryV."Sales Return Order No." <> '' THEN // in case the return order is not created yet
+            ReturnReasonCodeR := SalesLineL."Return Reason Code";
+          ItemR := SalesLineL."No.";
+          DescriptionR := SalesLineL.Description;
+          CWLastCustomerInfoR := SalesLineL."CW Last Customer Info";
+          StatusReturnOrderR :=  SalesLineL."Status Return Order";
+        //H1957       05.01.15 JM ++++++
+        END;
+        //H1957       05.01.15 JM ------
+      IF DunningEntryV.OrderIsArchived THEN
+
+        IF SalesLineArchiveL.GET(SalesLineArchiveL."Document Type"::Order,DunningEntryV."Sales Order No." ,1,1,
+            DunningEntryV."Sales Order Line No.")
+        THEN BEGIN
+          IF DunningEntryV."Sales Return Order No." <> '' THEN
+            ReturnReasonCodeR := SalesLineArchiveL."Return Reason Code";
+          ItemR := SalesLineArchiveL."No.";
+          DescriptionR := SalesLineArchiveL.Description;
+          CWLastCustomerInfoR := SalesLineArchiveL."CW Last Customer Info";
+          StatusReturnOrderR :=  SalesLineArchiveL."Status Return Order";
+        END;
+
+      IF DunningEntryV.Type = DunningEntryV.Type::Order THEN
+        EXIT;
+
+      // ReturnOrder
+      DunningEntryV.CALCFIELDS(ReturnOrderIsArchived);
+
+      IF NOT DunningEntryV.ReturnOrderIsArchived THEN
+
+        //Return Reason code could be changed in ReturnOrder
+        IF SalesLineL.GET(SalesLineL."Document Type"::"Return Order",
+            DunningEntryV."Sales Return Order No.",DunningEntryV."Sales Return Order Line No.")
+        THEN BEGIN
+          IF DunningEntryV."Sales Return Order No." <> '' THEN
+            ReturnReasonCodeR := SalesLineL."Return Reason Code";
+          ItemR := SalesLineL."No.";
+          DescriptionR := SalesLineL.Description;
+        END;
+
+      IF DunningEntryV.ReturnOrderIsArchived THEN
+
+        IF SalesLineArchiveL.GET(SalesLineArchiveL."Document Type"::"Return Order",DunningEntryV."Sales Return Order No.",1,1,
+                DunningEntryV."Sales Return Order Line No.")
+        THEN BEGIN
+          IF DunningEntryV."Sales Return Order No." <> '' THEN
+            ReturnReasonCodeR := SalesLineArchiveL."Return Reason Code";
+          ItemR := SalesLineArchiveL."No.";
+          DescriptionR := SalesLineArchiveL.Description;
+        END;
+      // H4231       24.06.15 JM +++++++++
+      IF DunningEntryV.Type = DunningEntryV.Type::"Sparepart Order" THEN BEGIN
+        IF NOT DunningEntryV.ReturnOrderIsArchived THEN
+          IF SalesLineL.GET(SalesLineL."Document Type"::Order,
+              DunningEntryV."Sales Return Order No.",DunningEntryV."Sales Return Order Line No.")
+          THEN BEGIN
+            ItemR := SalesLineL."No.";
+            DescriptionR := SalesLineL.Description;
+          END;
+        IF DunningEntryV.ReturnOrderIsArchived THEN
+          IF SalesLineArchiveL.GET(SalesLineArchiveL."Document Type"::Order,DunningEntryV."Sales Return Order No.",1,1,
+                  DunningEntryV."Sales Return Order Line No.")
+          THEN BEGIN
+            ItemR := SalesLineArchiveL."No.";
+            DescriptionR := SalesLineArchiveL.Description;
+          END;
+      END;
+      // H4231       24.06.15 JM ---------
+    END;
+
+    PROCEDURE CreateDunningEntry@1000000001(SaleslineV@1000000000 : Record 37) IsOnHoldO : Boolean;
+    VAR
+      CanSetOnHoldL@1000000001 : Boolean;
+      DunningEntryL@1000000002 : Record 50320;
+      CustLEIsOpenL@1000000003 : Boolean;
+      Home24InvoiceL@1000000004 : Boolean;
+    BEGIN
+      //H1957       05.01.15  JM ++++++++++++
+      IF (SaleslineV.Type <> SaleslineV.Type::Item) OR (SaleslineV.Quantity = 0) THEN
+        EXIT;
+      //H1957       05.01.15  JM ------------
+
+      // Check Return Reason for "On Hold Code"
+      Home24InvoiceL := FALSE;
+
+      // Check for Home24Invoice PaymentMethod
+      IF SaleslineV."Document Type" = SaleslineV."Document Type"::Order THEN
+        Home24InvoiceL := CheckPaymentMethod(SaleslineV."Document No.");
+      IF SaleslineV."Document Type" = SaleslineV."Document Type"::"Return Order" THEN
+        Home24InvoiceL := CheckPaymentMethod(SaleslineV."Linked to Sales Order No.");
+
+      // no need to create an entry
+      IF (NOT Home24InvoiceL) THEN
+        EXIT;
+
+      // Order => no reason codes
+      IF SaleslineV."Document Type" IN [SaleslineV."Document Type"::Order] THEN BEGIN
+        IF NOT DunningEntryL.GET(SaleslineV."Document No.",SaleslineV."Line No.") THEN BEGIN
+          DunningEntryL."Sales Order No." := SaleslineV."Document No.";
+          DunningEntryL."Sales Order Line No." := SaleslineV."Line No.";
+          DunningEntryL.Type := DunningEntryL.Type::Order;
+          DunningEntryL."Customer No." := SaleslineV."Sell-to Customer No.";
+          DunningEntryL."Sales Return Order No." := '';
+          DunningEntryL."Sales Return Order Line No." := 0;
+          DunningEntryL."Payment Terms Code" := PaymentTermsCode;
+          //H1957       05.01.15  JM ++++++++++++
+          DunningEntryL."Payment Method Code" := PaymentMethodCode;
+          //H1957       05.01.15  JM ------------
+          DunningEntryL.INSERT(TRUE);
+          // H4445       13.07.15 JM ++++
+          //SetCustomerReminderTerm(DunningEntryL."Customer No.");
+          SetCustomerReminderTerm(DunningEntryL);
+          // H4445       13.07.15 JM ----
+        END;
+
+        CustLEIsOpenL := AssignInvoiceLineNo(DunningEntryL);
+
+        IF CustLEIsOpenL THEN BEGIN // do not insert closed entries
+          DunningEntryL.MODIFY(TRUE);
+        END;
+      END;
+
+      // Return Order => has reason codes
+      IF SaleslineV."Document Type" IN [SaleslineV."Document Type"::"Return Order"] THEN BEGIN
+        SaleslineV.TESTFIELD("Linked to Sales Order No.");
+        CanSetOnHoldL := CheckReturnReason(SaleslineV."Return Reason Code");
+
+        // no need to create an entry
+        IF (NOT CanSetOnHoldL) OR (NOT Home24InvoiceL) THEN
+          EXIT;
+
+        IF DunningEntryL.GET(SaleslineV."Linked to Sales Order No.",SaleslineV."Linked to Sales Order Line No.") THEN BEGIN
+        // Entry exists Check if return reason still valid
+        END ELSE BEGIN
+          // New Entry Check if return reason still valid
+          IF CanSetOnHoldL THEN BEGIN
+            DunningEntryL."Sales Order No." :=  SaleslineV."Linked to Sales Order No.";
+            DunningEntryL."Sales Order Line No." := SaleslineV."Linked to Sales Order Line No.";
+            DunningEntryL.Type := DunningEntryL.Type::"Return Order";
+            DunningEntryL."Customer No." := SaleslineV."Sell-to Customer No.";
+            DunningEntryL."Sales Return Order No." := SaleslineV."Document No.";
+            DunningEntryL."Sales Return Order Line No." := SaleslineV."Line No." ;
+            IF DunningEntryL."Sales Return Order Date" = 0D THEN
+              DunningEntryL."Sales Return Order Date" := GetReturnOrderDate(DunningEntryL."Sales Return Order No.");
+            DunningEntryL."Payment Terms Code" := PaymentTermsCode;
+            //H1957       05.01.15  JM ++++++++++++
+            DunningEntryL."Payment Method Code" := PaymentMethodCode;
+            //H1957       05.01.15  JM ------------
+            DunningEntryL.INSERT(TRUE);
+            // H4445       13.07.15 JM ++++
+            //SetCustomerReminderTerm(DunningEntryL."Customer No.");
+            SetCustomerReminderTerm(DunningEntryL);
+            // H4445       13.07.15 JM ----
+
+          END;
+        END;
+
+        CustLEIsOpenL := AssignInvoiceLineNo(DunningEntryL);
+
+        IF CustLEIsOpenL THEN BEGIN// do not insert closed entries
+          DunningEntryL.Type := DunningEntryL.Type::"Return Order";
+          DunningEntryL."Sales Return Order No." := SaleslineV."Document No.";
+          DunningEntryL."Sales Return Order Line No." := SaleslineV."Line No." ;
+          IF DunningEntryL."Sales Return Order Date" = 0D THEN
+            DunningEntryL."Sales Return Order Date" := GetReturnOrderDate(DunningEntryL."Sales Return Order No.");
+
+          DunningEntryL.MODIFY(TRUE);
+
+          IsOnHoldO := CanSetOnHoldL;
+          SetOnHold(DunningEntryL,''); // Auto SetOnHold
+          // H4167       30.04.15 JM ++++++
+          //SetSalesReturnHeaderOnHold(DunningEntryL."Sales Return Order No.",IsOnHoldO);
+          // H4167       30.04.15 JM ------
+
+        END;
+      END;
+
+      // H4231       24.06.15 JM +++++++++
+      // Sparepart Order => has reason codes
+      IF (SaleslineV."Document Type" IN [SaleslineV."Document Type"::Order]) AND (IsSparepartItem(SaleslineV."No.")) THEN BEGIN
+        IF DunningEntryL.GET(SaleslineV."Linked to Sales Order No.",SaleslineV."Linked to Sales Order Line No.") THEN BEGIN
+
+          CustLEIsOpenL := AssignInvoiceLineNo(DunningEntryL);
+
+          IF CustLEIsOpenL THEN BEGIN// do not insert closed entries
+            DunningEntryL.Type := DunningEntryL.Type::"Sparepart Order";
+            DunningEntryL."Sales Return Order No." := SaleslineV."Document No.";
+            DunningEntryL."Sales Return Order Line No." := SaleslineV."Line No." ;
+            DunningEntryL.MODIFY(TRUE);
+
+            SetOnHold(DunningEntryL,''); //  Auto setonhold
+          END;
+        END;
+      END;
+      // H4231       24.06.15 JM ---------
+    END;
+
+    PROCEDURE CreateDunningEntryArchive@1000000040(SalesLineArchiveV@1000000000 : Record 5108) IsOnHoldO : Boolean;
+    VAR
+      CanSetOnHoldL@1000000001 : Boolean;
+      DunningEntryL@1000000002 : Record 50320;
+      CustLEIsOpenL@1000000003 : Boolean;
+      Home24InvoiceL@1000000004 : Boolean;
+    BEGIN
+      //H1957       05.01.15  JM ++++++++++++
+      IF (SalesLineArchiveV.Type <> SalesLineArchiveV.Type::Item) OR (SalesLineArchiveV.Quantity = 0) THEN
+        EXIT;
+
+      // Check Return Reason for "On Hold Code"
+      Home24InvoiceL := FALSE;
+
+      // Check for Home24Invoice PaymentMethod
+      IF SalesLineArchiveV."Document Type" = SalesLineArchiveV."Document Type"::Order THEN
+        Home24InvoiceL := CheckPaymentMethod(SalesLineArchiveV."Document No.");
+      IF SalesLineArchiveV."Document Type" = SalesLineArchiveV."Document Type"::"Return Order" THEN
+        Home24InvoiceL := CheckPaymentMethod(SalesLineArchiveV."Linked to Sales Order No.");
+
+      // no need to create an entry
+      IF (NOT Home24InvoiceL) THEN
+        EXIT;
+
+      // Order => no reason codes
+      IF SalesLineArchiveV."Document Type" IN [SalesLineArchiveV."Document Type"::Order] THEN BEGIN
+        IF NOT DunningEntryL.GET(SalesLineArchiveV."Document No.",SalesLineArchiveV."Line No.") THEN BEGIN
+          DunningEntryL."Sales Order No." := SalesLineArchiveV."Document No.";
+          DunningEntryL."Sales Order Line No." := SalesLineArchiveV."Line No.";
+          DunningEntryL.Type := DunningEntryL.Type::Order;
+          DunningEntryL."Customer No." := SalesLineArchiveV."Sell-to Customer No.";
+          DunningEntryL."Sales Return Order No." := '';
+          DunningEntryL."Sales Return Order Line No." := 0;
+          DunningEntryL."Payment Terms Code" := PaymentTermsCode;
+          DunningEntryL."Payment Method Code" := PaymentMethodCode;
+          DunningEntryL.INSERT(TRUE);
+          // H4445       13.07.15 JM ++++
+          //SetCustomerReminderTerm(DunningEntryL."Customer No.");
+          SetCustomerReminderTerm(DunningEntryL);
+          // H4445       13.07.15 JM ----
+
+        END;
+
+        CustLEIsOpenL := AssignInvoiceLineNo(DunningEntryL);
+
+        IF CustLEIsOpenL THEN BEGIN // do not insert closed entries
+          DunningEntryL.MODIFY(TRUE);
+        END;
+      END;
+
+      // Return Order => has reason codes
+      IF SalesLineArchiveV."Document Type" IN [SalesLineArchiveV."Document Type"::"Return Order"] THEN BEGIN
+        SalesLineArchiveV.TESTFIELD("Linked to Sales Order No.");
+        CanSetOnHoldL := CheckReturnReason(SalesLineArchiveV."Return Reason Code");
+
+        // no need to create an entry
+        IF (NOT CanSetOnHoldL) OR (NOT Home24InvoiceL) THEN
+          EXIT;
+
+        IF DunningEntryL.GET(SalesLineArchiveV."Linked to Sales Order No.",SalesLineArchiveV."Linked to Sales Order Line No.")
+        THEN BEGIN
+        // Entry exists Check if return reason still valid
+        END ELSE BEGIN
+          // New Entry Check if return reason still valid
+          IF CanSetOnHoldL THEN BEGIN
+            DunningEntryL."Sales Order No." :=  SalesLineArchiveV."Linked to Sales Order No.";
+            DunningEntryL."Sales Order Line No." := SalesLineArchiveV."Linked to Sales Order Line No.";
+            DunningEntryL.Type := DunningEntryL.Type::"Return Order";
+            DunningEntryL."Customer No." := SalesLineArchiveV."Sell-to Customer No.";
+            DunningEntryL."Sales Return Order No." := SalesLineArchiveV."Document No.";
+            DunningEntryL."Sales Return Order Line No." := SalesLineArchiveV."Line No." ;
+            IF DunningEntryL."Sales Return Order Date" = 0D THEN
+              DunningEntryL."Sales Return Order Date" := GetReturnOrderDate(DunningEntryL."Sales Return Order No.");
+            DunningEntryL."Payment Terms Code" := PaymentTermsCode;
+            //H1957       05.01.15  JM ++++++++++++
+            DunningEntryL."Payment Method Code" := PaymentMethodCode;
+            //H1957       05.01.15  JM ------------
+            DunningEntryL.INSERT(TRUE);
+            // H4445       13.07.15 JM ++++
+            //SetCustomerReminderTerm(DunningEntryL."Customer No.");
+            SetCustomerReminderTerm(DunningEntryL);
+            // H4445       13.07.15 JM ----
+          END;
+        END;
+
+        CustLEIsOpenL := AssignInvoiceLineNo(DunningEntryL);
+
+        IF CustLEIsOpenL THEN BEGIN// do not insert closed entries
+          DunningEntryL.Type := DunningEntryL.Type::"Return Order";
+          DunningEntryL."Sales Return Order No." := SalesLineArchiveV."Document No.";
+          DunningEntryL."Sales Return Order Line No." := SalesLineArchiveV."Line No." ;
+          IF DunningEntryL."Sales Return Order Date" = 0D THEN
+            DunningEntryL."Sales Return Order Date" := GetReturnOrderDate(DunningEntryL."Sales Return Order No.");
+
+          DunningEntryL.MODIFY(TRUE);
+
+          IsOnHoldO := CanSetOnHoldL;
+          SetOnHold(DunningEntryL,''); // Auto SetOnHold
+          // H4167       30.04.15 JM ++++++
+          //SetSalesReturnHeaderOnHold(DunningEntryL."Sales Return Order No.",IsOnHoldO);
+          // H4167       30.04.15 JM ------
+        END;
+      END;
+      //H1957       05.01.15  JM ------------
+
+      // H4231       24.06.15 JM +++++++++
+      // Sparepart Order => has reason codes
+      IF (SalesLineArchiveV."Document Type" IN [SalesLineArchiveV."Document Type"::Order])
+          AND (IsSparepartItem(SalesLineArchiveV."No.")) THEN BEGIN
+        IF DunningEntryL.GET(SalesLineArchiveV."Linked to Sales Order No.",SalesLineArchiveV."Linked to Sales Order Line No.")
+        THEN BEGIN
+
+          CustLEIsOpenL := AssignInvoiceLineNo(DunningEntryL);
+
+          IF CustLEIsOpenL THEN BEGIN// do not insert closed entries
+            DunningEntryL.Type := DunningEntryL.Type::"Sparepart Order";
+            DunningEntryL."Sales Return Order No." := SalesLineArchiveV."Document No.";
+            DunningEntryL."Sales Return Order Line No." := SalesLineArchiveV."Line No." ;
+            DunningEntryL.MODIFY(TRUE);
+
+            SetOnHold(DunningEntryL,''); //  Auto setonhold
+          END;
+        END;
+      END;
+      // H4231       24.06.15 JM ---------
+    END;
+
+    PROCEDURE UpdateDunningEntry@1000000020(VAR DunningEntryR@1000000002 : Record 50320;CustLedgerEntryL@1000000000 : Record 21) IsOnHoldO : Boolean;
+    VAR
+      CanSetOnHoldL@1000000006 : Boolean;
+      CustLEIsOpenL@1000000004 : Boolean;
+      Home24InvoiceL@1000000001 : Boolean;
+    BEGIN
+      //not used anymore
+      // H4480       24.07.15 JM ++++++++
+      // H4480       24.07.15 JM -------
+    END;
+
+    PROCEDURE DeleteDunningEntry@1000000037(SaleslineV@1000000000 : Record 37) IsOnHoldO : Boolean;
+    VAR
+      DunningEntryL@1000000002 : Record 50320;
+      Home24InvoiceL@1000000001 : Boolean;
+    BEGIN
+      //H1957       05.01.15  JM ++++++++++++
+      // if payment method was changed inbetween delete entry => manual orders
+
+      Home24InvoiceL := FALSE;
+
+      // Check for Home24Invoice PaymentMethod
+      IF SaleslineV."Document Type" = SaleslineV."Document Type"::Order THEN
+        Home24InvoiceL := CheckPaymentMethod(SaleslineV."Document No.");
+      IF SaleslineV."Document Type" = SaleslineV."Document Type"::"Return Order" THEN
+        Home24InvoiceL := CheckPaymentMethod(SaleslineV."Linked to Sales Order No.");
+
+      IF (Home24InvoiceL) THEN
+        EXIT;
+
+      IF SaleslineV."Document Type" IN [SaleslineV."Document Type"::Order] THEN BEGIN
+        IF DunningEntryL.GET(SaleslineV."Document No.",SaleslineV."Line No.") THEN BEGIN
+          DunningEntryL.DELETE(TRUE);
+        END;
+      END;
+
+      IF SaleslineV."Document Type" IN [SaleslineV."Document Type"::"Return Order"] THEN BEGIN
+        IF DunningEntryL.GET(SaleslineV."Linked to Sales Order No.",SaleslineV."Linked to Sales Order Line No.") THEN BEGIN
+          DunningEntryL.DELETE(TRUE);
+        END;
+      END;
+      //H1957       05.01.15  JM ++++++++++++
+    END;
+
+    PROCEDURE SetSalesReturnHeaderOnHold@1000000012(DocumentNoV@1000000001 : Code[20];IsOnHoldV@1000000000 : Boolean);
+    VAR
+      SalesReturnHeaderL@1000000002 : Record 36;
+    BEGIN
+      IF SalesReturnHeaderL.GET(SalesReturnHeaderL."Document Type"::"Return Order",DocumentNoV) THEN BEGIN
+        IF IsOnHoldV THEN
+          SalesReturnHeaderL."On Hold" := OnHoldCode
+        ELSE
+          SalesReturnHeaderL."On Hold" := '';
+        SalesReturnHeaderL.MODIFY;
+      END;
+    END;
+
+    PROCEDURE SetSalesFollowUpHeaderOnHold@1000000011(VAR SalesFollowUpHeaderR@1000000002 : Record 36);
+    VAR
+      DunningEntryL@1000000003 : Record 50320;
+    BEGIN
+      DunningEntryL.SETRANGE("Sales Order No.",SalesFollowUpHeaderR."External Document No.");
+      IF NOT DunningEntryL.FINDFIRST THEN
+        EXIT; // Original Order not found
+      IF NOT CheckPaymentMethod(SalesFollowUpHeaderR."No.") THEN
+        EXIT;
+      DunningEntryL.CALCFIELDS("On Hold Code");
+      SalesFollowUpHeaderR."On Hold" := DunningEntryL."On Hold Code";
+      // modify in Calling CU
+    END;
+
+    PROCEDURE SetSalesSparepartHeaderOnHold@1000000049(DocumentNoV@1000000001 : Code[20];IsOnHoldV@1000000000 : Boolean);
+    VAR
+      SalesSparePartHeaderL@1000000002 : Record 36;
+    BEGIN
+      // H4231       24.06.15 JM +++++++++
+      IF SalesSparePartHeaderL.GET(SalesSparePartHeaderL."Document Type"::Order,DocumentNoV) THEN BEGIN
+        IF IsOnHoldV THEN
+          SalesSparePartHeaderL."On Hold" := OnHoldCode
+        ELSE
+          SalesSparePartHeaderL."On Hold" := '';
+        SalesSparePartHeaderL.MODIFY;
+      END;
+      // H4231       24.06.15 JM ---------
+    END;
+
+    PROCEDURE SetOnHold@1000000004(VAR DunningEntryR@1000000001 : Record 50320;NewOnHoldCodeV@1000000004 : Code[3]);
+    VAR
+      ReturnReasonL@1000000002 : Record 6635;
+    BEGIN
+      // run manually by Customer Service
+      // H4231       24.06.15 JM +++++++++
+      //IF DunningEntryR.Type = DunningEntryR.Type::"Return Order" THEN BEGIN
+      IF (DunningEntryR.Type = DunningEntryR.Type::"Return Order") OR
+          (DunningEntryR.Type = DunningEntryR.Type::"Sparepart Order") THEN BEGIN
+      // H4231       24.06.15 JM ---------
+
+        GetSalesLines(DunningEntryR,ReturnReasonCode,ItemNo,Description,CWLastCustomerInfo,
+            StatusReturnOrder); // for return => reason from returnorder
+        ReturnReasonL.GET(ReturnReasonCode);
+        IF ReturnReasonL."On Hold Code" = '' THEN
+          EXIT;
+
+        NewOnHoldCodeV := ReturnReasonL."On Hold Code";
+        SetCLEOnHold(DunningEntryR,NewOnHoldCodeV);
+
+      END ELSE BEGIN  // Order
+
+        DunningEntryR.SETRANGE("Cust. Ledger Entry No.",DunningEntryR."Cust. Ledger Entry No.");
+        DunningEntryR.FINDFIRST;
+
+        REPEAT
+          SetCLEOnHold(DunningEntryR,NewOnHoldCodeV);
+        UNTIL DunningEntryR.NEXT = 0;
+
+        DunningEntryR.SETRANGE("Cust. Ledger Entry No.");
+      END;
+    END;
+
+    PROCEDURE ClearOnHoldOld@1000000010(VAR DunningEntryR@1000000001 : Record 50320;Compile@1000000003 : Code[10]);
+    VAR
+      CustLedgerEntryL@1000000000 : Record 21;
+      DunningEntry2L@1000000002 : Record 50320;
+    BEGIN
+      // used manually by Customer Service
+      NoOfNotExpiredEntries := 0;
+
+      IF DunningEntryR."Cust. Ledger Entry No." <> 0 THEN BEGIN
+        //H1957       05.01.15  JM ++++++++++++
+        DunningEntryR."On Hold Expiration Date" := 0D;
+        IF DunningEntryR."On Hold Expiration Date" > WORKDATE THEN
+          ERROR(HMEText006,DunningEntryR.FIELDCAPTION("On Hold Expiration Date"),DunningEntryR."Sales Order No.",
+              DunningEntryR."Sales Order Line No.");
+
+        NoOfNotExpiredEntries := CalcNoOfRelatedEntries(DunningEntryR);
+        //H1957       05.01.15  JM ------------
+        DunningEntryR."On Hold Date" := 0D;
+
+        IF NoOfNotExpiredEntries > 0 THEN BEGIN // related entries
+          DunningEntryR.MODIFY(TRUE);
+          EXIT;
+        END;
+
+        IF NoOfNotExpiredEntries <= 1 THEN BEGIN // not related entries
+          CustLedgerEntryL.GET(DunningEntryR."Cust. Ledger Entry No.");
+          CustLedgerEntryL."On Hold" := '';
+          SetPermissions.ModifyCustLedgerEntry(CustLedgerEntryL,TRUE);
+          DunningEntryR.MODIFY(TRUE);
+        END;
+      END;
+    END;
+
+    PROCEDURE ClearOnHold@1000000042(VAR DunningEntryR@1000000001 : Record 50320);
+    VAR
+      CustLedgerEntryL@1000000000 : Record 21;
+      DunningEntry2L@1000000002 : Record 50320;
+    BEGIN
+      // used manually by Customer Service
+      NoOfNotExpiredEntries := 0;
+
+      DunningEntryR.SETRANGE("Cust. Ledger Entry No.",DunningEntryR."Cust. Ledger Entry No.");
+      DunningEntryR.FINDFIRST;
+
+      REPEAT
+
+        IF DunningEntryR."Cust. Ledger Entry No." <> 0 THEN BEGIN
+          DunningEntryR."On Hold Expiration Date" := 0D;
+          NoOfNotExpiredEntries := CalcNoOfRelatedEntries(DunningEntryR);
+          DunningEntryR."On Hold Date" := 0D;
+
+          CustLedgerEntryL.GET(DunningEntryR."Cust. Ledger Entry No.");
+          CustLedgerEntryL."On Hold" := '';
+          SetPermissions.ModifyCustLedgerEntry(CustLedgerEntryL,TRUE);
+          DunningEntryR.MODIFY(TRUE);
+        END;
+
+      UNTIL DunningEntryR.NEXT = 0;
+
+      DunningEntryR.SETRANGE("Cust. Ledger Entry No.");
+    END;
+
+    PROCEDURE SetOnHoldFromLine@1000000030(DocumentTypeV@1000000005 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order,Externe Logistik';DocumentNoV@1000000003 : Code[20];LineNoV@1000000004 : Integer;ModeV@1000000002 : 'Set,Clear');
+    VAR
+      DunningEntryL@1000000001 : Record 50320;
+      SalesLineL@1000000000 : Record 37;
+      SalesLineArchiveL@1000000006 : Record 5108;
+    BEGIN
+      // H1241       18.09.13 JM +++++++++++++++++++
+      IF DocumentTypeV <> DocumentTypeV::Order THEN
+        EXIT;
+
+      // H1957       05.01.15 JM +++++++++
+      IF SalesLineL.GET(DocumentTypeV,DocumentNoV,LineNoV) THEN BEGIN
+        DeleteDunningEntry(SalesLineL);
+        CreateDunningEntry(SalesLineL);
+      END;
+      IF SalesLineArchiveL.GET(DocumentTypeV,DocumentNoV,1,1,LineNoV) THEN BEGIN
+        CreateDunningEntryArchive(SalesLineArchiveL);
+      END;
+      // H1957       05.01.15 JM ---------
+
+
+      IF DunningEntryL.GET(DocumentNoV,LineNoV) THEN BEGIN
+        IF ModeV = ModeV::Set THEN
+          SetOnHold(DunningEntryL,'');
+        IF ModeV = ModeV::Clear THEN
+          ClearOnHold(DunningEntryL);
+      END;
+      // H1241       18.09.13 JM -------------------
+    END;
+
+    PROCEDURE SetEntryNoFilter@1000000013(DocumentNoV@1000000001 : Code[20];LineNoV@1000000000 : Integer) EntryNoO : Integer;
+    VAR
+      DunningEntryL@1000000002 : Record 50320;
+    BEGIN
+      EntryNoO := 0;
+      DunningEntryL.SETRANGE("Sales Order No.",DocumentNoV);
+      DunningEntryL.SETRANGE("Sales Order Line No.",LineNoV);
+      IF DunningEntryL.FINDFIRST THEN BEGIN
+        IF DunningEntryL."Cust. Ledger Entry No." <> 0 THEN
+          EXIT(DunningEntryL."Cust. Ledger Entry No.");
+      END;
+    END;
+
+    PROCEDURE CalcNoOfRelatedEntries@1000000041(VAR DunningEntryR@1000000000 : Record 50320) NoOfRelatedEntriesO : Integer;
+    VAR
+      DunningEntry2L@1000000001 : Record 50320;
+    BEGIN
+      //H1957       05.01.15  JM ++++++++++++
+      NoOfRelatedEntriesO := 0;
+      IF DunningEntryR."Cust. Ledger Entry No." <> 0 THEN BEGIN
+
+        DunningEntry2L.SETRANGE("Sales Order No.",DunningEntryR."Sales Order No.");
+        DunningEntry2L.SETRANGE("Cust. Ledger Entry No.",DunningEntryR."Cust. Ledger Entry No.");
+        DunningEntry2L.SETFILTER("On Hold Code",'<>%1','');
+        DunningEntry2L.SETFILTER("On Hold Expiration Date",'>%1',WORKDATE);
+        NoOfRelatedEntriesO := DunningEntry2L.COUNT;
+
+      END;
+      //H1957       05.01.15  JM -----------
+    END;
+
+    PROCEDURE OnDrillDown@1000000007(SalesOrderNoP@1000000003 : Code[20];SalesOrderLineNoP@1000000004 : Integer;EntryNoP@1000000002 : Integer);
+    VAR
+      DunningListL@1000000000 : Form 50433;
+      DunningEntryL@1000000001 : Record 50320;
+    BEGIN
+      IF DunningEntryL.GET(SalesOrderNoP,SalesOrderLineNoP) THEN BEGIN
+        DunningEntryL.SETRANGE("Cust. Ledger Entry No.",EntryNoP);
+        DunningListL.SETTABLEVIEW(DunningEntryL);
+        DunningListL.RUN;
+      END;
+    END;
+
+    PROCEDURE OnLookUp@1000000028(ReasonCodeP@1000000003 : Code[20]);
+    VAR
+      ReturnReasonsL@1000000000 : Form 6635;
+      ReturnReasonL@1000000001 : Record 6635;
+    BEGIN
+      IF ReturnReasonL.GET(ReasonCodeP) THEN BEGIN
+        ReturnReasonsL.EDITABLE(FALSE);
+        ReturnReasonsL.LOOKUPMODE(FALSE);
+        ReturnReasonsL.SETTABLEVIEW(ReturnReasonL);
+        ReturnReasonsL.RUN;
+      END;
+    END;
+
+    PROCEDURE SetDueDate@1000000021(VAR DunningEntryR@1000000002 : Record 50320;VAR CustLedgerEntryR@1000000000 : Record 21);
+    VAR
+      PaymentTermsL@1000000003 : Record 3;
+      DueDateL@1000000001 : Date;
+    BEGIN
+      // the due date should be calculated only once
+      IF DunningEntryR.DueDateIsSet THEN
+        EXIT;
+      IF NOT PaymentTermsL.GET(DunningEntryR."Payment Terms Code") THEN
+        EXIT;
+      DueDateL := CALCDATE(PaymentTermsL."Due Date Calculation",WORKDATE);
+      CustLedgerEntryR.VALIDATE("Due Date",DueDateL);
+      SetPermissions.ModifyCustLedgerEntry(CustLedgerEntryR,TRUE);
+      DunningEntryR.DueDateIsSet := TRUE;
+      // H4403       02.07.15 JM +++++
+      DunningEntryR."Due Date Calc. Base" := WORKDATE;
+      // H4403       02.07.15 JM -----
+    END;
+
+    PROCEDURE FormatColorExpirationDate@1000000039(VAR DunningEntryR@1000000000 : Record 50320) ColorO : Integer;
+    BEGIN
+      // H1957       05.01.15 JM ++++++++++++
+      ColorO := 0;
+      IF DunningEntryR."On Hold Expiration Date" <= WORKDATE THEN // expired
+        ColorO := 40960; // green
+      IF CalcNoOfRelatedEntries(DunningEntryR) > 0 THEN // related & not expired
+        ColorO := 255; // red
+      // H1957       05.01.15 JM ------------
+    END;
+
+    PROCEDURE FormatColorLedgerEntry@1000000043(VAR DunningEntryR@1000000000 : Record 50320) ColorO : Integer;
+    VAR
+      CustLedgerEntryL@1000000001 : Record 21;
+    BEGIN
+      // H1957       05.01.15 JM ++++++++++++
+      ColorO := 0;
+      IF CustLedgerEntryL.GET(DunningEntryR."Cust. Ledger Entry No.") THEN
+        IF CustLedgerEntryL."On Hold" = '' THEN
+          ColorO := 40960; // green
+      // H1957       05.01.15 JM ------------
+    END;
+
+    PROCEDURE UpdateEntry@1000000018(VAR DunningEntryR@1000000000 : Record 50320);
+    BEGIN
+      AssignInvoiceLineNo(DunningEntryR);
+      DeleteClosedDunningEntry(DunningEntryR);
+      ClearOnHoldIfExpired(DunningEntryR);
+    END;
+
+    PROCEDURE UpdateEntriesBatch@1000000014(AssignInvoicesV@1000000000 : Boolean);
+    BEGIN
+      IsBatch := TRUE;
+      //H4403       02.07.15 JM ++++++++
+      IF GUIALLOWED AND IsBatch THEN
+        Window.OPEN('#1#################\\' +
+                    '#2#################');
+      //H4403       02.07.15 JM -------
+      //H4480       24.07.15 JM +++++++
+      IF AssignInvoicesV THEN
+          AssignInvoiceLineNos;
+      //H4480       24.07.15 JM -------
+      COMMIT;
+      DeleteClosedDunningEntries;
+      COMMIT;
+      ClearOnHoldsIfExpired;
+      COMMIT;
+
+      IF GUIALLOWED AND IsBatch THEN
+        Window.CLOSE;
+
+      IsBatch := FALSE;
+    END;
+
+    LOCAL PROCEDURE AssignCustLedgerEntry@1000000002(VAR DunningEntryR@1000000002 : Record 50320) CustLEIsOpenO : Boolean;
+    VAR
+      CustLedgerEntryL@1000000004 : Record 21;
+    BEGIN
+      CustLedgerEntryL.SETCURRENTKEY("Document No.","Document Type","Customer No.");
+      CustLedgerEntryL.SETRANGE("Document No.",DunningEntryR."Sales Invoice No.");
+      // H4403       02.07.15 JM +++++++
+      CustLedgerEntryL.SETRANGE("Customer No.",DunningEntryR."Customer No.");
+      // H4403       02.07.15 JM -------
+      CustLedgerEntryL.SETRANGE("Document Type",CustLedgerEntryL."Document Type"::Invoice);
+      CustLedgerEntryL.SETRANGE(Prepayment,FALSE);
+      IF CustLedgerEntryL.FINDFIRST THEN BEGIN
+
+        CustLEIsOpenO := CustLedgerEntryL.Open;
+
+        IF CustLEIsOpenO THEN BEGIN
+          DunningEntryR."Posting Date" := CustLedgerEntryL."Posting Date";
+          DunningEntryR."Cust. Ledger Entry No." := CustLedgerEntryL."Entry No.";
+
+          SetDueDate(DunningEntryR,CustLedgerEntryL);
+
+          DunningEntryR.CalcExpirationDate();
+          DunningEntryR.MODIFY(TRUE);
+          // H4403       02.07.15 JM +++++++
+          IF GUIALLOWED AND IsBatch THEN
+            Window.UPDATE(2,DunningEntryR."Sales Order No.");
+          // H4403       02.07.15 JM -------
+        END;
+      END;
+    END;
+
+    PROCEDURE AssignInvoiceLineNo@1000000003(VAR DunningEntryR@1000000001 : Record 50320) CustLEIsOpenO : Boolean;
+    VAR
+      SalesInvoiceLineL@1000000000 : Record 113;
+    BEGIN
+      // H4480       24.07.15 JM ++++
+      CustLEIsOpenO := TRUE;
+      // H4480       24.07.15 JM ----
+      IF GUIALLOWED AND IsBatch THEN
+        Window.UPDATE(1,HMEText001);
+      // H4403       02.07.15 JM +++++++
+      IF (DunningEntryR."Sales Invoice No." = '') OR (DunningEntryR."Sales Invoice Line No." = 0)
+          OR (DunningEntryR."Cust. Ledger Entry No." = 0)
+      THEN BEGIN
+      // H4403       02.07.15 JM -------
+        // initial assignement
+        SalesInvoiceLineL.SETCURRENTKEY("Order No.","Order Line No.");
+        SalesInvoiceLineL.SETRANGE("Order No.",DunningEntryR."Sales Order No.");
+        SalesInvoiceLineL.SETRANGE("Order Line No.",DunningEntryR."Sales Order Line No.");
+        SalesInvoiceLineL.SETRANGE(Type,SalesInvoiceLineL.Type::Item);
+        SalesInvoiceLineL.SETFILTER(Quantity,'<>%1',0);
+        IF SalesInvoiceLineL.FINDFIRST THEN BEGIN
+          DunningEntryR."Sales Invoice No." := SalesInvoiceLineL."Document No.";
+          DunningEntryR."Sales Invoice Line No." := SalesInvoiceLineL."Line No.";
+          DunningEntryR.MODIFY(TRUE);
+          CustLEIsOpenO := AssignCustLedgerEntry(DunningEntryR);
+
+          // H4403       02.07.15 JM ++++++
+          IF GUIALLOWED AND IsBatch THEN
+            Window.UPDATE(2,DunningEntryR."Sales Invoice No.");
+          // H4403       02.07.15 JM ++++++
+        END;
+      END;
+
+      // H4403       02.07.15 JM +++++++++
+      // H4403       02.07.15 JM ---------
+    END;
+
+    PROCEDURE AssignInvoiceLineNos@1000000008();
+    VAR
+      DunningEntryL@1000000000 : Record 50320;
+    BEGIN
+      // H4403       02.07.15 JM ++++++++
+      DunningEntryL.SETCURRENTKEY("Cust. Ledger Entry No.");
+      DunningEntryL.SETRANGE("Cust. Ledger Entry No.",0);
+      //IF DunningEntryL.FINDfirst THEN
+      IF DunningEntryL.FINDSET(TRUE,TRUE) THEN
+      // H4403       02.07.15 JM --------
+        REPEAT
+          AssignInvoiceLineNo(DunningEntryL);
+        UNTIL DunningEntryL.NEXT = 0;
+    END;
+
+    PROCEDURE DeleteClosedDunningEntry@1000000016(VAR DunningEntryR@1000000000 : Record 50320);
+    VAR
+      CustLedgerEntryL@1000000001 : Record 21;
+    BEGIN
+      // delete entries where CustLedgerEntry are closed inbetween
+      IF GUIALLOWED AND IsBatch THEN
+        Window.UPDATE(1,HMEText002);
+
+      CustLedgerEntryL.SETCURRENTKEY("Document No.");
+      CustLedgerEntryL.SETRANGE("Document No.",DunningEntryR."Sales Invoice No.");
+      CustLedgerEntryL.SETRANGE("Document Type",CustLedgerEntryL."Document Type"::Invoice);
+      CustLedgerEntryL.SETRANGE(Open,FALSE); // Closed
+      CustLedgerEntryL.SETRANGE(Prepayment,FALSE);
+      // H4231       24.06.15 JM +++++++++
+      CustLedgerEntryL.SETRANGE("Entry No.",DunningEntryR."Cust. Ledger Entry No.");
+      // H4231       24.06.15 JM ---------
+      IF CustLedgerEntryL.FINDFIRST THEN BEGIN
+        // H4403       02.07.15 JM +++++++++
+        // H4461       15.07.15 JM +++++++++
+        DunningEntryR.DELETE;
+        //IF DunningEntryR.DELETE(TRUE) THEN;
+        // H4461       15.07.15 JM +++++++++
+        // H4403       02.07.15 JM ---------
+        IF GUIALLOWED AND IsBatch THEN
+          Window.UPDATE(2,FORMAT(CustLedgerEntryL."Entry No."));
+      END;
+    END;
+
+    PROCEDURE DeleteClosedDunningEntries@1000000005();
+    VAR
+      DunningEntryL@1000000001 : Record 50320;
+      CustLedgerEntryL@1000000000 : Record 21;
+    BEGIN
+      // delete entries that where CustLedgerEntry are closed inbetween
+      // H4231       24.06.15 JM +++++++++
+      IF GUIALLOWED AND IsBatch THEN
+        Window.UPDATE(1,HMEText002);
+
+      // H4231       24.06.15 JM ---------
+      CustLedgerEntryL.SETCURRENTKEY("External Document No.");
+      DunningEntryL.SETCURRENTKEY("Cust. Ledger Entry No.");
+
+      DunningEntryL.SETFILTER("Cust. Ledger Entry No.",'<>%1',0);
+      DunningEntryL.SETFILTER("Sales Invoice No.",'<>%1','');
+      DunningEntryL.SETFILTER("Sales Invoice Line No.",'<>%1',0);
+
+      IF DunningEntryL.FINDSET THEN
+        REPEAT
+          CustLedgerEntryL.SETRANGE("External Document No.",DunningEntryL."Sales Order No.");
+          CustLedgerEntryL.SETRANGE("Document Type",CustLedgerEntryL."Document Type"::Invoice);
+          CustLedgerEntryL.SETRANGE(Open,FALSE); // Closed
+          CustLedgerEntryL.SETRANGE(Prepayment,FALSE);
+          // H4231       24.06.15 JM +++++++++
+          CustLedgerEntryL.SETRANGE("Entry No.",DunningEntryL."Cust. Ledger Entry No.");
+          IF CustLedgerEntryL.FINDFIRST THEN
+            // H4461       15.07.15 JM +++++++++
+            //IF DunningEntryL.DELETE(TRUE) THEN;
+            DunningEntryL.DELETE;
+            // H4461       15.07.15 JM --------
+          // H4231       24.06.15 JM ---------
+        UNTIL DunningEntryL.NEXT = 0;
+    END;
+
+    PROCEDURE ClearOnHoldIfExpired@1000000017(VAR DunningEntryR@1000000000 : Record 50320);
+    VAR
+      CustLedgerEntryL@1000000001 : Record 21;
+    BEGIN
+      IF DunningEntryR."Cust. Ledger Entry No." <> 0 THEN BEGIN
+        DunningEntryR."On Hold Expiration Date" := 0D;
+        DunningEntryR."On Hold Date" := 0D;
+
+        CustLedgerEntryL.GET(DunningEntryR."Cust. Ledger Entry No.");
+        CustLedgerEntryL."On Hold" := '';
+        SetPermissions.ModifyCustLedgerEntry(CustLedgerEntryL,TRUE);
+        DunningEntryR.MODIFY(TRUE);
+      END;
+    END;
+
+    PROCEDURE ClearOnHoldsIfExpired@1000000006();
+    VAR
+      DunningEntryL@1000000001 : Record 50320;
+    BEGIN
+      // run by batch
+      IF GUIALLOWED AND IsBatch THEN
+        Window.UPDATE(1,HMEText003);
+
+      DunningEntryL.SETCURRENTKEY("Cust. Ledger Entry No.");
+      DunningEntryL.SETFILTER("Cust. Ledger Entry No.",'<>%1',0);
+      DunningEntryL.SETFILTER("On Hold Expiration Date",'<=%1',WORKDATE);
+      DunningEntryL.SETFILTER("On Hold Code",'<>%1','');
+      IF DunningEntryL.FINDSET THEN
+
+        REPEAT
+          IF CalcNoOfRelatedEntries(DunningEntryL) > 0 THEN BEGIN // related & not expired
+          //Dont Clear one releated entry is not expired
+            IF GUIALLOWED AND IsBatch THEN
+              Window.UPDATE(2,FORMAT(DunningEntryL."Cust. Ledger Entry No."));
+
+          END ELSE BEGIN
+
+            ClearOnHoldIfExpired(DunningEntryL);
+            IF GUIALLOWED AND IsBatch THEN
+               Window.UPDATE(2,FORMAT(DunningEntryL."Cust. Ledger Entry No."));
+
+          END;
+        UNTIL DunningEntryL.NEXT = 0;
+    END;
+
+    PROCEDURE UpdateEntryInvoiceLine@1000000019(SalesInvoiceLineV@1000000000 : Record 113;SalesCMemoLineV@1000000002 : Record 115;PostingTypeV@1000000006 : 'Invoice,CreditMemo');
+    VAR
+      DunningEntryL@1000000003 : Record 50320;
+      PaymentMethodL@1000000004 : Record 289;
+      SalesInvoiceHeaderL@1000000005 : Record 112;
+      SalesLineL@1000000001 : Record 37;
+      SalesLineArchiveL@1000000008 : Record 5108;
+      SalesCMemoHeaderL@1000000007 : Record 114;
+    BEGIN
+      // called from CU 80 extended for credit memos
+      // H4480       24.07.15 JM ++++++
+      IF PostingTypeV = PostingTypeV::Invoice THEN BEGIN
+        IF NOT SalesInvoiceHeaderL.GET(SalesInvoiceLineV."Document No.") THEN
+          EXIT;
+
+      IF SalesInvoiceLineV.Type <> SalesInvoiceLineV.Type::Item THEN
+        EXIT;
+
+      IF PaymentMethodL.GET(SalesInvoiceHeaderL."Payment Method Code") THEN
+        IF NOT PaymentMethodL."Manual Reminder Process" THEN
+          EXIT;
+
+      IF DunningEntryL.GET(SalesInvoiceLineV."Order No.",SalesInvoiceLineV."Order Line No.") THEN BEGIN
+
+        //AssignInvoiceLineNo(DunningEntryL);
+        SalesLineL.GET(SalesLineL."Document Type"::Order,SalesInvoiceLineV."Order No.",SalesInvoiceLineV."Order Line No.");
+        CreateDunningEntry(SalesLineL);
+      END;
+      END;
+
+      IF PostingTypeV = PostingTypeV::CreditMemo THEN BEGIN
+        IF NOT SalesCMemoHeaderL.GET(SalesCMemoLineV."Document No.") THEN
+          EXIT;
+
+      IF SalesCMemoLineV.Type <> SalesCMemoLineV.Type::Item THEN
+        EXIT;
+
+      IF PaymentMethodL.GET(SalesCMemoHeaderL."Payment Method Code") THEN
+        IF NOT PaymentMethodL."Manual Reminder Process" THEN
+          EXIT;
+
+        IF DunningEntryL.GET(SalesCMemoLineV."Linked to Sales Order No.",
+            SalesCMemoLineV."Linked to Sales Order Line No.") THEN BEGIN
+
+        //AssignInvoiceLineNo(DunningEntryL);
+          IF SalesLineL.GET(SalesLineL."Document Type"::"Return Order",SalesCMemoLineV."Order No.",
+              SalesCMemoLineV."Order Line No.") THEN BEGIN
+        CreateDunningEntry(SalesLineL);
+          END ELSE BEGIN
+            IF SalesLineArchiveL.GET(SalesLineL."Document Type"::"Return Order",SalesCMemoLineV."Order No.",
+                1,1,SalesCMemoLineV."Order Line No.") THEN
+              CreateDunningEntryArchive(SalesLineArchiveL);
+          END;
+        END;
+      END;
+      // H4480       24.07.15 JM -----
+    END;
+
+    PROCEDURE UpdateEntryCLEPosting@1000000023(CustLedgerEntryV@1000000000 : Record 21);
+    VAR
+      DunningEntryL@1000000003 : Record 50320;
+      PaymentMethodL@1000000004 : Record 289;
+    BEGIN
+      // called from CU C12
+      IF PaymentMethodL.GET(CustLedgerEntryV."Payment Method Code") THEN
+        IF NOT PaymentMethodL."Manual Reminder Process" THEN
+          EXIT;
+
+      //H1957       05.01.15  JM ++++++++++++
+      IF CustLedgerEntryV."External Document No." = '' THEN
+        ERROR(HMEText005,CustLedgerEntryV.FIELDCAPTION("External Document No."));
+      //H1957       05.01.15  JM ------------
+
+      DunningEntryL.SETRANGE(DunningEntryL."Sales Order No.",CustLedgerEntryV."External Document No.");
+      IF DunningEntryL.FINDSET THEN
+        REPEAT // can be more then one DunningEntry
+          //UpdateDunningEntry(DunningEntryL,CustLedgerEntryV);
+          AssignCustLedgerEntry(DunningEntryL);
+        UNTIL DunningEntryL.NEXT = 0;
+    END;
+
+    PROCEDURE SetCustomerReminderTerm@1000000022(DunningEntryV@1000000006 : Record 50320);
+    VAR
+      CustomerL@1000000001 : Record 18;
+      PaymentMethodL@1000000002 : Record 289;
+      ReminderTermsL@1000000003 : Record 292;
+    BEGIN
+      // H4445       13.07.15 JM ++++++
+      IF NOT PaymentMethodL.GET(PaymentMethodCode) THEN
+        EXIT;
+      IF NOT  PaymentMethodL."Manual Reminder Process" THEN
+        EXIT;
+      // reminder code from payment method
+      IF PaymentMethodL."Def. Customer Reminder Term" <> '' THEN BEGIN
+        ReminderTermsL.GET(PaymentMethodL."Def. Customer Reminder Term");
+        IF CustomerL.GET(DunningEntryV."Customer No.") THEN BEGIN
+          IF CustomerL."Reminder Terms Code" <> ReminderTermsL.Code THEN BEGIN
+            // Sets the last used Cust reminder Term Code
+            CustomerL."Reminder Terms Code" := ReminderTermsL.Code;
+            CustomerL.MODIFY;
+          END;
+        END;
+      END ELSE BEGIN //multilanguage reminder code
+        IF CustomerL.GET(DunningEntryV."Customer No.") THEN BEGIN
+          ReminderTermsL.GET(GetLanguageReminderTerms(PaymentMethodL.Code,LanguageCode));
+          // Sets the last used Cust reminder Term Code
+          CustomerL."Reminder Terms Code" := ReminderTermsL.Code;
+          CustomerL."Has Language Reminder Terms" := TRUE;
+          CustomerL.MODIFY;
+        END;
+      END;
+      // H4445       13.07.15 JM ------
+    END;
+
+    LOCAL PROCEDURE GetReturnOrderDate@1000000029(ReturnOrderNoV@1000000001 : Code[20]) ReturnOrderDateO : Date;
+    VAR
+      SalesReturnHeaderL@1000000000 : Record 36;
+    BEGIN
+      IF SalesReturnHeaderL.GET(SalesReturnHeaderL."Document Type"::"Return Order",ReturnOrderNoV) THEN
+        EXIT(SalesReturnHeaderL."Order Date");
+    END;
+
+    PROCEDURE GetOnHoldCode@1000000024(VAR OnHoldCodesR@1000000001 : Record 50109;OnHoldCodeV@1000000002 : Code[3];IsDefaultCodeV@1000000000 : Boolean);
+    BEGIN
+      //H1604       09.10.14 JM ++++++++++++++++++
+      IF IsDefaultCodeV THEN BEGIN
+        OnHoldCodesR.SETRANGE("Is Default Code",TRUE);
+        OnHoldCodesR.FINDFIRST;
+      END ELSE BEGIN
+        OnHoldCodesR.GET(OnHoldCodeV);
+      END;
+      OnHoldCodesR.TESTFIELD("Expiration Calc.");
+      //H1604       09.10.14 JM ------------------
+    END;
+
+    PROCEDURE OverwriteOnHoldCode@1000000027() NewOnHoldCodeO : Code[3];
+    VAR
+      OnHoldCodesL@1000000000 : Record 50109;
+      OnHoldCodeL@1000000001 : Form 50441;
+    BEGIN
+      // H1604      09.10.14 JM +++++++++++++++
+      OnHoldCodeL.EDITABLE(FALSE);
+      OnHoldCodeL.LOOKUPMODE(TRUE);
+      IF OnHoldCodeL.RUNMODAL  = ACTION::LookupOK THEN BEGIN
+        OnHoldCodeL.GETRECORD(OnHoldCodesL);
+        OnHoldCodesL.TESTFIELD("Expiration Calc.");
+        EXIT(OnHoldCodesL."On Hold Code");
+      END;
+      // H1604       09.10.14 JM ---------------
+    END;
+
+    PROCEDURE SetCLEOnHold@1000000044(VAR DunningEntryR@1000000000 : Record 50320;NewOnHoldCodeV@1000000004 : Code[3]);
+    VAR
+      CustLedgerEntryL@1000000003 : Record 21;
+      ReturnReasonL@1000000002 : Record 6635;
+      OnHoldCodeL@1000000001 : Record 50109;
+    BEGIN
+      IF DunningEntryR."Cust. Ledger Entry No." <> 0 THEN BEGIN
+        CustLedgerEntryL.GET(DunningEntryR."Cust. Ledger Entry No.");
+        IF NOT CustLedgerEntryL.Open THEN
+          EXIT;
+        // get default on hold code
+        GetOnHoldCode(OnHoldCodeL,ReturnReasonL."On Hold Code",TRUE);
+
+        IF DunningEntryR.Type = DunningEntryR.Type::"Return Order" THEN
+          CustLedgerEntryL."On Hold" := ReturnReasonL."On Hold Code"
+        ELSE
+          CustLedgerEntryL."On Hold" := OnHoldCodeL."On Hold Code";
+        // H1604       09.10.14 JM +++++++++++++
+        IF NewOnHoldCodeV <> '' THEN
+          CustLedgerEntryL."On Hold" := NewOnHoldCodeV;
+        // H1604       09.10.14 JM -------------
+        SetPermissions.ModifyCustLedgerEntry(CustLedgerEntryL,TRUE);
+        DunningEntryR."On Hold Date" := WORKDATE;
+        // H1604       09.10.14 JM +++++++++++++
+        DunningEntryR.CalcExpirationDate();
+        // H1604       09.10.14 JM -------------
+        DunningEntryR.MODIFY(TRUE);
+      END;
+    END;
+
+    PROCEDURE "****HME********"@1000000026();
+    BEGIN
+    END;
+
+    PROCEDURE CheckChangeReason@1000000025(ReturnReasonCodeV@1000000000 : Code[10]) CanSetOnHoldO : Boolean;
+    VAR
+      ReturnReasonL@1000000001 : Record 6635;
+    BEGIN
+      // H1404       29.09.14 JM ++++++++++++++++++++
+      OnHoldCode := '';
+      IF NOT ReturnReasonL.GET(ReturnReasonCodeV) THEN
+        EXIT(FALSE);
+      IF ReturnReasonL."Return Type" <> ReturnReasonL."Return Type"::Change THEN
+        EXIT(FALSE);
+      OnHoldCode := ReturnReasonL."On Hold Code";
+      IF ReturnReasonL."On Hold Code" <> '' THEN
+        EXIT(TRUE);
+      // H1404     29.09.14 JM --------------------
+    END;
+
+    PROCEDURE "****HME1761****"@1000000035();
+    BEGIN
+    END;
+
+    PROCEDURE IsVirtualIBAN@1000000032(eBayNavCSalesHeaderV@1000000001 : Record 5251571;VAR PaymentMethodCodeR@1000000000 : Code[10]) Home24InvoiceO : Boolean;
+    VAR
+      PaymentMethodL@1000000002 : Record 289;
+      eBayNavCPaymentModuleL@1000000003 : Record 5251556;
+    BEGIN
+      // H1761        05.11.14 JM ++++++++++++++++++++
+      IF eBayNavCPaymentModuleL.GET(eBayNavCSalesHeaderV."Webshop Code",eBayNavCSalesHeaderV."Webshop Payment Module") THEN
+        IF PaymentMethodL.GET(eBayNavCPaymentModuleL."Payment Method Code") THEN BEGIN
+          PaymentMethodCodeR := PaymentMethodL.Code;
+          IF PaymentMethodL."Virtual IBAN" THEN BEGIN
+            // in case No virtual Iban is send a default bank account is printed on invoice
+            // H1957.2       19.02.15 JM ++++++++++++++
+            PaymentMethodL.TESTFIELD("Def. Virtual IBAN Bank Account");
+            // H1957.2       19.02.15 JM -------------
+            // in case No virtual Iban is send a default bank account is printed on invoice
+            EXIT(TRUE);
+          END;
+        END;
+      // H1761        05.11.14 JM --------------------
+    END;
+
+    PROCEDURE SetPaymentTransactionOrder@1000000031(eBayNavCSalesHeaderV@1000000002 : Record 5251571);
+    VAR
+      PaymentTransactionL@1000000000 : Record 5157819;
+      NextEntryNoL@1000000003 : Integer;
+      PaymentMethodCodeL@1000000004 : Code[10];
+    BEGIN
+      // H1761        05.11.14 JM ++++++++++++++++++++
+      IF NOT IsVirtualIBAN(eBayNavCSalesHeaderV,PaymentMethodCodeL) THEN
+        EXIT;
+
+      GeneralLedgerSetup.GET;
+
+      IF PaymentTransactionL.FINDLAST THEN
+        NextEntryNoL := PaymentTransactionL."Entry No." + NextEntryNoL + 1
+      ELSE
+        NextEntryNoL := 1;
+
+      PaymentTransactionL.INIT;
+      PaymentTransactionL."Entry No." := NextEntryNoL;
+      PaymentTransactionL."Pmt. Transaction No." := eBayNavCSalesHeaderV."Payment ID";
+      PaymentTransactionL.Type := PaymentTransactionL.Type::Incoming;
+      PaymentTransactionL."Order No." := eBayNavCSalesHeaderV."No.";
+      PaymentTransactionL."Customer No." := eBayNavCSalesHeaderV."Customer No.";
+      // H3896       27.04.15 JM ++++++++++++
+      // for some reason the eBayNavCSalesHeaderV."Customer No." is not filled at validation of the order
+      IF PaymentTransactionL."Customer No." = '' THEN BEGIN
+        PaymentTransactionL."Customer No." := GetCustomerFromAccount(eBayNavCSalesHeaderV."Webshop Code",
+            eBayNavCSalesHeaderV."Sell-to Account No.");
+      END;
+      // H3896       27.04.15 JM ------------
+      PaymentTransactionL."Payment Method Code" := PaymentMethodCodeL;
+      PaymentTransactionL."Date / Time" := CURRENTDATETIME;
+      PaymentTransactionL."Pmt. Service Provider" := 'RG H24'; //Deutsche Bank H24
+
+      IF eBayNavCSalesHeaderV."Currency Code" = GeneralLedgerSetup."LCY Code" THEN BEGIN
+        PaymentTransactionL."Currency Code" := '';
+        PaymentTransactionL."Currency Factor" := 0;
+        PaymentTransactionL.Amount := eBayNavCSalesHeaderV."Invoice Amount";
+        PaymentTransactionL."Amount (LCY)" := eBayNavCSalesHeaderV."Invoice Amount";
+      END ELSE BEGIN
+        ERROR(HMEText004,eBayNavCSalesHeaderV."Currency Code");
+      END;
+
+      PaymentTransactionL.IBAN := eBayNavCSalesHeaderV.IBAN;
+      PaymentTransactionL.BIC := eBayNavCSalesHeaderV.BIC;
+      PaymentTransactionL."Reference ID" := eBayNavCSalesHeaderV."Reference ID";
+      // H3896       13.03.15 JM ++++++++
+      IF PaymentTransactionL."Customer No." = '' THEN
+        PaymentTransactionL."Customer No." := GetCustomerFromOrder(PaymentTransactionL."Order No.");
+      // H3896       13.03.15 JM --------
+      PaymentTransactionL.INSERT;
+      // H1761        05.11.14 JM --------------------
+    END;
+
+    PROCEDURE SetPaymentTransactionPmnt@1000000034(PmtImportLineV@1000000002 : Record 5157809;PaymentMethodCodeV@1000000001 : Code[10];NotUsedV@1000000006 : Boolean);
+    VAR
+      PaymentTransactionL@1000000000 : Record 5157819;
+      NextEntryNoL@1000000003 : Integer;
+      PaymentMethodL@1000000004 : Record 289;
+      SalesHeaderL@1000000005 : Record 36;
+    BEGIN
+      // H1761        05.11.14 JM ++++++++++++++++++++
+      // not used anymore
+      IF NOT PaymentMethodL.GET(PaymentMethodCodeV) THEN
+        EXIT;
+      IF NOT PaymentMethodL."Virtual IBAN" THEN
+        EXIT;
+
+
+      IF PaymentTransactionL.FINDLAST THEN
+        NextEntryNoL := PaymentTransactionL."Entry No." + NextEntryNoL + 1
+      ELSE
+        NextEntryNoL := 1;
+
+      PaymentTransactionL.INIT;
+      PaymentTransactionL."Entry No." := NextEntryNoL;
+      PaymentTransactionL.Type := PaymentTransactionL.Type::Incoming;
+      PaymentTransactionL."Order No." := PmtImportLineV."Document No. Declared";
+      PaymentTransactionL."Payment Method Code" := PaymentMethodCodeV;
+      PaymentTransactionL."Date / Time" := CURRENTDATETIME;
+      PaymentTransactionL."Pmt. Service Provider" := 'RG H24'; //Deutsche Bank H24
+
+      IF PmtImportLineV."Currency-ID" = 'EUR' THEN BEGIN
+        PaymentTransactionL."Currency Code" := '';
+        PaymentTransactionL."Currency Factor" := 0;
+        PaymentTransactionL.Amount := PmtImportLineV.Amount;
+        PaymentTransactionL."Amount (LCY)" := PmtImportLineV.Amount;
+      END ELSE BEGIN
+        ERROR(HMEText004,PmtImportLineV."Currency-ID");
+      END;
+
+      PaymentTransactionL.IBAN := PmtImportLineV."Virtual IBAN"; // ?35 abweichender begÅnstigter
+      // H3896       13.03.15 JM ++++++++
+      IF PaymentTransactionL."Customer No." = '' THEN
+        PaymentTransactionL."Customer No." := GetCustomerFromOrder(PaymentTransactionL."Order No.");
+      // H3896       13.03.15 JM --------
+      PaymentTransactionL.INSERT;
+      // H1761       05.11.14 JM --------------------
+    END;
+
+    PROCEDURE DeletePaymentTransaction@1000000038(PaymentMethodCodeV@1000000001 : Code[10];VirtualIBAN_V@1000000002 : Code[34]);
+    VAR
+      PaymentTransactionL@1000000000 : Record 5157819;
+      PaymentTransaction2L@1000000003 : Record 5157819;
+      PaymentMethodL@1000000004 : Record 289;
+    BEGIN
+      // H1761        05.11.14 JM ++++++++++++++++++++
+      // to be used in future
+      IF NOT PaymentMethodL.GET(PaymentMethodCodeV) THEN
+        EXIT;
+      IF NOT PaymentMethodL."Virtual IBAN" THEN
+        EXIT;
+
+      PaymentTransactionL.SETRANGE(IBAN,VirtualIBAN_V);
+      PaymentTransaction2L.SETRANGE(IBAN,VirtualIBAN_V);
+      IF PaymentTransactionL.FINDFIRST THEN BEGIN
+        IF PaymentTransaction2L.FINDFIRST THEN BEGIN
+          IF PaymentTransactionL.GETPOSITION(FALSE) <> PaymentTransaction2L.GETPOSITION(FALSE) THEN BEGIN
+            PaymentTransactionL.DELETE;
+            PaymentTransaction2L.DELETE;
+          END;
+        END;
+      END;
+      // H1761        05.11.14 JM --------------------
+    END;
+
+    PROCEDURE MakeTokenPaymentTransaction@1000000036(VirtualIBAN_V@1000000002 : Code[34];VAR PaymentTransactionR@1000000003 : Record 5157819) CustomerNoO : Code[20];
+    VAR
+      PaymentTransactionL@1000000000 : Record 5157819;
+    BEGIN
+      // H1761        11.11.14 JM ++++++++++++++++++++
+      PaymentTransactionR.SETCURRENTKEY(IBAN,"Used Token");
+
+      PaymentTransactionR.SETRANGE(IBAN,VirtualIBAN_V);
+      PaymentTransactionR.SETRANGE("Used Token",FALSE);
+      PaymentTransactionR.SETFILTER(BIC,'<>%1','');  // finds entry from order
+      IF PaymentTransactionR.FINDFIRST THEN BEGIN
+        CustomerNoO := PaymentTransactionR."Customer No.";
+        EXIT(CustomerNoO);
+      END;
+      // H3896        27.04.15 JM ++++++
+      PaymentTransactionR.SETRANGE("Used Token");
+      IF PaymentTransactionR.FINDFIRST THEN BEGIN
+        CustomerNoO := PaymentTransactionR."Customer No.";
+        EXIT(CustomerNoO);
+      END;
+      // H3896        27.04.15 JM ++++++
+      // H1761        11.11.14 JM --------------------
+    END;
+
+    PROCEDURE GetVirtualIBANinformation@1000000033(InvoiceNoV@1000000001 : Code[20];VAR IBAN_R@1000000002 : Code[34];VAR BIC_R@1000000006 : Code[11];VAR ReferenceID_R@1000000007 : Code[6]) HasVirtualIBAN_O : Boolean;
+    VAR
+      PaymentMethodL@1000000004 : Record 289;
+      SalesInvoiceHeaderL@1000000008 : Record 112;
+      PaymentMethodCodeL@1000000009 : Code[10];
+      eBayNavCSalesHeaderL@1000000003 : Record 5251571;
+      BankAccountL@1000000000 : Record 270;
+      PaymentInformationCodeL@1000000005 : Record 5157894;
+    BEGIN
+      // H1760        11.11.14 JM ++++++++++++++++++++
+      IF NOT SalesInvoiceHeaderL.GET(InvoiceNoV) THEN
+        EXIT;
+
+      PaymentMethodCodeL := SalesInvoiceHeaderL."Payment Method Code";
+
+      IF NOT PaymentMethodL.GET(PaymentMethodCodeL) THEN
+        EXIT;
+      IF NOT PaymentMethodL."Virtual IBAN" THEN
+        EXIT;
+
+      eBayNavCSalesHeaderL.SETRANGE("Webshop Code",FORMAT(SalesInvoiceHeaderL."Website No."));
+      eBayNavCSalesHeaderL.SETRANGE("No.",SalesInvoiceHeaderL."External Document No.");
+      eBayNavCSalesHeaderL.SETFILTER(IBAN,'<>%1','');
+      eBayNavCSalesHeaderL.SETFILTER(BIC,'<>%1','');
+      IF eBayNavCSalesHeaderL.FINDFIRST THEN BEGIN
+        IF NOT IsVirtualIBAN(eBayNavCSalesHeaderL,PaymentMethodCodeL) THEN
+          EXIT(FALSE);
+        IBAN_R := eBayNavCSalesHeaderL.IBAN;
+        BIC_R := eBayNavCSalesHeaderL.BIC;
+        ReferenceID_R := eBayNavCSalesHeaderL."Reference ID";
+        EXIT(TRUE);
+      END ELSE BEGIN
+        // to be clarified by paul SO have no virtual iban use default bank account instead +++++++
+        // H1957.2       19.02.15 JM ++++++++++++++
+        //BankAccountL.GET(PaymentMethodL."Default Pmt. Bank Account No.");
+        BankAccountL.GET(PaymentMethodL."Def. Virtual IBAN Bank Account");
+        // H1957.2       19.02.15 JM -------------
+        BankAccountL.TESTFIELD("Post Code");
+        IBAN_R := BankAccountL.IBAN;
+        PaymentInformationCodeL.SETRANGE(Type,PaymentInformationCodeL.Type::"Bank Identifier Code");
+        PaymentInformationCodeL.SETRANGE("Bank Branch Code",BankAccountL."Bank Branch No.");
+        PaymentInformationCodeL.SETRANGE("Post Code",BankAccountL."Post Code");
+        PaymentInformationCodeL.FINDFIRST;
+        BIC_R := PaymentInformationCodeL."Bank Identifier Code";
+        ReferenceID_R := '';
+        EXIT(TRUE);
+        // to be clarified by paul------------------
+      END;
+      // H1760        11.11.14 JM --------------------
+    END;
+
+    PROCEDURE CheckIBANFormat@1(IBANCodeV@1000 : Code[100]) IsIBANO : Boolean;
+    VAR
+      Modulus97L@1001 : Integer;
+      iL@1002 : Integer;
+    BEGIN
+      // H1761        25.11.14 JM ++++++++++++++++++++
+      IF IBANCodeV = '' THEN
+        IBANError := TRUE;
+      IBANCodeV := DELCHR(IBANCodeV);
+      Modulus97L := 97;
+      IF (STRLEN(IBANCodeV) <= 5) OR (STRLEN(IBANCodeV) > 34) THEN
+        IBANError := TRUE;
+
+      ConvertIBAN(IBANCodeV);
+
+      WHILE STRLEN(IBANCodeV) > 6 DO
+        IBANCodeV := CalcModulus(COPYSTR(IBANCodeV,1,6),Modulus97L) + COPYSTR(IBANCodeV,7);
+      EVALUATE(iL,IBANCodeV);
+      IF (iL MOD Modulus97L) <> 1 THEN
+        IBANError := TRUE;
+
+      IsIBANO := NOT IBANError;
+      // H1761        25.11.14 JM -------------------
+    END;
+
+    LOCAL PROCEDURE ConvertIBAN@4(VAR IBANCodeR@1000 : Code[100]);
+    VAR
+      iL@1002 : Integer;
+    BEGIN
+      // H1761        25.11.14 JM ++++++++++++++++++++
+      IBANCodeR := COPYSTR(IBANCodeR,5) + COPYSTR(IBANCodeR,1,4);
+      iL := 0;
+      WHILE iL < STRLEN(IBANCodeR) DO BEGIN
+        iL := iL + 1;
+        IF ConvertLetter(IBANCodeR,COPYSTR(IBANCodeR,iL,1),iL) THEN
+          iL := 0;
+      END;
+      // H1761       25.11.14 JM ------------------
+    END;
+
+    LOCAL PROCEDURE CalcModulus@3(NumberV@1000 : Code[10];Modulus97V@1001 : Integer) : Code[10];
+    VAR
+      iL@1002 : Integer;
+    BEGIN
+      // H1761        25.11.14 JM ++++++++++++++++++++
+      IF NOT EVALUATE(iL,NumberV) THEN BEGIN
+        IBANError := TRUE;
+        EXIT('');
+      END;
+      iL := iL MOD Modulus97V;
+      IF iL = 0 THEN
+        EXIT('');
+      EXIT(FORMAT(iL));
+      // H1761        25.11.14 JM -------------------
+    END;
+
+    LOCAL PROCEDURE ConvertLetter@5(VAR IBANCodeR@1000 : Code[100];LetterV@1001 : Code[1];LetterPlaceV@1002 : Integer) : Boolean;
+    VAR
+      Letter2L@1003 : Code[2];
+    BEGIN
+      // H1761      25.11.14 JM ++++++++++++++++++++
+      IF (LetterV >= 'A') AND (LetterV <= 'Z') THEN BEGIN
+        CASE LetterV OF
+          'A': Letter2L := '10';
+          'B': Letter2L := '11';
+          'C': Letter2L := '12';
+          'D': Letter2L := '13';
+          'E': Letter2L := '14';
+          'F': Letter2L := '15';
+          'G': Letter2L := '16';
+          'H': Letter2L := '17';
+          'I': Letter2L := '18';
+          'J': Letter2L := '19';
+          'K': Letter2L := '20';
+          'L': Letter2L := '21';
+          'M': Letter2L := '22';
+          'N': Letter2L := '23';
+          'O': Letter2L := '24';
+          'P': Letter2L := '25';
+          'Q': Letter2L := '26';
+          'R': Letter2L := '27';
+          'S': Letter2L := '28';
+          'T': Letter2L := '29';
+          'U': Letter2L := '30';
+          'V': Letter2L := '31';
+          'W': Letter2L := '32';
+          'X': Letter2L := '33';
+          'Y': Letter2L := '34';
+          'Z': Letter2L := '35';
+        END;
+        IF LetterPlaceV = 1 THEN
+          IBANCodeR := Letter2L + COPYSTR(IBANCodeR,2)
+        ELSE BEGIN
+          IF LetterPlaceV = STRLEN(IBANCodeR) THEN
+            IBANCodeR := COPYSTR(IBANCodeR,1,LetterPlaceV - 1) + Letter2L
+          ELSE
+            IBANCodeR :=
+              COPYSTR(IBANCodeR,1,LetterPlaceV - 1) + Letter2L + COPYSTR(IBANCodeR,LetterPlaceV + 1);
+        END;
+        EXIT(TRUE);
+      END;
+      IF (LetterV >= '0') AND (LetterV <= '9') THEN
+        EXIT(FALSE);
+
+      IBANError := TRUE;
+      // H1761        25.11.14 JM ---------------------
+    END;
+
+    PROCEDURE GetCustomerFromOrder@1000000045(OrderNoV@1000000000 : Code[20]) CustomerNoO : Code[20];
+    VAR
+      SalesHeaderL@1000000001 : Record 36;
+      CustomerL@1000000002 : Record 18;
+      SalesHeaderArchiveL@1000000003 : Record 5107;
+    BEGIN
+      // H3896       13.03.15 JM +++++++++++
+      IF SalesHeaderL.GET(SalesHeaderL."Document Type"::Order,OrderNoV) THEN
+        IF CustomerL.GET(SalesHeaderL."Sell-to Customer No.") THEN
+          EXIT(CustomerL."No.");
+      IF SalesHeaderArchiveL.GET(SalesHeaderArchiveL."Document Type"::Order,OrderNoV,1,1) THEN
+        IF CustomerL.GET(SalesHeaderArchiveL."Sell-to Customer No.") THEN
+          EXIT(CustomerL."No.");
+      // H3896       13.03.15 JM -----------
+    END;
+
+    LOCAL PROCEDURE GetCustomerFromAccount@1000000047(WebshopCodeV@1000000002 : Code[10];AccountNoV@1000000000 : Code[20]) CustomerNoO : Code[20];
+    VAR
+      eBayNavCAccountL@1000000001 : Record 5251550;
+    BEGIN
+      // H3896       27.04.15 JM ++++++++++++
+      // H4403       02.07.15 JM +++++++++
+      //eBayNavCAccountL.GET(WebshopCodeV,AccountNoV);
+      IF eBayNavCAccountL.GET(WebshopCodeV,AccountNoV) THEN BEGIN
+        IF eBayNavCAccountL."Customer No." <> '' THEN
+          EXIT(eBayNavCAccountL."Customer No.");
+      END;
+      // H4403       02.07.15 JM ---------
+      // H3896       27.04.15 JM ------------
+    END;
+
+    PROCEDURE ResetUsedToken@1000000046(PmtImporEntryNoV@1000000001 : Integer);
+    VAR
+      PaymentTransactionL@1000000000 : Record 5157819;
+    BEGIN
+      // H3896       27.04.15 JM ++++++++++++
+      IF PaymentTransactionL.GET(PmtImporEntryNoV) THEN BEGIN
+        PaymentTransactionL."Used Token" := FALSE;
+        PaymentTransactionL.MODIFY;
+      END;
+      // H3896       27.04.15 JM ------------
+    END;
+
+    PROCEDURE GetRemIBAN@1000000048(InvoiceNoV@1000000006 : Code[20];VAR IBAN_R@1000000007 : Code[34];VAR BIC_R@1000000008 : Code[11]);
+    VAR
+      PaymentMethodL@1000000005 : Record 289;
+      SalesInvoiceHeaderL@1000000004 : Record 112;
+      PaymentMethodCodeL@1000000003 : Code[10];
+      eBayNavCSalesHeaderL@1000000002 : Record 5251571;
+      BankAccountL@1000000001 : Record 270;
+      PaymentInformationCodeL@1000000000 : Record 5157894;
+    BEGIN
+      // H4113        05.05.15 nst ++++++++++++++++++++
+      IF NOT SalesInvoiceHeaderL.GET(InvoiceNoV) THEN
+        EXIT;
+
+      PaymentMethodCodeL := SalesInvoiceHeaderL."Payment Method Code";
+
+      IF NOT PaymentMethodL.GET(PaymentMethodCodeL) THEN
+        EXIT;
+      IF NOT PaymentMethodL."Virtual IBAN" THEN
+        EXIT;
+
+      eBayNavCSalesHeaderL.SETRANGE("Webshop Code",FORMAT(SalesInvoiceHeaderL."Website No."));
+      eBayNavCSalesHeaderL.SETRANGE("No.",SalesInvoiceHeaderL."External Document No.");
+      eBayNavCSalesHeaderL.SETFILTER(IBAN,'<>%1','');
+      eBayNavCSalesHeaderL.SETFILTER(BIC,'<>%1','');
+      IF eBayNavCSalesHeaderL.FINDFIRST THEN BEGIN
+        IBAN_R := eBayNavCSalesHeaderL.IBAN;
+        BIC_R := eBayNavCSalesHeaderL.BIC;
+        EXIT;
+      END ELSE BEGIN
+        BankAccountL.GET(PaymentMethodL."Def. Virtual IBAN Bank Account");
+        BankAccountL.TESTFIELD("Post Code");
+        IBAN_R := BankAccountL.IBAN;
+        PaymentInformationCodeL.SETRANGE(Type,PaymentInformationCodeL.Type::"Bank Identifier Code");
+        PaymentInformationCodeL.SETRANGE("Bank Branch Code",BankAccountL."Bank Branch No.");
+        PaymentInformationCodeL.SETRANGE("Post Code",BankAccountL."Post Code");
+        PaymentInformationCodeL.FINDFIRST;
+        BIC_R := PaymentInformationCodeL."Bank Identifier Code";
+        EXIT;
+      END;
+      // H4113        05.05.15 nst --------------------
+    END;
+
+    PROCEDURE UpdatePaymentTransactions@1000000149();
+    VAR
+      PaymentTransactionL@1000000000 : Record 5157819;
+    BEGIN
+      // H4323       03.06.15 JM +++++++++++
+      IF PaymentTransactionL.FINDFIRST THEN
+        REPEAT
+          IF PaymentTransactionL."Customer No." = '' THEN BEGIN
+            PaymentTransactionL."Customer No." := GetCustomerFromOrder(PaymentTransactionL."Order No.");
+            PaymentTransactionL."Payment Method Code" := 'RG H24';
+            PaymentTransactionL.MODIFY;
+          END;
+        UNTIL PaymentTransactionL.NEXT = 0;
+      // H4323       03.06.15 JM -----------
+    END;
+
+    PROCEDURE IsSparepartItem@1000000050(ItemNoV@1000000001 : Code[20]) IsSparePartO : Boolean;
+    VAR
+      DummyItemVendorL@1000000000 : Record 50328;
+    BEGIN
+      // H4231       24.06.15 JM +++++++++
+      DummyItemVendorL.SETRANGE("Item No.",ItemNoV);
+      IF NOT DummyItemVendorL.ISEMPTY THEN
+        EXIT(TRUE);
+      // H4231       24.06.15 JM --------
+    END;
+
+    PROCEDURE ReWriteEnries@1000000052();
+    VAR
+      DunningEntryL@1000000001 : Record 50320;
+      SalesLineL@1000000002 : Record 37;
+      SalesLineArchiveL@1000000003 : Record 5108;
+      SalesHeaderArchiveL@1000000000 : Record 5107;
+      SalesHeaderL@1000000004 : Record 36;
+    BEGIN
+      // H4424       08.07.15 JM ++++++++
+      // Data Correction
+      SalesHeaderArchiveL.SETRANGE("Payment Method Code",'RG H24');
+      IF SalesHeaderArchiveL.FINDSET THEN
+
+        REPEAT
+          SalesLineArchiveL.SETRANGE("Document Type",SalesLineArchiveL."Document Type"::Order);
+          SalesLineArchiveL.SETRANGE("Document No.",SalesHeaderArchiveL."No.");
+          SalesLineArchiveL.SETRANGE(Type,SalesLineArchiveL.Type::Item);
+          IF SalesLineArchiveL.FINDSET THEN BEGIN
+            REPEAT
+              IF DunningEntryL.GET(SalesLineArchiveL."Document No.",SalesLineArchiveL."Line No.") THEN BEGIN
+                IF DunningEntryL."Cust. Ledger Entry No." = 0 THEN BEGIN
+                  CreateDunningEntryArchive(SalesLineArchiveL);
+                  DunningEntryL.GET(SalesLineArchiveL."Document No.",SalesLineArchiveL."Line No.");
+                  IF DunningEntryL."Cust. Ledger Entry No." <> 0 THEN BEGIN
+                    DunningEntryL.IsUpdated := TRUE;
+                    DunningEntryL.MODIFY;
+                  END;
+                END;
+              END ELSE BEGIN
+                CreateDunningEntryArchive(SalesLineArchiveL);
+                IF DunningEntryL.GET(SalesLineArchiveL."Document No.",SalesLineArchiveL."Line No.") THEN BEGIN
+                  IF DunningEntryL."Cust. Ledger Entry No." <> 0 THEN BEGIN
+                    DunningEntryL.IsUpdated := TRUE;
+                    DunningEntryL.MODIFY;
+                  END;
+                END;
+              END;
+            UNTIL SalesLineArchiveL.NEXT = 0;
+          END;
+        UNTIL SalesHeaderArchiveL.NEXT = 0;
+
+      SalesHeaderL.SETRANGE("Payment Method Code",'RG H24');
+      IF SalesHeaderL.FINDSET THEN
+
+        REPEAT
+          SalesLineL.SETRANGE("Document Type",SalesLineL."Document Type"::Order);
+          SalesLineL.SETRANGE("Document No.",SalesHeaderL."No.");
+          SalesLineL.SETRANGE(Type,SalesLineL.Type::Item);
+          IF SalesLineL.FINDSET THEN BEGIN
+            REPEAT
+              IF DunningEntryL.GET(SalesLineL."Document No.",SalesLineL."Line No.") THEN BEGIN
+                IF DunningEntryL."Cust. Ledger Entry No." = 0 THEN BEGIN
+                  CreateDunningEntry(SalesLineL);
+                  DunningEntryL.GET(SalesLineL."Document No.",SalesLineL."Line No.");
+                  IF DunningEntryL."Cust. Ledger Entry No." <> 0 THEN BEGIN
+                    DunningEntryL.IsUpdated := TRUE;
+                    DunningEntryL.MODIFY;
+                  END;
+                END;
+              END ELSE BEGIN
+                CreateDunningEntry(SalesLineL);
+                IF DunningEntryL.GET(SalesLineL."Document No.",SalesLineL."Line No.") THEN BEGIN
+                  IF DunningEntryL."Cust. Ledger Entry No." <> 0 THEN BEGIN
+                    DunningEntryL.IsUpdated := TRUE;
+                    DunningEntryL.MODIFY;
+                  END;
+                END;
+              END;
+            UNTIL SalesLineL.NEXT = 0;
+          END;
+        UNTIL SalesHeaderL.NEXT = 0;
+      // H4424       08.07.15 JM --------
+    END;
+
+    PROCEDURE GetLanguageReminderTerms@1000000051(PaymentMethodCodeV@1000000001 : Code[10];LanguageCodeV@1000000002 : Code[10]) ReminderTermsO : Code[10];
+    VAR
+      ReminderTermsL@1000000000 : Record 292;
+    BEGIN
+      // H4445       13.07.15 JM ++++
+      ReminderTermsL.SETRANGE("Payment Method Code",PaymentMethodCodeV);
+      ReminderTermsL.SETRANGE("Language Code",LanguageCodeV);
+      ReminderTermsL.FINDFIRST;
+      EXIT(ReminderTermsL.Code);
+      // H4445       13.07.15 JM ----
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+
+      H1241       11.09.14 JM        CU Created
+      H1404       29.09.14 JM        Set Change/Follow-up orders On Hold
+      H1604       09.10.14 JM        Setup for On Hold Codes, Table Relation for Field: On Hold Code
+      H1761       05.11.14 JM        virtual IBAN, new functions: IsVirtualIBAN,SetPaymentTransactionOrder,MakeTokenPaymentTransaction,
+                                     CheckIBANFormat
+      H1760       12.11.14 JM        virtual IBAN, Invoice Report Layout, new function: GetVirtualIBAN
+      H1957       05.01.15 JM        Inv. H24 support manual Sales Orders
+      H1957.2     19.02.15 JM        Payment Method Use new Field 51521 , instead of 5157894 from OP+
+      H3896       13.03.15 JM        Customer Ledger Entry Applic. new function : GetCustomerFromOrder,GetCustomerFromAccount
+      H4073       17.04.15 JM        Bugfix due date of INV H24 invoices
+      H4167       30.04.15 JM        RG H24 Credit Memos should not be put on hold
+      H4113       05.05.15 nst       New Function GetRemIBAN
+      H4323       03.06.15 JM        Update payment transaction entries for, new function UpdatePaymentTransactions (data correction)
+      H4348       10.06.15 nst       Changed funtion GetRemIBAN to get the IBAN from Table "Payment transactions".
+      H4231       24.06.15 JM        Set on hold code for RG H24 invoices when spare parts are ordered
+      H4403       02.07.15 JM        Disable the possibilty of deleting dunning entries
+      H4424       08.07.15 JM        Re create missing dunning entries
+      H4445       13.07.15 JM        Set Reminder Terms Code per language for RG H24, updated function: SetCustomerReminderTerm
+      H4461       15.07.15 JM        Opening Dunning Entry General Form fails with Error
+      H4480       24.07.15 JM        Speed up opening dunning entries form, Parameter added to function UpdateEntriesBatch
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,140 @@
+OBJECT Codeunit 50137 Deadlock Mgt. HME
+{
+  OBJECT-PROPERTIES
+  {
+    Date=31.05.13;
+    Time=14:54:45;
+    Version List=DEBUGW13.10.01;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+
+    PROCEDURE OpenPotentialDeadlockForm@7(VAR PotentialDeadlock@1002 : Record 50168);
+    VAR
+      ClientMonitorLine@1004 : Record 50162;
+      Transaction@1000 : Record 50165;
+      ClientMonitorMgt@1001 : Codeunit 50131;
+      TransactionMgt@1003 : Codeunit 50133;
+    BEGIN
+      TransactionMgt.OpenForm(Transaction);
+      COMMIT;
+      PotentialDeadlock.RESET;
+      ClientMonitorMgt.OpenForm(ClientMonitorLine);
+      ClientMonitorLine.COPYFILTER("Login Date",PotentialDeadlock."Login Date");
+      ClientMonitorLine.COPYFILTER("Login Time",PotentialDeadlock."Login Time");
+      ClientMonitorLine.COPYFILTER("Connection ID",PotentialDeadlock."Connection ID");
+      IF ClientMonitorLine.FIND('+') THEN BEGIN
+        IF ClientMonitorLine."Potential Deadlocks Checked" THEN
+          EXIT;
+        PotentialDeadlock.DELETEALL;
+        CheckAllTransactions;
+      END ELSE
+        PotentialDeadlock.DELETEALL;
+    END;
+
+    PROCEDURE CheckAllTransactions@5();
+    VAR
+      ClientMonitorLine@1005 : Record 50162;
+      Transaction@1001 : Record 50165;
+      PotentialDeadlock@1003 : Record 50168;
+      ClientMonitorMgt@1002 : Codeunit 50131;
+      Window@1000 : Dialog;
+    BEGIN
+      ClientMonitorMgt.OpenForm(ClientMonitorLine);
+
+      ClientMonitorLine.COPYFILTER("Login Date",Transaction."Login Date");
+      ClientMonitorLine.COPYFILTER("Login Time",Transaction."Login Time");
+      ClientMonitorLine.COPYFILTER("Connection ID",Transaction."Connection ID");
+      ClientMonitorLine.COPYFILTER("Login Date",PotentialDeadlock."Login Date");
+      ClientMonitorLine.COPYFILTER("Login Time",PotentialDeadlock."Login Time");
+      ClientMonitorLine.COPYFILTER("Connection ID",PotentialDeadlock."Connection ID");
+
+      Window.OPEN(
+        'Processing       #1###### to #2######\\' +
+        'No. of deadlocks #3######');
+      IF Transaction.FIND('+') THEN
+        Window.UPDATE(2,Transaction."No.");
+
+      IF Transaction.FIND('-') THEN
+        REPEAT
+          Window.UPDATE(1,Transaction."No.");
+          Window.UPDATE(3,PotentialDeadlock.COUNTAPPROX);
+          CheckOneTransaction(Transaction);
+        UNTIL Transaction.NEXT = 0;
+
+      ClientMonitorLine.LOCKTABLE;
+      IF ClientMonitorLine.FIND('+') THEN BEGIN
+        ClientMonitorLine."Potential Deadlocks Checked" := TRUE;
+        ClientMonitorLine.MODIFY;
+      END;
+    END;
+
+    PROCEDURE CheckOneTransaction@2(VAR Transaction@1001 : Record 50165);
+    VAR
+      Transaction2@1000 : Record 50165;
+    BEGIN
+      Transaction2.SETRANGE("Login Date",Transaction."Login Date");
+      Transaction2.SETRANGE("Login Time",Transaction."Login Time");
+      Transaction2.SETRANGE("Connection ID",Transaction."Connection ID");
+      Transaction2.SETFILTER("No.",'<>%1',Transaction."No.");
+      IF Transaction2.FIND('-') THEN
+        REPEAT
+          CheckTransactionCombination(Transaction,Transaction2);
+        UNTIL Transaction2.NEXT = 0;
+    END;
+
+    PROCEDURE CheckTransactionCombination@1(VAR Transaction@1003 : Record 50165;VAR Transaction2@1002 : Record 50165);
+    VAR
+      TransactionLock@1001 : Record 50166;
+      TransactionLock2@1000 : Record 50166;
+      PotentialDeadlock@1004 : Record 50168;
+    BEGIN
+      // 1: Mark tables that are used by both transactions.
+      TransactionLock.SETRANGE("Login Date",Transaction."Login Date");
+      TransactionLock.SETRANGE("Login Time",Transaction."Login Time");
+      TransactionLock.SETRANGE("Connection ID",Transaction."Connection ID");
+      TransactionLock.SETRANGE("Transaction No.",Transaction."No.");
+      TransactionLock2.SETRANGE("Login Date",Transaction2."Login Date");
+      TransactionLock2.SETRANGE("Login Time",Transaction2."Login Time");
+      TransactionLock2.SETRANGE("Connection ID",Transaction2."Connection ID");
+      TransactionLock2.SETRANGE("Transaction No.",Transaction2."No.");
+      IF TransactionLock.FIND('-') THEN
+        REPEAT
+          TransactionLock2.SETRANGE("Table ID",TransactionLock."Table ID");
+          IF TransactionLock2.FIND('-') THEN BEGIN
+            TransactionLock2.MARK := TRUE;
+            TransactionLock.MARK := TRUE;
+          END;
+          TransactionLock2.SETRANGE("Table ID");
+        UNTIL TransactionLock.NEXT = 0;
+
+      // 2: Among the marked tables, find deadlocks
+      TransactionLock.MARKEDONLY := TRUE;
+      TransactionLock2.MARKEDONLY := TRUE;
+      IF TransactionLock.FIND('-') AND TransactionLock2.FIND('-') THEN
+        IF TransactionLock."Table ID" <> TransactionLock2."Table ID" THEN BEGIN
+          PotentialDeadlock."Login Date" := Transaction."Login Date";
+          PotentialDeadlock."Login Time" := Transaction."Login Time";
+          PotentialDeadlock."Connection ID" := Transaction."Connection ID";
+          PotentialDeadlock."Transaction No." := TransactionLock."Transaction No.";
+          PotentialDeadlock."Transaction No. 2" := TransactionLock2."Transaction No.";
+          PotentialDeadlock."First Locked Table ID" := TransactionLock."Table ID";
+          PotentialDeadlock."First Locked Table Name" := TransactionLock."Table Name";
+          PotentialDeadlock."First Locked Table ID 2" := TransactionLock2."Table ID";
+          PotentialDeadlock."First Locked Table Name 2" := TransactionLock2."Table Name";
+          PotentialDeadlock.INSERT;
+          COMMIT;
+        END;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

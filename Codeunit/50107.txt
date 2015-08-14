@@ -1,0 +1,164 @@
+OBJECT Codeunit 50107 FindDoubleOrders
+{
+  OBJECT-PROPERTIES
+  {
+    Date=19.07.13;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=GOB1.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      gSalesHeaderId@1000000000 : Code[20];
+
+    PROCEDURE IdentifyDoubleOrder@1000000000(pSalesHeader@1000000000 : Record 36) Filterstring : Text[1024];
+    VAR
+      lSalesHeader@1000000001 : Record 36;
+      lSalesLine@1000000002 : Record 37;
+      lOrgImportDateTime@1000000005 : DateTime;
+      lMaxDuration@1000000004 : Duration;
+    BEGIN
+      lSalesHeader.SETRANGE("Document Type",lSalesHeader."Document Type"::Order);
+      lSalesHeader.SETFILTER("No.",'<>%1',pSalesHeader."No.");
+      lSalesHeader.SETFILTER("Original Sales Order No.",'');
+      lSalesHeader.SETRANGE("Sell-to Customer No.",pSalesHeader."Sell-to Customer No.");
+      lSalesHeader.SETRANGE("Sell-to Customer Name",pSalesHeader."Sell-to Customer Name");
+      lSalesHeader.SETRANGE(Status,lSalesHeader.Status::"Pending Prepayment");
+      lSalesHeader.SETRANGE("Order Date",pSalesHeader."Order Date" - 1,pSalesHeader."Order Date");
+      lSalesHeader.SETFILTER("Payment Method Code",'%1|%2','PP','IDEAL');
+      lSalesHeader.SETFILTER("Sales Order Entry No.",'<%1',pSalesHeader."Sales Order Entry No.");
+      //A/gob-adb/08.07.13
+      //IF NOT lSalesHeader.FINDSET THEN
+      //  EXIT(''); // ***EXIT***
+
+      IF lSalesHeader.ISEMPTY THEN
+        EXIT(''); // ***EXIT***
+
+      lSalesHeader.FIND('-');
+      //E/gob-adb/08.07.13
+
+      lMaxDuration := ABS(CREATEDATETIME(WORKDATE,0T) - CREATEDATETIME(WORKDATE,020000T));
+      lOrgImportDateTime := IdentifyImportTime(pSalesHeader);
+      CLEAR(Filterstring); // nur fÅr Ausgabe in Report
+      REPEAT
+        // 2 Stunden max. Erfassungsdifferenz
+        IF (ABS(lOrgImportDateTime - IdentifyImportTime(lSalesHeader)) <= lMaxDuration) THEN
+        // BeitragsprÅfung
+        // gleiche Auftragsstruktur
+          IF (NOT CheckSalesLine(pSalesHeader,lSalesHeader)) THEN BEGIN
+            // Dublette
+            Filterstring += lSalesHeader."No." + '|'; // nur fÅr Ausgabe in Report
+            // Markiere Dublette
+            lSalesHeader."Original Sales Order No." := pSalesHeader."No.";
+            lSalesHeader.MODIFY;
+            COMMIT; // ***COMMIT***
+          END;
+      UNTIL (lSalesHeader.NEXT = 0) OR (STRLEN(Filterstring) > 1000);
+
+      EXIT(Filterstring); // nur fÅr Ausgabe in Report
+    END;
+
+    PROCEDURE CheckSalesLine@1000000004(pSalesHeaderOrg@1000000000 : Record 36;pSalesHeaderTest@1000000001 : Record 36) lDifference : Boolean;
+    VAR
+      lSalesLineOrg@1000000002 : Record 37;
+      lSalesLineTest@1000000003 : Record 37;
+    BEGIN
+      lSalesLineOrg.SETRANGE("Document Type",pSalesHeaderOrg."Document Type");
+      lSalesLineOrg.SETRANGE("Document No.",pSalesHeaderOrg."No.");
+      lSalesLineOrg.SETRANGE(Type,lSalesLineOrg.Type::Item);
+      IF (lSalesLineOrg.COUNT = 10) THEN
+        EXIT(TRUE);
+      lSalesLineOrg.SETRANGE(Type);
+
+      lSalesLineTest.SETRANGE("Document Type",pSalesHeaderTest."Document Type");
+      lSalesLineTest.SETRANGE("Document No.",pSalesHeaderTest."No.");
+      lSalesLineTest.SETRANGE(Type,lSalesLineTest.Type::Item);
+      IF (lSalesLineTest.COUNT = 10) THEN
+        EXIT(TRUE);
+      lSalesLineTest.SETRANGE(Type);
+      IF lSalesLineOrg.FINDSET THEN BEGIN
+        REPEAT
+          IF lSalesLineTest.GET(pSalesHeaderTest."Document Type",pSalesHeaderTest."No.",lSalesLineOrg."Line No.") THEN BEGIN
+            IF (lSalesLineTest.Quantity <> lSalesLineOrg.Quantity) OR
+               (lSalesLineOrg."No." <> lSalesLineTest."No.") OR
+               (lSalesLineOrg."Line Amount" <> lSalesLineTest."Line Amount") THEN
+              lDifference := TRUE;
+          END ELSE
+            lDifference := TRUE;
+        UNTIL (lSalesLineOrg.NEXT = 0) OR lDifference;
+      END;
+      IF NOT lDifference THEN
+        lDifference := (lSalesLineOrg.COUNT - lSalesLineTest.COUNT <> 0)
+      // FALSE = Dublette
+    END;
+
+    PROCEDURE IdentifyImportTime@1000000006(pSalesHeader@1000000001 : Record 36) : DateTime;
+    VAR
+      lImportTable@1000000000 : Record 5096060;
+    BEGIN
+      lImportTable.SETRANGE("Source Type",lImportTable."Source Type"::"S.Order");
+      lImportTable.SETRANGE("Source No.",pSalesHeader."No.");
+      // S/P0811-1
+      //lImportTable.SETRANGE(Success,TRUE);
+      // E/P0811-1
+      IF NOT lImportTable.FINDFIRST THEN
+        EXIT(CREATEDATETIME(WORKDATE-2,0T));
+      EXIT(lImportTable."Conducted at");
+    END;
+
+    PROCEDURE CancelDoubleOrder@1000000001(VAR vSalesHeader@1000000000 : Record 36);
+    VAR
+      CommentLine@1000000003 : Record 97;
+      FPCManagement@1000000002 : Codeunit 50003;
+      SalesHeaderLoc@1000000001 : Record 36;
+      LocText001@1000000004 : TextConst 'ENU=Doublette %1';
+    BEGIN
+      WITH vSalesHeader DO BEGIN
+        "Cancel Without Interfaces" := TRUE;
+        MODIFY;
+        COMMIT;
+        CLEAR(FPCManagement);
+        FPCManagement.InitCancelWithoutInterfaces("No.",0);
+        CLEARLASTERROR;
+        IF NOT FPCManagement.RUN THEN BEGIN
+          "Cancel Without Interfaces" := FALSE;
+          MODIFY;
+          COMMIT;
+          ERROR(GETLASTERRORTEXT);
+        END;
+        // add log
+        COMMIT;
+        SalesHeaderLoc.RESET;
+        SalesHeaderLoc.GET("Document Type","No.");
+        SalesHeaderLoc."Cancel Without Interfaces" := FALSE;
+        SalesHeaderLoc.MODIFY;
+        CommentLine.InsertOrderHistory("No.",
+                                       'Doublette',
+                                       STRSUBSTNO(LocText001,CURRENTDATETIME));
+      END;
+    END;
+
+    BEGIN
+    {
+      +-----------------------------------------------------+
+      |               GOB Software & Systeme                |
+      +-----------------------------------------------------+
+      |                      FP Commerce                    |
+      +-----------------------------------------------------+
+
+      Version   Date      Consultant  Comment
+      -------------------------------------------------------
+      P0811     19.02.13  gob-sil     new object to identify double orders
+      P1014     08.07.13  gob-adb     Performance
+    }
+    END.
+  }
+}
+

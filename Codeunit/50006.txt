@@ -1,0 +1,1331 @@
+OBJECT Codeunit 50006 Commission Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.03.13;
+    Time=07:44:57;
+    Modified=Yes;
+    Version List=DN(1),GOB1.00,FPC;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 21=rm,
+                TableData 25=rm,
+                TableData 50006=rim,
+                TableData 50007=rim;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      ComHeader@1000000000 : Record 50004;
+      ComLine@1000000001 : Record 50005;
+      ComEntry@1000000002 : Record 50003;
+      Text001@1000000009 : TextConst 'DEU=Gutschriften ermitteln     #2######\;ENU=Calc. Credit Memo          #2######\';
+      Text002@1000000010 : TextConst 'DEU=Storno ermitteln           #3######\;ENU=Correction find            #3######\';
+      Text003@1000000006 : TextConst 'DEU=Retouren ermitteln         #4######\;ENU=Retoure find               #4######';
+      CancelComEntry@1000000013 : Record 50003;
+      GLSetup@1000000037 : Record 98;
+      PurchSetup@1000000038 : Record 312;
+      GenPostSetup@1000000021 : Record 252;
+      Cust@1000000028 : Record 18;
+      Vend@1000000041 : Record 23;
+      CustLedgEntry@1000000040 : Record 21;
+      Item@1000000003 : Record 27;
+      ComCondition@1000000045 : Record 50077;
+      GenJnlLine@1000000014 : Record 81;
+      EntryDim@1000000034 : Record 355;
+      DocDim@1000000031 : Record 357;
+      TempDocDim@1000000030 : TEMPORARY Record 357;
+      TempDimBuf@1000000036 : TEMPORARY Record 360;
+      SalesPost@1000000020 : Codeunit 80;
+      PurchPost@1000000044 : Codeunit 90;
+      NoSeriesMgt@1000000023 : Codeunit 396;
+      GenJnlCheckLine@1000000026 : Codeunit 11;
+      DimMgt@1000000029 : Codeunit 408;
+      LineNo@1000000012 : Integer;
+      Window@1000000005 : Dialog;
+      LineCount@1000000007 : Integer;
+      Text004@1000000015 : TextConst 'DEU=Stornoinfo eintragen       #5######;ENU=Correction Info insert     #5######';
+      Text005@1000000008 : TextConst 'DEU=Wenn Sie den Abrechnungsvorschlag starten, werden vorhandene Zeilen gelîscht und neue, basierend auf den neuen Informationen im Kopf, erstellt.\\;ENU=If you start proposal, the existing lines will be deleted and new lines based on the new information on the header will be created.\\';
+      Text006@1000000011 : TextConst 'DEU=Mîchten Sie fortfahren?;ENU=Do you want to continue?';
+      Text010@1000000004 : TextConst 'DEU=Bestellungen lt. Beleg;ENU=Orders as in document';
+      Text011@1000000016 : TextConst 'DEU=Storno lt. Beleg;ENU=Storno as in document';
+      Text012@1000000017 : TextConst 'DEU=Retouren lt. Beleg;ENU=Retoure as in document';
+      Text013@1000000018 : TextConst 'DEU=Auftrag %1 - %2;ENU=Order %1 - %2';
+      Text014@1000000019 : TextConst 'DEU=Abr. %1 vom %2 bis %3;ENU=Acc. %1 from %2 to %3';
+      Text015@1000000024 : TextConst 'DEU=Bel.-Anz.;ENU=Paym.';
+      Text016@1000000025 : TextConst 'DEU=Prov.-Abr.;ENU=Com. Acc.';
+      Text017@1000000035 : TextConst 'DEU=Prov.-Erl. %1%2 von %3;ENU=Comm. %1%2 from %3';
+      Text018@1000000039 : TextConst 'DEU=Auflîsung Prov. nicht abger.;ENU=Cancel exp. commission';
+      Text032@1000000033 : TextConst 'DEU=Die Kombination der in %1 %2 verwendeten Dimensionen ist gesperrt. %3;ENU=The combination of dimensions used in %1 %2 is blocked. %3';
+      Text033@1000000032 : TextConst 'DEU=Die Kombination der in %1 %2, Zeilennr. %3, verwendeten Dimensionen ist gesperrt. %4;ENU=The combination of dimensions used in %1 %2, line no. %3 is blocked. %4';
+      Text045@1000000027 : TextConst 'DEU=liegt nicht innerhalb des zugelassenen Buchungszeitraums.;ENU=is not within your range of allowed posting dates.';
+      Text100@1000000022 : TextConst 'DEU=Es gibt nichts zu buchen.;ENU=There is nothing to post.';
+      Text101@1000000042 : TextConst 'DEU="Korrekturzeilen (Art = Neu) sind bei MP1 nicht erlaubt. ";ENU="Correction lines (Type = New) are not allowed on MP1."';
+      Text102@1000000043 : TextConst 'DEU=Belegart %1 ist bei MP1 nicht erlaubt.;ENU=Document Type %1 nor allowed in MP1.';
+
+    PROCEDURE CalculateProposal@1000000000(_ComHeader@1000000000 : Record 50004);
+    VAR
+      L_Confirmed@1000000001 : Boolean;
+      L_CorrFound@1000000002 : Boolean;
+    BEGIN
+      ComHeader := _ComHeader;
+
+      WITH ComHeader DO BEGIN
+        TESTFIELD("Buy-from Vendor No.");
+        TESTFIELD("Acc. Period Start");
+        TESTFIELD("Acc. Period End");
+
+        ComLine.RESET;
+        ComLine.SETRANGE("Document No.","No.");
+        IF NOT ComLine.ISEMPTY THEN BEGIN
+          IF NOT GUIALLOWED THEN
+            L_Confirmed := TRUE
+          ELSE
+            L_Confirmed := CONFIRM(Text005 + Text006,FALSE);
+          ComLine.DELETEALL(TRUE);
+        END;
+
+        IF GUIALLOWED THEN BEGIN
+          Window.OPEN(
+            '#1#################################\\' +
+            Text001 +
+            Text002 +
+            Text003);
+          Window.UPDATE(1,STRSUBSTNO('%1 %2',TABLECAPTION,"No."));
+        END;
+
+        LineCount := 0;
+        LineNo := 10000;
+        ComEntry.LOCKTABLE;
+
+        // insert orders in Pre-Period
+        ComEntry.RESET;
+        ComEntry.SETCURRENTKEY("Vendor No.","Entry Type","Dropship Date","Dropship No.");
+        ComEntry.SETRANGE("Vendor No.","Buy-from Vendor No.");
+        ComEntry.SETRANGE("Entry Type",ComEntry."Entry Type"::Order);
+        ComEntry.SETFILTER("Acc. Status",'%1|%2|%3',ComEntry."Acc. Status"::" ",ComEntry."Acc. Status"::Post,
+          ComEntry."Acc. Status"::Error);
+        ComEntry.SETRANGE("Shipment Date (Exp./Real.)",010711D,"Acc. Period Start" - 1);
+        IF ComEntry.FINDSET(TRUE,FALSE) THEN REPEAT
+          LineCount := LineCount + 1;
+          IF GUIALLOWED THEN
+            Window.UPDATE(2,LineCount);
+          InitComLine(ComEntry);
+          ComEntry."Acc. Status" := CancelComEntry."Acc. Status"::Proposal;
+          ComEntry."Acc. Document No." := "No.";
+          ComEntry.MODIFY;
+        UNTIL ComEntry.NEXT = 0;
+
+        // insert orders in Period
+        ComEntry.RESET;
+        ComEntry.SETCURRENTKEY("Vendor No.","Entry Type","Dropship Date","Dropship No.");
+        ComEntry.SETRANGE("Vendor No.","Buy-from Vendor No.");
+        ComEntry.SETRANGE("Entry Type",ComEntry."Entry Type"::Order);
+        ComEntry.SETFILTER("Acc. Status",'%1|%2|%3',ComEntry."Acc. Status"::" ",ComEntry."Acc. Status"::Post,
+          ComEntry."Acc. Status"::Error);
+        ComEntry.SETRANGE("Shipment Date (Exp./Real.)","Acc. Period Start","Acc. Period End");
+        IF ComEntry.FINDSET(TRUE,FALSE) THEN REPEAT
+          LineCount := LineCount + 1;
+          IF GUIALLOWED THEN
+            Window.UPDATE(2,LineCount);
+          InitComLine(ComEntry);
+          ComEntry."Acc. Status" := CancelComEntry."Acc. Status"::Proposal;
+          ComEntry."Acc. Document No." := "No.";
+          ComEntry.MODIFY;
+        UNTIL ComEntry.NEXT = 0;
+
+        // insert correction
+        LineCount := 0;
+        CancelComEntry.RESET;
+        CancelComEntry.SETCURRENTKEY("Vendor No.","Entry Type","Dropship Date","Dropship No.");
+        CancelComEntry.SETRANGE("Vendor No.","Buy-from Vendor No.");
+        CancelComEntry.SETRANGE("Entry Type",CancelComEntry."Entry Type"::Correction);
+        CancelComEntry.SETFILTER("Acc. Status",'%1|%2|%3',CancelComEntry."Acc. Status"::" ",CancelComEntry."Acc. Status"::Post,
+          CancelComEntry."Acc. Status"::Error);
+        CancelComEntry.SETFILTER("Dropship Date",'<=%1',"Acc. Period End");
+        ComEntry.RESET;
+        ComEntry.SETCURRENTKEY("Vendor No.","Entry Type","Dropship Date","Dropship No.");
+        ComEntry.SETRANGE("Vendor No.","Buy-from Vendor No.");
+        ComEntry.SETRANGE("Entry Type",ComEntry."Entry Type"::Order);
+        ComEntry.SETFILTER("Acc. Status",'>%1',ComEntry."Acc. Status"::Error);
+        ComEntry.SETFILTER("Shipment Date (Exp./Real.)",'<=%1',"Acc. Period End");
+        IF CancelComEntry.FINDSET(TRUE,FALSE) THEN REPEAT
+          LineCount := LineCount + 1;
+          IF GUIALLOWED THEN
+            Window.UPDATE(3,LineCount);
+          ComEntry.SETRANGE("Document Type",CancelComEntry."Document Type");
+          ComEntry.SETRANGE("Document No.",CancelComEntry."Document No.");
+          ComEntry.SETRANGE("Document Line No.",CancelComEntry."Document Line No.");
+          IF ComEntry.FINDLAST THEN BEGIN
+            InitComLine(CancelComEntry);
+            CancelComEntry."Acc. Status" := CancelComEntry."Acc. Status"::Proposal;
+            CancelComEntry."Acc. Document No." := "No.";
+            CancelComEntry.MODIFY;
+          END;
+        UNTIL CancelComEntry.NEXT = 0;
+
+        // insert retoure
+        LineCount := 0;
+        CancelComEntry.RESET;
+        CancelComEntry.SETCURRENTKEY("Vendor No.","Entry Type","Dropship Date","Dropship No.");
+        CancelComEntry.SETRANGE("Vendor No.","Buy-from Vendor No.");
+        CancelComEntry.SETRANGE("Entry Type",CancelComEntry."Entry Type"::Retoure);
+        CancelComEntry.SETFILTER("Acc. Status",'%1|%2|%3',CancelComEntry."Acc. Status"::" ",CancelComEntry."Acc. Status"::Post,
+          CancelComEntry."Acc. Status"::Error);
+        CancelComEntry.SETRANGE("Dropship Date",0D,"Acc. Period End");
+        ComEntry.RESET;
+        ComEntry.SETCURRENTKEY("Vendor No.","Entry Type","Dropship Date","Dropship No.");
+        ComEntry.SETRANGE("Vendor No.","Buy-from Vendor No.");
+        ComEntry.SETRANGE("Entry Type",ComEntry."Entry Type"::Order);
+        ComEntry.SETFILTER("Acc. Status",'>%1',ComEntry."Acc. Status"::Error);
+        ComEntry.SETFILTER("Shipment Date (Exp./Real.)",'<=%1',"Acc. Period End");
+        IF CancelComEntry.FINDSET(TRUE,FALSE) THEN REPEAT
+          LineCount := LineCount + 1;
+          IF GUIALLOWED THEN
+            Window.UPDATE(4,LineCount);
+          ComEntry.SETRANGE("Dropship No.",CancelComEntry."Dropship No.");
+          ComEntry.SETRANGE(Type,CancelComEntry.Type);
+          ComEntry.SETRANGE("No.",CancelComEntry."No.");
+          IF ComEntry.FINDLAST THEN BEGIN
+            InitComLine(CancelComEntry);
+            CancelComEntry."Acc. Status" := CancelComEntry."Acc. Status"::Proposal;
+            CancelComEntry."Acc. Document No." := "No.";
+            CancelComEntry.MODIFY;
+          END;
+        UNTIL CancelComEntry.NEXT = 0;
+
+        IF GUIALLOWED THEN
+          Window.CLOSE;
+      END;
+    END;
+
+    LOCAL PROCEDURE InitComLine@1000000001(_ComEntry@1000000000 : Record 50003);
+    BEGIN
+      WITH _ComEntry DO BEGIN
+        ComLine.INIT;
+        ComLine."Document No." := ComHeader."No.";
+        ComLine."Line No." := LineNo;
+        LineNo := LineNo + 10000;
+        ComLine.VALIDATE(Type,ComLine.Type::Item);
+        ComLine.VALIDATE("No.","No.");
+        ComLine."Unit of Measure" := "Unit of Measure";
+        IF ("Entry Type" = "Entry Type"::Order) OR ("Entry Type" = 6) THEN
+          ComLine.VALIDATE(Quantity,Quantity)
+        ELSE
+          ComLine.VALIDATE(Quantity,-Quantity);
+        ComLine.Description := Description;
+        ComLine."Description 2" := "Description 2";
+        ComLine."Prices Including VAT" := "Prices Including VAT";
+        ComLine."VAT %" := "VAT %";
+        ComLine.VALIDATE("Unit Price","Unit Price");
+        ComLine."Order Date" := "Order Date";
+        ComLine."Dropship Date" := "Dropship Date";
+        ComLine."Shipment Date (Exp./Real.)" := ComEntry."Shipment Date (Exp./Real.)";
+        ComLine."Dropship No." := "Dropship No.";
+        ComLine."Manufacturer Item No." := "Manufacturer Item No.";
+        ComLine."Customer No." := "Customer No.";
+        ComLine."Customer Name" := "Customer Name";
+        ComLine."Source Type" := "Document Type";
+        ComLine."Source No." := "Document No.";
+        ComLine."Source Line No." := "Document Line No.";
+        ComLine."Source Entry No." := "Entry No.";
+        ComLine."Source Entry No. Corr." := "Source Entry No. Corr.";
+        ComLine."System-Created Entry" := TRUE;
+        ComLine."Line Type" := "Entry Type";
+        ComLine.INSERT;
+      END;
+    END;
+
+    PROCEDURE SetPositionNo@1000000003(_ComHeader@1000000000 : Record 50004);
+    VAR
+      L_PosNo@1000000001 : Code[10];
+    BEGIN
+      ComLine.RESET;
+      ComLine.SETCURRENTKEY("Document No.","Line Type","Dropship Date","Dropship No.");
+      ComLine.SETRANGE("Document No.",_ComHeader."No.");
+
+      L_PosNo := '001';
+      ComLine.SETFILTER("Line Type",'%1|%2',
+        ComLine."Line Type"::Order,ComLine."Line Type"::New);
+      IF ComLine.FIND('-') THEN REPEAT
+        ComLine.Position := L_PosNo;
+        L_PosNo := INCSTR(L_PosNo);
+        ComLine.MODIFY;
+      UNTIL ComLine.NEXT = 0;
+
+      L_PosNo := '001';
+      ComLine.SETRANGE("Line Type",ComLine."Line Type"::Correction);
+      IF ComLine.FIND('-') THEN REPEAT
+        ComLine.Position := L_PosNo;
+        L_PosNo := INCSTR(L_PosNo);
+        ComLine.MODIFY;
+      UNTIL ComLine.NEXT = 0;
+
+      L_PosNo := '001';
+      ComLine.SETRANGE("Line Type",ComLine."Line Type"::Retoure);
+      IF ComLine.FIND('-') THEN REPEAT
+        ComLine.Position := L_PosNo;
+        L_PosNo := INCSTR(L_PosNo);
+        ComLine.MODIFY;
+      UNTIL ComLine.NEXT = 0;
+
+      L_PosNo := '001';
+      ComLine.SETRANGE("Line Type",ComLine."Line Type"::"Correction Info");
+      IF ComLine.FIND('-') THEN REPEAT
+        ComLine.Position := L_PosNo;
+        L_PosNo := INCSTR(L_PosNo);
+        ComLine.MODIFY;
+      UNTIL ComLine.NEXT = 0;
+    END;
+
+    PROCEDURE PostExpCommission@1000000004(_SalesType@1000000002 : Integer;_SalesNo@1000000003 : Code[20]);
+    VAR
+      LT_ItemImpLog@1000000001 : Record 50002;
+      LT_GLAcc@1000000005 : Record 15;
+      LT_TempJnlLineDim@1000000008 : TEMPORARY Record 356;
+      LT_GLReg@1000000010 : Record 45;
+      LC_GenJnlPostLine@1000000009 : Codeunit 12;
+      LC_GenMgt2@1000000015 : Codeunit 50040;
+      L_PostDocNo@1000000007 : Code[20];
+      L_EntryNo@1000000000 : Integer;
+      L_Text001@1000000004 : TextConst 'DEU=%1 fehlt;ENU=%1 not exist';
+      L_Factor@1000000006 : Integer;
+      L_LineCount@1000000011 : Integer;
+      L_CheckCustomer@1000000012 : Boolean;
+      L_Text002@1000000013 : TextConst 'DEU=Debitor %1 wurde angelegt. Bitte Einrichtung prÅfen!;ENU="Customer %1 was create. Please check the customer card! "';
+      L_CheckCustomer2@1000000014 : Boolean;
+      L_Text003@1000000016 : TextConst 'DEU="Artikel/Debitor nicht aus Marktplatz. ";ENU=Item/Customer not in marketpace.';
+      L_MP@1000000017 : Integer;
+    BEGIN
+      PurchSetup.GET;
+      PurchSetup.TESTFIELD("On Hold Exp. Commission");
+      PurchSetup.TESTFIELD("Exp. Commission Nos.");
+
+      ComEntry.RESET;
+      ComEntry.SETRANGE("Document No.",_SalesNo);
+      ComEntry.SETRANGE("Document Type",_SalesType);
+      ComEntry.SETRANGE("Acc. Status",ComEntry."Acc. Status"::" ",ComEntry."Acc. Status"::Error);
+      ComEntry.LOCKTABLE;
+      IF ComEntry.FINDSET THEN BEGIN
+        L_CheckCustomer2 := FALSE;
+        REPEAT
+          L_CheckCustomer := FALSE;
+          Cust.GET(CopyVendorToCustomer(ComEntry."Vendor No.",L_CheckCustomer));
+          IF L_CheckCustomer THEN
+            L_CheckCustomer2 := TRUE;
+        UNTIL ComEntry.NEXT = 0;
+        IF L_CheckCustomer2 THEN BEGIN
+          //FPC  03.08.12 ABR ++++++++++++++++++++++++++++++++++++++
+          //COMMIT;
+          //FPC  03.08.12 ABR --------------------------------------
+          ERROR(L_Text002,Cust."No.");
+        END;
+        ComEntry.FINDSET;
+        REPEAT
+          // actual commission entry
+          IF (ComEntry."Acc. Status" = ComEntry."Acc. Status"::Error) AND (ComEntry."Vendor No." <> '') THEN BEGIN
+
+            // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+            //original IF Item.GET(ComEntry."No.") AND (ComEntry."Com. %" <> Item."Vendor Com. %") THEN BEGIN
+            IF (ComEntry.Type = ComEntry.Type::Item) AND Item.GET(ComEntry."No.") THEN BEGIN
+              Item."Vendor Com. %" := ComCondition.FindComPercent(ComEntry."No.",ComEntry."Vendor No.",WORKDATE);
+              IF ComEntry."Com. %" <> Item."Vendor Com. %" THEN BEGIN
+            // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+                ComEntry."Com. %" := Item."Vendor Com. %";
+                ComEntry."Com. Amount to Post" := ROUND(ROUND(ComEntry.Quantity * ComEntry."Unit Price") *
+                  ComEntry."Com. %" / 100) - ComEntry."Com. Amount Posted";
+                IF ComEntry."Com. Amount Posted" <> 0 THEN
+                  ComEntry."Acc. Status" := ComEntry."Acc. Status"::Post
+                ELSE
+                  ComEntry."Acc. Status" := ComEntry."Acc. Status"::" ";
+                ComEntry."Error Description" := '';
+                ComEntry.MODIFY;
+
+              // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+              END;
+              // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+            END;
+          END;
+          // insert error
+          IF (ComEntry."Vendor No." = '') OR (ComEntry."Com. %" = 0) THEN BEGIN
+            ComEntry."Acc. Status" := ComEntry."Acc. Status"::Error;
+            ComEntry."Error Description" := '';
+            IF ComEntry."Vendor No." = '' THEN
+              ComEntry."Error Description" := STRSUBSTNO(L_Text001,Cust.TABLECAPTION);
+            IF ComEntry."Com. %" = 0 THEN
+              IF ComEntry."Error Description" = '' THEN
+                ComEntry."Error Description" := STRSUBSTNO(L_Text001,Item.FIELDCAPTION("Vendor Com. %"))
+              ELSE
+                ComEntry."Error Description" := ComEntry."Error Description" + '; '+ STRSUBSTNO(L_Text001,
+                  Item.FIELDCAPTION("Vendor Com. %"));
+            ComEntry.MODIFY;
+          END;
+          // check MP I or II
+          IF ComEntry."Acc. Status" <> ComEntry."Acc. Status"::Error THEN BEGIN
+            L_MP := LC_GenMgt2.CheckMP(ComEntry."No.",ComEntry."Vendor No.");
+            IF L_MP = 0 THEN BEGIN
+              ComEntry."Acc. Status" := ComEntry."Acc. Status"::Error;
+              ComEntry."Error Description" := STRSUBSTNO(L_Text003);
+              ComEntry.MODIFY;
+            END ELSE
+              IF LC_GenMgt2.CheckMP(ComEntry."No.",ComEntry."Vendor No.") = 1 THEN BEGIN
+                ComEntry."Com. Amount to Post" := 0;
+                ComEntry."Com. Amount to Acc." := 0;
+                ComEntry."Acc. Status" := ComEntry."Acc. Status"::Post;
+                ComEntry.MODIFY;
+              END;
+          END;
+          IF (ComEntry."Com. Amount to Post" <> 0) AND (ComEntry."Acc. Status" <> ComEntry."Acc. Status"::Error) THEN BEGIN
+            Cust.GET(CopyVendorToCustomer(ComEntry."Vendor No.",L_CheckCustomer));
+            GenPostSetup.GET(ComEntry."Gen. Bus. Posting Group",ComEntry."Gen. Prod. Posting Group");
+            GenPostSetup.TESTFIELD("Exp. Commission Account");
+            LT_GLAcc.GET(GenPostSetup."Exp. Commission Account");
+            GenJnlLine.INIT;
+            GenJnlLine."Posting Date" := WORKDATE;
+            GenJnlLine."Document Date" := WORKDATE;
+            IF (ComEntry."Document Type" <= ComEntry."Document Type"::Invoice) AND
+               (ComEntry."Entry Type" = ComEntry."Entry Type"::Order) THEN
+              L_Factor := -1
+            ELSE
+              L_Factor := 1;
+            L_PostDocNo := NoSeriesMgt.GetNextNo(PurchSetup."Exp. Commission Nos.",WORKDATE,TRUE);
+            GenJnlLine."Document No." := L_PostDocNo;
+            GenJnlLine."External Document No." :=  COPYSTR(ComEntry."Document No.",1,MAXSTRLEN(GenJnlLine."External Document No."));
+            GenJnlLine.VALIDATE("Account Type",GenJnlLine."Account Type"::Customer);
+            GenJnlLine.VALIDATE("Account No.",Cust."No.");
+            GenJnlLine."System-Created Entry" := TRUE;
+            GenJnlLine.VALIDATE("Bal. Account No.",GenPostSetup."Exp. Commission Account");
+            GenJnlLine.VALIDATE("Bal. Gen. Bus. Posting Group",ComEntry."Gen. Bus. Posting Group");
+            GenJnlLine.VALIDATE("Bal. VAT Base Amount",ComEntry."Com. Amount to Post" * L_Factor);
+            GenJnlLine.Description := COPYSTR(STRSUBSTNO(Text017,ComEntry."Com. %",'%',ComEntry."No."),1,
+              MAXSTRLEN(GenJnlLine.Description));
+            GenJnlLine."On Hold" := PurchSetup."On Hold Exp. Commission";
+            DocDim.SETRANGE("Table ID",DATABASE::"Sales Line");
+            DocDim.SETRANGE("Document Type",ComEntry."Document Type");
+            DocDim.SETRANGE("Document No.",ComEntry."Document No.");
+            DocDim.SETRANGE("Line No.",ComEntry."Document Line No.");
+            TempDimBuf.DELETEALL;
+            IF DocDim.FIND('-') THEN REPEAT
+              TempDimBuf.INIT;
+              TempDimBuf."Dimension Code" := DocDim."Dimension Code";
+              TempDimBuf."Dimension Value Code" := DocDim."Dimension Value Code";
+              TempDimBuf."Line No." := DocDim."Line No.";
+              TempDimBuf.INSERT;
+              IF DocDim."Dimension Code" = GLSetup."Global Dimension 1 Code" THEN
+                GenJnlLine."Shortcut Dimension 1 Code" := DocDim."Dimension Value Code";
+              IF DocDim."Dimension Code" = GLSetup."Global Dimension 2 Code" THEN
+                GenJnlLine."Shortcut Dimension 2 Code" := DocDim."Dimension Value Code";
+            UNTIL DocDim.NEXT = 0;
+            LT_TempJnlLineDim.DELETEALL;
+            LT_TempJnlLineDim.INIT;
+            DimMgt.CopyDimBufToJnlLineDim(
+              TempDimBuf,LT_TempJnlLineDim,GenJnlLine."Journal Template Name",
+              GenJnlLine."Journal Batch Name",GenJnlLine."Line No.");
+            CLEAR(DimMgt);
+            LC_GenJnlPostLine.RunWithCheck(GenJnlLine,LT_TempJnlLineDim);
+            LC_GenJnlPostLine.GetGLReg(LT_GLReg);
+            ComEntry."Com. Amount Posted" := ComEntry."Com. Amount Posted" + ComEntry."Com. Amount to Post";
+            ComEntry."Com. Amount to Post" := 0;
+            ComEntry."From G/L Entry No." := LT_GLReg."From Entry No.";
+            ComEntry."To G/L Entry No." := LT_GLReg."To Entry No.";
+            ComEntry.MODIFY;
+            DimMgt.MoveDimBufToLedgEntryDim(TempDimBuf,DATABASE::"Commission Entry",ComEntry."Entry No.");
+          END;
+        UNTIL ComEntry.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE PostCommission@1000000002(_ComHeader@1000000000 : Record 50004);
+    VAR
+      LT_SalesHeader@1000000007 : Record 36;
+      LT_PurchHeader@1000000013 : Record 38;
+      LT_PostComHeader@1000000006 : Record 50006;
+      LT_PostComLine@1000000010 : Record 50007;
+      LT_Comment@1000000009 : Record 50008;
+      LT_PostComment@1000000002 : Record 50008;
+      L_InvDocNo@1000000001 : Code[20];
+      L_CrMemoDocNo@1000000005 : Code[20];
+      L_PayAmt@1000000003 : ARRAY [4] OF Decimal;
+      L_ComAmt@1000000004 : Decimal;
+      L_ToDelete@1000000008 : Boolean;
+      L_CheckCustomer@1000000011 : Boolean;
+      L_Text002@1000000012 : TextConst 'DEU=Debitor %1 wurde angelegt. Bitte Einrichtung prÅfen!;ENU="Customer %1 was create. Please check the customer card! "';
+    BEGIN
+      ComHeader := _ComHeader;
+
+      PurchSetup.GET;
+      ComHeader.TESTFIELD("Buy-from Vendor No.");
+      ComHeader.TESTFIELD("Acc. Period Start");
+      ComHeader.TESTFIELD("Acc. Period End");
+      ComHeader.TESTFIELD("Posting Date");
+      ComHeader.TESTFIELD("Document Date");
+      IF GenJnlCheckLine.DateNotAllowed(ComHeader."Posting Date") THEN
+        ComHeader.FIELDERROR("Posting Date",Text045);
+
+      L_CheckCustomer := FALSE;
+      Cust.GET(CopyVendorToCustomer(ComHeader."Buy-from Vendor No.",L_CheckCustomer));
+      IF L_CheckCustomer THEN
+        ERROR(L_Text002,Cust."No.");
+      Cust.CheckBlockedCustOnDocs(Cust,2,FALSE,FALSE);
+
+      CopyDocDimToTempDocDim;
+
+      //###
+      SetPositionNo(ComHeader);
+      //###
+
+      CLEAR(L_PayAmt);
+      ComLine.RESET;
+      ComLine.SETCURRENTKEY("Document No.","Line Type","Dropship Date","Dropship No.");
+      ComLine.SETRANGE("Document No.",ComHeader."No.");
+      ComLine.SETFILTER("Line Type",'<>%1',ComLine."Line Type"::"Correction Info");
+      IF ComLine.FIND('-') THEN BEGIN
+        //###
+        //ComLine.TESTFIELD("Gen. Prod. Posting Group");
+        //SetPositionNo(ComHeader);
+        //###
+
+        REPEAT
+
+        //###
+        ComLine.TESTFIELD("Gen. Prod. Posting Group");
+        //###
+
+          CASE ComLine."Line Type" OF
+            ComLine."Line Type"::Order:
+              L_PayAmt[1] := L_PayAmt[1] + ComLine."Com. Base Amount";
+            ComLine."Line Type"::Correction:
+              L_PayAmt[2] := L_PayAmt[2] + ComLine."Com. Base Amount";
+            ComLine."Line Type"::Retoure:
+              L_PayAmt[3] := L_PayAmt[3] + ComLine."Com. Base Amount";
+            ComLine."Line Type"::New:
+
+              {####
+              IF ComHeader.Marketplace = ComHeader.Marketplace::I THEN
+                ERROR(Text101)
+              ELSE
+              ###}
+
+                L_PayAmt[1] := L_PayAmt[1] + ComLine."Com. Base Amount";
+          END; //case
+          L_ComAmt := L_ComAmt + ComLine."Com. Amount";
+        UNTIL ComLine.NEXT = 0;
+        IF (L_PayAmt[1] = 0) AND (L_PayAmt[2] = 0) AND (L_PayAmt[3] = 0) AND (L_ComAmt = 0) THEN
+          ERROR(Text100);
+        IF ComHeader."Posting No." = '' THEN BEGIN
+          ComHeader.TESTFIELD("Posting No. Series");
+          ComHeader."Posting No." := NoSeriesMgt.GetNextNo(ComHeader."Posting No. Series",ComHeader."Posting Date",TRUE);
+          ComHeader.MODIFY;
+        END;
+
+        L_ToDelete := FALSE;
+        IF ComHeader.Marketplace = ComHeader.Marketplace::II THEN BEGIN
+      //###    IF L_ComAmt <> 0 THEN BEGIN
+            CheckSalesDocExist(ComHeader."Posting No.",L_InvDocNo,L_CrMemoDocNo);
+
+            //###
+            IF L_PayAmt[1] + L_PayAmt[2] + L_PayAmt[3] - L_ComAmt < 0 THEN BEGIN
+            //IF L_ComAmt < 0 THEN BEGIN
+            //###
+
+              // insert sales invoice header for commission
+              IF CheckSalesInvExist(ComHeader."Posting No.") THEN BEGIN
+                L_ToDelete := TRUE;
+                IF L_InvDocNo = '' THEN BEGIN
+                  InsertSalesDoc(2,L_InvDocNo);
+                  InsertLineCom(2,L_InvDocNo);
+                END;
+                COMMIT;
+                LT_SalesHeader.GET(LT_SalesHeader."Document Type"::Invoice,L_InvDocNo);
+                {###
+                IF LT_SalesHeader."Posting No." = '' THEN BEGIN
+                  LT_SalesHeader.TESTFIELD("Posting No. Series");
+                  LT_SalesHeader."Posting No." := NoSeriesMgt.GetNextNo(LT_SalesHeader."Posting No. Series",
+                    LT_SalesHeader."Posting Date",TRUE);
+                  LT_SalesHeader.MODIFY;
+                END;
+                ###}
+
+                ApplyCommission(LT_SalesHeader."Posting Date",LT_SalesHeader."Document Date",
+                  LT_SalesHeader."Posting No.",ComHeader."Posting No.",LT_SalesHeader."Sell-to Customer No.");
+                COMMIT;
+                CLEAR(SalesPost);
+      //###          IF SalesPost.RUN(LT_SalesHeader) THEN;
+      //###          IF NOT CheckSalesInvExist(ComHeader."Posting No.") THEN
+      //###            L_ToDelete := FALSE;
+              END;
+            END ELSE BEGIN
+              // insert sales credit memo header for commission
+              IF CheckSalesCrMemoExist(ComHeader."Posting No.") THEN BEGIN
+                L_ToDelete := TRUE;
+                IF L_CrMemoDocNo = '' THEN BEGIN
+                  InsertSalesDoc(3,L_CrMemoDocNo);
+                  InsertLineCom(3,L_CrMemoDocNo);
+                END;
+                COMMIT;
+                LT_SalesHeader.GET(LT_SalesHeader."Document Type"::"Credit Memo",L_CrMemoDocNo);
+
+                {###
+                IF LT_SalesHeader."Posting No." = '' THEN BEGIN
+                  LT_SalesHeader.TESTFIELD("Posting No. Series");
+                  LT_SalesHeader."Posting No." := NoSeriesMgt.GetNextNo(LT_SalesHeader."Posting No. Series",
+                    LT_SalesHeader."Posting Date",TRUE);
+                  LT_SalesHeader.MODIFY;
+                END;
+                ###}
+
+
+                ApplyCommission(LT_SalesHeader."Posting Date",LT_SalesHeader."Document Date",
+                  LT_SalesHeader."Posting No.",ComHeader."Posting No.",LT_SalesHeader."Sell-to Customer No.");
+                COMMIT;
+                CLEAR(SalesPost);
+      //###          IF SalesPost.RUN(LT_SalesHeader) THEN;
+      //###          IF NOT CheckSalesCrMemoExist(ComHeader."Posting No.") THEN
+      //###            L_ToDelete := FALSE;
+              END;
+            END;
+          //### END;
+        END ELSE BEGIN
+          CheckSalesDocExist(ComHeader."Posting No.",L_InvDocNo,L_CrMemoDocNo);
+          IF L_PayAmt[1] + L_PayAmt[2] + L_PayAmt[3] - L_ComAmt > 0 THEN BEGIN
+            // insert invoice header for purchasing
+            CheckAndPostShipment;
+            IF CheckPurchInvExist(ComHeader."Posting No.") THEN BEGIN
+              L_ToDelete := TRUE;
+              IF L_InvDocNo = '' THEN BEGIN
+                InsertPurchDoc(2,L_InvDocNo);
+                InsertLineInv(2,L_InvDocNo);
+              END;
+              COMMIT;
+              LT_PurchHeader.GET(LT_PurchHeader."Document Type"::Invoice,L_InvDocNo);
+              LT_PurchHeader.TESTFIELD(Status,LT_PurchHeader.Status::Open);
+
+              //###
+              IF PurchSetup."Invoice Nos." = PurchSetup."Posted Invoice Nos." THEN
+                LT_PurchHeader."Posting No." := LT_PurchHeader."No.";
+              //###
+
+              IF LT_PurchHeader."Posting No." = '' THEN BEGIN
+                LT_PurchHeader.TESTFIELD("Posting No. Series");
+                LT_PurchHeader."Posting No." := NoSeriesMgt.GetNextNo(LT_PurchHeader."Posting No. Series",
+                  LT_PurchHeader."Posting Date",TRUE);
+                LT_PurchHeader.MODIFY;
+              END;
+              COMMIT;
+      //        IF PurchPost.RUN(LT_PurchHeader) THEN;
+      //        IF NOT CheckPurchInvExist(ComHeader."Posting No.") THEN
+      //###          L_ToDelete := FALSE;
+            END;
+          END ELSE BEGIN
+          END;
+        END;
+
+        ComHeader.MODIFY;
+
+        // Copy and delete commission proposal
+        IF L_ToDelete THEN BEGIN
+          IF ComHeader.RECORDLEVELLOCKING THEN BEGIN
+            DocDim.LOCKTABLE;
+            ComLine.LOCKTABLE;
+            ComEntry.LOCKTABLE;
+          END;
+          LT_PostComHeader.INIT;
+          LT_PostComHeader.TRANSFERFIELDS(ComHeader);
+          IF ComHeader."Posting No." <> '' THEN BEGIN
+            LT_PostComHeader."No." := ComHeader."Posting No.";
+            LT_PostComHeader."Pre-Assigned No. Series" := ComHeader."No. Series";
+            LT_PostComHeader."Pre-Assigned No." := ComHeader."No.";
+          END;
+          LT_PostComHeader."User ID" := USERID;
+          LT_PostComHeader."No. Printed" := 0;
+          LT_PostComHeader.INSERT;
+          LT_PostComHeader.COPYLINKS(ComHeader);
+          DimMgt.MoveOneDocDimToPostedDocDim(
+            TempDocDim,DATABASE::"Commission Header",1,ComHeader."No.",0,
+            DATABASE::"Posted Commission Header",LT_PostComHeader."No.");
+          ComLine.RESET;
+          ComLine.SETRANGE("Document No.",ComHeader."No.");
+          IF ComLine.FINDSET THEN REPEAT
+            LT_PostComLine.INIT;
+            LT_PostComLine.TRANSFERFIELDS(ComLine);
+            LT_PostComLine."Document No." := LT_PostComHeader."No.";
+            LT_PostComLine.INSERT;
+            LT_PostComLine.COPYLINKS(ComLine);
+            DimMgt.MoveOneDocDimToPostedDocDim(
+              TempDocDim,DATABASE::"Commission Line",1,ComHeader."No.",LT_PostComLine."Line No.",
+              DATABASE::"Posted Commission Line",LT_PostComHeader."No.");
+          UNTIL ComLine.NEXT = 0;
+          LT_Comment.RESET;
+          LT_Comment.SETRANGE("Document Type",LT_Comment."Document Type"::Commission);
+          LT_Comment.SETRANGE("No.",ComHeader."No.");
+          IF NOT LT_Comment.ISEMPTY THEN BEGIN
+            LT_Comment.FINDSET;
+            REPEAT
+              LT_PostComment := LT_Comment;
+              LT_PostComment."Document Type" := LT_PostComment."Document Type"::"Posted Commission";
+              LT_PostComment."No." := LT_PostComHeader."No.";
+              LT_PostComment.INSERT;
+            UNTIL LT_Comment.NEXT = 0;
+            LT_Comment.DELETEALL;
+          END;
+
+          ComEntry.RESET;
+          ComEntry.SETRANGE("Acc. Document No.",ComHeader."No.");
+          IF ComEntry.FIND('-') THEN REPEAT
+            IF ComEntry."Acc. Status" = ComEntry."Acc. Status"::Proposal THEN BEGIN
+              ComEntry."Acc. Status" := ComEntry."Acc. Status"::Post;
+              ComEntry."Acc. Document No." := LT_PostComHeader."No.";
+            END;
+          UNTIL ComEntry.NEXT = 0;
+
+          IF NOT ComHeader.RECORDLEVELLOCKING THEN BEGIN
+            DocDim.LOCKTABLE(TRUE,TRUE);
+            ComLine.LOCKTABLE(TRUE,TRUE);
+          END;
+          DocDim.RESET;
+          DocDim.SETRANGE("Table ID",DATABASE::"Commission Header");
+          DocDim.SETRANGE("Document Type",1);
+          DocDim.SETRANGE("Document No.",ComHeader."No.");
+          IF NOT DocDim.ISEMPTY THEN
+            DocDim.DELETEALL;
+          DocDim.SETRANGE("Table ID",DATABASE::"Commission Line");
+          IF NOT DocDim.ISEMPTY THEN
+            DocDim.DELETEALL;
+          ComLine.RESET;
+          ComLine.SETRANGE("Document No.",ComHeader."No.");
+          IF ComLine.FINDSET THEN REPEAT
+            IF ComLine.HASLINKS THEN
+              ComLine.DELETELINKS;
+          UNTIL ComLine.NEXT = 0;
+          ComLine.DELETEALL;
+
+          IF ComHeader.HASLINKS THEN
+            ComHeader.DELETELINKS;
+          ComHeader.DELETE;
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE ApplyCommission@1000000008(_PostDate@1000000003 : Date;_DocDate@1000000004 : Date;_DocNo@1000000005 : Code[20];_ExtDocNo@1000000006 : Code[20];_CustNo@1000000010 : Code[20]);
+    VAR
+      LT_GLAcc@1000000001 : Record 15;
+      LT_TempJnlLineDim@1000000009 : TEMPORARY Record 356;
+      LC_GenJnlPostLine@1000000007 : Codeunit 12;
+      L_Factor@1000000000 : Integer;
+      L_TotalAmt@1000000002 : Decimal;
+      L_LineCount@1000000008 : Integer;
+    BEGIN
+      //###
+      EXIT;
+      //###
+
+      L_TotalAmt := 0;
+      L_LineCount := 0;
+      ComLine.RESET;
+      ComLine.SETCURRENTKEY("Document No.","Line Type","Dropship Date","Dropship No.");
+      ComLine.SETRANGE("Document No.",ComHeader."No.");
+      ComLine.SETFILTER("Line Type",'<>%1',ComLine."Line Type"::"Correction Info");
+      IF ComLine.FIND('-') THEN REPEAT
+        ComEntry.GET(ComLine."Source Entry No.");
+        IF ComEntry."Com. Amount Posted" <> 0 THEN BEGIN
+          GenPostSetup.GET(ComEntry."Gen. Bus. Posting Group",ComEntry."Gen. Prod. Posting Group");
+          GenPostSetup.TESTFIELD("Exp. Commission Account");
+          LT_GLAcc.GET(GenPostSetup."Exp. Commission Account");
+          GenJnlLine.INIT;
+          GenJnlLine."Posting Date" := _PostDate;
+          GenJnlLine."Document Date" := _DocDate;
+          IF (ComEntry."Document Type" <= ComEntry."Document Type"::Invoice) AND
+             (ComEntry."Entry Type" = ComEntry."Entry Type"::Order) THEN
+            L_Factor := 1
+          ELSE
+            L_Factor := -1;
+          GenJnlLine."Document No." := _DocNo;
+          GenJnlLine."External Document No." :=  _ExtDocNo;
+          GenJnlLine.VALIDATE("Account No.",GenPostSetup."Exp. Commission Account");
+          GenJnlLine.VALIDATE("Gen. Bus. Posting Group",ComEntry."Gen. Bus. Posting Group");
+          GenJnlLine.VALIDATE("VAT Base Amount",ComEntry."Com. Amount Posted" * L_Factor);
+          GenJnlLine.Description := COPYSTR(Text018,1,MAXSTRLEN(GenJnlLine.Description));
+          GenJnlLine."On Hold" := PurchSetup."On Hold Exp. Commission";
+          GenJnlLine."System-Created Entry" := TRUE;
+          L_LineCount := L_LineCount + 1;
+          L_TotalAmt := L_TotalAmt + GenJnlLine.Amount;
+          EntryDim.RESET;
+          EntryDim.SETRANGE("Table ID",DATABASE::"Commission Entry");
+          EntryDim.SETRANGE("Entry No.",ComEntry."Entry No.");
+          TempDimBuf.DELETEALL;
+          IF EntryDim.FIND('-') THEN REPEAT
+            TempDimBuf.INIT;
+            TempDimBuf."Dimension Code" := EntryDim."Dimension Code";
+            TempDimBuf."Dimension Value Code" := EntryDim."Dimension Value Code";
+            TempDimBuf.INSERT;
+            IF EntryDim."Dimension Code" = GLSetup."Global Dimension 1 Code" THEN
+              GenJnlLine."Shortcut Dimension 1 Code" := EntryDim."Dimension Value Code";
+            IF EntryDim."Dimension Code" = GLSetup."Global Dimension 2 Code" THEN
+              GenJnlLine."Shortcut Dimension 2 Code" := EntryDim."Dimension Value Code";
+          UNTIL EntryDim.NEXT = 0;
+          LT_TempJnlLineDim.DELETEALL;
+          LT_TempJnlLineDim.INIT;
+          DimMgt.CopyDimBufToJnlLineDim(
+            TempDimBuf,LT_TempJnlLineDim,GenJnlLine."Journal Template Name",
+            GenJnlLine."Journal Batch Name",GenJnlLine."Line No.");
+          LC_GenJnlPostLine.RunWithCheck(GenJnlLine,LT_TempJnlLineDim);
+          CustLedgEntry.RESET;
+          CustLedgEntry.SETRANGE("Entry No.",ComEntry."From G/L Entry No.",ComEntry."To G/L Entry No.");
+          CustLedgEntry.SETRANGE("Customer No.",_CustNo);
+          CustLedgEntry.SETRANGE(Open,TRUE);
+          IF CustLedgEntry.FIND('-') THEN REPEAT
+            CustLedgEntry.CALCFIELDS("Remaining Amt. (LCY)");
+            CustLedgEntry."Applies-to ID" := _DocNo;
+            CustLedgEntry."Amount to Apply" := CustLedgEntry."Remaining Amt. (LCY)";
+            CustLedgEntry.MODIFY;
+          UNTIL CustLedgEntry.NEXT = 0;
+        END;
+      UNTIL ComLine.NEXT = 0;
+
+      IF L_LineCount > 0 THEN BEGIN
+        GenJnlLine.INIT;
+        GenJnlLine."Posting Date" := _PostDate;
+        GenJnlLine."Document Date" := _DocDate;
+        GenJnlLine."Document No." := _DocNo;
+        GenJnlLine."External Document No." :=  _ExtDocNo;
+        GenJnlLine.VALIDATE("Account Type",GenJnlLine."Account Type"::Customer);
+        GenJnlLine.VALIDATE("Account No.",_CustNo);
+        GenJnlLine.VALIDATE(Amount,-L_TotalAmt);
+        GenJnlLine.Description := COPYSTR(Text018,1,MAXSTRLEN(GenJnlLine.Description));
+        GenJnlLine."System-Created Entry" := TRUE;
+        GenJnlLine."Applies-to ID" := _DocNo;
+        //dim von kopf
+        LT_TempJnlLineDim.DELETEALL;
+        LT_TempJnlLineDim.INIT;
+        DimMgt.CopyDimBufToJnlLineDim(
+          TempDimBuf,LT_TempJnlLineDim,GenJnlLine."Journal Template Name",
+          GenJnlLine."Journal Batch Name",GenJnlLine."Line No.");
+        LC_GenJnlPostLine.RunWithCheck(GenJnlLine,LT_TempJnlLineDim);
+      END;
+    END;
+
+    LOCAL PROCEDURE InsertSalesDoc@1000000005(_DocType@1000000001 : Integer;VAR _DocNo@1000000003 : Code[20]);
+    VAR
+      LT_SalesHeader@1000000002 : Record 36;
+    BEGIN
+      WITH ComHeader DO BEGIN
+
+      {###
+        LT_SalesHeader.INIT;
+        LT_SalesHeader."Document Type" := _DocType;
+        LT_SalesHeader."No." := '';
+        LT_SalesHeader.INSERT(TRUE);
+      ###}
+        LT_SalesHeader.GET(LT_SalesHeader."Document Type"::Invoice,'VR12011675');
+
+
+        LT_SalesHeader.VALIDATE("Sell-to Customer No.",Cust."No.");
+        LT_SalesHeader."Sell-to Contact" := "Buy-from Contact";
+        LT_SalesHeader."Bill-to Contact" := "Buy-from Contact";
+        IF LT_SalesHeader."Currency Code" <> '' THEN
+          LT_SalesHeader.VALIDATE("Currency Code",'');
+        LT_SalesHeader.VALIDATE("Posting Date","Posting Date");
+        LT_SalesHeader."Document Date" := "Document Date";
+        LT_SalesHeader.VALIDATE("Payment Terms Code","Payment Terms Code");
+        LT_SalesHeader."Due Date" := "Due Date";
+        LT_SalesHeader.VALIDATE("Payment Discount %","Payment Discount %");
+        LT_SalesHeader.VALIDATE("Pmt. Discount Date","Pmt. Discount Date");
+        LT_SalesHeader.VALIDATE("Payment Method Code","Payment Method Code");
+        IF LT_SalesHeader."Gen. Bus. Posting Group" <> "Gen. Bus. Posting Group" THEN
+          LT_SalesHeader.VALIDATE("Gen. Bus. Posting Group","Gen. Bus. Posting Group");
+        IF LT_SalesHeader."VAT Bus. Posting Group" <> "VAT Bus. Posting Group" THEN
+          LT_SalesHeader.VALIDATE("VAT Bus. Posting Group","VAT Bus. Posting Group");
+        LT_SalesHeader."Posting Description" := COPYSTR(Text016 +' '+ "Posting No." +' '+
+          FORMAT("Acc. Period Start") +'-'+ FORMAT("Acc. Period End"),1,MAXSTRLEN(LT_SalesHeader."Posting Description"));
+        LT_SalesHeader."External Document No." := "Posting No.";
+        LT_SalesHeader."Your Reference" := "Posting No.";
+        LT_SalesHeader.MODIFY;
+        LT_SalesHeader.VALIDATE("Shortcut Dimension 1 Code","Shortcut Dimension 1 Code");
+        LT_SalesHeader.VALIDATE("Shortcut Dimension 2 Code","Shortcut Dimension 2 Code");
+        LT_SalesHeader.MODIFY;
+      END;
+      _DocNo := LT_SalesHeader."No.";
+    END;
+
+    LOCAL PROCEDURE InsertPurchDoc@1000000012(_DocType@1000000001 : Integer;VAR _DocNo@1000000003 : Code[20]);
+    VAR
+      LT_PurchHeader@1000000002 : Record 38;
+    BEGIN
+      WITH ComHeader DO BEGIN
+        LT_PurchHeader.INIT;
+        LT_PurchHeader."Document Type" := _DocType;
+        LT_PurchHeader."No." := '';
+        LT_PurchHeader.INSERT(TRUE);
+        LT_PurchHeader.VALIDATE("Buy-from Vendor No.","Buy-from Vendor No.");
+        LT_PurchHeader."Buy-from Contact" := "Buy-from Contact";
+        LT_PurchHeader."Pay-to Contact" := "Buy-from Contact";
+        IF LT_PurchHeader."Currency Code" <> '' THEN
+          LT_PurchHeader.VALIDATE("Currency Code",'');
+        LT_PurchHeader.VALIDATE("Posting Date","Posting Date");
+        LT_PurchHeader."Document Date" := "Document Date";
+        LT_PurchHeader.VALIDATE("Payment Terms Code","Payment Terms Code");
+        LT_PurchHeader."Due Date" := "Due Date";
+        LT_PurchHeader.VALIDATE("Payment Discount %","Payment Discount %");
+        LT_PurchHeader.VALIDATE("Pmt. Discount Date","Pmt. Discount Date");
+        LT_PurchHeader.VALIDATE("Payment Method Code","Payment Method Code");
+        IF LT_PurchHeader."Gen. Bus. Posting Group" <> "Gen. Bus. Posting Group" THEN
+          LT_PurchHeader.VALIDATE("Gen. Bus. Posting Group","Gen. Bus. Posting Group");
+        IF LT_PurchHeader."VAT Bus. Posting Group" <> "VAT Bus. Posting Group" THEN
+          LT_PurchHeader.VALIDATE("VAT Bus. Posting Group","VAT Bus. Posting Group");
+        LT_PurchHeader.VALIDATE("Prices Including VAT",TRUE);
+        LT_PurchHeader."Posting Description" := COPYSTR(Text015 +' '+ "Posting No." +' '+
+          FORMAT("Acc. Period Start") +'-'+ FORMAT("Acc. Period End"),1,MAXSTRLEN(LT_PurchHeader."Posting Description"));
+        LT_PurchHeader."Commission No." := "Posting No.";
+        IF LT_PurchHeader."Document Type" = LT_PurchHeader."Document Type"::"Credit Memo" THEN
+          LT_PurchHeader."Vendor Cr. Memo No." := "Posting No."
+        ELSE
+          LT_PurchHeader."Vendor Invoice No." := "Posting No.";
+        LT_PurchHeader.MODIFY;
+        LT_PurchHeader.VALIDATE("Shortcut Dimension 1 Code","Shortcut Dimension 1 Code");
+        LT_PurchHeader.VALIDATE("Shortcut Dimension 2 Code","Shortcut Dimension 2 Code");
+        LT_PurchHeader.MODIFY;
+      END;
+      _DocNo := LT_PurchHeader."No.";
+    END;
+
+    LOCAL PROCEDURE InsertLineInv@1000000006(_DocType@1000000000 : Integer;_DocNo@1000000004 : Code[20]);
+    VAR
+      LT_PurchHeader@1000000003 : Record 38;
+      LT_PurchLine@1000000001 : Record 39;
+      LT_PurchOrderHeader@1000000007 : Record 38;
+      LT_PurchOrderLine@1000000005 : Record 39;
+      LT_PurchRcptLine@1000000002 : Record 121;
+      LC_GetReceipts@1000000006 : Codeunit 74;
+      L_Qty@1000000008 : Decimal;
+    BEGIN
+      ComLine.RESET;
+      ComLine.SETCURRENTKEY("Document No.","Line Type","Dropship Date","Dropship No.");
+      ComLine.SETRANGE("Document No.",ComHeader."No.");
+      ComLine.SETFILTER("Line Type",'<>%1',ComLine."Line Type"::"Correction Info");
+      IF ComLine.FIND('-') THEN BEGIN
+        LineNo := 10000;
+        InitPurchLine(LT_PurchLine,_DocType,_DocNo);
+        LT_PurchLine.Description := COPYSTR(STRSUBSTNO(Text014,ComHeader."No.",
+          FORMAT(ComHeader."Acc. Period Start"),FORMAT(ComHeader."Acc. Period End")),1,MAXSTRLEN(LT_PurchLine.Description));
+        LT_PurchLine.MODIFY;
+        InitPurchLine(LT_PurchLine,_DocType,_DocNo);
+        LT_PurchHeader.GET(_DocType,_DocNo);
+        REPEAT
+          LT_PurchRcptLine.RESET;
+          LT_PurchRcptLine.SETCURRENTKEY("Pay-to Vendor No.");
+          LT_PurchRcptLine.SETRANGE("Pay-to Vendor No.",LT_PurchHeader."Pay-to Vendor No.");
+          LT_PurchRcptLine.SETFILTER("Qty. Rcd. Not Invoiced",'<>0');
+          LT_PurchRcptLine.SETRANGE("Currency Code",LT_PurchHeader."Currency Code");
+          LT_PurchRcptLine.SETRANGE("Sales Order No.",ComLine."Source No.");
+          LT_PurchRcptLine.SETRANGE("Sales Order Line No.",ComLine."Source Line No.");
+          LT_PurchRcptLine.FINDFIRST;
+          LC_GetReceipts.SetPurchHeader(LT_PurchHeader);
+          LC_GetReceipts.CreateInvLines(LT_PurchRcptLine);
+          CLEAR(LC_GetReceipts);
+          LT_PurchLine.SETRANGE("Document Type",LT_PurchHeader."Document Type");
+          LT_PurchLine.SETRANGE("Document No.",LT_PurchHeader."No.");
+          LT_PurchLine.SETRANGE("Order No.",ComLine."Source No.");
+          LT_PurchLine.SETRANGE("Order Line No.",ComLine."Source Line No.");
+          L_Qty := 0;
+          LT_PurchLine.FINDSET;
+          REPEAT
+            L_Qty := L_Qty + LT_PurchLine.Quantity;
+          UNTIL LT_PurchLine.NEXT = 0;
+          ComLine.TESTFIELD(Quantity,L_Qty);
+          LT_PurchLine.FINDSET;
+          REPEAT
+            IF LT_PurchLine."Direct Unit Cost" <> ComLine."Unit Price" THEN
+              LT_PurchLine.VALIDATE("Direct Unit Cost",ComLine."Unit Price");
+            IF LT_PurchLine."Line Discount %" <> ComLine."Com. %" THEN
+              LT_PurchLine.VALIDATE("Line Discount %",ComLine."Com. %");
+            LT_PurchLine.VALIDATE("Line Discount Amount",LT_PurchLine."Line Discount Amount" +
+              ROUND(LT_PurchLine."Line Discount Amount" * LT_PurchLine."VAT %" / 100));
+            LT_PurchLine.MODIFY;
+          UNTIL LT_PurchLine.NEXT = 0;
+        UNTIL ComLine.NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE InsertLineCom@1000000007(_DocType@1000000001 : Integer;_DocNo@1000000000 : Code[20]);
+    VAR
+      LT_SalesLine@1000000004 : Record 37;
+      L_Factor@1000000002 : Integer;
+    BEGIN
+      ComLine.RESET;
+      ComLine.SETCURRENTKEY("Document No.","Line Type","Dropship Date","Dropship No.");
+      ComLine.SETRANGE("Document No.",ComHeader."No.");
+      ComLine.SETFILTER("Line Type",'<>%1',ComLine."Line Type"::"Correction Info");
+      IF ComLine.FIND('-') THEN BEGIN
+        LineNo := 10000;
+        InitSalesLine(LT_SalesLine,_DocType,_DocNo,'');
+        LT_SalesLine.Description := COPYSTR(STRSUBSTNO(Text014,ComHeader."No.",
+          FORMAT(ComHeader."Acc. Period Start"),FORMAT(ComHeader."Acc. Period End")),1,MAXSTRLEN(LT_SalesLine.Description));
+        LT_SalesLine.MODIFY;
+        InitSalesLine(LT_SalesLine,_DocType,_DocNo,'');
+        REPEAT
+          GenPostSetup.GET(ComHeader."Gen. Bus. Posting Group",ComLine."Gen. Prod. Posting Group");
+          GenPostSetup.TESTFIELD("Commission Account");
+          IF LT_SalesLine."Document Type" = LT_SalesLine."Document Type"::Invoice THEN
+            L_Factor := 1
+          ELSE
+            L_Factor := -1;
+          InitSalesLine(LT_SalesLine,_DocType,_DocNo,GenPostSetup."Commission Account");
+          IF ComLine."Com. %" <> 0 THEN BEGIN
+            LT_SalesLine.VALIDATE(Quantity,ROUND(ComLine."Com. %"/100,0.00001));
+            LT_SalesLine.VALIDATE("Unit Price",ComLine."Com. Base Amount" * L_Factor);
+          END ELSE BEGIN
+            LT_SalesLine.VALIDATE(Quantity,1);
+            LT_SalesLine.VALIDATE("Unit Price",ComLine."Com. Amount" * L_Factor);
+          END;
+
+      //###
+          IF LT_SalesLine."Unit Price" <> 0 THEN
+      //###
+
+          LT_SalesLine.VALIDATE("Line Amount",ComLine."Com. Amount" * L_Factor);
+          LT_SalesLine.Description := COPYSTR(STRSUBSTNO(Text013,ComLine."Source No.",ComLine."No."),1,
+            MAXSTRLEN(LT_SalesLine.Description));
+          EntryDim.RESET;
+          EntryDim.SETRANGE("Table ID",DATABASE::"Commission Entry");
+          EntryDim.SETRANGE("Entry No.",ComEntry."Entry No.");
+          IF EntryDim.FINDFIRST THEN BEGIN
+            REPEAT
+              IF EntryDim."Dimension Code" = GLSetup."Global Dimension 1 Code" THEN
+                LT_SalesLine."Shortcut Dimension 1 Code" := EntryDim."Dimension Value Code";
+              IF EntryDim."Dimension Code" = GLSetup."Global Dimension 2 Code" THEN
+                LT_SalesLine."Shortcut Dimension 2 Code" := EntryDim."Dimension Value Code";
+            UNTIL EntryDim.NEXT = 0;
+            DimMgt.MoveLedgEntryDimToDocDim(EntryDim,DATABASE::"Sales Line",LT_SalesLine."Document No.",
+              LT_SalesLine."Line No.",LT_SalesLine."Document Type");
+          END;
+          LT_SalesLine.MODIFY;
+          GenPostSetup.GET(ComHeader."Gen. Bus. Posting Group",ComLine."Gen. Prod. Posting Group");
+          GenPostSetup.TESTFIELD("Sales Account");
+          IF LT_SalesLine."Document Type" = LT_SalesLine."Document Type"::Invoice THEN
+            L_Factor := -1
+          ELSE
+            L_Factor := 1;
+          InitSalesLine(LT_SalesLine,_DocType,_DocNo,GenPostSetup."Sales Account");
+
+          //A/gob-ko/240712/P0053
+          LT_SalesLine.ID_MP2 := ComLine."Source No.";
+          //E/gob-ko/240712/P0053
+
+          LT_SalesLine.VALIDATE(Quantity,1);
+          LT_SalesLine.VALIDATE("Unit Price",ComLine."Com. Base Amount" * L_Factor);
+          LT_SalesLine.Description := COPYSTR(STRSUBSTNO(Text013,ComLine."Source No.",ComLine."No."),1,
+            MAXSTRLEN(LT_SalesLine.Description));
+          LT_SalesLine.MODIFY;
+        UNTIL ComLine.NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE InitSalesLine@1000000017(VAR _SalesLine@1000000000 : Record 37;_DocType@1000000002 : Integer;_DocNo@1000000003 : Code[20];_AccNo@1000000001 : Code[20]);
+    BEGIN
+      _SalesLine.INIT;
+      _SalesLine."Document Type" := _DocType;
+      _SalesLine."Document No." := _DocNo;
+      _SalesLine."Line No." := LineNo;
+      IF _AccNo <> '' THEN BEGIN
+        _SalesLine.VALIDATE(Type,_SalesLine.Type::"G/L Account");
+        _SalesLine.VALIDATE("No.",_AccNo);
+      END;
+      _SalesLine.INSERT(TRUE);
+      LineNo := LineNo + 10000;
+    END;
+
+    LOCAL PROCEDURE InitPurchLine@1000000024(VAR _PurchLine@1000000000 : Record 39;_DocType@1000000002 : Integer;_DocNo@1000000003 : Code[20]);
+    BEGIN
+      _PurchLine.INIT;
+      _PurchLine."Document Type" := _DocType;
+      _PurchLine."Document No." := _DocNo;
+      _PurchLine."Line No." := LineNo;
+      _PurchLine.INSERT(TRUE);
+      LineNo := LineNo + 10000;
+    END;
+
+    PROCEDURE CheckAndPostShipment@1000000027();
+    VAR
+      LT_PurchHeader@1000000001 : Record 38;
+      LT_PurchOrderLine@1000000000 : Record 39;
+      LT_TempPurchLine@1000000002 : TEMPORARY Record 39;
+    BEGIN
+      CLEAR(LT_TempPurchLine);
+      LT_TempPurchLine.DELETEALL;
+      ComLine.RESET;
+      ComLine.SETCURRENTKEY("Document No.","Line Type","Dropship Date","Dropship No.");
+      ComLine.SETRANGE("Document No.",ComHeader."No.");
+      ComLine.SETFILTER("Line Type",'<>%1',ComLine."Line Type"::"Correction Info");
+      IF ComLine.FINDSET THEN REPEAT
+        LT_PurchOrderLine.RESET;
+        LT_PurchOrderLine.SETCURRENTKEY("Order No.","Order Line No.");
+        LT_PurchOrderLine.SETRANGE("Order No.",ComLine."Source No.");
+        LT_PurchOrderLine.SETRANGE("Order Line No.",ComLine."Source Line No.");
+        CASE ComLine."Source Type" OF
+          ComLine."Source Type"::Order:
+            LT_PurchOrderLine.SETRANGE("Document Type",LT_PurchOrderLine."Document Type"::Order);
+          ComLine."Source Type"::"Return Order":
+            LT_PurchOrderLine.SETRANGE("Document Type",LT_PurchOrderLine."Document Type"::"Return Order");
+          ELSE
+            ERROR(Text102);
+        END; //case
+        LT_PurchOrderLine.FINDFIRST;
+        ComLine.TESTFIELD("No.",LT_PurchOrderLine."No.");
+        ComLine.TESTFIELD(Quantity,LT_PurchOrderLine.Quantity); //Stornos prÅfen!!!!
+        IF LT_PurchOrderLine."Outstanding Quantity" <> 0 THEN BEGIN
+          LT_TempPurchLine := LT_PurchOrderLine;
+          LT_TempPurchLine."Promised Receipt Date" := ComLine."Shipment Date (Exp./Real.)";
+          IF LT_TempPurchLine.INSERT THEN;
+        END;
+      UNTIL ComLine.NEXT = 0;
+      IF LT_TempPurchLine.FIND('-') THEN REPEAT
+        LT_TempPurchLine.SETRANGE("Document Type",LT_TempPurchLine."Document Type");
+        LT_TempPurchLine.SETRANGE("Document No.",LT_TempPurchLine."Document No.");
+        LT_TempPurchLine.FIND('-');
+        LT_PurchHeader.GET(LT_TempPurchLine."Document Type",LT_TempPurchLine."Document No.");
+        LT_PurchOrderLine.RESET;
+        LT_PurchOrderLine.SETRANGE("Document Type",LT_TempPurchLine."Document Type");
+        LT_PurchOrderLine.SETRANGE("Document No.",LT_TempPurchLine."Document No.");
+        LT_PurchOrderLine.SETFILTER(Quantity,'<>0');
+        REPEAT
+          LT_PurchOrderLine.VALIDATE("Qty. to Receive",0);
+          LT_PurchOrderLine.MODIFY;
+        UNTIL LT_PurchOrderLine.NEXT = 0;
+        REPEAT
+          LT_TempPurchLine.SETRANGE("Promised Receipt Date",LT_TempPurchLine."Promised Receipt Date");
+          LT_TempPurchLine.FIND('-');
+          REPEAT
+            LT_PurchOrderLine.RESET;
+            LT_PurchOrderLine."Document Type" := LT_TempPurchLine."Document Type";
+            LT_PurchOrderLine."Document No." := LT_TempPurchLine."Document No.";
+            LT_PurchOrderLine."Line No." := LT_TempPurchLine."Line No.";
+            LT_PurchOrderLine.FIND;
+            LT_PurchOrderLine.VALIDATE("Qty. to Receive",LT_TempPurchLine."Outstanding Quantity");
+            LT_PurchOrderLine.MODIFY;
+          UNTIL LT_TempPurchLine.NEXT = 0;
+          LT_PurchHeader.VALIDATE("Posting Date",LT_TempPurchLine."Promised Receipt Date");
+          LT_PurchHeader.Receive := TRUE;
+          LT_PurchHeader.Invoice := FALSE;
+          PurchPost.RUN(LT_PurchHeader);
+          CLEAR(PurchPost);
+          LT_TempPurchLine.DELETEALL;
+          LT_TempPurchLine.SETRANGE("Promised Receipt Date");
+        UNTIL LT_TempPurchLine.NEXT = 0;
+        LT_TempPurchLine.SETRANGE("Document Type");
+        LT_TempPurchLine.SETRANGE("Document No.");
+      UNTIL LT_TempPurchLine.NEXT = 0;
+    END;
+
+    PROCEDURE CheckSalesDocExist@1000000009(_ComNo@1000000001 : Code[20];VAR _InvNo@1000000002 : Code[20];VAR _CrMemoNo@1000000003 : Code[20]);
+    VAR
+      LT_SalesHeader@1000000000 : Record 36;
+    BEGIN
+      _InvNo := '';
+      _CrMemoNo := '';
+      LT_SalesHeader.SETRANGE("External Document No.",_ComNo);
+      IF NOT LT_SalesHeader.ISEMPTY THEN BEGIN
+        LT_SalesHeader.FINDSET;
+        REPEAT
+          IF LT_SalesHeader."Document Type" = LT_SalesHeader."Document Type"::"Credit Memo" THEN
+            _CrMemoNo := LT_SalesHeader."No."
+          ELSE
+            _InvNo := LT_SalesHeader."No.";
+        UNTIL LT_SalesHeader.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE CheckSalesInvExist@1000000010(_ComNo@1000000001 : Code[20]) : Boolean;
+    VAR
+      LT_SalesInvHeader@1000000000 : Record 112;
+    BEGIN
+      LT_SalesInvHeader.SETCURRENTKEY("External Document No.");
+      LT_SalesInvHeader.SETRANGE("External Document No.",_ComNo);
+      EXIT(LT_SalesInvHeader.ISEMPTY);
+    END;
+
+    PROCEDURE CheckSalesCrMemoExist@1000000011(_ComNo@1000000001 : Code[20]) : Boolean;
+    VAR
+      LT_SalesCrMemoHeader@1000000000 : Record 114;
+    BEGIN
+      LT_SalesCrMemoHeader.SETCURRENTKEY("External Document No.");
+      LT_SalesCrMemoHeader.SETRANGE("External Document No.",_ComNo);
+      EXIT(LT_SalesCrMemoHeader.ISEMPTY);
+    END;
+
+    PROCEDURE CheckPurchDocExist@1000000015(_ComNo@1000000001 : Code[20];VAR _InvNo@1000000002 : Code[20];VAR _CrMemoNo@1000000003 : Code[20]);
+    VAR
+      LT_PurchHeader@1000000000 : Record 36;
+    BEGIN
+      _InvNo := '';
+      _CrMemoNo := '';
+      LT_PurchHeader.SETRANGE("External Document No.",_ComNo);
+      IF NOT LT_PurchHeader.ISEMPTY THEN BEGIN
+        LT_PurchHeader.FINDSET;
+        REPEAT
+          IF LT_PurchHeader."Document Type" = LT_PurchHeader."Document Type"::"Credit Memo" THEN
+            _CrMemoNo := LT_PurchHeader."No."
+          ELSE
+            _InvNo := LT_PurchHeader."No.";
+        UNTIL LT_PurchHeader.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE CheckPurchInvExist@1000000016(_ComNo@1000000001 : Code[20]) : Boolean;
+    VAR
+      LT_PurchInvHeader@1000000000 : Record 122;
+    BEGIN
+      LT_PurchInvHeader.SETCURRENTKEY("Commission No.");
+      LT_PurchInvHeader.SETRANGE("Commission No.",_ComNo);
+      EXIT(LT_PurchInvHeader.ISEMPTY);
+    END;
+
+    PROCEDURE CheckPurchCrMemoExist@1000000019(_ComNo@1000000001 : Code[20]) : Boolean;
+    VAR
+      LT_PurchCrMemoHeader@1000000000 : Record 124;
+    BEGIN
+      LT_PurchCrMemoHeader.SETCURRENTKEY("Commission No.");
+      LT_PurchCrMemoHeader.SETRANGE("Commission No.",_ComNo);
+      EXIT(LT_PurchCrMemoHeader.ISEMPTY);
+    END;
+
+    LOCAL PROCEDURE CopyDocDimToTempDocDim@34();
+    VAR
+      PurchLine2@1000 : Record 39;
+      DimExist@1001 : Boolean;
+    BEGIN
+      TempDocDim.RESET;
+      TempDocDim.DELETEALL;
+      DocDim.SETRANGE("Table ID",DATABASE::"Commission Header");
+      DocDim.SETRANGE("Document Type",1);
+      DocDim.SETRANGE("Document No.",ComHeader."No.");
+      IF DocDim.FINDSET THEN BEGIN
+        REPEAT
+          TempDocDim.INIT;
+          TempDocDim := DocDim;
+          TempDocDim.INSERT;
+        UNTIL DocDim.NEXT = 0;
+        TempDocDim.SETRANGE("Line No.",0);
+        CheckDimComb(0);
+      END;
+      DocDim.SETRANGE("Table ID",DATABASE::"Commission Line");
+      DocDim.SETRANGE("Document Type",1);
+      DocDim.SETRANGE("Document No.",ComHeader."No.");
+      IF DocDim.FINDSET THEN BEGIN
+        REPEAT
+          TempDocDim.INIT;
+          TempDocDim := DocDim;
+          TempDocDim.INSERT;
+        UNTIL DocDim.NEXT = 0;
+        TempDocDim.SETRANGE("Line No.",0);
+        CheckDimComb(0);
+      END;
+      TempDocDim.RESET;
+    END;
+
+    LOCAL PROCEDURE CheckDimComb@30(LineNo@1000 : Integer);
+    BEGIN
+      IF NOT DimMgt.CheckDocDimComb(TempDocDim) THEN
+        IF LineNo = 0 THEN
+          ERROR(Text032,1,ComHeader."No.",DimMgt.GetDimCombErr)
+        ELSE
+          ERROR(Text033,1,ComHeader."No.",LineNo,DimMgt.GetDimCombErr);
+    END;
+
+    PROCEDURE CopyVendorToCustomer@1000000013(_VendorNo@1000000000 : Code[20];VAR _CheckResult@1000000006 : Boolean) : Code[20];
+    VAR
+      LT_RMSetup@1000000003 : Record 5079;
+      LT_ContBusRel@1000000001 : Record 5054;
+      LT_Contact@1000000002 : Record 5050;
+      LT_DefaultDim@1000000004 : Record 352;
+      LT_DefaultDim2@1000000005 : Record 352;
+      LT_VendBank@1000000008 : Record 288;
+      LT_CustBank@1000000009 : Record 287;
+      LC_UpdateCustVendBank@1000000007 : Codeunit 5055;
+    BEGIN
+      LT_ContBusRel.RESET;
+      LT_ContBusRel.SETCURRENTKEY("Link to Table","No.");
+      LT_ContBusRel.SETRANGE("Link to Table",LT_ContBusRel."Link to Table"::Vendor);
+      LT_ContBusRel.SETRANGE("No.",_VendorNo);
+      IF NOT LT_ContBusRel.FIND('-') THEN
+        EXIT('');
+      LT_Contact.GET(LT_ContBusRel."Contact No.");
+
+      LT_RMSetup.GET;
+      LT_RMSetup.TESTFIELD("Bus. Rel. Code for Customers");
+      LT_ContBusRel.RESET;
+      LT_ContBusRel.SETRANGE("Contact No.",LT_Contact."No.");
+      LT_ContBusRel.SETRANGE("Link to Table",LT_ContBusRel."Link to Table"::Customer);
+      IF LT_ContBusRel.FINDFIRST THEN
+        EXIT(LT_ContBusRel."No.");
+
+      CLEAR(Cust);
+      Cust.SetInsertFromContact(TRUE);
+      Cust."No." := _VendorNo;
+      Cust.INSERT(TRUE);
+      Cust.SetInsertFromContact(FALSE);
+      LT_ContBusRel."Contact No." := LT_Contact."No.";
+      LT_ContBusRel."Business Relation Code" := LT_RMSetup."Bus. Rel. Code for Customers";
+      LT_ContBusRel."Link to Table" := LT_ContBusRel."Link to Table"::Customer;
+      LT_ContBusRel."No." := Cust."No.";
+      LT_ContBusRel.INSERT(TRUE);
+      LC_UpdateCustVendBank.UpdateCustomer(LT_Contact,LT_ContBusRel);
+      _CheckResult := TRUE;
+
+      Vend.GET(_VendorNo);
+      Cust.GET(LT_ContBusRel."No.");
+      Cust.VALIDATE(Name,Vend.Name);
+      Cust."Territory Code" := Vend."Territory Code";
+      Cust."Currency Code" := Vend."Currency Code";
+      Cust."Country/Region Code" := Vend."Country/Region Code";
+      Cust."Invoice Disc. Code" := Vend."Invoice Disc. Code";
+      Cust."Gen. Bus. Posting Group" := Vend."Gen. Bus. Posting Group";
+      Cust."VAT Bus. Posting Group" := Vend."VAT Bus. Posting Group";
+      Cust."Payment Terms Code" := Vend."Payment Terms Code";
+      Cust."Payment Method Code" := Vend."Payment Method Code";
+      Cust."Shipment Method Code" := Vend."Shipment Method Code";
+      Cust.MODIFY;
+      LT_DefaultDim.RESET;
+      LT_DefaultDim.SETRANGE("Table ID",DATABASE::Customer);
+      LT_DefaultDim.SETRANGE("No.",Cust."No.");
+      IF NOT LT_DefaultDim.ISEMPTY THEN
+        LT_DefaultDim.DELETEALL;
+      LT_DefaultDim.RESET;
+      LT_DefaultDim.SETRANGE("Table ID",DATABASE::Vendor);
+      LT_DefaultDim.SETRANGE("No.",_VendorNo);
+      IF LT_DefaultDim.FINDSET THEN REPEAT
+        CLEAR(LT_DefaultDim2);
+        LT_DefaultDim2.INIT;
+        LT_DefaultDim2.VALIDATE("Table ID",DATABASE::Customer);
+        LT_DefaultDim2."No." := Cust."No.";
+        LT_DefaultDim2.VALIDATE("Dimension Code",LT_DefaultDim."Dimension Code");
+        LT_DefaultDim2.VALIDATE("Dimension Value Code",LT_DefaultDim."Dimension Value Code");
+        LT_DefaultDim2."Value Posting" := LT_DefaultDim."Value Posting";
+        LT_DefaultDim2.INSERT;
+      UNTIL LT_DefaultDim.NEXT = 0;
+      LT_VendBank.SETRANGE("Vendor No.",_VendorNo);
+      IF LT_VendBank.FINDSET THEN REPEAT
+        LT_CustBank.TRANSFERFIELDS(LT_VendBank);
+        LT_CustBank."Customer No." := Cust."No.";
+        LT_CustBank.Code := LT_VendBank.Code;
+        LT_CustBank.INSERT;
+      UNTIL LT_VendBank.NEXT = 0;
+      EXIT(Cust."No.");
+    END;
+
+    BEGIN
+    {
+      GOB1.00   gob-ko   10.05.2012     Permission fÅr Bearbeitung Debitorenposten gegeben
+      GOB1.01   gob-ko   25.07.2012     P0053: automatic applicatin MP2
+      1.00      eich     31.07.12       use commission conditions for find "Com. %"
+      FPC   abr  03.08.12  Commit Removed PostExpCommission
+    }
+    END.
+  }
+}
+

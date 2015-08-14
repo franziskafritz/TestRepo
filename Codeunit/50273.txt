@@ -1,0 +1,180 @@
+OBJECT Codeunit 50273 DPD Job Queue Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=17.04.14;
+    Time=10:35:25;
+    Version List=GOB;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=VAR
+            WrongJQParameterError@1000000000 : TextConst 'ENU=Wrong Job Queue Parameter';
+          BEGIN
+            DPDSetup.GET;
+            DPDSetup.TESTFIELD("JQ Param. SCANINFO Import");
+            DPDSetup.TESTFIELD("JQ Param. SCANINFO Process");
+            DPDSetup.TESTFIELD("Interface Code DPD");
+            CASE "Parameter String" OF
+              DPDSetup."JQ Param. SCANINFO Import" :
+                BEGIN
+                  ImportSCANINFO;
+                END;
+              DPDSetup."JQ Param. SCANINFO Process" :
+                BEGIN
+                  ProcessSCANINFO;
+                END;
+              ELSE
+                ERROR(WrongJQParameterError);
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      DPDSetup@1000000000 : Record 50221;
+
+    PROCEDURE ImportSCANINFO@1000000000();
+    VAR
+      FPCInterfaceSetup@1000000000 : Record 50014;
+      FileRec@1000000001 : Record 2000000022;
+      DPDSCANINFOManagement@1000000002 : Codeunit 50274;
+      SIIGeneralManagement@1000000003 : Codeunit 50120;
+      i@1000000004 : Integer;
+      SCANINFOImportText@1000000005 : TextConst 'ENU=Import SCANINFO\';
+      FTPLog@1000000006 : Record 50038;
+    BEGIN
+      FPCInterfaceSetup.GET(DPDSetup."Interface Code DPD");
+      FPCInterfaceSetup.TESTFIELD("Import Folder");
+      FPCInterfaceSetup.TESTFIELD("Archive Root Folder");  // Archiv Path
+      IF FPCInterfaceSetup."Import Folder"[STRLEN(FPCInterfaceSetup."Import Folder")] <> '\' THEN
+        FPCInterfaceSetup."Import Folder" += '\';
+      FileRec.RESET;
+      FileRec.SETRANGE(Path,FPCInterfaceSetup."Import Folder");
+      FileRec.SETFILTER(Name,'*.dpd');
+      FileRec.SETRANGE("Is a file",TRUE);
+      IF FileRec.FIND('-') THEN BEGIN
+        SIIGeneralManagement.OpenWindow(FileRec.COUNT,SCANINFOImportText);
+        REPEAT
+          i += 1;
+          SIIGeneralManagement.UpdateWindow(i);
+          CLEAR(DPDSCANINFOManagement);
+          CLEARLASTERROR;
+          DPDSCANINFOManagement.InitImportSCANINFO(FileRec.Path + FileRec.Name,FPCInterfaceSetup."Archive Root Folder" + FileRec.Name);
+          IF DPDSCANINFOManagement.RUN THEN BEGIN
+            FTPLog.INIT;
+            FTPLog."Entry No." := FTPLog.GetNextEntryNo;
+            FTPLog."Entry Type" := FTPLog."Entry Type"::Success;
+            FTPLog."Interface Code" := DPDSetup."Interface Code DPD";
+            FTPLog."Upload/Download" := FTPLog."Upload/Download"::Processing;
+            FTPLog.Timestamp := CURRENTDATETIME;
+            FTPLog."Log Type" := FTPLog."Log Type"::"File Process Log";
+            FTPLog."File Name" := FileRec.Name;
+            FTPLog.INSERT;
+          END ELSE BEGIN
+            FTPLog.INIT;
+            FTPLog."Entry No." := FTPLog.GetNextEntryNo;
+            FTPLog."Entry Type" := FTPLog."Entry Type"::Error;
+            FTPLog."Interface Code" := DPDSetup."Interface Code DPD";
+            FTPLog."Upload/Download" := FTPLog."Upload/Download"::Processing;
+            FTPLog.Timestamp := CURRENTDATETIME;
+            FTPLog."Log Type" := FTPLog."Log Type"::"File Process Log";
+            FTPLog."File Name" := FileRec.Name;
+            FTPLog."Error Text 1" := COPYSTR(GETLASTERRORTEXT,1,250);
+            FTPLog."Error Text 2" := COPYSTR(GETLASTERRORTEXT,251,250);
+            FTPLog."Error Text 3" := COPYSTR(GETLASTERRORTEXT,501,250);
+            FTPLog."Error Text 4" := COPYSTR(GETLASTERRORTEXT,751,250);
+            FTPLog.INSERT;
+            COMMIT;
+            CLEAR(DPDSCANINFOManagement);
+            CLEARLASTERROR;
+            DPDSCANINFOManagement.InitErrorSCANINFO(FileRec.Path + FileRec.Name);
+            IF NOT DPDSCANINFOManagement.RUN THEN BEGIN
+              FTPLog."Entry No." := FTPLog.GetNextEntryNo;
+              FTPLog."Entry Type" := FTPLog."Entry Type"::Error;
+              FTPLog."Interface Code" := DPDSetup."Interface Code DPD";
+              FTPLog."Upload/Download" := FTPLog."Upload/Download"::Processing;
+              FTPLog.Timestamp := CURRENTDATETIME;
+              FTPLog."Log Type" := FTPLog."Log Type"::"File Process Log";
+              FTPLog."File Name" := FileRec.Name;
+              FTPLog."Error Text 1" := COPYSTR(GETLASTERRORTEXT,1,250);
+              FTPLog."Error Text 2" := COPYSTR(GETLASTERRORTEXT,251,250);
+              FTPLog."Error Text 3" := COPYSTR(GETLASTERRORTEXT,501,250);
+              FTPLog."Error Text 4" := COPYSTR(GETLASTERRORTEXT,751,250);
+              FTPLog.INSERT;
+            END;
+          END;
+          COMMIT; //!!
+        UNTIL FileRec.NEXT = 0;
+        SIIGeneralManagement.CloseWindow;
+      END;
+    END;
+
+    PROCEDURE ProcessSCANINFO@1000000001();
+    VAR
+      DPDSCANINFOImportBuffer@1000000000 : Record 50222;
+      DPDSCANINFOImportBuffer2@1000000002 : Record 50222;
+      DPDSCANINFOManagement@1000000001 : Codeunit 50274;
+      WasDuplicateRecordText@1000000003 : TextConst 'ENU=Record already exists. Processing aborted.';
+      SIIGeneralManagement@1000000004 : Codeunit 50120;
+      SCANINFOProcessText@1000000005 : TextConst 'ENU=Processing SCANINFO\';
+      i@1000000006 : Integer;
+    BEGIN
+      DPDSCANINFOImportBuffer.RESET;
+      DPDSCANINFOImportBuffer.SETCURRENTKEY(Status,"Insert Timestamp");
+      DPDSCANINFOImportBuffer.SETRANGE(Status,DPDSCANINFOImportBuffer.Status::Unprocessed);
+      IF DPDSCANINFOImportBuffer.FIND('-') THEN BEGIN
+        SIIGeneralManagement.OpenWindow(DPDSCANINFOImportBuffer.COUNT,SCANINFOProcessText);
+        REPEAT
+          i += 1;
+          SIIGeneralManagement.UpdateWindow(i);
+          CLEAR(DPDSCANINFOManagement);
+          CLEARLASTERROR;
+          DPDSCANINFOManagement.InitProcessSCANINFO(DPDSCANINFOImportBuffer."Entry No.");
+          IF DPDSCANINFOManagement.RUN THEN BEGIN
+            DPDSCANINFOImportBuffer2.GET(DPDSCANINFOImportBuffer."Entry No.");
+            IF DPDSCANINFOManagement.GetWasNewRecord THEN
+              DPDSCANINFOImportBuffer2.Status := DPDSCANINFOImportBuffer2.Status::Processed
+            ELSE BEGIN
+              DPDSCANINFOImportBuffer2.Status := DPDSCANINFOImportBuffer2.Status::Canceled;
+              DPDSCANINFOImportBuffer2."Error Text 1" := WasDuplicateRecordText;
+            END;
+            DPDSCANINFOImportBuffer2."Process Timestamp" := CURRENTDATETIME;
+            DPDSCANINFOImportBuffer2."Process User" := USERID;
+            DPDSCANINFOImportBuffer2.MODIFY;
+          END ELSE BEGIN
+            DPDSCANINFOImportBuffer2.GET(DPDSCANINFOImportBuffer."Entry No.");
+            DPDSCANINFOImportBuffer2.Status := DPDSCANINFOImportBuffer2.Status::Error;
+            DPDSCANINFOImportBuffer2."Process Timestamp" := CURRENTDATETIME;
+            DPDSCANINFOImportBuffer2."Process User" := USERID;
+            DPDSCANINFOImportBuffer2."Error Text 1" := COPYSTR(GETLASTERRORTEXT,1,250);
+            DPDSCANINFOImportBuffer2."Error Text 2" := COPYSTR(GETLASTERRORTEXT,251,250);
+            DPDSCANINFOImportBuffer2."Error Text 3" := COPYSTR(GETLASTERRORTEXT,501,250);
+            DPDSCANINFOImportBuffer2."Error Text 4" := COPYSTR(GETLASTERRORTEXT,751,250);
+            DPDSCANINFOImportBuffer2.MODIFY;
+          END;
+          COMMIT; ///!!!
+        UNTIL DPDSCANINFOImportBuffer.NEXT = 0;
+        SIIGeneralManagement.CloseWindow;
+      END;
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------------+
+      |                   ¸  Copyright                   |
+      |       GOB Software & Systeme GmbH & Co. KG       |
+      +--------------------------------------------------+
+      |                      home24                      |
+      +--------------------------------------------------+
+
+      Project   Date        Consultant  Comment
+      ------------------------------------------------------
+      P1227     02.04.14    gob-rste    Object Created
+    }
+    END.
+  }
+}
+

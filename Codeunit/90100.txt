@@ -1,0 +1,259 @@
+OBJECT Codeunit 90100 Execute SQL (MS ADO)
+{
+  OBJECT-PROPERTIES
+  {
+    Date=16.12.11;
+    Time=12:00:00;
+    Version List=SSI/PTB#ADO1.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      ADOConnection@1000000008 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000514-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'.Connection";
+      ADORecSet@1000000011 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000535-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'.Recordset";
+      ADOErrors@1000000015 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000501-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'.Errors";
+      Server@1000000005 : Record 2000000047;
+      Databases@1000000006 : Record 2000000048;
+      Statement@1000000007 : Text[1024];
+      SQLConnectionOK@1000000018 : Boolean;
+      Text001@1000000026 : TextConst 'ENU=You have exceeded the maximum line length of 1000 characters.';
+      Text002@1000000025 : TextConst 'ENU=The ADO connection to the database has been closed.';
+      Text003@1000000024 : TextConst 'ENU=There is no SQL Connection setup.';
+      Text004@1000000023 : TextConst 'ENU=The SQL Connection information specified is incorrect.  Please verify the User ID and Password.';
+      Text005@1000000022 : TextConst 'ENU=Attempting to Connect to the SQL Server ...';
+      Text006@1000000021 : TextConst 'ENU=Connection Established.';
+      Text007@1000000020 : TextConst 'ENU=A Server Name must be entered.';
+      IsError@1000000016 : Boolean;
+      NoOfRecords@1000000014 : Integer;
+      Window@1000000009 : Dialog;
+      Text010@1000000004 : TextConst 'ENU=No SQL statement defined.';
+      Text011@1000000002 : TextConst 'ENU=The SQL statement returned an Error.';
+      Text012@1000000001 : TextConst 'ENU=Execute SQL Statement ...\#1###############################################';
+      PTBSetup@1000000000 : Record 90100;
+
+    PROCEDURE ExecuteStatement@1000000000(InStatement@1000000000 : Text[1024]);
+    BEGIN
+      IF (InStatement = '') THEN
+        ERROR(Text010);
+
+      PTBSetup.GET;
+      PTBSetup.TESTFIELD("SQL Server Name");
+      IF (PTBSetup."Authentication Mode" = PTBSetup."Authentication Mode"::"SQL Server") THEN
+        PTBSetup.TESTFIELD("Login Name");
+
+      Statement := InStatement;
+
+      IF GUIALLOWED THEN BEGIN
+        Window.OPEN(Text012);
+        Window.UPDATE(1, Statement);
+      END;
+
+      ServerConnect(FALSE);
+      SendSQLStatement();
+      ServerDisconnect();
+
+      IF GUIALLOWED THEN
+        Window.CLOSE;
+
+      IF IsError THEN
+        ERROR(Text011);
+    END;
+
+    PROCEDURE ServerConnect@1020004(TestConnection@1020003 : Boolean);
+    VAR
+      ConnectionString@1020000 : Text[100];
+      CursorLocation@1020001 : Integer;
+    BEGIN
+      IF ISCLEAR(ADOConnection) THEN
+        CREATE(ADOConnection);
+
+      ConnectionString := 'Server=' + GetCurrentServer;
+
+      CASE PTBSetup."Authentication Mode" OF
+        PTBSetup."Authentication Mode"::Windows:
+          ConnectionString += ';Trusted_Connection=Yes;';
+
+        PTBSetup."Authentication Mode"::"SQL Server":
+          ConnectionString += ';Trusted_Connection=No;UID=' + PTBSetup."Login Name" + ';pwd=' + PTBSetup.Password + ';'
+      END;
+
+      // CursorLocation:
+      // 3 : Uses client-side cursors
+      // 2 : Uses data provider or driver-supplied cursors
+      // 1 : Not Valid, only for backward compatibility
+      CursorLocation := 3;
+
+      ADOConnection.Provider('SQLOLEDB');
+      ADOConnection.CursorLocation(CursorLocation);
+      ADOConnection.ConnectionString(ConnectionString);
+      ADOConnection.Open;
+
+      // ADO State Values:
+      //   adStateClosed     : 0 = Object is closed
+      //   adStateOpen       : 1 = Object is open
+      //   adStateConnecting : 2 = Attempting to connect
+      //   adStateExecuting  :     Not used
+      //   adStateFetching   :     Not used
+
+      SQLConnectionOK := (ADOConnection.State = 1);
+
+      IF NOT SQLConnectionOK THEN
+        ERROR(Text004)
+      ELSE IF SQLConnectionOK AND TestConnection THEN BEGIN
+        MESSAGE(Text006);
+        ServerDisconnect;
+      END;
+    END;
+
+    PROCEDURE ServerDisconnect@1020008();
+    BEGIN
+      ADOConnection.Close;
+    END;
+
+    PROCEDURE SendSQLStatement@1020002();
+    VAR
+      RecordsAffected@1020002 : Integer;
+      Options@1020003 : Integer;
+    BEGIN
+      RecordsAffected := 0;
+
+      // Command Option Values:
+      //   adCmdFile        : 256 = Evaluate as a previously persisted file
+      //   adCmdStoredProc  :   4 = Evaluate as a stored procedure
+      //   adCmdTable       :   2 = Have the provider generate a SQL query and return all rows from the specified table
+      //   adCmdTableDirect : 512 = Return all rows from the specified table
+      //   adCmdText        :   1 = Evaluate as a textual definition
+      //   adCmdUnknown     :   8 = The type of the CommandText parameter is unknown
+      //   adCmdUnspecified :  -1 = Default, does not specify how to evaluate
+
+      Options := 1;
+
+      IF ADOConnection.State = 1 THEN BEGIN
+        ADOConnection.DefaultDatabase(GetCurrentDatabase);
+        ADOConnection.CommandTimeout(0);                                     // Timeout set to indefinitely
+        ADOConnection.Execute(Statement, RecordsAffected, Options);
+        ADOErrors := ADOConnection.Errors();
+        IsError := ADOErrors.Count > 0;
+        IF IsError THEN
+          EXIT;
+        YIELD;
+      END ELSE
+        ERROR(Text002);
+    END;
+
+    PROCEDURE GetCurrentServer@1020013() : Text[250];
+    BEGIN
+      PTBSetup.GET;
+      EXIT(PTBSetup."SQL Server Name");
+
+      //Server.SETRANGE("My Server", TRUE);
+      //Server.FINDFIRST;
+      //EXIT(Server."Server Name");
+    END;
+
+    PROCEDURE GetCurrentDatabase@1000000001() : Text[250];
+    BEGIN
+      Databases.SETRANGE("My Database", TRUE);
+      Databases.FINDFIRST;
+      EXIT(STRSUBSTNO('[%1]', Databases."Database Name"));
+    END;
+
+    EVENT ADOConnection@1000000008::InfoMessage@0(pError@1000000002 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000500-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'.Error";adStatus@1000000001 : Integer;pConnection@1000000000 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000550-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'._Connection");
+    BEGIN
+    END;
+
+    EVENT ADOConnection@1000000008::BeginTransComplete@1(TransactionLevel@1000000003 : Integer;pError@1000000002 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000500-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'.Error";adStatus@1000000001 : Integer;pConnection@1000000000 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000550-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'._Connection");
+    BEGIN
+    END;
+
+    EVENT ADOConnection@1000000008::CommitTransComplete@3(pError@1000000002 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000500-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'.Error";adStatus@1000000001 : Integer;pConnection@1000000000 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000550-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'._Connection");
+    BEGIN
+    END;
+
+    EVENT ADOConnection@1000000008::RollbackTransComplete@2(pError@1000000002 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000500-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'.Error";adStatus@1000000001 : Integer;pConnection@1000000000 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000550-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'._Connection");
+    BEGIN
+    END;
+
+    EVENT ADOConnection@1000000008::WillExecute@4(VAR Source@1000000007 : Text[1024];CursorType@1000000006 : Integer;LockType@1000000005 : Integer;VAR Options@1000000004 : Integer;adStatus@1000000003 : Integer;pCommand@1000000002 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{B08400BD-F9D1-4D02-B856-71D5DBA123E9}:'Microsoft ActiveX Data Objects 2.7 Library'._Command";pRecordset@1000000001 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000556-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'._Recordset";pConnection@1000000000 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000550-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'._Connection");
+    BEGIN
+    END;
+
+    EVENT ADOConnection@1000000008::ExecuteComplete@5(RecordsAffected@1000000005 : Integer;pError@1000000004 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000500-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'.Error";adStatus@1000000003 : Integer;pCommand@1000000002 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{B08400BD-F9D1-4D02-B856-71D5DBA123E9}:'Microsoft ActiveX Data Objects 2.7 Library'._Command";pRecordset@1000000001 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000556-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'._Recordset";pConnection@1000000000 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000550-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'._Connection");
+    BEGIN
+    END;
+
+    EVENT ADOConnection@1000000008::WillConnect@6(VAR ConnectionString@1000000005 : Text[1024];VAR UserID@1000000004 : Text[1024];VAR Password@1000000003 : Text[1024];VAR Options@1000000002 : Integer;adStatus@1000000001 : Integer;pConnection@1000000000 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000550-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'._Connection");
+    BEGIN
+    END;
+
+    EVENT ADOConnection@1000000008::ConnectComplete@7(pError@1000000002 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000500-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'.Error";adStatus@1000000001 : Integer;pConnection@1000000000 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000550-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'._Connection");
+    BEGIN
+    END;
+
+    EVENT ADOConnection@1000000008::Disconnect@8(adStatus@1000000001 : Integer;pConnection@1000000000 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000550-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'._Connection");
+    BEGIN
+    END;
+
+    EVENT ADORecSet@1000000011::WillChangeField@9(cFields@1000000003 : Integer;Fields@1000000002 : Variant;adStatus@1000000001 : Integer;pRecordset@1000000000 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000556-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'._Recordset");
+    BEGIN
+    END;
+
+    EVENT ADORecSet@1000000011::FieldChangeComplete@10(cFields@1000000004 : Integer;Fields@1000000003 : Variant;pError@1000000002 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000500-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'.Error";adStatus@1000000001 : Integer;pRecordset@1000000000 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000556-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'._Recordset");
+    BEGIN
+    END;
+
+    EVENT ADORecSet@1000000011::WillChangeRecord@11(adReason@1000000003 : Integer;cRecords@1000000002 : Integer;adStatus@1000000001 : Integer;pRecordset@1000000000 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000556-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'._Recordset");
+    BEGIN
+    END;
+
+    EVENT ADORecSet@1000000011::RecordChangeComplete@12(adReason@1000000004 : Integer;cRecords@1000000003 : Integer;pError@1000000002 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000500-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'.Error";adStatus@1000000001 : Integer;pRecordset@1000000000 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000556-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'._Recordset");
+    BEGIN
+    END;
+
+    EVENT ADORecSet@1000000011::WillChangeRecordset@13(adReason@1000000002 : Integer;adStatus@1000000001 : Integer;pRecordset@1000000000 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000556-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'._Recordset");
+    BEGIN
+    END;
+
+    EVENT ADORecSet@1000000011::RecordsetChangeComplete@14(adReason@1000000003 : Integer;pError@1000000002 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000500-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'.Error";adStatus@1000000001 : Integer;pRecordset@1000000000 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000556-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'._Recordset");
+    BEGIN
+    END;
+
+    EVENT ADORecSet@1000000011::WillMove@15(adReason@1000000002 : Integer;adStatus@1000000001 : Integer;pRecordset@1000000000 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000556-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'._Recordset");
+    BEGIN
+    END;
+
+    EVENT ADORecSet@1000000011::MoveComplete@16(adReason@1000000003 : Integer;pError@1000000002 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000500-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'.Error";adStatus@1000000001 : Integer;pRecordset@1000000000 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000556-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'._Recordset");
+    BEGIN
+    END;
+
+    EVENT ADORecSet@1000000011::EndOfRecordset@17(VAR fMoreData@1000000002 : Boolean;adStatus@1000000001 : Integer;pRecordset@1000000000 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000556-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'._Recordset");
+    BEGIN
+    END;
+
+    EVENT ADORecSet@1000000011::FetchProgress@18(Progress@1000000003 : Integer;MaxProgress@1000000002 : Integer;adStatus@1000000001 : Integer;pRecordset@1000000000 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000556-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'._Recordset");
+    BEGIN
+    END;
+
+    EVENT ADORecSet@1000000011::FetchComplete@19(pError@1000000002 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000500-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'.Error";adStatus@1000000001 : Integer;pRecordset@1000000000 : Automation "{EF53050B-882E-4776-B643-EDA472E8E3F2} 2.7:{00000556-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.7 Library'._Recordset");
+    BEGIN
+    END;
+
+    BEGIN
+    {
+      *********************************************************
+      ***              STRYK System Improvement             ***
+      ***    Performance Optimization & Troubleshooting     ***
+      ***  (c) 2007, STRYK System Improvement, J”rg Stryk   ***
+      ***               Contact: www.stryk.info             ***
+      *********************************************************
+    }
+    END.
+  }
+}
+

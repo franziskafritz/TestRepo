@@ -1,0 +1,673 @@
+OBJECT Codeunit 50074 SC Web Service Out
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18.04.13;
+    Time=13:51:14;
+    Modified=Yes;
+    Version List=HME0007;
+  }
+  PROPERTIES
+  {
+    TableNo=50103;
+    OnRun=VAR
+            SCQueueLogL@1000000000 : Record 50103;
+            SCCountL@1000000001 : Integer;
+          BEGIN
+            //First Check Data
+            ErrorSource := ErrorSource::NAV;
+
+            SCQueueSetup.GET;
+            SCCode.GET("Shop Connector Code");
+
+            IF NOT "Test Mail" THEN BEGIN
+              IF SCQueueSetup."Shop Connector active" = SCQueueSetup."Shop Connector active"::No THEN
+                SCQueueSetup.FIELDERROR("Shop Connector active");
+
+              IF SCCode."Shop Connector active" = SCCode."Shop Connector active"::No THEN
+                SCCode.FIELDERROR("Shop Connector active");
+            END;
+
+            SCCode.TESTFIELD("Web Service Adress");
+            SCCode.TESTFIELD("Web Service Action");
+
+            //Check Mail Count
+            IF (SCCode."Max. Run Count" <> 0) AND (NOT "Test Mail") AND (Action = Action::Automatic) THEN BEGIN
+              SCQueueLogL.SETRANGE(Direction,SCQueueLogL.Direction::Outgoing);
+              SCQueueLogL.SETRANGE(Status,SCQueueLogL.Status::Commited,SCQueueLogL.Status::Warning);
+              SCQueueLogL.SETRANGE(Send,TRUE);
+              SCQueueLogL.SETRANGE("Source Type","Source Type");
+              SCQueueLogL.SETRANGE("Source Subtype","Source Subtype");
+              SCQueueLogL.SETRANGE("Source ID","Source ID");
+              SCQueueLogL.SETRANGE("Shop Connector Code","Shop Connector Code");
+              SCCountL := SCQueueLogL.COUNT;
+              IF SCCountL >= SCCode."Max. Run Count" THEN
+                ERROR(Text002,"Source ID","Shop Connector Code",SCCountL,SCCode."Max. Run Count");
+            END;
+
+            GlobalSCQueueLog := Rec;
+
+            ErrorSource := ErrorSource::" ";
+
+            CASE SCCode.Code OF
+              SCQueueSetup."Shipment Mail Code":
+                  GenerateShipmentXML(Rec);
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text001@1000000000 : TextConst 'DEU=Erfolgreich!;ENU=Successful!';
+      SCQueueSetup@1000000001 : Record 50101;
+      SCCode@1000000009 : Record 50102;
+      GlobalSCQueueLog@1000000006 : Record 50103;
+      SCUtils@1000000004 : Codeunit 50072;
+      XmlResponseDoc@1000000005 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v6.0'.DOMDocument";
+      ErrorText@1000000003 : Text[250];
+      ErrorSource@1000000008 : ' ,NAV,Connection,Shop,UMS';
+      QueueId@1000000002 : Integer;
+      Text002@1000000010 : TextConst 'ENU=For Order %1 Mail Type %2 were send %3 E-Mails.\%4 are allowed!';
+      Text003@1000000007 : TextConst 'ENU=Unknown XML Structure! There is no Response or SOAP Node!';
+      Text004@1000000011 : TextConst 'ENU=Successful!\A new Entry is created!';
+
+    LOCAL PROCEDURE SendXMLFile@1000000003(TempBlobV@1000000000 : Record 99008535) : Boolean;
+    VAR
+      SoapHttpConnectorL@1000000005 : Automation "{46BF17C2-9257-11D5-87EA-00B0D0BE6479} 3.0:{0AF40C55-9257-11D5-87EA-00B0D0BE6479}:'Microsoft Soap WinHttp Connector Type Library (v3.0)'.WinHttpConnector30";
+      SoapSerializerL@1000000002 : Automation "{91147A58-DFE4-47C0-8E76-987FC1A6001B} 3.0:{B76585B0-9257-11D5-87EA-00B0D0BE6479}:'Microsoft Soap Type Library v3.0'.SoapSerializer30";
+      XmlDocL@1000000004 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v3.0'.DOMDocument";
+      XmlResponseRootNodeL@1000000015 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMNode";
+      XmlResponseNodeL@1000000001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMNode";
+      TempInstreamL@1000000003 : InStream;
+      ResponseBigTextL@1000000007 : BigText;
+      TempTextL@1000000008 : Text[1000];
+      PositionL@1000000010 : Integer;
+      ActLenL@1000000009 : Integer;
+      XMLValueStartPosL@1000000016 : Integer;
+      XMLValueEndPosL@1000000017 : Integer;
+      XMLValueLengthL@1000000018 : Integer;
+    BEGIN
+      CLEAR(SoapHttpConnectorL);
+      CLEAR(SoapSerializerL);
+      CLEAR(XmlResponseDoc);
+      CLEAR(XmlResponseNodeL);
+      CLEAR(XmlDocL);
+      ErrorText := '';
+
+      IF ISCLEAR(XmlDocL) THEN
+        CREATE(XmlDocL);
+
+      IF ISCLEAR(SoapHttpConnectorL) THEN
+        CREATE(SoapHttpConnectorL);
+
+      IF ISCLEAR(SoapSerializerL) THEN
+        CREATE(SoapSerializerL);
+
+      IF ISCLEAR(XmlResponseDoc) THEN
+        CREATE(XmlResponseDoc);
+
+      TempBlobV.CALCFIELDS(Blob);
+      TempBlobV.Blob.CREATEINSTREAM(TempInstreamL);
+
+      XmlDocL.async := FALSE;
+      XmlDocL.load(TempInstreamL);
+
+      //Save Request
+      IF SCCode."Save Request XML" THEN BEGIN
+        ErrorSource := ErrorSource::NAV;
+        SCCode.TESTFIELD("Request File Path");
+        XmlDocL.save(SCCode."Request File Path" + '\' + FORMAT(GlobalSCQueueLog."Entry No.") +'_request.xml');
+        GlobalSCQueueLog."Request File Path" :=
+            COPYSTR(SCCode."Request File Path" + '\' + FORMAT(GlobalSCQueueLog."Entry No.") +'_request.xml',1,250);
+        GlobalSCQueueLog.MODIFY;
+        ErrorSource := ErrorSource::" ";
+      END;
+
+      //Save XML as Text
+      TempBlobV.Blob.CREATEINSTREAM(TempInstreamL);
+      ResponseBigTextL.READ(TempInstreamL);
+
+      //Initialize Connector
+      SoapHttpConnectorL.Property('EndPointURL',SCCode."Web Service Adress");
+      SoapHttpConnectorL.Connect;
+
+      IF SCCode."User Authorization active" THEN BEGIN
+        ErrorSource := ErrorSource::NAV;
+        SCCode.TESTFIELD("Authorization User");
+        SCCode.TESTFIELD("Authorization Password");
+        SoapHttpConnectorL.Property('AuthUser',SCCode."Authorization User");
+        SoapHttpConnectorL.Property('AuthPassword', SCCode."Authorization Password");
+        ErrorSource := ErrorSource::" ";
+      END;
+
+      ErrorSource := ErrorSource::Connection;
+      SoapHttpConnectorL.Property('Timeout', SCCode."Timeout (Sec.)" * 1000);
+      SoapHttpConnectorL.Property('SoapAction',SCCode."Web Service Action");
+      SoapHttpConnectorL.BeginMessage;
+
+      //Initialize Serializer
+      SoapSerializerL.Init(SoapHttpConnectorL.InputStream);
+      SoapSerializerL.StartEnvelope('SOAP','STANDARD');
+      SoapSerializerL.SoapAttribute(STRSUBSTNO('xmlns="%1" >',SCCode."Web Service Adress"));
+        SoapSerializerL.StartBody;
+          SoapSerializerL.StartElement(SCCode."Web Service Action");
+            SoapSerializerL.StartElement('request');
+
+              PositionL := 1;
+              ActLenL := 1;
+              WHILE ActLenL <> 0 DO BEGIN
+                ActLenL := ResponseBigTextL.GETSUBTEXT(TempTextL,PositionL, 1000);
+                SoapSerializerL.WriteString(TempTextL);
+                PositionL += 1000;
+                TempTextL := '';
+              END;
+
+            SoapSerializerL.EndElement;
+
+
+          SoapSerializerL.EndElement;
+        SoapSerializerL.EndBody;
+      SoapSerializerL.EndEnvelope;
+      SoapHttpConnectorL.EndMessage;
+
+      XmlResponseDoc.load(SoapHttpConnectorL.OutputStream);
+      ErrorSource := ErrorSource::" ";
+
+      //Save Response
+      IF SCCode."Save Response XML" THEN BEGIN
+        ErrorSource := ErrorSource::NAV;
+        SCCode.TESTFIELD("Request File Path");
+        XmlResponseDoc.save(SCCode."Response File Path" + '\' + FORMAT(GlobalSCQueueLog."Entry No.") + '_response.xml');
+        GlobalSCQueueLog."Response File Path" :=
+            COPYSTR(SCCode."Response File Path" + '\' + FORMAT(GlobalSCQueueLog."Entry No.") + '_response.xml',1,250);
+        GlobalSCQueueLog.MODIFY;
+        ErrorSource := ErrorSource::" ";
+      END;
+
+      CASE SCCode.Code OF
+        SCQueueSetup."Shipment Mail Code":
+          BEGIN
+            ErrorSource := ErrorSource::Connection;
+            XmlResponseRootNodeL := XmlResponseDoc.documentElement;
+
+            IF SCUtils.XmlGetNode(XmlResponseRootNodeL,
+                                   'SOAP-ENV:Body/ns1:triggerEmailResult/response',XmlResponseNodeL) THEN BEGIN
+
+              //Check Queue ID
+              XMLValueStartPosL := STRPOS(XmlResponseNodeL.text,'<queueId>')+9;
+              XMLValueEndPosL := STRPOS(XmlResponseNodeL.text,'</queueId>');
+              XMLValueLengthL := XMLValueEndPosL - XMLValueStartPosL;
+
+              IF XMLValueLengthL > 0 THEN
+                EVALUATE(QueueId,COPYSTR(XmlResponseNodeL.text,XMLValueStartPosL,XMLValueLengthL));
+
+              GlobalSCQueueLog."Mail Queue ID" := QueueId;
+              GlobalSCQueueLog.MODIFY;
+
+              //Check Error Text
+              XMLValueStartPosL := STRPOS(XmlResponseNodeL.text,'<error>')+7;
+              XMLValueEndPosL := STRPOS(XmlResponseNodeL.text,'</error>');
+              XMLValueLengthL := XMLValueEndPosL - XMLValueStartPosL;
+
+              IF XMLValueLengthL > 0 THEN
+                ErrorText := COPYSTR(XmlResponseNodeL.text,XMLValueStartPosL,MAXSTRLEN(ErrorText));
+
+              IF (ErrorText <> '') AND (QueueId = 0) THEN BEGIN
+                ErrorSource := ErrorSource::Shop;
+                ERROR(ErrorText);
+                ErrorSource := ErrorSource::" ";
+              END;
+
+            END ELSE BEGIN
+
+            //Check if error
+              IF SCUtils.XmlGetNode(XmlResponseRootNodeL,
+                                     'SOAP-ENV:Body/SOAP-ENV:Fault/faultcode',XmlResponseNodeL) THEN BEGIN
+                ErrorText := XmlResponseNodeL.text;
+
+              IF ErrorText = 'Sender' THEN
+                ErrorSource := ErrorSource::NAV
+              ELSE
+                ErrorSource := ErrorSource::Connection;
+
+              ErrorText := ErrorText + ': ' +
+                SCUtils.XmlGetNodeText(XmlResponseRootNodeL,
+                                        'SOAP-ENV:Body/SOAP-ENV:Fault/faultstring',
+                                        MAXSTRLEN(ErrorText) - (STRLEN(ErrorText)+2));
+
+              ERROR(ErrorText);
+              ErrorSource := ErrorSource::" ";
+
+              END ELSE BEGIN
+                ErrorSource := ErrorSource::Connection;
+                ErrorText := Text003;
+                ERROR(ErrorText);
+                ErrorSource := ErrorSource::" ";
+              END;
+            END;
+          END;
+      END;
+
+      ErrorSource := ErrorSource::" ";
+
+      CLEAR(SoapHttpConnectorL);
+      CLEAR(SoapSerializerL);
+      CLEAR(XmlResponseNodeL);
+      CLEAR(XmlResponseDoc);
+      CLEAR(XmlDocL);
+
+      ErrorSource := ErrorSource::Shop;
+      IF ErrorText <> '' THEN
+        ERROR(ErrorText);
+      ErrorSource := ErrorSource::" ";
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE CheckWebServiceConnection@1000000000();
+    VAR
+      SCCodeL@1000000007 : Record 50102;
+      SCQueueLogL@1000000000 : Record 50103;
+      SCQueueLog2L@1000000002 : Record 50103;
+      SCQueueLogSuccL@1000000005 : Record 50103;
+      SCQueueLogErrorL@1000000004 : Record 50103;
+      SCQueueLineLogL@1000000001 : Record 50104;
+      SCQueueLineLogSuccL@1000000008 : Record 50104;
+      SCCodesL@1000000006 : Form 50108;
+      WebServiceMailOutL@1000000003 : Codeunit 50074;
+    BEGIN
+      SCCodesL.SETRECORD(SCCodeL);
+      SCCodesL.EDITABLE(FALSE);
+      SCCodesL.LOOKUPMODE(TRUE);
+      IF SCCodesL.RUNMODAL <> ACTION::LookupOK THEN
+        EXIT;
+      SCCodesL.GETRECORD(SCCodeL);
+
+      CLEARLASTERROR;
+
+      SCQueueLogL.INIT;
+      //A/gob-adb/18.04.13
+      SCQueueLog2L.LOCKTABLE;
+      //E/gob-adb/18.04.13
+      IF SCQueueLog2L.FINDLAST THEN
+        SCQueueLogL."Entry No." := SCQueueLog2L."Entry No." +1
+      ELSE
+        SCQueueLogL."Entry No." := 1;
+
+      SCQueueLogL."Website No." := 1;
+      SCQueueLogL.Direction := SCQueueLogL.Direction::Outgoing;
+      SCQueueLogL.Status := SCQueueLogL.Status::New;
+      SCQueueLogL.Action := SCQueueLogL.Action::Manual;
+      SCQueueLogL."Created at" := CREATEDATETIME(WORKDATE,TIME);
+      SCQueueLogL."Source Type" := DATABASE::"Sales Header";
+      SCQueueLogL."Source Subtype" := 1;
+      SCQueueLogL."Source ID" := '10101000131318';
+      SCQueueLogL."Recipient Type" := SCQueueLogL."Recipient Type"::Customer;
+      SCQueueLogL."Recipient No." := '1000252120';
+      SCQueueLogL."Recipient E-Mail Adress" := SCCodeL."Test E-Mail Adress";
+      SCQueueLogL."Shop Connector Code" := SCCodeL.Code;
+      SCQueueLogL."Test Mail" := TRUE;
+      SCQueueLogL.INSERT;
+
+      //1
+      SCQueueLineLogL.INIT;
+      SCQueueLineLogL."Attached to Entry No." := SCQueueLogL."Entry No.";
+      SCQueueLineLogL."Line No.":= 10000;
+      SCQueueLineLogL.Status := SCQueueLogL.Status;
+      SCQueueLineLogL."Source Type" := DATABASE::"Sales Line";
+      SCQueueLineLogL."Source Subtype" := SCQueueLogL."Source Subtype";
+      SCQueueLineLogL."Source ID" := SCQueueLogL."Source ID";
+      SCQueueLineLogL."Source Ref. No." := 10000;
+      SCQueueLineLogL."Recipient Type" := SCQueueLogL."Recipient Type";
+      SCQueueLineLogL."Recipient No." := SCQueueLogL."Recipient No.";
+      SCQueueLineLogL."Recipient E-Mail Adress" := SCQueueLogL."Recipient E-Mail Adress";
+      SCQueueLineLogL.Type := SCQueueLineLogL.Type::Item;
+      SCQueueLineLogL."No." := 'M-PP-WSL-0002';
+      SCQueueLineLogL."Tracking No." := '274733040386';
+      SCQueueLineLogL."Shipping Agent Code" := 'DHL';
+      SCQueueLineLogL."Purchasing Code" := 'GER-2';
+      SCQueueLineLogL.INSERT;
+
+      //2
+      SCQueueLineLogL.INIT;
+      SCQueueLineLogL."Attached to Entry No." := SCQueueLogL."Entry No.";
+      SCQueueLineLogL."Line No.":= 20000;
+      SCQueueLineLogL.Status := SCQueueLogL.Status;
+      SCQueueLineLogL."Source Type" := DATABASE::"Sales Line";
+      SCQueueLineLogL."Source Subtype" := SCQueueLogL."Source Subtype";
+      SCQueueLineLogL."Source ID" := SCQueueLogL."Source ID";
+      SCQueueLineLogL."Source Ref. No." := 10000;
+      SCQueueLineLogL."Recipient Type" := SCQueueLogL."Recipient Type";
+      SCQueueLineLogL."Recipient No." := SCQueueLogL."Recipient No.";
+      SCQueueLineLogL."Recipient E-Mail Adress" := SCQueueLogL."Recipient E-Mail Adress";
+      SCQueueLineLogL.Type := SCQueueLineLogL.Type::Item;
+      SCQueueLineLogL."No." := 'M-PP-WSL-0002';
+      SCQueueLineLogL."Tracking No." := '274733040386';
+      SCQueueLineLogL."Shipping Agent Code" := 'DHL';
+      SCQueueLineLogL."Purchasing Code" := 'GER-2';
+      SCQueueLineLogL.INSERT;
+
+      //3
+      SCQueueLineLogL.INIT;
+      SCQueueLineLogL."Attached to Entry No." := SCQueueLogL."Entry No.";
+      SCQueueLineLogL."Line No.":= 30000;
+      SCQueueLineLogL.Status := SCQueueLogL.Status;
+      SCQueueLineLogL."Source Type" := DATABASE::"Sales Line";
+      SCQueueLineLogL."Source Subtype" := SCQueueLogL."Source Subtype";
+      SCQueueLineLogL."Source ID" := SCQueueLogL."Source ID";
+      SCQueueLineLogL."Source Ref. No." := 10000;
+      SCQueueLineLogL."Recipient Type" := SCQueueLogL."Recipient Type";
+      SCQueueLineLogL."Recipient No." := SCQueueLogL."Recipient No.";
+      SCQueueLineLogL."Recipient E-Mail Adress" := SCQueueLogL."Recipient E-Mail Adress";
+      SCQueueLineLogL.Type := SCQueueLineLogL.Type::Item;
+      SCQueueLineLogL."No." := 'M-PP-WSL-0007';
+      SCQueueLineLogL."Tracking No." := '319893816160';
+      SCQueueLineLogL."Shipping Agent Code" := 'DHL';
+      SCQueueLineLogL."Purchasing Code" := 'GER-2';
+      SCQueueLineLogL.INSERT;
+
+      //4
+      SCQueueLineLogL.INIT;
+      SCQueueLineLogL."Attached to Entry No." := SCQueueLogL."Entry No.";
+      SCQueueLineLogL."Line No.":= 40000;
+      SCQueueLineLogL.Status := SCQueueLogL.Status;
+      SCQueueLineLogL."Source Type" := DATABASE::"Sales Line";
+      SCQueueLineLogL."Source Subtype" := SCQueueLogL."Source Subtype";
+      SCQueueLineLogL."Source ID" := SCQueueLogL."Source ID";
+      SCQueueLineLogL."Source Ref. No." := 10000;
+      SCQueueLineLogL."Recipient Type" := SCQueueLogL."Recipient Type";
+      SCQueueLineLogL."Recipient No." := SCQueueLogL."Recipient No.";
+      SCQueueLineLogL."Recipient E-Mail Adress" := SCQueueLogL."Recipient E-Mail Adress";
+      SCQueueLineLogL.Type := SCQueueLineLogL.Type::Item;
+      SCQueueLineLogL."No." := 'M-PP-WSL-0007';
+      SCQueueLineLogL."Tracking No." := '319893816924';
+      SCQueueLineLogL."Shipping Agent Code" := 'DHL';
+      SCQueueLineLogL."Purchasing Code" := 'GER-2';
+      SCQueueLineLogL.INSERT;
+
+      //5
+      SCQueueLineLogL.INIT;
+      SCQueueLineLogL."Attached to Entry No." := SCQueueLogL."Entry No.";
+      SCQueueLineLogL."Line No.":= 50000;
+      SCQueueLineLogL.Status := SCQueueLogL.Status;
+      SCQueueLineLogL."Source Type" := DATABASE::"Sales Line";
+      SCQueueLineLogL."Source Subtype" := SCQueueLogL."Source Subtype";
+      SCQueueLineLogL."Source ID" := SCQueueLogL."Source ID";
+      SCQueueLineLogL."Source Ref. No." := 10000;
+      SCQueueLineLogL."Recipient Type" := SCQueueLogL."Recipient Type";
+      SCQueueLineLogL."Recipient No." := SCQueueLogL."Recipient No.";
+      SCQueueLineLogL."Recipient E-Mail Adress" := SCQueueLogL."Recipient E-Mail Adress";
+      SCQueueLineLogL.Type := SCQueueLineLogL.Type::Item;
+      SCQueueLineLogL."No." := 'M-PP-WSL-0009';
+      SCQueueLineLogL."Tracking No." := '319893816974';
+      SCQueueLineLogL."Shipping Agent Code" := 'DHL';
+      SCQueueLineLogL."Purchasing Code" := 'GER-2';
+      SCQueueLineLogL.INSERT;
+
+      CLEAR(WebServiceMailOutL);
+      COMMIT;
+      IF WebServiceMailOutL.RUN(SCQueueLogL) THEN BEGIN
+        SCQueueLogSuccL := SCQueueLogL;
+        SCQueueLogSuccL.FIND;
+        SCQueueLogSuccL.Status := SCQueueLogSuccL.Status::Transfered;
+        SCQueueLogSuccL."Processed at" := CREATEDATETIME(WORKDATE,TIME);
+        SCQueueLogSuccL.MODIFY;
+        SCQueueLineLogSuccL.SETRANGE("Attached to Entry No.",SCQueueLogSuccL."Entry No.");
+        IF NOT SCQueueLineLogSuccL.ISEMPTY THEN
+          SCQueueLineLogSuccL.MODIFYALL(Status,SCQueueLogSuccL.Status);
+        MESSAGE(Text001)
+      END ELSE BEGIN
+        SCQueueLogErrorL := SCQueueLogL;
+        SCQueueLogErrorL.FIND;
+        SCQueueLogErrorL.Status := SCQueueLogErrorL.Status::Error;
+        SCQueueLogErrorL."Error Text" := COPYSTR(GETLASTERRORTEXT,1,250);
+        SCQueueLogErrorL."Processed at" := CREATEDATETIME(WORKDATE,TIME);
+        SCQueueLogErrorL."Error Source" := WebServiceMailOutL.GetErrorSource;
+        SCQueueLogErrorL.MODIFY;
+        SCQueueLineLogSuccL.SETRANGE("Attached to Entry No.",SCQueueLogSuccL."Entry No.");
+        IF NOT SCQueueLineLogSuccL.ISEMPTY THEN
+          SCQueueLineLogSuccL.MODIFYALL(Status,SCQueueLogErrorL.Status);
+        MESSAGE(GETLASTERRORTEXT);
+      END;
+    END;
+
+    LOCAL PROCEDURE GenerateTestXML@1000000001(SCQueueLogV@1000000000 : Record 50103) : Boolean;
+    VAR
+      TempBlobL@1000000003 : TEMPORARY Record 99008535;
+      TestXmlPortL@1000000001 : XMLport 50000;
+      OstreamL@1000000002 : OutStream;
+    BEGIN
+      CLEAR(TempBlobL);
+      TempBlobL.Blob.CREATEOUTSTREAM(OstreamL);
+      TestXmlPortL.SETDESTINATION(OstreamL);
+      TestXmlPortL.SetSCQueueLog(SCQueueLogV);
+      TestXmlPortL.EXPORT;
+      EXIT(SendXMLFile(TempBlobL));
+    END;
+
+    LOCAL PROCEDURE GenerateShipmentXML@1000000014(SCQueueLogV@1000000008 : Record 50103) : Boolean;
+    VAR
+      TempBlobL@1000000003 : TEMPORARY Record 99008535;
+      ShipmentXmlPortL@1000000001 : XMLport 50000;
+      XmlHttpL@1000000007 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{F6D90F16-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v6.0'.XMLHTTP";
+      XmlDocL@1000000006 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v6.0'.DOMDocument";
+      XmlNodeL@1000000005 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMNode";
+      TempInstreamL@1000000004 : InStream;
+      OstreamL@1000000002 : OutStream;
+    BEGIN
+      CLEAR(TempBlobL);
+      TempBlobL.Blob.CREATEOUTSTREAM(OstreamL);
+      ShipmentXmlPortL.SETDESTINATION(OstreamL);
+      ShipmentXmlPortL.SetSCQueueLog(SCQueueLogV);
+      ShipmentXmlPortL.EXPORT;
+      EXIT(SendXMLFile(TempBlobL));
+    END;
+
+    PROCEDURE GetErrorSource@1000000004() : Integer;
+    BEGIN
+      EXIT(ErrorSource);
+    END;
+
+    PROCEDURE RecreateNewEntry@1000000002(SCQueueLogV@1000000000 : Record 50103);
+    VAR
+      CustomerL@1000000006 : Record 18;
+      ContactL@1000000005 : Record 5050;
+      SCQueueLogL@1000000001 : Record 50103;
+      SCQueueLog2L@1000000002 : Record 50103;
+      SCQueueLineLogL@1000000003 : Record 50104;
+      SCQueueLineLog2L@1000000004 : Record 50104;
+    BEGIN
+      IF SCQueueLogV."Entry No." = 0 THEN
+        EXIT;
+
+      IF SCQueueLogV.Direction <> SCQueueLogV.Direction::Outgoing THEN
+        EXIT;
+
+      SCQueueLogL.INIT;
+      //A/gob-adb/18.04.13
+      SCQueueLog2L.LOCKTABLE;
+      //E/gob-adb/18.04.13
+      IF SCQueueLog2L.FINDLAST THEN
+        SCQueueLogL."Entry No." := SCQueueLog2L."Entry No." +1
+      ELSE
+        SCQueueLogL."Entry No." := 1;
+
+      SCQueueLogL."Website No." := SCQueueLogV."Website No.";
+      SCQueueLogL.Direction := SCQueueLogV.Direction;
+      SCQueueLogL.Status := SCQueueLogL.Status::New;
+      SCQueueLogL.Action := SCQueueLogL.Action::Manual;
+      SCQueueLogL."Created at" := CREATEDATETIME(WORKDATE,TIME);;
+      SCQueueLogL."Source Type" := SCQueueLogV."Source Type";
+      SCQueueLogL."Source Subtype" := SCQueueLogV."Source Subtype";
+      SCQueueLogL."Source ID" := SCQueueLogV."Source ID";
+      SCQueueLogL."Recipient Type" := SCQueueLogV."Recipient Type";
+      SCQueueLogL."Recipient No." := SCQueueLogV."Recipient No.";
+
+      IF SCQueueLogL."Recipient Type" = SCQueueLogL."Recipient Type"::Customer THEN BEGIN
+        IF NOT CustomerL.GET(SCQueueLogV."Recipient No.") THEN BEGIN
+          IF SCQueueLogV."Recipient E-Mail Adress" = '' THEN BEGIN
+            SCQueueLogL.Status := SCQueueLogL.Status::Error;
+            SCQueueLogL."Error Text" := STRSUBSTNO(Text001,SCQueueLogV."Recipient No.");
+            SCQueueLogL."Error Source" := SCQueueLogL."Error Source"::NAV;
+          END ELSE
+            SCQueueLogL."Recipient E-Mail Adress" := SCQueueLogV."Recipient E-Mail Adress";
+        END ELSE BEGIN
+          SCQueueLogL."Recipient E-Mail Adress" := CustomerL."E-Mail";
+          IF (SCQueueLogL."Recipient E-Mail Adress" = '') AND
+             (ContactL.GET(CustomerL."Primary Contact No.")) THEN
+            SCQueueLogL."Recipient E-Mail Adress" := ContactL."E-Mail";
+
+          IF SCQueueLogL."Recipient E-Mail Adress" = '' THEN
+            SCQueueLogL."Recipient E-Mail Adress" := SCQueueLogV."Recipient E-Mail Adress";
+
+          IF SCQueueLogL."Recipient E-Mail Adress" = '' THEN BEGIN
+            SCQueueLogL.Status := SCQueueLogL.Status::Error;
+            SCQueueLogL."Error Text" := STRSUBSTNO(Text002,SCQueueLogV."Recipient No.");
+            SCQueueLogL."Error Source" := SCQueueLogL."Error Source"::NAV;
+          END;
+        END;
+      END ELSE
+        SCQueueLogL."Recipient E-Mail Adress" := SCQueueLogV."Recipient E-Mail Adress";
+
+      SCQueueLogL."Shop Connector Code" := SCQueueLogV."Shop Connector Code";
+      SCQueueLogL."Test Mail" := SCQueueLogV."Test Mail";
+      SCQueueLogL.INSERT;
+
+      SCQueueLineLog2L.SETRANGE("Attached to Entry No.",SCQueueLogV."Entry No.");
+      IF SCQueueLineLog2L.FINDSET THEN
+        REPEAT
+          SCQueueLineLogL.INIT;
+          SCQueueLineLogL."Attached to Entry No." := SCQueueLogL."Entry No.";
+          SCQueueLineLogL."Line No." := SCQueueLineLog2L."Line No.";
+          SCQueueLineLogL."Mail Queue ID" := SCQueueLineLog2L."Mail Queue ID";
+          SCQueueLineLogL.Status := SCQueueLineLogL.Status::New;
+          SCQueueLineLogL."Source Type" := SCQueueLineLog2L."Source Type";
+          SCQueueLineLogL."Source Subtype" := SCQueueLineLog2L."Source Subtype";
+          SCQueueLineLogL."Source ID" := SCQueueLineLog2L."Source ID";
+          SCQueueLineLogL."Source Ref. No." := SCQueueLineLog2L."Source Ref. No.";
+          SCQueueLineLogL."Recipient Type" := SCQueueLogL."Recipient Type";
+          SCQueueLineLogL."Recipient No." := SCQueueLogL."Recipient No.";
+          SCQueueLineLogL."Recipient E-Mail Adress" := SCQueueLogL."Recipient E-Mail Adress";
+          SCQueueLineLogL.Type := SCQueueLineLog2L.Type;
+          SCQueueLineLogL."No." := SCQueueLineLog2L."No.";
+          SCQueueLineLogL."Tracking No." := SCQueueLineLog2L."Tracking No.";
+          SCQueueLineLogL."Shipping Agent Code" := SCQueueLineLog2L."Shipping Agent Code";
+          SCQueueLineLogL."Purchasing Code" := SCQueueLineLog2L."Purchasing Code";
+          SCQueueLineLogL.INSERT;
+        UNTIL SCQueueLineLog2L.NEXT = 0;
+
+      MESSAGE(Text004);
+    END;
+
+    PROCEDURE UpdateEntry@1000000005(VAR SCQueueLogR@1000000000 : Record 50103);
+    VAR
+      CustomerL@1000000001 : Record 18;
+      ContactL@1000000002 : Record 5050;
+      SalesHeaderL@1000000003 : Record 36;
+    BEGIN
+      IF SCQueueLogR."Entry No." = 0 THEN
+        EXIT;
+
+      IF SCQueueLogR.Direction <> SCQueueLogR.Direction::Incoming THEN
+        EXIT;
+
+      CASE SCQueueLogR."Source Type" OF
+        DATABASE::Customer:
+          BEGIN
+            CustomerL.GET(SCQueueLogR."Source ID");
+            SCQueueLogR."Recipient E-Mail Adress" := CustomerL."E-Mail";
+            IF (SCQueueLogR."Recipient E-Mail Adress" = '') AND
+               (ContactL.GET(CustomerL."Primary Contact No.")) THEN
+              SCQueueLogR."Recipient E-Mail Adress" := ContactL."E-Mail";
+            SCQueueLogR.MODIFY;
+          END;
+        DATABASE::"Sales Header":
+          BEGIN
+            SalesHeaderL.GET(SCQueueLogR."Source Subtype",SCQueueLogR."Source ID");
+            SCQueueLogR."Website No." := SalesHeaderL."Website No.";
+            SCQueueLogR."Recipient No." := SalesHeaderL."Sell-to Customer No.";
+
+
+            IF SCQueueLogR."Recipient Type" = SCQueueLogR."Recipient Type"::Customer THEN BEGIN
+            CustomerL.GET(SCQueueLogR."Recipient No.");
+              SCQueueLogR."Recipient E-Mail Adress" := CustomerL."E-Mail";
+              IF (SCQueueLogR."Recipient E-Mail Adress" = '') AND
+                 (ContactL.GET(CustomerL."Primary Contact No.")) THEN
+                SCQueueLogR."Recipient E-Mail Adress" := ContactL."E-Mail";
+              SCQueueLogR.MODIFY;
+            END;
+          END;
+      END;
+    END;
+
+    PROCEDURE UpdateEntryArch@1000000006(VAR SCQueueLogArchR@1000000000 : Record 50105);
+    VAR
+      CustomerL@1000000001 : Record 18;
+      ContactL@1000000002 : Record 5050;
+      SalesHeaderL@1000000003 : Record 36;
+      SalesHeaderArchL@1000000004 : Record 5107;
+    BEGIN
+      IF SCQueueLogArchR."Entry No." = 0 THEN
+        EXIT;
+
+      IF SCQueueLogArchR.Direction <> SCQueueLogArchR.Direction::Incoming THEN
+        EXIT;
+
+      CASE SCQueueLogArchR."Source Type" OF
+        DATABASE::"Sales Header Archive":
+          BEGIN
+            IF SalesHeaderL.GET(SCQueueLogArchR."Source Subtype",SCQueueLogArchR."Source ID") THEN BEGIN
+              SCQueueLogArchR."Website No." := SalesHeaderL."Website No.";
+              SCQueueLogArchR."Recipient No." := SalesHeaderL."Sell-to Customer No.";
+            END ELSE BEGIN
+              IF SalesHeaderArchL.GET(SCQueueLogArchR."Source Subtype",SCQueueLogArchR."Source ID",
+                                      SCQueueLogArchR."Source Doc. No. Occurrence",SCQueueLogArchR."Source Version No.") THEN BEGIN
+                SCQueueLogArchR."Website No." := SalesHeaderArchL."Website No.";
+                SCQueueLogArchR."Recipient No." := SalesHeaderArchL."Sell-to Customer No.";
+              END;
+            END;
+
+            IF SCQueueLogArchR."Recipient Type" = SCQueueLogArchR."Recipient Type"::Customer THEN BEGIN
+              CustomerL.GET(SCQueueLogArchR."Recipient No.");
+              SCQueueLogArchR."Recipient E-Mail Adress" := CustomerL."E-Mail";
+              IF (SCQueueLogArchR."Recipient E-Mail Adress" = '') AND
+                 (ContactL.GET(CustomerL."Primary Contact No.")) THEN
+                SCQueueLogArchR."Recipient E-Mail Adress" := ContactL."E-Mail";
+            END;
+            SCQueueLogArchR.MODIFY;
+
+          END;
+      END;
+    END;
+
+    EVENT XmlResponseDoc@1000000005::ondataavailable@198();
+    BEGIN
+    END;
+
+    EVENT XmlResponseDoc@1000000005::onreadystatechange@-609();
+    BEGIN
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+
+      *** Module: Shop Connector - Create Shipping Mails ***
+      H0007       27.09.12 ABR       Created
+
+      *** Module: Miscellaneous
+      P0890       18.04.13 gob-adb   LOCKTABLE inserted
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,730 @@
+OBJECT Codeunit 50256 Hermes Outbound EDI IFTMIN
+{
+  OBJECT-PROPERTIES
+  {
+    Date=20.03.15;
+    Time=17:37:46;
+    Modified=Yes;
+    Version List=#HME3800;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=VAR
+            FPCGeneralSetupL@1000000000 : Record 50055;
+            HermesSetupL@1000000001 : Record 50319;
+            LogisticsStatusHistoryL@1000000002 : Record 80013;
+            LogisticsStatusHistory2L@1000000011 : Record 80013;
+            PurchaseHeaderL@1000000009 : Record 38;
+            PurchaseLineL@1000000008 : Record 39;
+            EDIPartnerL@1000000003 : Record 82851;
+            EDIPartnerDocumentTypeL@1000000010 : Record 82852;
+            OutboundEDIDocumentHeaderL@1000000006 : Record 82865;
+            OutboundEDIDocumentListL@1000000013 : Record 82864;
+            OutboundEDIServiceL@1000000012 : Codeunit 82851;
+            LastPurchOrderNoL@1000000005 : Code[20];
+            iLineCounterL@1000000007 : Integer;
+            ContinueL@1000000004 : Boolean;
+          BEGIN
+            FPCGeneralSetupL.GET;
+            HermesSetupL.GET();
+
+            IF NOT isManualProcess THEN
+              SetEDItoSend();
+
+            CASE FPCGeneralSetupL."Active Parcel Status History" OF
+              FPCGeneralSetupL."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+              FPCGeneralSetupL."Active Parcel Status History"::"Fill Both But Show And Use Old":
+                BEGIN
+                  ERROR(TextHME001);
+                END;
+              FPCGeneralSetupL."Active Parcel Status History"::"Fill Both But Show And Use New",
+              FPCGeneralSetupL."Active Parcel Status History"::"Use Only New Parcel Status History":
+                BEGIN
+                  //1. Sort Parcel Status History by Purchase Order No.
+                  //2. Find out if there are any records to sent
+                  //3. Create IFTMIN List
+                  //4. For the first Parcel Status History record belonging to a Purchase Order create  a Header
+                  //5. For each Parcel Status History record belonging to a Purchase Order create lines
+
+                  //1.
+                  LogisticsStatusHistoryL.SETCURRENTKEY("Purchase Doc. No.","Purchase Doc. Line No.","Purchase Doc. Type");
+
+                  //2.
+                  LogisticsStatusHistoryL.SETRANGE("Shipping Agent Code", HermesSetupL."Shipping Agent Hermes");
+                  LogisticsStatusHistoryL.SETRANGE("EDI to Send",TRUE);
+                  LogisticsStatusHistoryL.SETRANGE("EDI Sent",FALSE);
+                  LogisticsStatusHistoryL.SETRANGE(Error,FALSE);
+                  LogisticsStatusHistoryL.SETRANGE("Direction of Information",
+                    LogisticsStatusHistoryL."Direction of Information"::Outgoing);
+                  IF LogisticsStatusHistoryL.FIND('-') THEN BEGIN
+
+                    //3.
+                    EDIPartnerL.GET(HermesSetupL."EDI Partner Code");
+                    EDIPartnerDocumentTypeL.GET(HermesSetupL."EDI Partner Code",
+                                                EDIPartnerDocumentTypeL."Document Direction"::Outbound,'IFTMIN');
+
+                    IF (TODAY >= EDIPartnerL."Start Date") AND
+                       (CreateOutboundList(OutboundEDIDocumentListL, EDIPartnerL, EDIPartnerDocumentTypeL))
+                    THEN BEGIN
+                      LastPurchOrderNoL := '';
+                      OutboundEDIDocumentListL."External No." := FORMAT(LogisticsStatusHistoryL."Entry No.");
+                      OutboundEDIDocumentListL.MODIFY;
+                      REPEAT
+                        //4.
+                        ContinueL := PurchaseHeaderL.GET(PurchaseHeaderL."Document Type"::Order, LogisticsStatusHistoryL."Purchase Doc. No.");
+                        IF ContinueL THEN
+                          IF LastPurchOrderNoL <> LogisticsStatusHistoryL."Purchase Doc. No." THEN BEGIN
+                            ContinueL := CreateOutboundHeader(OutboundEDIDocumentHeaderL,
+                                                              OutboundEDIDocumentListL,
+                                                              PurchaseHeaderL,
+                                                              EDIPartnerL,
+                                                              LogisticsStatusHistoryL);
+                            iLineCounterL := 0;
+                          END;
+
+                          //5.
+                          IF ContinueL THEN BEGIN
+                            PurchaseLineL.GET(LogisticsStatusHistoryL."Purchase Doc. Type",
+                                              LogisticsStatusHistoryL."Purchase Doc. No.",
+                                              LogisticsStatusHistoryL."Purchase Doc. Line No.");
+                            iLineCounterL += 1;
+                            ContinueL := CreateOutboundLine(OutboundEDIDocumentListL,
+                                                            PurchaseLineL,
+                                                            iLineCounterL,
+                                                            OutboundEDIDocumentHeaderL,
+                                                            LogisticsStatusHistoryL);
+                        END;
+
+                        IF ContinueL THEN BEGIN
+                          LogisticsStatusHistory2L.GET(LogisticsStatusHistoryL."Entry No.");
+                          LogisticsStatusHistory2L."EDI Sent" := TRUE;
+                          LogisticsStatusHistory2L."EDI Sent DateTime" := CURRENTDATETIME;
+                          LogisticsStatusHistory2L.MODIFY(TRUE);
+                        END ELSE BEGIN
+                          LogisticsStatusHistory2L.GET(LogisticsStatusHistoryL."Entry No.");
+                          LogisticsStatusHistory2L.Error := TRUE;
+                          LogisticsStatusHistory2L.MODIFY(TRUE);
+                        END;
+
+                        LastPurchOrderNoL := LogisticsStatusHistoryL."Purchase Doc. No.";
+                      UNTIL LogisticsStatusHistoryL.NEXT = 0;
+                    END ELSE BEGIN //Belongs to: IF CreateOutboundList() THEN
+                      LogisticsStatusHistory2L.GET(LogisticsStatusHistoryL."Entry No.");
+                      LogisticsStatusHistory2L.Error := TRUE;
+                      LogisticsStatusHistory2L.MODIFY(TRUE);
+                      EXIT;
+                    END;
+                  END; //Belongs to: IF LogisticsStatusHistoryL.FIND('-') THEN BEGIN
+                END;
+            END;
+
+            IF OutboundEDIDocumentListL."No." <> '' THEN
+              OutboundEDIServiceL.RUN(OutboundEDIDocumentListL); //Create Outbound EDI Message
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      TextHME001@1000000000 : TextConst 'ENU=The old Parcel Status History is not supported by this source code.';
+      isManualProcess@1000000001 : Boolean;
+      TextHME002@1000000002 : TextConst 'ENU=No line has been selected.';
+      TextHME003@1000000003 : TextConst 'ENU=The Purchase Line can not be transferred %1 %2 %3.';
+      TextHME004@1000000004 : TextConst 'ENU=TODAY %1 must not be less than %2 %3';
+      TextHME005@1000000005 : TextConst 'ENU=Data set in the Outbound EDI Document List can not be created.';
+      TextHME006@1000000006 : TextConst 'ENU=Data set in the Outbound EDI Document Header can not be created.';
+      TextHME007@1000000008 : TextConst 'ENU=Data set in the Outbound EDI Document Line can not be created.';
+      TextHME008@1000000007 : TextConst 'ENU=%1 is wrong in the Purchase Line %2 %3 %4.';
+      TextHME009@1000000009 : TextConst 'ENU=Today %1 is less than %2 %3 + %4 %5 in the Purchase Line %6 %7 %8.';
+      TextHME010@1000000010 : TextConst 'ENU=%1 can not be empty in the Location %2.';
+      TextHME011@1000000011 : TextConst 'ENU=Hermes IFTMIN was generated for %1 Purchase Lines.';
+      TextHME012@1000000012 : TextConst 'ENU=No Hermes IFTMIN was generated.';
+
+    PROCEDURE CreateOutboundList@1000000009(VAR OutboundEDIDocumentListR@1000000005 : Record 82864;EDIPartnerV@1000000003 : Record 82851;EDIPartnerDocumentTypeV@1000000002 : Record 82852) : Boolean;
+    VAR
+      OutboundEDIDocumentListL@1000000004 : Record 82864;
+      OutbEDIDocListL@1000000001 : Record 82864;
+      EDIIntegratorSetupL@1000000006 : Record 82850;
+      NoSeriesMgtL@1000000000 : Codeunit 396;
+    BEGIN
+      EDIIntegratorSetupL.GET;
+
+      OutboundEDIDocumentListR.INIT;
+      OutboundEDIDocumentListR."Document Type" := OutboundEDIDocumentListR."Document Type"::IFTMIN;
+      OutboundEDIDocumentListR."No." := '';
+
+      NoSeriesMgtL.InitSeries(
+        EDIPartnerDocumentTypeV."IFTMIN No. Series", OutboundEDIDocumentListR."No. Series",
+        OutboundEDIDocumentListR."Document Date", OutboundEDIDocumentListR."No.", OutboundEDIDocumentListR."No. Series"
+        );
+
+      OutboundEDIDocumentListR."Partner Code" := EDIPartnerV.Code;
+      OutboundEDIDocumentListR.Name := EDIPartnerV.Name;
+      OutboundEDIDocumentListR."Name 2" := EDIPartnerV."Name 2";
+      OutboundEDIDocumentListR.Address := EDIPartnerV.Address;
+      OutboundEDIDocumentListR."Address 2" := EDIPartnerV."Address 2";
+      OutboundEDIDocumentListR."Post Code" := EDIPartnerV."Post Code";
+      OutboundEDIDocumentListR.City := EDIPartnerV.City;
+      OutboundEDIDocumentListR."Country/Region Code" := EDIPartnerV."Country/Region Code";
+      OutboundEDIDocumentListR."Document Date" := TODAY;
+      OutboundEDIDocumentListR."User ID" := USERID;
+      OutboundEDIDocumentListR."Test Indicator" := EDIPartnerDocumentTypeV."Test Indicator";
+      OutboundEDIDocumentListR."Payer GLN" := EDIIntegratorSetupL."Global Location Number (GLN)";
+      OutboundEDIDocumentListR."Recipient GLN" := EDIPartnerV.GLN;
+
+      IF EDIPartnerDocumentTypeV."Alternate Sender GLN" <> '' THEN
+        OutboundEDIDocumentListR."Sender GLN" := EDIPartnerDocumentTypeV."Alternate Sender GLN"
+      ELSE
+        OutboundEDIDocumentListR."Sender GLN" := EDIIntegratorSetupL."Global Location Number (GLN)";
+
+      OutboundEDIDocumentListR.INSERT;
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE CreateOutboundHeader@1000000010(VAR OutboundEDIDocumentHeaderR@1000000001 : Record 82865;OutboundEDIDocumentListV@1000000014 : Record 82864;PurchaseHeaderV@1000000015 : Record 38;EDIPartnerV@1000000016 : Record 82851;LogisticsStatusHistoryV@1000000017 : Record 80013) : Boolean;
+    VAR
+      EDIIntegratorSetupL@1000000018 : Record 82850;
+      OutboundEDIDocumentHeaderL@1000000000 : Record 82865;
+      VendorL@1000000002 : Record 23;
+      CustomerL@1000000007 : Record 18;
+      CompanyInformationL@1000000004 : Record 79;
+      SalespersonPurchaserL@1000000005 : Record 13;
+      ItemL@1000000006 : Record 27;
+      PurchLineL@1000000008 : Record 39;
+      SalesHeaderL@1000000009 : Record 36;
+      LocationL@1000000010 : Record 14;
+      HesDepAssDirInj@1000000013 : Record 50333;
+      OrderNoL@1000000011 : Code[20];
+      ParcelsAllLinesL@1000000003 : Integer;
+    BEGIN
+      CompanyInformationL.GET;
+      EDIIntegratorSetupL.GET;
+
+      OutboundEDIDocumentHeaderL.INIT;
+      OutboundEDIDocumentHeaderL."Header Document Type" := OutboundEDIDocumentListV."Document Type";
+      OutboundEDIDocumentHeaderL."Header Document No." := OutboundEDIDocumentListV."No.";
+      OutboundEDIDocumentHeaderL."Document Type" := OutboundEDIDocumentHeaderL."Document Type"::"Purchase Order";
+      OutboundEDIDocumentHeaderL."Document No." := PurchaseHeaderV."No.";
+      OutboundEDIDocumentHeaderL.INSERT;
+
+      OutboundEDIDocumentHeaderL."External No." := OutboundEDIDocumentListV."External No.";
+
+      OutboundEDIDocumentHeaderL."Document Date" := PurchaseHeaderV."Document Date";
+      OutboundEDIDocumentHeaderL."Order Date" := PurchaseHeaderV."Order Date";
+      OutboundEDIDocumentHeaderL.Currency := PurchaseHeaderV."Currency Code";
+      OutboundEDIDocumentHeaderL."Sell-to Customer No." := PurchaseHeaderV."Buy-from Vendor No.";
+      OutboundEDIDocumentHeaderL."Bill-to Customer No." := PurchaseHeaderV."Pay-to Vendor No.";
+      OutboundEDIDocumentHeaderL."Sell-to Customer Name" := PurchaseHeaderV."Buy-from Vendor Name";
+      OutboundEDIDocumentHeaderL."Sell-to Name" := PurchaseHeaderV."Buy-from Vendor Name";
+      OutboundEDIDocumentHeaderL."Sell-to Name 2" := PurchaseHeaderV."Buy-from Vendor Name 2";
+      OutboundEDIDocumentHeaderL."Sell-to Address" := PurchaseHeaderV."Buy-from Address";
+      OutboundEDIDocumentHeaderL."Sell-to Address 2" := PurchaseHeaderV."Buy-from Address 2";
+      OutboundEDIDocumentHeaderL."Sell-to City" := PurchaseHeaderV."Buy-from City";
+      OutboundEDIDocumentHeaderL."Sell-to Post Code" := PurchaseHeaderV."Buy-from Post Code";
+      OutboundEDIDocumentHeaderL."Sell-to Contact" := PurchaseHeaderV."Buy-from Contact";
+      OutboundEDIDocumentHeaderL."Bill-to Name" := PurchaseHeaderV."Pay-to Name";
+      OutboundEDIDocumentHeaderL."Bill-to Name 2" := PurchaseHeaderV."Pay-to Name 2";
+      OutboundEDIDocumentHeaderL."Bill-to Address" := PurchaseHeaderV."Pay-to Address";
+      OutboundEDIDocumentHeaderL."Bill-to Address 2" := PurchaseHeaderV."Pay-to Address 2";
+      OutboundEDIDocumentHeaderL."Bill-to City" := PurchaseHeaderV."Pay-to City";
+      OutboundEDIDocumentHeaderL."Bill-to Post Code" := PurchaseHeaderV."Pay-to Post Code";
+      OutboundEDIDocumentHeaderL."Your Reference" := PurchaseHeaderV."Your Reference";
+      OutboundEDIDocumentHeaderL."Ship-to Code" := PurchaseHeaderV."Ship-to Code";
+      OutboundEDIDocumentHeaderL."Ship-to Name" := PurchaseHeaderV."Ship-to Name";
+      OutboundEDIDocumentHeaderL."Ship-to Name 2" := PurchaseHeaderV."Ship-to Name 2";
+      OutboundEDIDocumentHeaderL."Ship-to Address" := PurchaseHeaderV."Ship-to Address";
+      OutboundEDIDocumentHeaderL."Ship-to Address 2" := PurchaseHeaderV."Ship-to Address 2";
+      OutboundEDIDocumentHeaderL."Ship-to City" := PurchaseHeaderV."Ship-to City";
+      OutboundEDIDocumentHeaderL."Ship-to Contact" := PurchaseHeaderV."Ship-to Contact";
+      OutboundEDIDocumentHeaderL."Ship-to Post Code" := PurchaseHeaderV."Ship-to Post Code";
+      OutboundEDIDocumentHeaderL."Ship-to Country/Region Code" := PurchaseHeaderV."Ship-to Country/Region Code";
+
+      OutboundEDIDocumentHeaderL."Company Name" := CompanyInformationL.Name;
+      OutboundEDIDocumentHeaderL."Company Name 2" := CompanyInformationL."Name 2";
+      OutboundEDIDocumentHeaderL."Company Address" := CompanyInformationL.Address;
+      OutboundEDIDocumentHeaderL."Company Address 2" := CompanyInformationL."Address 2";
+      OutboundEDIDocumentHeaderL."Company City" := CompanyInformationL.City;
+      OutboundEDIDocumentHeaderL."Company Post Code" := CompanyInformationL."Post Code";
+      OutboundEDIDocumentHeaderL."Company Country/Region Code" := CompanyInformationL."Country/Region Code";
+      OutboundEDIDocumentHeaderL."VAT Registration No." := CompanyInformationL."VAT Registration No.";
+      OutboundEDIDocumentHeaderL."Registration No." := CompanyInformationL."Registration No.";
+
+      IF SalespersonPurchaserL.GET(PurchaseHeaderV."Purchaser Code") THEN BEGIN
+        OutboundEDIDocumentHeaderL."Salesperson Name" := SalespersonPurchaserL.Name;
+        OutboundEDIDocumentHeaderL."Salesperson Phone No." := SalespersonPurchaserL."Phone No.";
+      END;
+
+      OutboundEDIDocumentHeaderL."Receiver GLN" := EDIPartnerV.GLN;
+
+      IF PurchaseHeaderV."Requested Receipt Date" <> 0D THEN
+        OutboundEDIDocumentHeaderL."Requested Delivery Date" := PurchaseHeaderV."Requested Receipt Date"
+      ELSE BEGIN
+        IF PurchaseHeaderV."Expected Receipt Date" <> 0D THEN
+          OutboundEDIDocumentHeaderL."Requested Delivery Date" := PurchaseHeaderV."Expected Receipt Date"
+        ELSE BEGIN
+          OutboundEDIDocumentHeaderL."Requested Delivery Date" := PurchaseHeaderV."Posting Date";
+          OutboundEDIDocumentHeaderL."Shipment Date" := PurchaseHeaderV."Posting Date";
+        END;
+      END;
+
+      IF (PurchaseHeaderV."Requested Receipt Week" <> 0) AND (OutboundEDIDocumentHeaderL."Requested Delivery Date" <> 0D) THEN BEGIN
+        OutboundEDIDocumentHeaderL."Requested Delivery Week" :=
+            DWY2DATE(3, PurchaseHeaderV."Requested Receipt Week", DATE2DMY(OutboundEDIDocumentHeaderL."Requested Delivery Date",3));
+        OutboundEDIDocumentHeaderL."Requested Delivery Date" := 0D;
+      END;
+
+      VendorL.GET(PurchaseHeaderV."Buy-from Vendor No.");
+      OutboundEDIDocumentHeaderL."Supplier GLN" := VendorL."GLN/ILN";
+      OutboundEDIDocumentHeaderL."Buyer GLN" := EDIIntegratorSetupL."Global Location Number (GLN)";
+      OutboundEDIDocumentHeaderL."Invoicer GLN" := EDIIntegratorSetupL."Global Location Number (GLN)";
+
+      OutboundEDIDocumentHeaderL."Referral DateTime" := LogisticsStatusHistoryV."Timestamp Insert";
+
+      IF PurchaseHeaderV."Sell-to Customer No." <> '' THEN BEGIN
+        IF CustomerL.GET(PurchaseHeaderV."Sell-to Customer No.") THEN BEGIN
+          OutboundEDIDocumentHeaderL."Customer E-mail" := CustomerL."E-Mail";
+          OutboundEDIDocumentHeaderL."Customer Phone No." := CustomerL."Phone No.";
+        END;
+      END;
+
+      OutboundEDIDocumentHeaderL."Export DateTime" := CURRENTDATETIME;
+
+      // Count Collis in complete order
+      PurchLineL.SETRANGE("Document No.",PurchaseHeaderV."No.");
+      PurchLineL.SETRANGE("Document Type",PurchLineL."Document Type"::Order);
+      PurchLineL.SETRANGE(Type,PurchLineL.Type::Item);
+      PurchLineL.SETFILTER(Quantity,'>%1',0);
+      IF PurchLineL.FIND('-') THEN BEGIN
+        REPEAT
+          IF ItemL.GET(PurchLineL."No.") THEN BEGIN
+            ItemL.CALCFIELDS("Parcels Number");
+            IF ItemL."Parcels Number" = 0 THEN
+              ParcelsAllLinesL += 1
+            ELSE
+              ParcelsAllLinesL += ItemL."Parcels Number";
+          END;
+        UNTIL PurchLineL.NEXT=0;
+      END;
+      OutboundEDIDocumentHeaderL."Number of parcels" := ParcelsAllLinesL;
+
+      // Set the Branch Code of corresponding Hermes Depot
+      IF LocationL.GET(PurchLineL."Location Code") THEN BEGIN
+        IF LocationL."Hermes Location Type" = LocationL."Hermes Location Type"::"Direct Injection" THEN BEGIN
+          OutboundEDIDocumentHeaderL."RHD Branch" := LocationL."Branch Code";
+        END ELSE BEGIN
+          IF PurchLineL."Special Order" THEN
+            OrderNoL := PurchLineL."Special Order Sales No."
+          ELSE
+            OrderNoL := PurchLineL."Sales Order No.";
+
+          IF SalesHeaderL.GET(SalesHeaderL."Document Type"::Order, OrderNoL) THEN BEGIN
+            HesDepAssDirInj.GetSalesOrderDILocation(SalesHeaderL, LocationL);
+            OutboundEDIDocumentHeaderL."RHD Branch" := LocationL."Branch Code";
+          END;
+        END;
+      END;
+
+      OutboundEDIDocumentHeaderL.MODIFY;
+
+      OutboundEDIDocumentHeaderR := OutboundEDIDocumentHeaderL;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE CreateOutboundLine@1000000011(OutboundEDIDocumentListV@1000000016 : Record 82864;PurchaseLineV@1000000001 : Record 39;LineCounterV@1000000004 : Integer;VAR OutboundEDIDocumentHeaderR@1000000015 : Record 82865;LogisticsStatusHistoryV@1000000017 : Record 80013) : Boolean;
+    VAR
+      OutboundEDIDocumentLineL@1000000000 : Record 82866;
+      ItemL@1000000002 : Record 27;
+      UnitOfMeasureL@1000000003 : Record 204;
+      ItemCrossReferenceL@1000000005 : Record 5717;
+      SalesHeaderL@1000000007 : Record 36;
+      HermesSetupL@1000000009 : Record 50319;
+      SalesLineL@1000000013 : Record 37;
+    BEGIN
+      OutboundEDIDocumentLineL."Header Document Type" := OutboundEDIDocumentListV."Document Type";
+      OutboundEDIDocumentLineL."Header Document No." := OutboundEDIDocumentListV."No.";
+      OutboundEDIDocumentLineL."Document Type" := OutboundEDIDocumentLineL."Document Type"::"Purchase Order";
+      OutboundEDIDocumentLineL."Document No." := PurchaseLineV."Document No.";
+      OutboundEDIDocumentLineL."Line No." := PurchaseLineV."Line No.";
+      OutboundEDIDocumentLineL.INSERT;
+
+      OutboundEDIDocumentLineL."Item No." := PurchaseLineV."No.";
+      OutboundEDIDocumentLineL."Customer Item No." := PurchaseLineV."Cross-Reference No.";
+      OutboundEDIDocumentLineL."EDI Line No." := LineCounterV;
+      OutboundEDIDocumentLineL."Direct Unit Cost" := PurchaseLineV."Direct Unit Cost";
+      OutboundEDIDocumentLineL.Description := PurchaseLineV.Description;
+      OutboundEDIDocumentLineL."Description 2" := PurchaseLineV."Description 2";
+      OutboundEDIDocumentLineL.Quantity := PurchaseLineV.Quantity;
+      OutboundEDIDocumentLineL."Description 2" := LogisticsStatusHistoryV."Tracking Code";
+
+      IF ItemL.GET(PurchaseLineV."No.") THEN
+        OutboundEDIDocumentLineL."Country Purchased Code" := ItemL."Country/Region Purchased Code";
+
+      IF OutboundEDIDocumentLineL."Country Purchased Code" = '' THEN
+        OutboundEDIDocumentLineL."Country Purchased Code" := 'DE';
+
+      IF UnitOfMeasureL.GET(PurchaseLineV."Unit of Measure Code") THEN BEGIN
+        IF UnitOfMeasureL."UN/ECE Code" <> '' THEN
+          OutboundEDIDocumentLineL."Unit of Measure" := UnitOfMeasureL."UN/ECE Code"
+        ELSE
+          OutboundEDIDocumentLineL."Unit of Measure" := UnitOfMeasureL.Code;
+      END ELSE
+        OutboundEDIDocumentLineL."Unit of Measure" := PurchaseLineV."Unit of Measure Code";
+
+      OutboundEDIDocumentLineL."Net Weight" := PurchaseLineV."Net Weight";
+      OutboundEDIDocumentLineL."Gross Weight" := PurchaseLineV."Gross Weight";
+      OutboundEDIDocumentLineL."Unit Volume" := PurchaseLineV."Unit Volume";
+
+      ItemCrossReferenceL.RESET;
+      ItemCrossReferenceL.SETRANGE("Item No.", PurchaseLineV."No.");
+      IF PurchaseLineV."Variant Code" <> '' THEN
+        ItemCrossReferenceL.SETRANGE("Variant Code", PurchaseLineV."Variant Code");
+      ItemCrossReferenceL.SETRANGE("Cross-Reference Type", ItemCrossReferenceL."Cross-Reference Type"::"Bar Code");
+      IF ItemCrossReferenceL.FINDFIRST THEN
+        OutboundEDIDocumentLineL.GTIN := ItemCrossReferenceL."Cross-Reference No.";
+
+      IF PurchaseLineV."Vendor Item No." <> '' THEN
+        OutboundEDIDocumentLineL."Customer Item No." := PurchaseLineV."Vendor Item No."
+      ELSE
+        OutboundEDIDocumentLineL."Customer Item No." := COPYSTR(ItemL."Vendor Item No." + ' ' + ItemL."Vendor Item No. Add.",1,35);
+
+      IF PurchaseLineV."Order No." <> '' THEN
+        OutboundEDIDocumentLineL."Sales Order No." := PurchaseLineV."Order No.";
+      IF PurchaseLineV."Special Order Sales No." <> '' THEN
+        OutboundEDIDocumentLineL."Sales Order No." := PurchaseLineV."Special Order Sales No.";
+
+      // H3800 04.03.15 tec-ar +++++++++++++
+      HermesSetupL.GET;
+      IF PurchaseLineV."Purchasing Code" = HermesSetupL."Purchasing Code HES CD-DI GER" THEN BEGIN
+         PurchaseLineV.GetLinkedSalesLine(SalesLineL,FALSE);
+         IF SalesLineL.HasServiceLine THEN
+           OutboundEDIDocumentLineL."Assembly Service" := '1'
+         ELSE
+           OutboundEDIDocumentLineL."Assembly Service" := '0';
+      END;
+      // H3800 04.03.15 tec-ar -------------
+
+      OutboundEDIDocumentLineL.MODIFY;
+
+      IF SalesHeaderL.GET(SalesHeaderL."Document Type"::Order, OutboundEDIDocumentLineL."Sales Order No.") THEN BEGIN
+        OutboundEDIDocumentHeaderR."Ship-to Code" := '';
+        OutboundEDIDocumentHeaderR."Ship-to Name" := SalesHeaderL."Ship-to Name";
+        OutboundEDIDocumentHeaderR."Ship-to Name 2" := SalesHeaderL."Ship-to Name 2";
+        OutboundEDIDocumentHeaderR."Ship-to Address" := SalesHeaderL."Ship-to Address";
+        OutboundEDIDocumentHeaderR."Ship-to Address 2" := SalesHeaderL."Ship-to Address 2";
+        OutboundEDIDocumentHeaderR."Ship-to City" := SalesHeaderL."Ship-to City";
+        OutboundEDIDocumentHeaderR."Ship-to Contact" := SalesHeaderL."Ship-to Contact";
+        OutboundEDIDocumentHeaderR."Ship-to Post Code" := SalesHeaderL."Ship-to Post Code";
+        OutboundEDIDocumentHeaderR."Ship-to Country/Region Code" := SalesHeaderL."Ship-to Country/Region Code";
+        OutboundEDIDocumentHeaderR."Sell-to Customer Name" := SalesHeaderL."Sell-to Customer Name";
+        OutboundEDIDocumentHeaderR."Sell-to Name" := SalesHeaderL."Sell-to Customer Name";
+        OutboundEDIDocumentHeaderR."Sell-to Name 2" := SalesHeaderL."Sell-to Customer Name 2";
+        OutboundEDIDocumentHeaderR."Sell-to Address" := SalesHeaderL."Sell-to Address";
+        OutboundEDIDocumentHeaderR."Sell-to Address 2" := SalesHeaderL."Sell-to Address 2";
+        OutboundEDIDocumentHeaderR."Sell-to City" := SalesHeaderL."Sell-to City";
+        OutboundEDIDocumentHeaderR."Sell-to Post Code" := SalesHeaderL."Sell-to Post Code";
+        OutboundEDIDocumentHeaderR."Sell-to Contact" := SalesHeaderL."Sell-to Contact";
+        OutboundEDIDocumentHeaderR."Bill-to Name" := SalesHeaderL."Bill-to Name";
+        OutboundEDIDocumentHeaderR."Bill-to Name 2" := SalesHeaderL."Bill-to Name 2";
+        OutboundEDIDocumentHeaderR."Bill-to Address" := SalesHeaderL."Bill-to Address";
+        OutboundEDIDocumentHeaderR."Bill-to Address 2" := SalesHeaderL."Bill-to Address 2";
+        OutboundEDIDocumentHeaderR."Bill-to City" := SalesHeaderL."Bill-to City";
+        OutboundEDIDocumentHeaderR."Bill-to Post Code" := SalesHeaderL."Bill-to Post Code";
+      END;
+      OutboundEDIDocumentHeaderR."Order No." := OutboundEDIDocumentLineL."Sales Order No.";
+      OutboundEDIDocumentHeaderR.MODIFY;
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE SetEDItoSend@1000000001();
+    VAR
+      LogisticsStatusHistoryL@1000000000 : Record 80013;
+      HermesSetupL@1000000001 : Record 50319;
+      PurchaseLineL@1000000002 : Record 39;
+    BEGIN
+      HermesSetupL.GET;
+
+      LogisticsStatusHistoryL.SETCURRENTKEY("Shipping Agent Code");
+      LogisticsStatusHistoryL.SETRANGE("Shipping Agent Code", HermesSetupL."Shipping Agent Hermes");
+      LogisticsStatusHistoryL.SETRANGE("EDI Sent", FALSE);
+      LogisticsStatusHistoryL.SETRANGE("Direction of Information",
+              LogisticsStatusHistoryL."Direction of Information"::Outgoing);
+
+      //LogisticsStatusHistoryL.SETRANGE("Status Code", 'IFTMIN');
+      IF NOT LogisticsStatusHistoryL.ISEMPTY THEN BEGIN
+        LogisticsStatusHistoryL.FINDSET;
+        REPEAT
+          PurchaseLineL.SETRANGE("Document Type", LogisticsStatusHistoryL."Purchase Doc. Type");
+          PurchaseLineL.SETRANGE("Document No.", LogisticsStatusHistoryL."Purchase Doc. No.");
+          PurchaseLineL.SETRANGE("Line No.", LogisticsStatusHistoryL."Purchase Doc. Line No.");
+          IF PurchaseLineL.FINDFIRST THEN BEGIN
+            IF CheckIFTMIN2SendConditions(PurchaseLineL,FALSE) THEN BEGIN
+              LogisticsStatusHistoryL."EDI to Send" := TRUE;
+              LogisticsStatusHistoryL.Error := FALSE;
+              LogisticsStatusHistoryL.MODIFY;
+            END;
+          END;
+        UNTIL LogisticsStatusHistoryL.NEXT=0;
+      END;
+
+      COMMIT;
+    END;
+
+    PROCEDURE CheckIFTMIN2SendConditions@1000000004(PurchaseLineV@1000000000 : Record 39;ShowMessageV@1000000003 : Boolean) : Boolean;
+    VAR
+      HermesSetupL@1000000001 : Record 50319;
+      LocationL@1000000002 : Record 14;
+      PurchaseHeaderL@1000000006 : Record 38;
+      CalcDatesL@1000000005 : Codeunit 50115;
+      CheckDateL@1000000004 : Date;
+    BEGIN
+      IF NOT PurchaseHeaderL.GET(PurchaseLineV."Document Type", PurchaseLineV."Document No.") THEN
+        EXIT(FALSE);
+
+      IF PurchaseHeaderL.Status <> PurchaseHeaderL.Status::Released THEN
+        IF ShowMessageV THEN
+          PurchaseHeaderL.TESTFIELD(Status, PurchaseHeaderL.Status::Released)
+        ELSE
+          EXIT(FALSE);
+
+      HermesSetupL.GET;
+
+      IF NOT ((PurchaseLineV."Expected Receipt Date" < 29122099D) AND
+              (PurchaseLineV."Expected Receipt Date" <> 0D))
+      THEN
+        IF ShowMessageV THEN
+          ERROR(TextHME008,
+          PurchaseLineV.FIELDCAPTION("Expected Receipt Date"),
+          PurchaseLineV."Document Type",
+          PurchaseLineV."Document No.",
+          PurchaseLineV."Line No.")
+        ELSE
+          EXIT(FALSE);
+
+      IF (TODAY < CalcDatesL.CalcWorkingDaysFromDate(PurchaseLineV."Expected Receipt Date", HermesSetupL."Advising Lead Time")) THEN
+        IF ShowMessageV THEN
+          ERROR(TextHME009,
+            TODAY,
+            PurchaseLineV.FIELDCAPTION("Expected Receipt Date"),
+            PurchaseLineV."Expected Receipt Date",
+            HermesSetupL.FIELDCAPTION("Advising Lead Time"),
+            HermesSetupL."Advising Lead Time",
+            PurchaseLineV."Document Type",
+            PurchaseLineV."Document No.",
+            PurchaseLineV."Line No.")
+        ELSE
+          EXIT(FALSE);
+
+      IF PurchaseLineV."Order Status Code" <> '30' THEN
+        IF ShowMessageV THEN
+          PurchaseLineV.TESTFIELD("Order Status Code",'30')
+        ELSE
+          EXIT(FALSE);
+
+      IF PurchaseLineV."Outstanding Quantity" <= 0 THEN
+        IF ShowMessageV THEN
+          ERROR(TextHME008,
+          PurchaseLineV.FIELDCAPTION("Outstanding Quantity"),
+          PurchaseLineV."Document Type",
+          PurchaseLineV."Document No.",
+          PurchaseLineV."Line No.")
+        ELSE
+          EXIT(FALSE);
+
+      //PurchaseLineV.SETFILTER("Expected Receipt Date", '<%1&<>%2&>%3',
+      //    29122099D, 0D, CALCDATE(HermesSetupL."Advising Lead Time", today));
+      //PurchaseLineV.SETRANGE("Order Status Code", '30');
+      //PurchaseLineV.SETFILTER("Outstanding Quantity", '>%1', 0);
+      //IF PurchaseLineV.COUNT = 0 THEN
+      //  EXIT(FALSE);
+
+      LocationL.GET(PurchaseLineV."Location Code");
+      IF LocationL."Hermes Location Type" = LocationL."Hermes Location Type"::" " THEN
+        IF ShowMessageV THEN
+          ERROR(TextHME010,
+            LocationL.FIELDCAPTION("Hermes Location Type"),
+            LocationL.Code)
+        ELSE
+          EXIT(FALSE);
+
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE SetIsManualProcess@1000000002(isManualProcessV@1000000000 : Boolean);
+    BEGIN
+      isManualProcessV := isManualProcessV;
+    END;
+
+    PROCEDURE CreateManualIFTMIN@1000000000(VAR PurchaseLineR@1000000000 : Record 39);
+    VAR
+      HermesTrackingInfoMgtL@1000000001 : Codeunit 50254;
+      OutboundEDIServiceL@1000000014 : Codeunit 82851;
+      PurchaseLineL@1000000015 : Record 39;
+      HermesTrackingGroupL@1000000002 : Record 50332;
+      FPCGeneralSetupL@1000000005 : Record 50055;
+      HermesSetupL@1000000004 : Record 50319;
+      LogisticsStatusHistoryL@1000000006 : Record 80013;
+      LogisticsStatusHistory2L@1000000007 : Record 80013;
+      EDIPartnerL@1000000009 : Record 82851;
+      EDIPartnerDocumentTypeL@1000000008 : Record 82852;
+      OutboundEDIDocumentListL@1000000010 : Record 82864;
+      OutboundEDIDocumentHeaderL@1000000012 : Record 82865;
+      PurchaseHeaderL@1000000011 : Record 38;
+      iLineCounterL@1000000013 : Integer;
+      EntryNoL@1000000003 : Integer;
+    BEGIN
+      //H1700 11.02.15 tec-ar ++++++++++++++++++++
+      PurchaseLineL.COPY(PurchaseLineR);
+
+      PurchaseLineL.MARKEDONLY(TRUE);
+      IF NOT PurchaseLineL.FINDSET THEN
+        ERROR(TextHME002);
+
+      FPCGeneralSetupL.GET;
+      HermesSetupL.GET;
+
+      CASE FPCGeneralSetupL."Active Parcel Status History" OF
+        FPCGeneralSetupL."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+        FPCGeneralSetupL."Active Parcel Status History"::"Fill Both But Show And Use Old":
+          BEGIN
+            ERROR(TextHME001);
+          END;
+
+        FPCGeneralSetupL."Active Parcel Status History"::"Fill Both But Show And Use New",
+        FPCGeneralSetupL."Active Parcel Status History"::"Use Only New Parcel Status History":
+          BEGIN
+
+            IF HermesTrackingGroupL.FINDLAST THEN
+              EntryNoL := HermesTrackingGroupL."Entry No.";
+
+            SetManulIFTMINLogStatHistFiltr(LogisticsStatusHistoryL,HermesSetupL,FALSE);
+
+            REPEAT
+              HermesTrackingInfoMgtL.PrepCDLabelGeneration4Line(PurchaseLineL,EntryNoL,HermesSetupL."Manual IFTMIN Parc.Status Code");
+              LogisticsStatusHistoryL.SETRANGE("Purchase Doc. No.",PurchaseLineL."Document No.");
+              LogisticsStatusHistoryL.SETRANGE("Purchase Doc. Line No.",PurchaseLineL."Line No.");
+              LogisticsStatusHistoryL.SETRANGE("Purchase Doc. Type",PurchaseLineL."Document Type");
+              LogisticsStatusHistoryL.FINDLAST;
+              LogisticsStatusHistory2L.GET(LogisticsStatusHistoryL."Entry No.");
+              LogisticsStatusHistory2L."EDI to Send" := TRUE;
+              LogisticsStatusHistory2L.MODIFY(TRUE);
+
+              IF NOT CheckIFTMIN2SendConditions(PurchaseLineL,TRUE) THEN
+                ERROR(TextHME003, PurchaseLineL."Document Type",PurchaseLineL."Document No.",PurchaseLineL."Line No.");
+            UNTIL PurchaseLineL.NEXT = 0;
+
+            PurchaseLineL.FINDSET;
+
+            EDIPartnerL.GET(HermesSetupL."EDI Partner Code");
+            EDIPartnerDocumentTypeL.GET(HermesSetupL."EDI Partner Code",
+                                        EDIPartnerDocumentTypeL."Document Direction"::Outbound,'IFTMIN');
+
+            IF (TODAY < EDIPartnerL."Start Date") THEN
+              ERROR(TextHME004, TODAY, EDIPartnerL.FIELDCAPTION("Start Date"), EDIPartnerL."Start Date");
+
+            IF NOT CreateOutboundList(OutboundEDIDocumentListL, EDIPartnerL, EDIPartnerDocumentTypeL) THEN
+              ERROR(TextHME005);
+
+            SetManulIFTMINLogStatHistFiltr(LogisticsStatusHistoryL,HermesSetupL,TRUE);
+
+            LogisticsStatusHistoryL.SETRANGE("Purchase Doc. No.",PurchaseLineL."Document No.");
+            LogisticsStatusHistoryL.SETRANGE("Purchase Doc. Line No.",PurchaseLineL."Line No.");
+            LogisticsStatusHistoryL.SETRANGE("Purchase Doc. Type",PurchaseLineL."Document Type");
+            LogisticsStatusHistoryL.FINDLAST;
+
+            OutboundEDIDocumentListL."External No." := FORMAT(LogisticsStatusHistoryL."Entry No.");
+            OutboundEDIDocumentListL.MODIFY;
+
+            PurchaseHeaderL.GET(PurchaseLineL."Document Type",PurchaseLineL."Document No.");
+            IF NOT CreateOutboundHeader(OutboundEDIDocumentHeaderL,
+                                                        OutboundEDIDocumentListL,
+                                                        PurchaseHeaderL,
+                                                        EDIPartnerL,
+                                                        LogisticsStatusHistoryL)
+            THEN
+              ERROR(TextHME006);
+
+            iLineCounterL := 0;
+
+            REPEAT
+              iLineCounterL += 1;
+
+              LogisticsStatusHistoryL.SETRANGE("Purchase Doc. No.",PurchaseLineL."Document No.");
+              LogisticsStatusHistoryL.SETRANGE("Purchase Doc. Line No.",PurchaseLineL."Line No.");
+              LogisticsStatusHistoryL.SETRANGE("Purchase Doc. Type",PurchaseLineL."Document Type");
+              LogisticsStatusHistoryL.FINDLAST;
+
+              IF NOT CreateOutboundLine(OutboundEDIDocumentListL,
+                                                      PurchaseLineL,
+                                                      iLineCounterL,
+                                                      OutboundEDIDocumentHeaderL,
+                                                      LogisticsStatusHistoryL)
+              THEN
+                ERROR(TextHME007);
+
+              LogisticsStatusHistory2L.GET(LogisticsStatusHistoryL."Entry No.");
+              LogisticsStatusHistory2L."EDI Sent" := TRUE;
+              LogisticsStatusHistory2L."EDI Sent DateTime" := CURRENTDATETIME;
+              LogisticsStatusHistory2L.MODIFY(TRUE);
+
+            UNTIL PurchaseLineL.NEXT = 0;
+
+            IF OutboundEDIDocumentListL."No." <> '' THEN
+              OutboundEDIServiceL.RUN(OutboundEDIDocumentListL); //Create Outbound EDI Message
+
+          END;
+      END;
+
+      IF iLineCounterL > 0 THEN
+        MESSAGE(TextHME011,iLineCounterL)
+      ELSE
+        ERROR(TextHME012);
+      //H1700 11.02.15 tec-ar --------------------
+    END;
+
+    PROCEDURE SetManulIFTMINLogStatHistFiltr@1000000003(VAR LogisticsStatusHistoryR@1000000000 : Record 80013;HermesSetupV@1000000001 : Record 50319;EDItoSendFilterV@1000000002 : Boolean);
+    BEGIN
+      //H1700 11.02.15 tec-ar ++++++++++++++++++++
+      CLEAR(LogisticsStatusHistoryR);
+      LogisticsStatusHistoryR.SETCURRENTKEY("Purchase Doc. No.","Purchase Doc. Line No.","Purchase Doc. Type");
+      LogisticsStatusHistoryR.SETRANGE("Shipping Agent Code",HermesSetupV."Shipping Agent Hermes");
+      LogisticsStatusHistoryR.SETRANGE("EDI to Send",EDItoSendFilterV);
+      LogisticsStatusHistoryR.SETRANGE("EDI Sent",FALSE);
+      LogisticsStatusHistoryR.SETRANGE(Error,FALSE);
+      LogisticsStatusHistoryR.SETRANGE("Status Code",HermesSetupV."Manual IFTMIN Parc.Status Code");
+      LogisticsStatusHistoryR.SETRANGE("Direction of Information",LogisticsStatusHistoryR."Direction of Information"::Outgoing);
+      //H1700 11.02.15 tec-ar --------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation CC & Home24 NAV Team       |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      H1700       11.02.15  tec-are   Hermes 2MH: Generation and transmission of shipping instruction (IFTMIN)
+      H3800       05.03.15  tec-are   Hermes IFTMIN: Include assembly service if ordered by customer
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      H1700       27.01.15  MKR       Hermes 2MH: Generation and transmission of IFTMIN: Object created
+    }
+    END.
+  }
+}
+

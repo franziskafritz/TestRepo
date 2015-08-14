@@ -1,0 +1,1093 @@
+OBJECT Codeunit 82857 Create EDI Single Order
+{
+  OBJECT-PROPERTIES
+  {
+    Date=20.05.15;
+    Time=18:03:09;
+    Modified=Yes;
+    Version List=EDIINT6.02,HME3929,GOB;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+            AutoSendSingleOrder();
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      rCompanyInformation@1115500005 : Record 79;
+      rEDIPartnerDocumentType@1115500003 : Record 82852;
+      rOutboundEDIDocumentList@1115500002 : Record 82864;
+      rEDIIntegratorSetup@1108200001 : Record 82850;
+      sExternalDocNo@1119443001 : Code[20];
+      bHeaderExists@1000000000 : Boolean;
+      Text001@1115500001 : TextConst 'DEU=Der Partner %1 hat keine aktive Vereinbarung fÅr %2.;ENU=The partner %1 does not have any active %2 agreement.';
+      Text004@1108200000 : TextConst 'ENU=This %1 %2 has already been transferred.';
+      Home24Error01@1000000001 : TextConst 'ENU=No DHL tracking information was found in %1 line %2.';
+      Text002@1000000002 : TextConst 'ENU=Weight for DHL Packet, Item %1, must not be over 31.5 kg.';
+      repDHLLabel@1000000003 : Report 50009;
+      Text003@1000000004 : TextConst 'ENU=Error on transfer to the EDI Integrator.';
+      Text005@1000000005 : TextConst 'ENU=Error in the EDI Shipping.';
+      Text006@1000000006 : TextConst 'ENU=There is no Code GLN for Vendor %1.';
+      Text007@1000000007 : TextConst 'ENU=EDI partner %1 could not be found.';
+      Text008@1000000008 : TextConst 'ENU=Document Type ORDERS was not found for EDI Partner %1.';
+      Text009@1000000009 : TextConst 'ENU=No Series No. ORDERS were found for EDI Partner %1.';
+      Text010@1000000010 : TextConst 'ENU=No "Dummy GLN Ship-to with Label" was found for EDI Partner %1.';
+      Text011@1000000011 : TextConst 'ENU=No "Dummy GLN Ship-to w/o Label" was found for EDI Partner %1.';
+      Text012@1000000012 : TextConst 'ENU=There is no Requested Delivery Date for Order %1.';
+      Text013@1000000013 : TextConst 'ENU=Location Code for Order %1 does not exist.';
+      Text014@1000000014 : TextConst 'ENU=There is no GLN for Location Code %1.';
+      Text015@1000000015 : TextConst 'ENU=There are no Items in Order %1.';
+      Text016@1000000016 : TextConst 'ENU=There are Items without Vendor Item No. in the Order %1.';
+      Text017@1000000017 : TextConst 'ENU=Weight greater than 31.5 kg for DHL Package %1, line %2.';
+      Text018@1000000018 : TextConst 'ENU=In Purch. Order %1, line %2, there is no link to a Sales Order.';
+      Text019@1000000019 : TextConst 'ENU=In Purch. Order %1 line %2 there is no link to Sales order %3 line %4.';
+      FPCGeneralSetup@1000000020 : Record 50055;
+      "** HME ***********************"@1000000021 : TextConst;
+      HMEText001@1000000022 : TextConst 'ENU=COPY-KOPIE';
+
+    PROCEDURE CreateSingleOrder@1108200001(rPurchaseHeader@1115500000 : Record 38;bShowForm@1115500002 : Boolean;LabelPath_r@1000000000 : Text[250];DNPath_r@1000000002 : Text[250]);
+    VAR
+      rVendor@1000000001 : Record 23;
+      rEDIPartner@1108200000 : Record 82851;
+      cOutboundEDIService@1108200001 : Codeunit 82851;
+      Confirm001@1108200002 : TextConst 'DEU=Die Bestellung %1 wurde bereits per EDI Åbermittelt. Soll die Bestellung erneut Åbermittelt werden?;ENU=Order %1 was already sent via EDI. Do you want to send again?';
+      Error001@1108200003 : TextConst 'ENU=The transmission was aborted.';
+    BEGIN
+      // H0552       13.09.13    FX ++++++++++++++++++++++++++++++++++++++
+      IF (rPurchaseHeader."Outbound EDI No." <> '') AND GUIALLOWED THEN
+      // H0552       13.09.13    FX -------------------------------------
+        IF NOT CONFIRM(STRSUBSTNO(Confirm001,rPurchaseHeader."No."),FALSE) THEN
+          ERROR(Error001);
+
+      rVendor.GET(rPurchaseHeader."Buy-from Vendor No.");
+      rVendor.TESTFIELD("EDI ORDERS Partner");
+      rEDIPartner.GET(rVendor."EDI ORDERS Partner");
+
+      IsPartnerDocumentActive(rEDIPartner.Code,'ORDERS');
+      rCompanyInformation.GET();
+      rEDIIntegratorSetup.GET();
+
+      IF CheckLines(rPurchaseHeader) THEN BEGIN
+        //H1218 08.08.14 EHN +++++++++++++++++++++
+        CreateSingleOrderList(rEDIPartner,rPurchaseHeader);
+        //H1218 08.08.14 EHN ---------------------
+        CreateSingleOrderHeader(rPurchaseHeader);
+      END ELSE BEGIN
+        rPurchaseHeader."Outbound EDI No." := rEDIPartner.Code;
+        rPurchaseHeader.MODIFY;
+      END;
+
+      IF rPurchaseHeader."Outbound EDI No." <> '' THEN BEGIN
+        IF bShowForm THEN
+          MESSAGE(Text004,rPurchaseHeader."Document Type",rPurchaseHeader."No.");
+      END;
+
+      COMMIT;
+
+      IF bShowForm THEN
+        FORM.RUNMODAL(FORM::"Outbound EDI ORDERS",rOutboundEDIDocumentList)
+      ELSE
+        IF GUIALLOWED THEN BEGIN
+          // A/gob-lku/20.11.2012
+          IF (LabelPath_r <> '') OR (DNPath_r <> '') THEN
+            cOutboundEDIService.PDFPaths(LabelPath_r,DNPath_r);
+          // E/gob-lku/20.11.2012
+          cOutboundEDIService.SendOutboundEDIListToEDI(rOutboundEDIDocumentList,TRUE);
+        END ELSE BEGIN
+          // A/gob-lku/20.11.2012
+          IF (LabelPath_r <> '') OR (DNPath_r <> '') THEN
+            cOutboundEDIService.PDFPaths(LabelPath_r,DNPath_r);
+          // E/gob-lku/20.11.2012
+          IF NOT cOutboundEDIService.RUN(rOutboundEDIDocumentList) THEN
+            SendRequirementMail(Text003);
+        END;
+
+      rOutboundEDIDocumentList.GET(rOutboundEDIDocumentList."Document Type",rOutboundEDIDocumentList."No.");
+      rPurchaseHeader.GET(rPurchaseHeader."Document Type",rPurchaseHeader."No.");
+      rPurchaseHeader."EDI Message No." := rOutboundEDIDocumentList."Outbound EDI Message No.";
+      //A,gob-dst,15.05.2013,P0908
+      rPurchaseHeader."EDI Order" := TRUE;
+      //E,gob-dst,15.05.2013,P0908
+      rPurchaseHeader.MODIFY;
+    END;
+
+    PROCEDURE CreateSingleOrderList@1115500003(EDIPartnerV@1115500001 : Record 82851;PurchHdrV@1000000003 : Record 38);
+    VAR
+      NoSeriesMgt@1115500000 : Codeunit 396;
+      "****HME****************"@1000000000 : Integer;
+      CountryL@1000000001 : Record 9;
+      VendorL@1000000002 : Record 23;
+    BEGIN
+      // H0880 FX 07.04.14 +++++++++++++++++++++++++++++++++
+      IF EDIPartnerV."Start Date" > WORKDATE THEN
+        EXIT;
+      // H0880 FX 07.04.14 -------------------------------
+
+      rOutboundEDIDocumentList.INIT;
+      rOutboundEDIDocumentList."Document Type" := rOutboundEDIDocumentList."Document Type"::ORDERS;
+
+      NoSeriesMgt.InitSeries(
+        rEDIPartnerDocumentType."ORDERS No. Series",rOutboundEDIDocumentList."No. Series",
+        rOutboundEDIDocumentList."Document Date",
+        rOutboundEDIDocumentList."No.",rOutboundEDIDocumentList."No. Series");
+
+      rOutboundEDIDocumentList."Partner Code" := EDIPartnerV.Code;
+      rOutboundEDIDocumentList.Name := EDIPartnerV.Name;
+      rOutboundEDIDocumentList."Name 2" := EDIPartnerV."Name 2";
+      rOutboundEDIDocumentList.Address := EDIPartnerV.Address;
+      rOutboundEDIDocumentList."Address 2" := EDIPartnerV."Address 2";
+      rOutboundEDIDocumentList."Post Code" := EDIPartnerV."Post Code";
+      rOutboundEDIDocumentList.City := EDIPartnerV.City;
+      rOutboundEDIDocumentList."Country/Region Code" := EDIPartnerV."Country/Region Code";
+      rOutboundEDIDocumentList."Document Date" := WORKDATE;
+      rOutboundEDIDocumentList."User ID" := USERID;
+      rOutboundEDIDocumentList."Test Indicator" := rEDIPartnerDocumentType."Test Indicator";
+      rOutboundEDIDocumentList."Supplier GLN" := EDIPartnerV.GLN;
+      rOutboundEDIDocumentList."Payer GLN" := rEDIIntegratorSetup."Global Location Number (GLN)";
+      rOutboundEDIDocumentList."Sender GLN" := rEDIIntegratorSetup."Global Location Number (GLN)";
+      //H1218, H1619 04.11.14 EHN +++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF PurchHdrV.IsDropShip THEN
+        IF VendorL.GET(PurchHdrV."Buy-from Vendor No.") THEN
+          IF VendorL."Crossborder VAT" THEN
+            IF CountryL.GET(PurchHdrV."Ship-to Country/Region Code") THEN
+              rOutboundEDIDocumentList."Sender GLN" := CountryL."Our GLN-No.";
+      //H1218, H1619 04.11.14 EHN ---------------------------------------------------
+      rOutboundEDIDocumentList."Recipient GLN" := EDIPartnerV.GLN;
+      rOutboundEDIDocumentList."External No." := EDIPartnerV."External No.";
+      rOutboundEDIDocumentList.INSERT;
+
+      bHeaderExists := TRUE;
+    END;
+
+    PROCEDURE CreateSingleOrderHeader@1115500001(rPurchaseHeader@1115500002 : Record 38);
+    VAR
+      rCurrency@1115500004 : Record 4;
+      rSalespersonPurchaser@1119443000 : Record 13;
+      rVendor@1115500006 : Record 23;
+      rPurchaseLine@1000000000 : Record 39;
+      rOutboundEDIDocumentHeader@1115500001 : Record 82865;
+      rLocation@1000000001 : Record 14;
+      rCustomer@1000000002 : Record 18;
+      iLineCounter@1115500000 : Integer;
+      "****HME**********"@1000000004 : Integer;
+      RHDSalesExportLineL@1000000005 : Record 50182;
+      RHDSalesExportLine2L@1000000006 : Record 50182;
+      RHDSetupL@1000000003 : Record 50177;
+      CountryL@1000000007 : Record 9;
+      RHDSalesExportHdrL@1000000008 : Record 50181;
+      PurchaseLineL@1000000009 : Record 39;
+      SalesHdrL@1000000010 : Record 36;
+      SalesHdrArchiveL@1000000011 : Record 5107;
+      HesDepAssDirInjL@1000000013 : Record 50333;
+      OrderNoL@1000000012 : Code[20];
+    BEGIN
+      CLEAR(sExternalDocNo);
+
+      rOutboundEDIDocumentHeader.INIT;
+      rOutboundEDIDocumentHeader."Header Document Type" := rOutboundEDIDocumentList."Document Type";
+      rOutboundEDIDocumentHeader."Header Document No." := rOutboundEDIDocumentList."No.";
+      rOutboundEDIDocumentHeader."Document Type" := rOutboundEDIDocumentHeader."Document Type"::"Purchase Order";
+      rOutboundEDIDocumentHeader."Document No." := rPurchaseHeader."No.";
+      rOutboundEDIDocumentHeader."Document Date" := rPurchaseHeader."Document Date";
+      rOutboundEDIDocumentHeader."Order Date" := rPurchaseHeader."Order Date";
+      rOutboundEDIDocumentHeader.Currency := rPurchaseHeader."Currency Code";
+      rOutboundEDIDocumentHeader."Sell-to Customer No." := rPurchaseHeader."Buy-from Vendor No.";
+      rOutboundEDIDocumentHeader."Sell-to Customer Name" := rPurchaseHeader."Buy-from Vendor Name";
+      rOutboundEDIDocumentHeader."Sell-to Name 2" := rPurchaseHeader."Buy-from Vendor Name 2";
+      rOutboundEDIDocumentHeader."Sell-to Address" := rPurchaseHeader."Buy-from Address";
+      rOutboundEDIDocumentHeader."Sell-to Address 2" := rPurchaseHeader."Buy-from Address 2";
+      rOutboundEDIDocumentHeader."Sell-to City" := rPurchaseHeader."Buy-from City";
+      rOutboundEDIDocumentHeader."Sell-to Post Code" := rPurchaseHeader."Buy-from Post Code";
+      rOutboundEDIDocumentHeader."Sell-to Contact" := rPurchaseHeader."Buy-from Contact";
+      //H1452 12.08.14 EHN +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      //In case of CD, get customer address from SO or SO Archived
+      PurchaseLineL.RESET;
+      PurchaseLineL.SETRANGE("Document Type", rPurchaseHeader."Document Type");
+      PurchaseLineL.SETRANGE("Document No.", rPurchaseHeader."No.");
+      PurchaseLineL.SETRANGE("Special Order", TRUE);
+      IF PurchaseLineL.FINDFIRST THEN BEGIN
+        IF SalesHdrL.GET(SalesHdrL."Document Type"::Order,PurchaseLineL."Special Order Sales No.") THEN BEGIN
+          rOutboundEDIDocumentHeader."Bill-to Customer No." := SalesHdrL."Bill-to Customer No.";
+          rOutboundEDIDocumentHeader."Bill-to Name" := SalesHdrL."Ship-to Name";
+          rOutboundEDIDocumentHeader."Bill-to Name 2" := SalesHdrL."Ship-to Name 2";
+          rOutboundEDIDocumentHeader."Bill-to Address" := SalesHdrL."Ship-to Address";
+          rOutboundEDIDocumentHeader."Bill-to Address 2" := SalesHdrL."Ship-to Address 2";
+          rOutboundEDIDocumentHeader."Bill-to City" := SalesHdrL."Ship-to City";
+          rOutboundEDIDocumentHeader."Bill-to Post Code" := SalesHdrL."Ship-to Post Code";
+          rOutboundEDIDocumentHeader."Bill-to Country/Region Code" := SalesHdrL."Ship-to Country/Region Code";
+        END ELSE IF SalesHdrArchiveL.GET(SalesHdrArchiveL."Document Type"::Order,PurchaseLineL."Special Order Sales No.") THEN BEGIN
+          rOutboundEDIDocumentHeader."Bill-to Customer No." := SalesHdrArchiveL."Bill-to Customer No.";
+          rOutboundEDIDocumentHeader."Bill-to Name" := SalesHdrArchiveL."Ship-to Name";
+          rOutboundEDIDocumentHeader."Bill-to Name 2" := SalesHdrArchiveL."Ship-to Name 2";
+          rOutboundEDIDocumentHeader."Bill-to Address" := SalesHdrArchiveL."Ship-to Address";
+          rOutboundEDIDocumentHeader."Bill-to Address 2" := SalesHdrArchiveL."Ship-to Address 2";
+          rOutboundEDIDocumentHeader."Bill-to City" := SalesHdrArchiveL."Ship-to City";
+          rOutboundEDIDocumentHeader."Bill-to Post Code" := SalesHdrArchiveL."Ship-to Post Code";
+          rOutboundEDIDocumentHeader."Bill-to Country/Region Code" := SalesHdrArchiveL."Ship-to Country/Region Code";
+        END;
+      END;
+      //In general, get customer address from PO
+      IF rOutboundEDIDocumentHeader."Bill-to Customer No." = '' THEN BEGIN
+        rOutboundEDIDocumentHeader."Bill-to Customer No." := rPurchaseHeader."Sell-to Customer No.";
+        rOutboundEDIDocumentHeader."Bill-to Name" := rPurchaseHeader."Ship-to Name";
+        rOutboundEDIDocumentHeader."Bill-to Name 2" := rPurchaseHeader."Ship-to Name 2";
+        rOutboundEDIDocumentHeader."Bill-to Address" := rPurchaseHeader."Ship-to Address";
+        rOutboundEDIDocumentHeader."Bill-to Address 2" := rPurchaseHeader."Ship-to Address 2";
+        rOutboundEDIDocumentHeader."Bill-to City" := rPurchaseHeader."Ship-to City";
+        rOutboundEDIDocumentHeader."Bill-to Post Code" := rPurchaseHeader."Ship-to Post Code";
+        rOutboundEDIDocumentHeader."Bill-to Country/Region Code" := rPurchaseHeader."Ship-to Country/Region Code";
+      END;
+      //H1452 12.08.14 EHN -------------------------------------------------------------------------
+
+      rOutboundEDIDocumentHeader."VAT Registration No." := rCompanyInformation."VAT Registration No.";
+      //H1218, H1619 04.11.14 EHN +++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF rPurchaseHeader.IsDropShip() THEN
+        IF rVendor.GET(rPurchaseHeader."Buy-from Vendor No.") THEN
+          IF rVendor."Crossborder VAT" THEN
+            IF CountryL.GET(rPurchaseHeader."Ship-to Country/Region Code") THEN
+              rOutboundEDIDocumentHeader."VAT Registration No." := CountryL."Our VAT Registration No.";
+      //H1218, H1619 04.11.14 EHN ---------------------------------------------------
+
+      rOutboundEDIDocumentHeader."Registration No." := rCompanyInformation."Registration No.";
+      rOutboundEDIDocumentHeader."Your Reference" := rPurchaseHeader."Your Reference";
+      rOutboundEDIDocumentHeader."External No." := rOutboundEDIDocumentList."External No.";
+
+      IF rSalespersonPurchaser.GET(rPurchaseHeader."Purchaser Code") THEN BEGIN
+        rOutboundEDIDocumentHeader."Salesperson Name" := rSalespersonPurchaser.Name;
+        rOutboundEDIDocumentHeader."Salesperson Phone No." := rSalespersonPurchaser."Phone No.";
+      END;
+
+      IF rPurchaseHeader."Sell-to Customer No." <> '' THEN BEGIN
+        rPurchaseLine.SETRANGE("Document Type",rPurchaseHeader."Document Type");
+        rPurchaseLine.SETRANGE("Document No.",rPurchaseHeader."No.");
+        rPurchaseLine.SETRANGE(Type,rPurchaseLine.Type::Item);
+      //  rPurchaseLine.SETFILTER("Unit Cost (LCY)",'<>%1',0);
+        rPurchaseLine.SETFILTER("Purchasing Code",'%1|%2|%3','*-4','*-7','*-12');
+        IF NOT rPurchaseLine.ISEMPTY THEN BEGIN
+          rOutboundEDIDocumentHeader."Receiver GLN" := rEDIPartnerDocumentType."Dummy GLN Ship-to with Label";
+          rOutboundEDIDocumentHeader."Ultimate Consignee GLN" := rEDIPartnerDocumentType."Dummy GLN Ship-to with Label";
+          rOutboundEDIDocumentList."Label needed" := TRUE;
+          rOutboundEDIDocumentList."Del. Note needed" := TRUE;
+          rOutboundEDIDocumentList.MODIFY;
+        END ELSE BEGIN
+          rPurchaseLine.SETFILTER("Purchasing Code",'%1|%2','*-8','*-13');
+          IF NOT rPurchaseLine.ISEMPTY THEN BEGIN
+            rOutboundEDIDocumentHeader."Receiver GLN" := rEDIPartnerDocumentType."Dummy GLN Ship-to w/o Label";
+            rOutboundEDIDocumentHeader."Ultimate Consignee GLN" := rEDIPartnerDocumentType."Dummy GLN Ship-to w/o Label";
+            rOutboundEDIDocumentList."Del. Note needed" := TRUE;
+            rOutboundEDIDocumentList.MODIFY;
+          END ELSE BEGIN
+            rLocation.GET(rPurchaseHeader."Location Code");
+            rOutboundEDIDocumentHeader."Receiver GLN" := rLocation."GLN/ILN";
+            IF rLocation."EDI Cross Docking" THEN BEGIN
+              rOutboundEDIDocumentList."Del. Note needed" := TRUE;
+              rOutboundEDIDocumentList.MODIFY;
+            // S/P1106
+            END ELSE BEGIN
+              IF rLocation."Rhenus Crossdock Location" THEN BEGIN
+                rOutboundEDIDocumentList."Label needed" := TRUE;
+                rOutboundEDIDocumentList."Del. Note needed" := FALSE;
+                rOutboundEDIDocumentList.MODIFY;
+              END;
+            // E/P1106
+            END;
+          END;
+        END;
+        //A,gob-dst,29.01.2013
+        IF rCustomer.GET(rPurchaseHeader."Sell-to Customer No.") THEN
+          rOutboundEDIDocumentHeader."Customer Phone No." := rCustomer."Phone No.";
+        //E,gob-dst,29.01.2013
+      END ELSE BEGIN
+        rLocation.GET(rPurchaseHeader."Location Code");
+        rOutboundEDIDocumentHeader."Receiver GLN" := rLocation."GLN/ILN";
+      END;
+
+      rOutboundEDIDocumentHeader."Ship-to Code" := rPurchaseHeader."Ship-to Code";
+      rOutboundEDIDocumentHeader."Ship-to Name" := rPurchaseHeader."Ship-to Name";
+      rOutboundEDIDocumentHeader."Ship-to Name 2" := rPurchaseHeader."Ship-to Name 2";
+      rOutboundEDIDocumentHeader."Ship-to Address" := rPurchaseHeader."Ship-to Address";
+      //S/P1260
+      IF STRLEN(rPurchaseHeader."Ship-to Address") <= 35 THEN BEGIN
+        IF STRLEN(rPurchaseHeader."Ship-to Address" + ' ' + rPurchaseHeader."Ship-to Address 2") > 50 THEN BEGIN
+          rOutboundEDIDocumentHeader."Ship-to Address" := COPYSTR(
+            rPurchaseHeader."Ship-to Address" + ' ' + rPurchaseHeader."Ship-to Address 2",1,50);
+          rOutboundEDIDocumentHeader."Ship-to Address 2" := COPYSTR(
+            rPurchaseHeader."Ship-to Address" + ' ' + rPurchaseHeader."Ship-to Address 2",51,50);
+        END ELSE BEGIN
+          rOutboundEDIDocumentHeader."Ship-to Address" :=
+            rPurchaseHeader."Ship-to Address" + ' ' + rPurchaseHeader."Ship-to Address 2";
+        END;
+      END ELSE
+      //E/P1260
+        rOutboundEDIDocumentHeader."Ship-to Address 2" := rPurchaseHeader."Ship-to Address 2";
+      rOutboundEDIDocumentHeader."Ship-to City" := rPurchaseHeader."Ship-to City";
+      rOutboundEDIDocumentHeader."Ship-to Contact" := rPurchaseHeader."Ship-to Contact";
+      rOutboundEDIDocumentHeader."Ship-to Post Code" := rPurchaseHeader."Ship-to Post Code";
+      rOutboundEDIDocumentHeader."Ship-to Country/Region Code" := rPurchaseHeader."Ship-to Country/Region Code";
+      //H1417 29.07.14 EHN ++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF rEDIPartnerDocumentType."Include Delivery Date" THEN
+      //H1417 29.07.14 EHN --------------------------------------------------
+        IF rPurchaseHeader."Requested Receipt Date" <> 0D THEN
+          rOutboundEDIDocumentHeader."Requested Delivery Date" := rPurchaseHeader."Requested Receipt Date"
+        ELSE BEGIN
+          IF rPurchaseHeader."Expected Receipt Date" <> 0D THEN
+            rOutboundEDIDocumentHeader."Requested Delivery Date" := rPurchaseHeader."Expected Receipt Date"
+          ELSE BEGIN
+            rOutboundEDIDocumentHeader."Requested Delivery Date" := rPurchaseHeader."Posting Date";
+            rOutboundEDIDocumentHeader."Shipment Date" := rPurchaseHeader."Posting Date";
+          END;
+        END;
+
+      IF (NOT rOutboundEDIDocumentList."Label needed") AND (NOT rOutboundEDIDocumentList."Del. Note needed") THEN BEGIN
+        IF (rPurchaseHeader."Requested Receipt Week" <> 0) AND (rOutboundEDIDocumentHeader."Requested Delivery Date" <> 0D) THEN
+          rOutboundEDIDocumentHeader."Requested Delivery Week" :=
+            DWY2DATE(3,rPurchaseHeader."Requested Receipt Week",DATE2DMY(rOutboundEDIDocumentHeader."Requested Delivery Date",3));;
+        rOutboundEDIDocumentHeader."Requested Delivery Date" := 0D;
+      END;
+
+      rVendor.GET(rPurchaseHeader."Buy-from Vendor No.");
+      rVendor.TESTFIELD("GLN/ILN");
+      rOutboundEDIDocumentHeader."Supplier GLN" := rVendor."GLN/ILN";
+      rOutboundEDIDocumentHeader."Buyer GLN" := rEDIIntegratorSetup."Global Location Number (GLN)";
+      rOutboundEDIDocumentHeader."Invoicer GLN" := rEDIIntegratorSetup."Global Location Number (GLN)";
+      //rOutboundEDIDocumentHeader."Invoicer GLN" := rVendor."Global Location Number (GLN)";
+
+      //H1362, H1451, H1619 04.11.14 EHN +++++++++++++++++++++
+      rOutboundEDIDocumentHeader."RHD Branch" := rPurchaseHeader.GetBranchCode;
+      rOutboundEDIDocumentHeader."No. of Packaging" := rPurchaseHeader.GetNoofCollis;
+      //H1362, H1451, H1619 04.11.14 EHN ---------------------
+
+      // H3903, H1698  23.03.15  MKR ++++++++++++++++++++++++++++++
+      IF rLocation.GET(rPurchaseHeader."Location Code") THEN
+        CASE rLocation."Hermes Location Type" OF
+          rLocation."Hermes Location Type"::"Direct Injection": rOutboundEDIDocumentHeader."RHD Branch" := rLocation."Branch Code";
+          rLocation."Hermes Location Type"::"Cross-Dock":
+            BEGIN
+              rPurchaseLine.RESET;
+              rPurchaseLine.SETRANGE("Document Type",rPurchaseHeader."Document Type");
+              rPurchaseLine.SETRANGE("Document No.",rPurchaseHeader."No.");
+              rPurchaseLine.SETRANGE(Type,rPurchaseLine.Type::Item);
+              rPurchaseLine.SETFILTER(Quantity,'<>%1',0);
+              IF rPurchaseLine.FINDFIRST THEN BEGIN
+                IF rPurchaseLine."Special Order" THEN
+                  OrderNoL := rPurchaseLine."Special Order Sales No."
+                ELSE
+                  OrderNoL := rPurchaseLine."Sales Order No.";
+
+                IF SalesHdrL.GET(SalesHdrL."Document Type"::Order, OrderNoL) THEN BEGIN
+                  HesDepAssDirInjL.GetSalesOrderDILocation(SalesHdrL, rLocation);
+                  rOutboundEDIDocumentHeader."RHD Branch" := rLocation."Branch Code";
+                END;
+              END;
+            END;
+        END;
+      // H3903, H1698  23.03.15  MKR ------------------------------
+      rOutboundEDIDocumentHeader.INSERT;
+
+      rPurchaseLine.RESET();
+      rPurchaseLine.SETRANGE("Document Type",rPurchaseHeader."Document Type");
+      rPurchaseLine.SETRANGE("Document No.",rPurchaseHeader."No.");
+      rPurchaseLine.SETRANGE(Type,rPurchaseLine.Type::Item);
+      //A,gob-dst,26.02.2013
+      rPurchaseLine.SETFILTER(Quantity,'<>%1',0);
+      //E,gob-dst,26.02.2013
+      //rPurchaseLine.SETFILTER("Unit Cost (LCY)",'<>%1',0);
+      rPurchaseLine.FIND('-');
+      REPEAT
+        iLineCounter += 1;
+        CreateSingleOrderLine(rPurchaseLine,iLineCounter,rOutboundEDIDocumentHeader);
+      UNTIL rPurchaseLine.NEXT = 0;
+
+      IF rPurchaseHeader."Currency Code" = '' THEN
+        rCurrency.InitRoundingPrecision
+      ELSE
+        rCurrency.GET(rPurchaseHeader."Currency Code");
+
+      //A,gob-Fuchs,19.11.12,Home24 DHL Tracking
+      CreateDHLShipmentEntries(rOutboundEDIDocumentHeader);
+      //E,gob-Fuchs,19.11.12,Home24 DHL Tracking
+
+      rOutboundEDIDocumentHeader."Position Count" := iLineCounter;
+      rOutboundEDIDocumentHeader.MODIFY;
+
+      rPurchaseHeader."Outbound EDI No." := rOutboundEDIDocumentHeader."Header Document No.";
+      rPurchaseHeader."Date Sent" := TODAY;
+      rPurchaseHeader."Time Sent" := TIME;
+      //A,gob-dst,18.04.2013,P0883
+      rPurchaseHeader."EDI Send Date" := rPurchaseHeader."Date Sent";
+      rPurchaseHeader."EDI Time Sent" := rPurchaseHeader."Time Sent";
+      //E,gob-dst,18.04.2013,P0883
+      rPurchaseHeader.MODIFY;
+    END;
+
+    PROCEDURE CreateSingleOrderLine@1115500006(rPurchaseLine@1115500000 : Record 39;iLineCounter@1115500002 : Integer;rOutboundDocHeader@1000000000 : Record 82865);
+    VAR
+      rItem@1108200003 : Record 27;
+      rUnitOfMeasure@1108200001 : Record 204;
+      rItemCrossReference@1115500003 : Record 5717;
+      rOutboundEDIDocumentLine@1115500001 : Record 82866;
+      rVendor@1000000001 : Record 23;
+      rSalesHeader@1000000002 : Record 36;
+      rSalesLine@1000000003 : Record 37;
+      IsBulkyGood@1000000004 : Boolean;
+      DHLLabelMgt@1000000005 : Codeunit 50111;
+      DummyCodeVarPar@1000000006 : Code[50];
+      PurchaseHeader_l@1000000007 : Record 38;
+      DumyPZ@1000000008 : Code[20];
+      "**** HME *********************"@1000000009 : Integer;
+      RHDSalesExportHdrL@1000000010 : Record 50181;
+      PurchLineDescription2L@1000000011 : Text[50];
+    BEGIN
+      rOutboundEDIDocumentLine."Header Document Type" := rOutboundEDIDocumentList."Document Type";
+      rOutboundEDIDocumentLine."Header Document No." := rOutboundEDIDocumentList."No.";
+      rOutboundEDIDocumentLine."Document Type" := rOutboundEDIDocumentLine."Document Type"::"Purchase Order";
+      rOutboundEDIDocumentLine."Document No." := rPurchaseLine."Document No.";
+      rOutboundEDIDocumentLine."Line No." := rPurchaseLine."Line No.";
+      rOutboundEDIDocumentLine."Item No." := rPurchaseLine."No.";
+      IF rItem.GET(rPurchaseLine."No.") THEN
+        rOutboundEDIDocumentLine."Country Purchased Code" := rItem."Country/Region Purchased Code";
+      IF rOutboundEDIDocumentLine."Country Purchased Code" = '' THEN
+        rOutboundEDIDocumentLine."Country Purchased Code" := 'DE';
+
+      rOutboundEDIDocumentLine."Customer Item No." := rPurchaseLine."Cross-Reference No.";
+      //H3847 07.04.15 DMO +++++++++++++++++++++++++++++
+      IF rItem."Vendor Description" <> '' THEN
+        rOutboundEDIDocumentLine.Description := COPYSTR(rItem."Vendor Description",1,50)
+      ELSE
+        rOutboundEDIDocumentLine.Description := rPurchaseLine.Description;
+      //H3847 07.04.15 DMO -----------------------------
+      //H2172, H1731 20.02.15 EHN +++++++++++++++++++++++++++++++++++++++++
+      IF rPurchaseLine."Spare Part Reason" <> 0 THEN BEGIN
+        IF STRLEN(rPurchaseLine."Description 2") > 45 THEN
+          PurchLineDescription2L := COPYSTR(rPurchaseLine."Description 2",1,45);
+        rOutboundEDIDocumentLine."Description 2" := '--' + PurchLineDescription2L +
+                                                   '--' + COPYSTR(FORMAT(rPurchaseLine."Spare Part Reason"),1,1);
+      END ELSE
+        rOutboundEDIDocumentLine."Description 2" := rPurchaseLine."Description 2";
+
+      //EDI can only handle 70 characters
+      IF STRLEN(rOutboundEDIDocumentLine.Description + rOutboundEDIDocumentLine."Description 2") > 70 THEN
+        rOutboundEDIDocumentLine."Description 2" := DELSTR(rOutboundEDIDocumentLine."Description 2",20);
+      //H2172, H1731 20.02.15 EHN -----------------------------------------
+
+      rOutboundEDIDocumentLine.Quantity := rPurchaseLine.Quantity;
+      IF rUnitOfMeasure.GET(rPurchaseLine."Unit of Measure Code") THEN BEGIN
+        IF rUnitOfMeasure."UN/ECE Code" <> '' THEN
+          rOutboundEDIDocumentLine."Unit of Measure" := rUnitOfMeasure."UN/ECE Code"
+        ELSE
+          rOutboundEDIDocumentLine."Unit of Measure" := rUnitOfMeasure.Code;
+      END ELSE
+        rOutboundEDIDocumentLine."Unit of Measure" := rPurchaseLine."Unit of Measure Code";
+      rOutboundEDIDocumentLine."EDI Line No." := iLineCounter;
+      rOutboundEDIDocumentLine."Gross Weight" := ROUND(rPurchaseLine."Gross Weight",0.00001,'=');
+
+      //H1731, H1526, H0811 09.12.14 EHN ++++++++++++++++++++++++++++++++++++
+      IF rOutboundEDIDocumentLine."Gross Weight" = 0 THEN
+        rOutboundEDIDocumentLine."Gross Weight" := 0.01;
+      //H1526 07.10.14 DMA ------------------------------------
+
+      //rOutboundEDIDocumentLine."Net Weight" := ROUND(rPurchaseLine."Net Weight",0.0001,'=');
+      //H0811 09.04.14 DMA ++++++++++++++++++++++++++++++++++++
+      //rOutboundEDIDocumentLine."Net Weight" := ROUND(rPurchaseLine."Net Weight" / 100, 0.0001, '=');
+      //H0811 09.04.14 DMA ------------------------------------
+      //H0811 09.04.14 DMA ++++++++++++++++++++++++++++++++++++
+      rOutboundEDIDocumentLine."Net Weight" := rPurchaseLine."Net Weight";
+      //H0811 09.04.14 DMA ------------------------------------
+
+      //H1526 07.10.14 DMA ++++++++++++++++++++++++++++++++++++
+      IF rOutboundEDIDocumentLine."Net Weight" = 0 THEN
+        rOutboundEDIDocumentLine."Net Weight" := 0.01;
+      //H1731, H1526, H0811 09.12.14 EHN ------------------------------------
+
+      rOutboundEDIDocumentLine."Customer Order No." := sExternalDocNo;
+      rOutboundEDIDocumentLine."Direct Unit Cost" := rPurchaseLine."Direct Unit Cost";
+
+      //GTIN aus Referenztabelle
+      rItemCrossReference.RESET;
+      rItemCrossReference.SETRANGE("Item No.",rPurchaseLine."No.");
+      IF rPurchaseLine."Variant Code" <> '' THEN
+        rItemCrossReference.SETRANGE("Variant Code",rPurchaseLine."Variant Code");
+      rItemCrossReference.SETRANGE("Cross-Reference Type",rItemCrossReference."Cross-Reference Type"::"Bar Code");
+      //A,gob-dst,25.06.2013,P1053
+      rItemCrossReference.SETRANGE("Discontinue Bar Code",FALSE);
+      //E,gob-dst,25.06.2013,P1053
+      IF rItemCrossReference.FINDFIRST THEN
+        rOutboundEDIDocumentLine.GTIN := rItemCrossReference."Cross-Reference No.";
+
+      // Determine Vendor Item No.
+      {
+      IF rPurchaseLine."Cross-Reference No." = '' THEN BEGIN
+        rItemCrossReference.RESET;
+        rItemCrossReference.SETRANGE("Item No.",rPurchaseLine."No.");
+        IF rPurchaseLine."Variant Code" <> '' THEN
+          rItemCrossReference.SETRANGE("Variant Code",rPurchaseLine."Variant Code");
+        rItemCrossReference.SETRANGE("Cross-Reference Type",rItemCrossReference."Cross-Reference Type"::Vendor);
+        rItemCrossReference.SETRANGE("Cross-Reference Type No.",rPurchaseLine."Buy-from Vendor No.");
+        IF rItemCrossReference.FINDFIRST THEN
+          rOutboundEDIDocumentLine."Customer Item No." := rItemCrossReference."Cross-Reference No.";
+      END;
+      }
+      //A,gob-dst,12.02.2013,P0780
+      IF rPurchaseLine."Vendor Item No." <> '' THEN
+        rOutboundEDIDocumentLine."Customer Item No." := rPurchaseLine."Vendor Item No."
+      ELSE
+      //E,gob-dst,12.02.2013,P0780
+        rOutboundEDIDocumentLine."Customer Item No." := COPYSTR(rItem."Vendor Item No." + ' ' + rItem."Vendor Item No. Add.",1,35);
+
+      //H2030, H1619, H1361 23.01.15 EHN +++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      rOutboundEDIDocumentLine."Sales Order No." := rPurchaseLine.GetLongSalesOrderNo();
+      //H2030, H1619, H1361 23.01.15 EHN ---------------------------------------------------------
+
+      //P0780,H0826,H0980,H1417 29.07.14 EHN +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF rEDIPartnerDocumentType."Include Delivery Date" THEN
+        IF rOutboundEDIDocumentList."Label needed" OR rOutboundEDIDocumentList."Del. Note needed" THEN BEGIN
+          IF rSalesLine.GET(rSalesLine."Document Type"::Order,rPurchaseLine."Sales Order No.",rPurchaseLine."Sales Order Line No.") THEN
+            rOutboundEDIDocumentLine."Requested Delivery Date" := rSalesLine."Latest First Scan"
+          ELSE
+            IF rSalesLine.GET(rSalesLine."Document Type"::Order,rPurchaseLine."Special Order Sales No.",
+              rPurchaseLine."Special Order Sales Line No.") THEN
+                rOutboundEDIDocumentLine."Requested Delivery Date" := rSalesLine."Latest First Scan";
+        END;
+      //P0780,H0826,H0980,H1417 29.07.14 EHN -------------------------------------------------------------
+
+      //P1106, P0819, P0924, P1015, H1619 04.11.14 EHN +++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF rOutboundEDIDocumentList."Label needed" AND (NOT CDLabelNeeded(rPurchaseLine."Location Code")) THEN BEGIN
+        rOutboundEDIDocumentLine."Billing No. DHL Label" := rPurchaseLine.GetDSLabelBillingNo;
+        PurchaseHeader_l.GET(rPurchaseLine."Document Type",rPurchaseLine."Document No.");
+        IF NOT (PurchaseHeader_l."Ship-to Country/Region Code" IN ['DE','']) THEN BEGIN
+          IsBulkyGood := FALSE;
+          rOutboundEDIDocumentLine."Leitcode DHL Label" := DHLLabelMgt.GetLeitcodeInt(rPurchaseLine,DummyCodeVarPar,IsBulkyGood,DumyPZ);
+        END ELSE BEGIN
+          IsBulkyGood := FALSE;
+          rOutboundEDIDocumentLine."Leitcode DHL Label" := DHLLabelMgt.GetLeitcode(rPurchaseLine,DummyCodeVarPar,IsBulkyGood);
+        END;
+      END;
+      //P1106, P0819, P0924, P1015, H1619 04.11.14 EHN ---------------------------------------------------
+
+      //H1361 15.07.14 EHN ++++++++++++++++++++++++++++++++++++++++++++++++
+      rItem.CALCFIELDS("Parcels Number");
+      rOutboundEDIDocumentLine."No. of Packaging" := rItem."Parcels Number" * rOutboundEDIDocumentLine.Quantity;
+      //H1361 15.07.14 EHN ------------------------------------------------
+
+      // H3929, H1698, H3806, H3878 19.03.15  MKR ++++++++++++++++++++++++++++++++++++++++++++
+      rOutboundEDIDocumentLine.INSERT;
+      // H3929, H1698, H3806, H3878 19.03.15  MKR --------------------------------------------
+    END;
+
+    PROCEDURE IsPartnerDocumentActive@10(Partner@1000 : Code[20];DocumentTypeCode@1001 : Text[30]);
+    BEGIN
+      rEDIPartnerDocumentType.SETRANGE("Partner Code",Partner);
+      rEDIPartnerDocumentType.SETRANGE("Document Type",DocumentTypeCode);
+      rEDIPartnerDocumentType.SETRANGE("Document Direction",rEDIPartnerDocumentType."Document Direction"::Outbound);
+      rEDIPartnerDocumentType.SETRANGE(Active,TRUE);
+      IF rEDIPartnerDocumentType.ISEMPTY THEN
+        ERROR(Text001,Partner,DocumentTypeCode);
+
+      rEDIPartnerDocumentType.FINDFIRST;
+      rEDIPartnerDocumentType.TESTFIELD("ORDERS No. Series");
+    END;
+
+    PROCEDURE CheckLines@1115500002(rPurchaseHeader@1115500000 : Record 38) : Boolean;
+    VAR
+      rPurchaseLine@1115500001 : Record 39;
+    BEGIN
+      rPurchaseLine.SETRANGE("Document Type",rPurchaseHeader."Document Type");
+      rPurchaseLine.SETRANGE("Document No.",rPurchaseHeader."No.");
+      rPurchaseLine.SETRANGE(Type,rPurchaseLine.Type::Item);
+      //rPurchaseLine.SETFILTER("Unit Cost (LCY)",'<>%1',0);
+      IF rPurchaseLine.ISEMPTY THEN
+        EXIT(FALSE)
+      ELSE
+        EXIT(TRUE);
+    END;
+
+    PROCEDURE GetOutboundEDIHeader@1115500009(VAR rLocOutboundEDIDocumentHeader@1115500001 : Record 82864);
+    BEGIN
+      rLocOutboundEDIDocumentHeader := rOutboundEDIDocumentList;
+    END;
+
+    PROCEDURE AutoSendSingleOrder@1108200004();
+    VAR
+      rVendor@1108200001 : Record 23;
+      rPurchaseHeader@1108200000 : Record 38;
+      rEDIPartner@1108200002 : Record 82851;
+    BEGIN
+      rPurchaseHeader.SETFILTER("Outbound EDI No.",'%1','');
+
+      IF rPurchaseHeader.FIND('-') THEN BEGIN
+        REPEAT
+          rVendor.GET(rPurchaseHeader."Buy-from Vendor No.");
+          rVendor.TESTFIELD("EDI ORDERS Partner");
+          rEDIPartner.GET(rVendor."EDI ORDERS Partner");
+
+          IsPartnerDocumentActive(rEDIPartner.Code,'ORDERS');
+          rCompanyInformation.GET();
+
+          //H1218 08.08.14 EHN ++++++++++++++++++++++++++
+          CreateSingleOrderList(rEDIPartner,rPurchaseHeader);
+          //H1218 08.08.14 EHN --------------------------
+          IF CheckLines(rPurchaseHeader) THEN
+            CreateSingleOrderHeader(rPurchaseHeader)
+          ELSE BEGIN
+            rPurchaseHeader."Outbound EDI No." := rEDIPartner.Code;
+            rPurchaseHeader.MODIFY;
+          END;
+        UNTIL rPurchaseHeader.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE "--- FPC Functions ---"@1000000000();
+    BEGIN
+    END;
+
+    PROCEDURE CheckRequirementsForSending@1000000001(pPurchHeader@1000000000 : Record 38;SendMail@1000000006 : Boolean) : Boolean;
+    VAR
+      rEDIPartner@1000000003 : Record 82851;
+      rEDIPartnerDocType@1000000001 : Record 82852;
+      rVendor@1000000002 : Record 23;
+      rLocation@1000000004 : Record 14;
+      rPurchaseLine@1000000005 : Record 39;
+      rSalesLine@1000000010 : Record 37;
+      rItem@1000000007 : Record 27;
+      iTotalQty@1000000008 : Integer;
+      dParcelWeight@1000000009 : Decimal;
+      "****GOB***********************"@1000000011 : Integer;
+      RelPurchDocumentL@1000000013 : Codeunit 415;
+      NoEDIL@1000000012 : Boolean;
+    BEGIN
+      // H0564       18.09.13    FX ++++++++++++++++++++++++++
+      IF pPurchHeader."Dummy Order" THEN
+        EXIT(FALSE);
+      // H0564       18.09.13    FX ---------------------------
+
+      IF pPurchHeader."Document Type" <> pPurchHeader."Document Type"::Order THEN
+        EXIT(FALSE);
+
+      IF pPurchHeader."Outbound EDI No." <> '' THEN
+        EXIT(FALSE);
+
+      IF NOT rVendor.GET(pPurchHeader."Buy-from Vendor No.") THEN
+        EXIT(FALSE);
+
+      IF rVendor."EDI ORDERS Partner" = '' THEN
+        EXIT(FALSE);
+
+      IF rVendor."GLN/ILN" = '' THEN BEGIN
+        IF GUIALLOWED THEN BEGIN
+          rVendor.TESTFIELD("GLN/ILN");
+        END ELSE BEGIN
+          IF SendMail THEN
+            SendRequirementMail(STRSUBSTNO(Text006,rVendor."No."));
+          EXIT(FALSE);
+        END;
+      END;
+
+      IF NOT rEDIPartner.GET(rVendor."EDI ORDERS Partner") THEN BEGIN
+        IF GUIALLOWED THEN BEGIN
+          rEDIPartner.GET(rVendor."EDI ORDERS Partner");
+        END ELSE BEGIN
+          IF SendMail THEN
+            SendRequirementMail(STRSUBSTNO(Text007,rVendor."EDI ORDERS Partner"));
+          EXIT(FALSE);
+        END;
+      END;
+
+      rEDIPartnerDocType.SETRANGE("Partner Code",rEDIPartner.Code);
+      rEDIPartnerDocType.SETRANGE("Document Direction",rEDIPartnerDocType."Document Direction"::Outbound);
+      rEDIPartnerDocType.SETRANGE("Document Type",'ORDERS');
+      rEDIPartnerDocType.SETRANGE(Active,TRUE);
+      IF NOT rEDIPartnerDocType.FINDFIRST THEN BEGIN
+        IF GUIALLOWED THEN BEGIN
+          rEDIPartnerDocType.FINDFIRST;
+        END ELSE BEGIN
+          IF SendMail THEN
+            SendRequirementMail(STRSUBSTNO(Text008,rEDIPartner.Code));
+          EXIT(FALSE);
+        END;
+      END;
+
+      IF rEDIPartnerDocType."ORDERS No. Series" = '' THEN BEGIN
+        IF GUIALLOWED THEN BEGIN
+          rEDIPartnerDocType.TESTFIELD("ORDERS No. Series");
+        END ELSE BEGIN
+          IF SendMail THEN
+            SendRequirementMail(STRSUBSTNO(Text009,rEDIPartner.Code));
+          EXIT(FALSE);
+        END;
+      END;
+
+      IF pPurchHeader."Sell-to Customer No." <> '' THEN BEGIN
+        IF GUIALLOWED THEN BEGIN
+          rEDIPartnerDocType.TESTFIELD("Dummy GLN Ship-to with Label");
+          rEDIPartnerDocType.TESTFIELD("Dummy GLN Ship-to w/o Label");
+        END ELSE BEGIN
+          IF rEDIPartnerDocType."Dummy GLN Ship-to with Label" = '' THEN BEGIN
+            IF SendMail THEN
+              SendRequirementMail(STRSUBSTNO(Text010,rEDIPartner.Code));
+            EXIT(FALSE);
+          END;
+          IF rEDIPartnerDocType."Dummy GLN Ship-to w/o Label" = '' THEN BEGIN
+            IF SendMail THEN
+              SendRequirementMail(STRSUBSTNO(Text011,rEDIPartner.Code));
+            EXIT(FALSE);
+          END;
+        END;
+      END ELSE BEGIN
+        IF GUIALLOWED THEN BEGIN
+          pPurchHeader.TESTFIELD("Requested Receipt Week");
+          rLocation.GET(pPurchHeader."Location Code");
+          rLocation.TESTFIELD("GLN/ILN");
+        END ELSE BEGIN
+          IF pPurchHeader."Requested Receipt Week" = 0 THEN BEGIN
+            IF SendMail THEN
+              SendRequirementMail(STRSUBSTNO(Text012,pPurchHeader."No."));
+            EXIT(FALSE);
+          END;
+          IF NOT rLocation.GET(pPurchHeader."Location Code") THEN BEGIN
+            IF SendMail THEN
+              SendRequirementMail(STRSUBSTNO(Text013,pPurchHeader."Location Code"));
+            EXIT(FALSE);
+          END;
+          IF rLocation."GLN/ILN" = '' THEN BEGIN
+            SendRequirementMail(STRSUBSTNO(Text014,pPurchHeader."Location Code"));
+            EXIT(FALSE);
+          END;
+        END;
+      END;
+
+      rPurchaseLine.SETRANGE("Document Type",pPurchHeader."Document Type");
+      rPurchaseLine.SETRANGE("Document No.",pPurchHeader."No.");
+      rPurchaseLine.SETRANGE(Type,rPurchaseLine.Type::Item);
+      rPurchaseLine.SETFILTER(Quantity,'<>%1',0);
+      IF rPurchaseLine.ISEMPTY THEN BEGIN
+        IF SendMail THEN
+          SendRequirementMail(STRSUBSTNO(Text015, pPurchHeader."No."));
+        EXIT(FALSE);
+      END;
+
+      rPurchaseLine.SETFILTER("Vendor Item No.",'%1','');
+      IF NOT rPurchaseLine.ISEMPTY THEN BEGIN
+        IF SendMail THEN
+          SendRequirementMail(STRSUBSTNO(Text016,pPurchHeader."No."));
+        EXIT(FALSE);
+      END;
+
+      //A,gob-dst,02.01.2013,P0720
+      rPurchaseLine.SETRANGE("Vendor Item No.");
+      rPurchaseLine.SETFILTER("Purchasing Code",'%1|%2','*-7','*-12');
+      IF rPurchaseLine.FIND('-') THEN BEGIN
+        REPEAT
+          // If > 31.5 then must throw an error
+          IF rItem."No." <> rPurchaseLine."No." THEN
+            rItem.GET(rPurchaseLine."No.");
+          rItem.CALCFIELDS("Parcels Number");
+          iTotalQty := 0;
+          IF rItem."Parcels Number" = 0 THEN
+            iTotalQty := rPurchaseLine.Quantity
+          ELSE
+            iTotalQty := rPurchaseLine.Quantity * rItem."Parcels Number";
+          dParcelWeight := rItem."Net Weight" / iTotalQty;
+          IF (dParcelWeight / 100) > 31.5 THEN BEGIN
+            IF GUIALLOWED THEN BEGIN
+              ERROR(Text002, rItem."No.", pPurchHeader."No.");
+            END ELSE BEGIN
+              IF SendMail THEN
+                SendRequirementMail(STRSUBSTNO(Text017,rPurchaseLine."Document No.",FORMAT(rPurchaseLine."Line No.")));
+              EXIT(FALSE);
+            END;
+          END;
+        UNTIL rPurchaseLine.NEXT = 0;
+      END;
+      //E,gob-dst,02.01.2013,P0720
+
+      //A,gob-Fuchs,28.02.13,P0835
+      IF pPurchHeader."Sell-to Customer No." <> '' THEN BEGIN
+        rPurchaseLine.RESET;
+        rPurchaseLine.SETRANGE("Document Type",pPurchHeader."Document Type");
+        rPurchaseLine.SETRANGE("Document No.",pPurchHeader."No.");
+        rPurchaseLine.SETRANGE(Type,rPurchaseLine.Type::Item);
+        rPurchaseLine.SETFILTER("Purchasing Code",'%1|%2|%3|%4|%5','*-8','*-13','*-4','*-7','*-12');
+        IF rPurchaseLine.FINDFIRST THEN BEGIN
+          IF (rPurchaseLine."Sales Order No." = '') AND (rPurchaseLine."Special Order Sales No." = '') THEN BEGIN
+            IF SendMail THEN
+              SendRequirementMail(STRSUBSTNO(Text018,pPurchHeader."No.",FORMAT(rPurchaseLine."Line No.")));
+            EXIT(FALSE);
+          END;
+          //A,gob-Fuchs,06.03.13,P0849
+          IF (rPurchaseLine."Sales Order No." <> '') THEN
+            IF NOT rSalesLine.GET(rSalesLine."Document Type"::Order,rPurchaseLine."Sales Order No.",
+            rPurchaseLine."Sales Order Line No.") THEN BEGIN
+              IF SendMail THEN
+                SendRequirementMail(STRSUBSTNO(Text019,pPurchHeader."No.",FORMAT(rPurchaseLine."Line No."),
+                  rPurchaseLine."Sales Order No.",FORMAT(rPurchaseLine."Sales Order Line No.")));
+              EXIT(FALSE);
+            END;
+          IF (rPurchaseLine."Special Order Sales No." <> '') THEN
+            IF NOT rSalesLine.GET(rSalesLine."Document Type"::Order,rPurchaseLine."Special Order Sales No.",
+            rPurchaseLine."Special Order Sales Line No.") THEN BEGIN
+              IF SendMail THEN
+                SendRequirementMail(STRSUBSTNO(Text019,pPurchHeader."No.",FORMAT(rPurchaseLine."Line No."),
+                  rPurchaseLine."Special Order Sales No.",rPurchaseLine."Special Order Sales Line No."));
+              EXIT(FALSE);
+            END;
+          //E,gob-Fuchs,06.03.13,P0849
+        END;
+
+        rLocation.GET(pPurchHeader."Location Code");
+        IF rLocation."EDI Cross Docking" THEN BEGIN
+          rPurchaseLine.RESET;
+          rPurchaseLine.SETRANGE("Document Type",pPurchHeader."Document Type");
+          rPurchaseLine.SETRANGE("Document No.",pPurchHeader."No.");
+          rPurchaseLine.SETRANGE(Type,rPurchaseLine.Type::Item);
+          IF rPurchaseLine.FINDFIRST THEN BEGIN
+            IF (rPurchaseLine."Sales Order No." = '') AND (rPurchaseLine."Special Order Sales No." = '') THEN BEGIN
+              IF SendMail THEN
+                SendRequirementMail(STRSUBSTNO(Text018,pPurchHeader."No.",FORMAT(rPurchaseLine."Line No.")));
+              EXIT(FALSE);
+            END;
+            //A,gob-Fuchs,06.03.13,P0849
+            IF (rPurchaseLine."Sales Order No." <> '') THEN
+              IF NOT rSalesLine.GET(rSalesLine."Document Type"::Order,rPurchaseLine."Sales Order No.",
+              rPurchaseLine."Sales Order Line No.") THEN BEGIN
+                IF SendMail THEN
+                  SendRequirementMail(STRSUBSTNO(Text019,pPurchHeader."No.",FORMAT(rPurchaseLine."Line No."),
+                    rPurchaseLine."Sales Order No.",FORMAT(rPurchaseLine."Sales Order Line No.")));
+                EXIT(FALSE);
+              END;
+            IF (rPurchaseLine."Special Order Sales No." <> '') THEN
+              IF NOT rSalesLine.GET(rSalesLine."Document Type"::Order,rPurchaseLine."Special Order Sales No.",
+              rPurchaseLine."Special Order Sales Line No.") THEN BEGIN
+                IF SendMail THEN
+                  SendRequirementMail(STRSUBSTNO(Text019,pPurchHeader."No.",FORMAT(rPurchaseLine."Line No."),
+                    rPurchaseLine."Special Order Sales No.",FORMAT(rPurchaseLine."Special Order Sales Line No.")));
+                EXIT(FALSE);
+              END;
+            //E,gob-Fuchs,06.03.13,P0849
+          END;
+        END;
+
+      END;
+      //E,gob-Fuchs,28.02.13,P0835
+
+      // S/H1773
+      IF RelPurchDocumentL.CheckNoEDIProcessPossible(pPurchHeader) THEN
+        EXIT(FALSE);
+      // E/H1773
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE SendRequirementMail@1000000003(pErrorText@1000000002 : Text[250]);
+    VAR
+      rAdminMailQueueSetup@1000000001 : Record 50092;
+      cAdminMailQueueFunctions@1000000000 : Codeunit 50019;
+    BEGIN
+      rEDIIntegratorSetup.GET;
+      rAdminMailQueueSetup.GET;
+
+      cAdminMailQueueFunctions.InitMail(rAdminMailQueueSetup."EDI Mail Code",rAdminMailQueueSetup."Administrator E-Mail");
+      cAdminMailQueueFunctions.AddRecipient(rEDIIntegratorSetup."Error Mail Address");
+      IF rEDIIntegratorSetup."Error CC Mail Address" <> '' THEN
+        cAdminMailQueueFunctions.AddRecipientCC(rEDIIntegratorSetup."Error CC Mail Address");
+
+      cAdminMailQueueFunctions.AddSubject(Text005);
+
+      cAdminMailQueueFunctions.AddText(pErrorText);
+      cAdminMailQueueFunctions.FinishMail;
+    END;
+
+    PROCEDURE CreateDHLShipmentEntries@1000000002(VAR rOutboundEDIDocumentHeader@1000000000 : Record 82865);
+    VAR
+      PurchaseLine@1000000001 : Record 39;
+      DHLParcelsStatusHistory@1000000002 : Record 50021;
+      OutboundEDIDHLShipmentCode@1000000003 : Record 50112;
+      Counter@1000000004 : Integer;
+      ParcelStatusHistory@1000000005 : Record 80013;
+    BEGIN
+      //S/P1133
+      FPCGeneralSetup.GET;
+      //E/P1133
+
+      PurchaseLine.SETRANGE("Document Type",PurchaseLine."Document Type"::Order);
+      PurchaseLine.SETRANGE("Document No.",rOutboundEDIDocumentHeader."Document No.");
+      PurchaseLine.SETFILTER("DHL Shipment Number",'<>%1','');
+      IF PurchaseLine.ISEMPTY THEN
+        EXIT;
+
+      // A/gob-lku/20.11.12/Home24 DHL Tracking
+      Counter := 0;
+      // E/gob-lku/20.11.12/Home24 DHL Tracking
+      PurchaseLine.FIND('-');
+      REPEAT
+        //S/P1133
+        CASE FPCGeneralSetup."Active Parcel Status History" OF
+          FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+          FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old":
+            BEGIN
+        //E/P1133
+              DHLParcelsStatusHistory.SETCURRENTKEY("Purchase Order Code","PO Line No.",
+                "Current Status","Time Stamp","DHL Shipment Code","Rhenus Entry");
+              DHLParcelsStatusHistory.SETRANGE("Purchase Order Code",PurchaseLine."Document No.");
+              DHLParcelsStatusHistory.SETRANGE("PO Line No.",PurchaseLine."Line No.");
+              IF DHLParcelsStatusHistory.ISEMPTY THEN
+                //A,gob-dst,27.03.2013
+                //ERROR(STRSUBSTNO(Home24Error01,PurchaseLine."Line No."));
+                ERROR(STRSUBSTNO(Home24Error01,PurchaseLine."Document No.",PurchaseLine."Line No."));
+                //E,gob-dst,27.03.2013
+
+              DHLParcelsStatusHistory.FIND('-');
+              REPEAT
+                OutboundEDIDHLShipmentCode.INIT;
+                OutboundEDIDHLShipmentCode."Header Document Type" := rOutboundEDIDocumentHeader."Header Document Type";
+                OutboundEDIDHLShipmentCode."Header Document No." := rOutboundEDIDocumentHeader."Header Document No.";
+                OutboundEDIDHLShipmentCode."Document Type" := rOutboundEDIDocumentHeader."Document Type";
+                OutboundEDIDHLShipmentCode."Document No." := rOutboundEDIDocumentHeader."Document No.";
+                OutboundEDIDHLShipmentCode."Entry No." := 0;
+                OutboundEDIDHLShipmentCode."DHL Shipment Code" := DHLParcelsStatusHistory."Piece-Code (Identifier)";
+                // A/gob-lku/11.12.2012
+                OutboundEDIDHLShipmentCode.Direction := OutboundEDIDHLShipmentCode.Direction::Outbound;
+                // E/gob-lku/11.12.2012
+                OutboundEDIDHLShipmentCode.INSERT;
+                // A/gob-lku/20.11.12/Home24 DHL Tracking
+                Counter += 1;
+                // E/gob-lku/20.11.12/Home24 DHL Tracking
+              UNTIL DHLParcelsStatusHistory.NEXT = 0;
+        //S/P1133
+            END;
+          FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+          FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History":
+            BEGIN
+              ParcelStatusHistory.SETCURRENTKEY("Purchase Doc. No.","Purchase Doc. Line No.","Purchase Doc. Type");
+              ParcelStatusHistory.SETRANGE("Purchase Doc. No.",PurchaseLine."Document No.");
+              ParcelStatusHistory.SETRANGE("Purchase Doc. Line No.",PurchaseLine."Line No.");
+              IF ParcelStatusHistory.ISEMPTY THEN
+                ERROR(STRSUBSTNO(Home24Error01,PurchaseLine."Document No.",PurchaseLine."Line No."));
+              ParcelStatusHistory.FIND('-');
+              REPEAT
+                OutboundEDIDHLShipmentCode.INIT;
+                OutboundEDIDHLShipmentCode."Header Document Type" := rOutboundEDIDocumentHeader."Header Document Type";
+                OutboundEDIDHLShipmentCode."Header Document No." := rOutboundEDIDocumentHeader."Header Document No.";
+                OutboundEDIDHLShipmentCode."Document Type" := rOutboundEDIDocumentHeader."Document Type";
+                OutboundEDIDHLShipmentCode."Document No." := rOutboundEDIDocumentHeader."Document No.";
+                OutboundEDIDHLShipmentCode."Entry No." := 0;
+                OutboundEDIDHLShipmentCode."DHL Shipment Code" := ParcelStatusHistory."Piece Code";
+                OutboundEDIDHLShipmentCode.Direction := OutboundEDIDHLShipmentCode.Direction::Outbound;
+                OutboundEDIDHLShipmentCode.INSERT;
+                Counter += 1;
+              UNTIL ParcelStatusHistory.NEXT = 0;
+            END;
+        END;
+        //E/P1133
+      UNTIL PurchaseLine.NEXT = 0;
+
+      // A/gob-lku/20.11.12/Home24 DHL Tracking
+      rOutboundEDIDocumentHeader."Number of parcels" := Counter;
+      // E/gob-lku/20.11.12/Home24 DHL Tracking
+    END;
+
+    PROCEDURE GetBillingNo@1000000006(pVendor@1000000000 : Record 23) r_BillingNo : Code[20];
+    VAR
+      DHL_HerstellerIDLoc@1108200000 : Code[10];
+      tempString@1108200001 : Text[30];
+    BEGIN
+      IF pVendor."DHL Partner ID" <> '' THEN BEGIN
+        CASE STRLEN(pVendor."DHL Partner ID") OF
+        1: DHL_HerstellerIDLoc := '0000' + pVendor."DHL Partner ID";
+        2: DHL_HerstellerIDLoc := '000' + pVendor."DHL Partner ID";
+        3: DHL_HerstellerIDLoc := '00' + pVendor."DHL Partner ID";
+        4: DHL_HerstellerIDLoc := '0' + pVendor."DHL Partner ID";
+        ELSE
+          DHL_HerstellerIDLoc := COPYSTR(pVendor."DHL Partner ID",1,5);
+        END;
+      END ELSE
+        DHL_HerstellerIDLoc := '00003';
+
+      r_BillingNo := '6212684059' + '01' + DHL_HerstellerIDLoc;
+    END;
+
+    PROCEDURE CDLabelNeeded@1000000004(pLocationCode@1000000000 : Code[10]) : Boolean;
+    VAR
+      rLocation@1000000002 : Record 14;
+    BEGIN
+      rLocation.GET(pLocationCode);
+      EXIT(rLocation."Rhenus Crossdock Location");
+    END;
+
+    PROCEDURE "*** HME ***********"@1000000007();
+    BEGIN
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation GOB & Home24 NAV Team      |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+
+      EDIINT6.00    30.05.2011    gob-dst       Objekt erstellt
+      EDIINT6.02    06.09.2011    gob-Fuchs     Objekt Åberarbeitet
+      P0819         28.02.2013    gob-rste      New Code DHL Leitcode for Bulky Goods, Billing No
+      P0849         06.03.2013    gob-Fuchs     ZusatzprÅfung, ob Verkaufsauftrag existiert
+      P0908         15.05.2013    gob-dst       "EDI Order" im Purch Header setzen
+      P0924         03.06.2013    gob-lku       Billing No. fÅr international DS angepasst
+      P1053         25.06.2013    gob-dst       EAN in EDI öbertragung
+      P1015         04.07.2013    gob-dst       Absicherung CU 50099
+      P1106         02.10.2013    gob-dst       BerÅcksichtigung CrossDock Label
+      P1133         06.11.13      gob-mlan      Redesign of "DHL Parcel Status History"
+      P1260         16.06.2014    gob-dst       Anpassung Ship-to Address
+      H1773         19.11.2014    gob-ael       Send no EDI single order if an item in purchase order has flag "no edi process possible"
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation Tectura & Home24 NAV Team  |
+      |                                            |
+      +--------------------------------------------+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      H3806       05.03.15  tec-ar    Bugfix
+      H3878       12.03.15  tec-ar    Bugfix
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+      Project No. Date        Shortcut  Description
+      _____________________________________________
+      *** Module: EDI ***
+      H0552       13.09.13    FX        - Removed all DEU messages in function CheckRequirementsForSending
+                                        - Added GUIALLOWED to prevent many error messages
+      H0564       18.09.13    FX        Added new field Dummy Order --> To don't send order to Vendors
+      H0826       14.02.14    FX        Shift Delivery Date from MaxFirstScan to Workdate
+      H0880       07.04.14    FX        Added Start Date to the EDI Partner Vendor Card
+      H0980       04.04.14    DMA       Rollback project H0826 as some vendors can't process WORKDATE as Requested delivery date
+      H0811       09.04.14    DMA       Fix for correct net weights
+      H1218       10.07.14    EHN       Export crossborder VAT Registration No. via EDI and CSV File
+      H1362       14.07.14    EHN       EDI: Extend EDI ORDERS File with Qty. of Collis
+      H1361       15.07.14    EHN       EDI: Extend EDI ORDERS File with RHD Barcode
+      H1417       29.07.14    EHN       Suppress Delivery Date (DTM+2) in ORDERS File
+      H1451       12.08.14    EHN       Extend EDI ORDERS file with RHD Branch Code
+      H1452       12.08.14    EHN       Transfer correct Customer Address in EDI ORDERS file for Crossdocking
+      H1526       07.10.14    DMA       IFTMIN DHL - replace 0kg by 0.01kg, CODECHANGE
+      H1619       03.11.14    EHN       Extend CSV in Purchase Order Email
+      H1698       16.01.15    MKR       Hermes 2MH: Adjustments EDI ORDERS: Hermes Adjustments
+      H2030       23.01.15    EHN       BUG: EDI Outbound ORDERS do not contain RFF-ON Segment
+      H1731       09.12.14    EHN       Phase 2: spare part - EDI & CSV adjustment
+      H2172       20.02.15    EHN       BUG: Overflow in Description 2 on Item Card causes error in EDI Purchase Outbound
+      H3929       19.03.15    MKR       Hermes: send barcodes in EDI ORDERS: Deleted Code
+      H3903       20.03.15    MKR       Hermes 2MH: Adjustments label/EDI ORDERS/CSV for cross docking: Use customer based depot
+    }
+    END.
+  }
+}
+

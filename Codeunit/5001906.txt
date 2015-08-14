@@ -1,0 +1,276 @@
+OBJECT Codeunit 5001906 Create Foreign Messages
+{
+  OBJECT-PROPERTIES
+  {
+    Date=03.08.07;
+    Time=12:00:00;
+    Version List=AR5.00.01;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text1105400000@1105400000 : TextConst 'DEU="INV.NO ";ENU="INV.NO "';
+      Text1105400001@1105400001 : TextConst 'DEU=" FROM ";ENU=" FROM "';
+      Text1105400002@1105400002 : TextConst 'DEU=<day,2>.<month,2>.<year,2>;ENU=<day,2>.<month,2>.<year,2>';
+      Text1105400003@1105400003 : TextConst 'DEU="CR.NO ";ENU="CR.NO "';
+      Text1105400004@1105400004 : TextConst 'DEU="PAYM ";ENU="PAYM "';
+      Text1105400005@1105400005 : TextConst 'DEU=" Die vorhandenen MeldesÑtze fÅr den Auslands- \";ENU=" Existing Registration records for this foreign"';
+      Text1105400006@1105400006 : TextConst 'DEU=" zahlungsverkehr wurden gelîscht ";ENU=" payment were deleted "';
+      KAZV@1105400007 : Record 5001940;
+      Vendor@1105400008 : Record 23;
+      VendLedgEntry@1105400009 : Record 25;
+      PaymentSetup@1105400010 : Record 5001901;
+      GLAccSetup@1105400011 : Record 98;
+      PostedKAZV@1105400012 : Record 5001947;
+      Clearing@1105400019 : Codeunit 5001901;
+      NoSeriesMgm@1105400013 : Codeunit 396;
+      RegistrationSet@1105400014 : Record 5001942;
+      ForeignPayment@1105400015 : Record 5001940;
+      VendLedgfound@1105400016 : Boolean;
+
+    PROCEDURE "From Payment Journal"@1105400016(GenJnlLine@1105400000 : Record 81;AZ@1105400001 : Boolean);
+    BEGIN
+      IF GenJnlLine."Account Type"<>GenJnlLine."Account Type"::Vendor THEN
+        EXIT;
+
+      VendLedgfound := TRUE;
+      GenJnlLine.TESTFIELD("External Document No.");
+
+      IF GenJnlLine."Payment File created" THEN BEGIN
+        PostedKAZV.SETCURRENTKEY("Vendor Code","Vendor Document No.","Document Type");
+        PostedKAZV.SETRANGE("Vendor Code",GenJnlLine."Account No.");
+        PostedKAZV.SETRANGE("Document Type",GenJnlLine."Applies-to Doc. Type");
+        PostedKAZV.SETRANGE("Vendor Document No.",GenJnlLine."External Document No.");
+        PostedKAZV.FINDFIRST;
+        KAZV.SETRANGE(KAZV.Number,KAZV.Number);
+        FORM.RUN(FORM::"Posted Foreign Supplement",PostedKAZV);
+      END ELSE BEGIN
+        GenJnlLine.TESTFIELD("Account Type",GenJnlLine."Account Type"::Vendor);
+        GenJnlLine.TESTFIELD("Account No.");
+        KAZV.RESET;
+        KAZV.SETCURRENTKEY("Vendor Code","Vendor Document No.","Document Type");
+        KAZV.SETRANGE("Vendor Code",GenJnlLine."Account No.");
+        KAZV.SETRANGE("Document Type",GenJnlLine."Applies-to Doc. Type");
+        BEGIN
+          VendLedgEntry.SETCURRENTKEY("Document No.","Document Type","Vendor No.");
+          VendLedgEntry.SETRANGE("Document Type",GenJnlLine."Applies-to Doc. Type");
+          VendLedgEntry.SETRANGE("Document No.",GenJnlLine."Applies-to Doc. No.");
+          VendLedgEntry.SETRANGE("Vendor No.",GenJnlLine."Account No.");
+          IF VendLedgEntry.FINDFIRST THEN BEGIN
+            VendLedgEntry.CALCFIELDS("Remaining Amount");
+            IF VendLedgEntry."External Document No."<>'' THEN
+              GenJnlLine."External Document No." := VendLedgEntry."External Document No."
+            ELSE
+              GenJnlLine."External Document No." := GenJnlLine."Applies-to Doc. No.";
+            GenJnlLine.MODIFY;
+          END ELSE BEGIN
+            VendLedgfound := FALSE;
+            CLEAR(VendLedgEntry);
+          END;
+        END;
+        KAZV.SETRANGE("Vendor Document No.",GenJnlLine."External Document No.");
+        KAZV.SETRANGE(KAZV."Line No.",GenJnlLine."Line No.");
+        IF KAZV.FINDFIRST THEN BEGIN
+          KAZV.GenJnlTemplateName := GenJnlLine."Journal Template Name";
+          KAZV.GenJnlBatch := GenJnlLine."Journal Batch Name";
+          KAZV."Line No." := GenJnlLine."Line No.";
+          IF VendLedgfound THEN BEGIN
+            KAZV."Document Date" := VendLedgEntry."Document Date";
+            KAZV."Posting Date" := VendLedgEntry."Posting Date";
+          END ELSE BEGIN
+            KAZV."Document Date" := GenJnlLine."Posting Date";
+            KAZV."Posting Date" := GenJnlLine."Posting Date";
+          END;
+          KAZV.Amount := GenJnlLine.Amount;
+          KAZV.VALIDATE("Payment Currency");
+          KAZV."Original Currency Code" := GenJnlLine."Currency Code";
+          KAZV."Amount (LCY)" := GenJnlLine."Amount (LCY)";
+          KAZV."Currency Factor" := GenJnlLine."Currency Factor";
+          KAZV.MODIFY;
+          IF NOT RegistrationSet.FINDFIRST THEN
+            IF AZ THEN
+              CreateRegistration(KAZV);
+          KAZV.SETRANGE(KAZV.Number,KAZV.Number);
+          FORM.RUN(FORM::"Foreign Supplement",KAZV);
+        END ELSE BEGIN
+          KAZV.RESET;
+          PaymentSetup.GET;
+          GLAccSetup.GET;
+          PaymentSetup.TESTFIELD("Document No. foreign vendor");
+          KAZV."No. Series" := PaymentSetup."Document No. foreign vendor";
+          KAZV.Number := NoSeriesMgm.GetNextNo(KAZV."No. Series",0D,TRUE);
+          KAZV.INSERT;
+          KAZV.GenJnlTemplateName := GenJnlLine."Journal Template Name";
+          KAZV.GenJnlBatch := GenJnlLine."Journal Batch Name";
+          KAZV."Line No." := GenJnlLine."Line No.";
+          KAZV."Document Type" := GenJnlLine."Applies-to Doc. Type";
+          KAZV."Vendor Document No." := GenJnlLine."External Document No.";
+          KAZV.VALIDATE("Vendor Code",GenJnlLine."Account No.");
+          KAZV.VALIDATE(Beneficiary,GenJnlLine."Account No.");
+          KAZV."Document Date" := GenJnlLine."Document Date";
+          KAZV."Amount (LCY)" := GenJnlLine."Amount (LCY)";
+          KAZV.Amount := GenJnlLine.Amount;
+          KAZV."Currency Amount" := GenJnlLine.Amount;
+          KAZV."Currency Factor" := GenJnlLine."Currency Factor";
+          Vendor.GET(GenJnlLine."Account No.");
+          KAZV.VALIDATE("Instruction Code 1",Vendor."Direction Code");
+          KAZV.VALIDATE("Payment Type",Vendor."Payment Type");
+          IF VendLedgfound THEN BEGIN
+            KAZV."Document Date" := VendLedgEntry."Document Date";
+            KAZV."Posting Date" := VendLedgEntry."Posting Date";
+          END ELSE BEGIN
+            KAZV."Document Date" := GenJnlLine."Posting Date";
+            KAZV."Posting Date" := GenJnlLine."Posting Date";
+          END;
+          KAZV."Bank Account" := GenJnlLine."Bal. Account No.";
+          VendLedgEntry.CALCFIELDS("Remaining Amount");
+          KAZV.Purposal := STRSUBSTNO(DELCHR(PaymentSetup."Foreign Payment Proposal",'>'),
+                 DELCHR(FORMAT(VendLedgEntry."External Document No."),'>'),
+                 DELCHR(FORMAT(VendLedgEntry."Document No."),'>'),
+                 FORMAT(VendLedgEntry."Document Date",8,'<day,2>.<month,2>.<year,2>'),
+                 DELCHR(FORMAT(ABS(KAZV.Amount-(VendLedgEntry."Remaining Amount" + GenJnlLine.Amount)),12,'<Sign><Integer><Decimals,3>')
+      ),
+                 DELCHR(FORMAT(ABS(VendLedgEntry."Remaining Amount" + GenJnlLine.Amount),8,'<Sign><Integer><Decimals,3>')),
+                 DELCHR(FORMAT(ABS(KAZV.Amount),12,'<Sign><Integer><Decimals,3>')),
+                 FORMAT(GenJnlLine."Posting Date",8,'<day,2>.<month,2>.<year,2>'),
+                 DELCHR(FORMAT(VendLedgEntry."Currency Code")),
+                 KAZV.CheckDocType(KAZV."Document Type"));
+          KAZV.Purposal := COPYSTR(FORMAT(UPPERCASE(KAZV.Purposal)),1,35);
+          IF VendLedgfound THEN
+            KAZV.VALIDATE("Payment Currency",VendLedgEntry."Currency Code")
+          ELSE
+             KAZV.VALIDATE("Payment Currency",GenJnlLine."Currency Code");
+          KAZV."EU-Payment" := KAZV."EU-Payment"::" ";   // khf
+          KAZV.MODIFY;
+          RegistrationSet.SETRANGE("Document No.",KAZV.Number);
+          IF NOT RegistrationSet.FINDFIRST THEN
+            IF AZ THEN
+              CreateRegistration(KAZV);
+          KAZV.SETRANGE(KAZV.Number,KAZV.Number);
+          FORM.RUN(FORM::"Foreign Supplement",KAZV)
+        END;
+      END;
+    END;
+
+    PROCEDURE CreateRegistration@1105400017(AZV@1105400000 : Record 5001940);
+    BEGIN
+      PaymentSetup.GET;
+      IF NOT PaymentSetup."Set Service" THEN
+        EXIT;
+      RegistrationSet.INIT;
+      RegistrationSet."Document No." := AZV.Number;
+      RegistrationSet."Line No." := 10000;
+      RegistrationSet."Vendor No." := AZV."Vendor Code";
+      RegistrationSet."Invoice No." := AZV."Vendor Document No.";
+      RegistrationSet.Type := AZV."Document Type";
+      CASE PaymentSetup."Default Type" OF
+        PaymentSetup."Default Type"::"Transit trade" :
+          RegistrationSet.VALIDATE("Trading Type",RegistrationSet."Trading Type"::"Transit trade");
+        PaymentSetup."Default Type"::Service :
+          RegistrationSet.VALIDATE("Trading Type",RegistrationSet."Trading Type"::Service);
+        PaymentSetup."Default Type"::"Capital trade      " :
+          RegistrationSet.VALIDATE("Trading Type",RegistrationSet."Trading Type"::"Capital trade");
+      END;
+      RegistrationSet.VALIDATE(Amount,AZV.Amount);
+      RegistrationSet.VALIDATE("Index No.",PaymentSetup."Default Service");
+      RegistrationSet.INSERT;
+    END;
+
+    PROCEDURE RemoveForeignID@1105400018(GenJnl@1105400000 : Record 81);
+    BEGIN
+      ForeignPayment.SETCURRENTKEY(GenJnlTemplateName,GenJnlBatch,"Line No.");
+      ForeignPayment.SETRANGE(GenJnlTemplateName,GenJnl."Journal Template Name");
+      ForeignPayment.SETRANGE(GenJnlBatch,GenJnl."Journal Batch Name");
+      ForeignPayment.SETRANGE("Line No.",GenJnl."Line No.");
+      IF ForeignPayment.FINDFIRST THEN REPEAT
+        ForeignPayment.DELETE(TRUE);
+      UNTIL ForeignPayment.NEXT=0;
+    END;
+
+    PROCEDURE CorrectForeign@1105400019(GenJnl@1105400000 : Record 81);
+    BEGIN
+      PaymentSetup.GET;
+      ForeignPayment.SETCURRENTKEY(GenJnlTemplateName,GenJnlBatch,"Line No.");
+      ForeignPayment.SETRANGE(GenJnlTemplateName,GenJnl."Journal Template Name");
+      ForeignPayment.SETRANGE(GenJnlBatch,GenJnl."Journal Batch Name");
+      ForeignPayment.SETRANGE("Line No.",GenJnl."Line No.");
+      IF ForeignPayment.FINDFIRST THEN BEGIN
+        ForeignPayment.Amount := GenJnl.Amount;
+        ForeignPayment."Amount (LCY)" := GenJnl."Amount (LCY)";
+        ForeignPayment."Currency Factor" := GenJnl."Currency Factor";
+        ForeignPayment."Currency Amount" := GenJnl.Amount;
+        ForeignPayment."Payment Currency" := GenJnl."Currency Code";
+        ForeignPayment.MODIFY;
+        RegistrationSet.SETRANGE("Document No.",ForeignPayment.Number);
+        IF RegistrationSet.FINDFIRST THEN BEGIN
+          IF RegistrationSet.COUNT > 1 THEN BEGIN
+             RegistrationSet.DELETEALL;
+             MESSAGE(Text1105400005+
+                     Text1105400006);
+          END ELSE BEGIN
+              IF PaymentSetup."Set Service" THEN BEGIN
+                 RegistrationSet.Amount := GenJnl.Amount;
+                 RegistrationSet.MODIFY;
+              END;
+          END;
+        END ELSE
+          IF PaymentSetup."Set Service" THEN
+            CreateRegistration(ForeignPayment);
+      END;
+    END;
+
+    PROCEDURE EUStandard@1105400020(VAR ForeignPayment@1105400000 : Record 5001940;GenJnlLine@1105400001 : Record 81);
+    BEGIN
+      WITH ForeignPayment DO BEGIN
+        GenJnlLine.TESTFIELD("Account Type",GenJnlLine."Account Type"::Vendor);
+        GenJnlLine.TESTFIELD("Account No.");
+        GenJnlLine.TESTFIELD("Applies-to Doc. No.");
+        VendLedgEntry.SETCURRENTKEY("Document No.","Document Type","Vendor No.");
+        VendLedgEntry.SETRANGE("Document Type",GenJnlLine."Applies-to Doc. Type");
+        VendLedgEntry.SETRANGE("Document No.",GenJnlLine."Applies-to Doc. No.");
+        VendLedgEntry.SETRANGE("Vendor No.",GenJnlLine."Account No.");
+        VendLedgEntry.FINDFIRST;
+        VendLedgEntry.CALCFIELDS("Remaining Amount");
+
+        PaymentSetup.GET;
+        GLAccSetup.GET;
+        Vendor.GET(GenJnlLine."Account No.");
+        VALIDATE("Vendor Code",GenJnlLine."Account No.");
+        VALIDATE(Beneficiary,GenJnlLine."Account No.");
+        VALIDATE("Instruction Code 1",Vendor."Direction Code");
+        VALIDATE("Payment Type",Vendor."Payment Type");
+        VALIDATE("Instruction Code 1",Vendor."Direction Code");
+        VALIDATE("Payment Type",Vendor."Payment Type");
+        "Document Date" := VendLedgEntry."Document Date";
+        "Posting Date" := VendLedgEntry."Posting Date";
+        "Bank Account" := GenJnlLine."Bal. Account No.";
+        VendLedgEntry.CALCFIELDS("Remaining Amount");
+        Purposal := STRSUBSTNO(DELCHR(PaymentSetup."Foreign Payment Proposal",'>'),
+             DELCHR(FORMAT(VendLedgEntry."External Document No."),'>'),
+             DELCHR(FORMAT(VendLedgEntry."Document No."),'>'),
+             FORMAT(VendLedgEntry."Document Date",8,'<day,2>.<month,2>.<year,2>'),
+             DELCHR(FORMAT(ABS(Amount-(VendLedgEntry."Remaining Amount" + GenJnlLine.Amount)),12,'<Sign><Integer><Decimals,3>')),
+             DELCHR(FORMAT(ABS(VendLedgEntry."Remaining Amount" + GenJnlLine.Amount),8,'<Sign><Integer><Decimals,3>')),
+             DELCHR(FORMAT(ABS(Amount),12,'<Sign><Integer><Decimals,3>')),
+             FORMAT(GenJnlLine."Posting Date",8,'<day,2>.<month,2>.<year,2>'),
+             DELCHR(FORMAT(VendLedgEntry."Currency Code")),
+             KAZV.CheckDocType("Document Type"));
+        Purposal := COPYSTR(FORMAT(UPPERCASE(Purposal)),1,35);
+
+        VALIDATE("Payment Currency",VendLedgEntry."Currency Code");
+        "EU-Payment" :=  KAZV."EU-Payment";
+        MODIFY;
+      END;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

@@ -1,0 +1,167 @@
+OBJECT Codeunit 50140 Batch Post Return Orders
+{
+  OBJECT-PROPERTIES
+  {
+    Date=30.06.14;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=HME0432,T0014;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=VAR
+            BatchPostDocumentL@1000000000 : Record 50043;
+          BEGIN
+            IF ReturnOrderLineIsSet THEN BEGIN
+              SalesLine.SETRANGE("Document Type",SalesHeader."Document Type");
+              SalesLine.SETRANGE("Document No.",SalesHeader."No.");
+              SalesLine.SETFILTER("Return Reason Code",'<>%1','R-DOPPELT');
+              SalesLine.SETFILTER(Quantity,'>%1',0);
+              IF SalesLine.FIND('-') THEN BEGIN
+                REPEAT
+                  IF SalesLine.Quantity - SalesLine."Return Qty. Received" >0 THEN BEGIN
+                    SalesLine.VALIDATE("Return Qty. to Receive",SalesLine.Quantity - SalesLine."Return Qty. Received");
+                    SalesLine.MODIFY(TRUE);
+                    Post := TRUE;
+                  END;
+
+                  IF SalesLine.Quantity - SalesLine."Quantity Invoiced" > 0  THEN BEGIN
+                    SalesLine.VALIDATE("Qty. to Invoice",SalesLine.Quantity - SalesLine."Quantity Invoiced");
+                    SalesLine.MODIFY(TRUE);
+                    Post := TRUE;
+                  END;
+                UNTIL SalesLine.NEXT = 0;
+
+                IF Post THEN BEGIN
+                  CLEAR(SalesPost);
+                  SalesHeader.Receive := TRUE;
+                  SalesHeader.Invoice := TRUE;
+                  IF PostingDateisSet THEN
+                    SalesPost.SetPostingDate(TRUE,FALSE,PostingDate)
+                  ELSE
+                    SalesPost.SetPostingDate(TRUE,FALSE,WORKDATE);
+                  //T0014 30.06.14 MSL +++++++++++++++++++++++++++
+                  {
+                  IF (SalesHeader."Document Type" = SalesHeader."Document Type"::"Return Order") AND
+                     (NOT SalesHeader."Ignore Conf. Mail") THEN BEGIN
+                    IF (SalesHeader."Return Type" = SalesHeader."Return Type"::Return) AND (NOT ChargeLineExist(SalesHeader)) THEN
+                      BatchPostDocumentL.CreateWhseConfEMailBatch(SalesHeader."No.",SalesHeader."Document Type")
+                  END;
+                  }
+                  //T0014 30.06.14 MSL ---------------------------
+                  SalesPost.RUN(SalesHeader);
+                END;
+
+              END;
+
+            END ELSE BEGIN
+              SalesHeader.SETCURRENTKEY("Document Type",Status,"Last Prepayment No.","Return Type","Status Return Order");
+              SalesHeader.SETRANGE("Document Type", SalesHeader."Document Type"::"Return Order");
+              SalesHeader.SETFILTER("Return Type",'%1|%2',SalesHeader."Return Type"::Return,SalesHeader."Return Type"::Change);
+              //H0584 11.03.14 HCN +++++++++++++++++++++++++++++
+              SalesHeader.SETRANGE("Status Return Order",SalesHeader."Status Return Order"::finished);
+              {
+              SalesHeader.SETRANGE("Status Return Order",SalesHeader."Status Return Order"::"10"); // 10=zur Auszahlung freigegeben
+              }
+              //H0584 11.03.14 HCN -----------------------------
+              IF SalesHeader.FIND('-') THEN
+                REPEAT
+                  SalesLine.SETRANGE("Document Type",SalesHeader."Document Type");
+                  SalesLine.SETRANGE("Document No.",SalesHeader."No.");
+                  SalesLine.SETFILTER("Return Reason Code",'<>%1','R-DOPPELT');
+                  SalesLine.SETFILTER(Quantity,'>%1',0);
+                  IF SalesLine.FIND('-') THEN BEGIN
+                    REPEAT
+                      IF SalesLine.Quantity - SalesLine."Return Qty. Received" >0 THEN BEGIN
+                        SalesLine.VALIDATE("Return Qty. to Receive",SalesLine.Quantity - SalesLine."Return Qty. Received");
+                        SalesLine.MODIFY(TRUE);
+                        Post := TRUE;
+                      END;
+
+                      IF SalesLine.Quantity - SalesLine."Quantity Invoiced" > 0  THEN BEGIN
+                        SalesLine.VALIDATE("Qty. to Invoice",SalesLine.Quantity - SalesLine."Quantity Invoiced");
+                        SalesLine.MODIFY(TRUE);
+                        Post := TRUE;
+                      END;
+                    UNTIL SalesLine.NEXT = 0;
+
+                    IF Post THEN BEGIN
+                      CLEAR(SalesPost);
+                      SalesHeader.Receive := TRUE;
+                      SalesHeader.Invoice := TRUE;
+                      SalesPost.SetPostingDate(TRUE,FALSE,WORKDATE);
+                      //T0014 30.06.14 MSL +++++++++++++++++++++++++++
+                      {
+                      IF (SalesHeader."Document Type" = SalesHeader."Document Type"::"Return Order") AND
+                         (NOT SalesHeader."Ignore Conf. Mail") THEN BEGIN
+                        IF (SalesHeader."Return Type" = SalesHeader."Return Type"::Return) AND (NOT ChargeLineExist(SalesHeader)) THEN
+                          BatchPostDocumentL.CreateWhseConfEMailBatch(SalesHeader."No.",SalesHeader."Document Type")
+                      END;
+                      }
+                      //T0014 30.06.14 MSL ---------------------------
+                      SalesPost.RUN(SalesHeader);
+                    END;
+
+                  END;
+                UNTIL SalesHeader.NEXT = 0;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      SalesHeader@1000000001 : Record 36;
+      SalesLine@1000000002 : Record 37;
+      SalesPost@1000000004 : Codeunit 80;
+      PostingDate@1000000005 : Date;
+      PostingDateisSet@1000000006 : Boolean;
+      ReturnOrderLineIsSet@1000000000 : Boolean;
+      Post@1000000003 : Boolean;
+
+    PROCEDURE SetReturnOrder@1000000000(SalesHeaderV@1000000000 : Record 36);
+    BEGIN
+      SalesHeader := SalesHeaderV;
+      ReturnOrderLineIsSet := TRUE;
+    END;
+
+    PROCEDURE SetPostingDate@1000000001(PostingDateV@1000000000 : Date);
+    BEGIN
+      PostingDate := PostingDateV;
+      PostingDateisSet := TRUE;
+    END;
+
+    PROCEDURE ChargeLineExist@1000000002(SalesHeaderV@1000000001 : Record 36) : Boolean;
+    VAR
+      SalesLineL@1000000000 : Record 37;
+    BEGIN
+      //H0114  10.12.12  ABR  ++++++++++++++++++++++++++++++++++++++
+      SalesLineL.SETRANGE("Document Type",SalesHeaderV."Document Type");
+      SalesLineL.SETRANGE("Document No.",SalesHeaderV."No.");
+      SalesLineL.SETRANGE(Type,SalesLineL.Type::"Charge (Item)");
+      EXIT(NOT SalesLineL.ISEMPTY);
+      //H0114  10.12.12  ABR  --------------------------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+
+      H0395       11.06.13 ABR       Created
+      H0432       28.06.13 ABR       Changed Posting do Header
+      H0584       11.03.14 HCN       Various field changes incorporated
+      T0014       30.06.14 MSL       FTTC 3 - Phase 1- Remove Ret. Whse. Mail Fields
+    }
+    END.
+  }
+}
+

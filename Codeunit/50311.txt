@@ -1,0 +1,222 @@
+OBJECT Codeunit 50311 Process SII Request
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09.01.15;
+    Time=17:45:12;
+    Modified=Yes;
+    Version List=T0052;
+  }
+  PROPERTIES
+  {
+    TableNo=50330;
+    OnRun=BEGIN
+            DoProcess(Rec);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      TextHME001@1000000000 : TextConst 'ENU=%1 has to be shipped first';
+
+    PROCEDURE Process@1000000002(VAR _SIIIncReqBatchProcessR@1000000001 : Record 50330;_withErrorsV@1000000002 : Boolean) : Boolean;
+    VAR
+      myCodeunitL@1000000000 : Codeunit 50311;
+    BEGIN
+
+      IF NOT DoCheck(_SIIIncReqBatchProcessR) THEN BEGIN
+        IF _withErrorsV THEN
+          MESSAGE(TextHME001,
+            STRSUBSTNO('%1: %2, %3: %4',
+              _SIIIncReqBatchProcessR.FIELDCAPTION("Document Type"),
+              _SIIIncReqBatchProcessR."Document Type",
+              _SIIIncReqBatchProcessR.FIELDCAPTION("Document No."),
+              _SIIIncReqBatchProcessR."Document No."),
+          _SIIIncReqBatchProcessR."Document No.");
+        EXIT(FALSE);
+      END;
+
+      _SIIIncReqBatchProcessR.ClearErrorText;
+      _SIIIncReqBatchProcessR."Processed at" := CURRENTDATETIME;
+
+      IF _withErrorsV THEN BEGIN
+        // for manually calls, use this to show errors to the user
+        DoProcess(_SIIIncReqBatchProcessR); // use DoProcess directly to allow execution within a write-transaction
+
+        _SIIIncReqBatchProcessR.Status := _SIIIncReqBatchProcessR.Status::Completed;
+        _SIIIncReqBatchProcessR.MODIFY;
+        EXIT(TRUE);
+
+      END;
+
+      IF myCodeunitL.RUN(_SIIIncReqBatchProcessR) THEN BEGIN
+
+        _SIIIncReqBatchProcessR.Status := _SIIIncReqBatchProcessR.Status::Completed;
+        _SIIIncReqBatchProcessR.MODIFY;
+        EXIT(TRUE);
+
+      END ELSE BEGIN
+
+        _SIIIncReqBatchProcessR.Status := _SIIIncReqBatchProcessR.Status::Error;
+        _SIIIncReqBatchProcessR.SetErrorText(GETLASTERRORTEXT);
+        _SIIIncReqBatchProcessR.MODIFY;
+        EXIT(FALSE);
+
+      END;
+    END;
+
+    PROCEDURE ResetProcessStatus@1000000009(VAR _SIIIncReqBatchProcessR@1000000000 : Record 50330);
+    BEGIN
+      _SIIIncReqBatchProcessR."Processed at" := 0DT;
+      _SIIIncReqBatchProcessR.Status := _SIIIncReqBatchProcessR.Status::Unprocessed;
+      _SIIIncReqBatchProcessR.ClearErrorText;
+      _SIIIncReqBatchProcessR.MODIFY;
+    END;
+
+    PROCEDURE "--- locals ---"@1000000001();
+    BEGIN
+    END;
+
+    LOCAL PROCEDURE DoCheck@1000000004(VAR SIIIncReqBatchProcessR@1000000001 : Record 50330) : Boolean;
+    VAR
+      SIIReqBatchProcessLineL@1000000002 : Record 50331;
+      SalesLineL@1000000003 : Record 37;
+    BEGIN
+      //Check, if the order is ready for processing.
+
+      //"Calc. Prevention Discount" => No precondition
+      IF SIIIncReqBatchProcessR."Process Type" = SIIIncReqBatchProcessR."Process Type"::"Calc. Prevention Discount" THEN
+        EXIT(TRUE);
+
+      //"Calc. Prevention Discount" => Order has to be shipped
+      IF SIIIncReqBatchProcessR."Process Type" = SIIIncReqBatchProcessR."Process Type"::"Process Complaint Request" THEN BEGIN
+        //If order has been archived, it means it has been shipped&invoiced.
+        IF SIIIncReqBatchProcessR."Document Table ID"=DATABASE::"Sales Header Archive" THEN
+          EXIT(TRUE);
+
+        IF SIIIncReqBatchProcessR."Document Table ID"=DATABASE::"Sales Header" THEN BEGIN
+          SIIReqBatchProcessLineL.RESET;
+          SIIReqBatchProcessLineL.SETRANGE("Entry No.",SIIIncReqBatchProcessR."Entry No.");
+          IF SIIReqBatchProcessLineL.FINDSET THEN
+            REPEAT
+              IF SalesLineL.GET(SIIReqBatchProcessLineL."Document Type",
+                                SIIReqBatchProcessLineL."Document No.",
+                                SIIReqBatchProcessLineL."Document Line No.") THEN BEGIN
+                IF SalesLineL."Quantity Shipped" = 0 THEN
+                  EXIT(FALSE);
+              END;
+            UNTIL SIIReqBatchProcessLineL.NEXT = 0;
+          //All entries shipped, check done
+          EXIT(TRUE);
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE DoProcess@1000000000(VAR _SIIIncReqBatchProcessR@1000000005 : Record 50330);
+    BEGIN
+      _SIIIncReqBatchProcessR.TESTFIELD(Status, _SIIIncReqBatchProcessR.Status::Unprocessed);
+
+      CASE _SIIIncReqBatchProcessR."Process Type" OF
+
+        _SIIIncReqBatchProcessR."Process Type"::" ":
+          BEGIN
+            // do nothing
+          END;
+
+        _SIIIncReqBatchProcessR."Process Type"::"Calc. Prevention Discount":
+          BEGIN
+            Process_CalcPreventionDiscount(_SIIIncReqBatchProcessR, GUIALLOWED);
+          END;
+
+        _SIIIncReqBatchProcessR."Process Type"::"Process Complaint Request":
+          BEGIN
+            // process complaint request
+            Process_ComplaintRequest(_SIIIncReqBatchProcessR, GUIALLOWED);
+          END;
+
+        ELSE
+          BEGIN
+            ERROR('Process Type "%1" is not implemented.', _SIIIncReqBatchProcessR."Process Type");
+          END;
+
+      END;
+    END;
+
+    LOCAL PROCEDURE Process_ComplaintRequest@1000000003(VAR _SIIIncReqBatchProcessR@1000000004 : Record 50330;_withErrorsV@1000000001 : Boolean);
+    VAR
+      ComplaintRequestMgtL@1000000000 : Codeunit 50313;
+    BEGIN
+      CASE _SIIIncReqBatchProcessR."Document Table ID" OF
+
+        0,
+        DATABASE::"Sales Header",
+        DATABASE::"Sales Header Archive":
+          BEGIN
+            ComplaintRequestMgtL.ProcessComplaintRequest(_SIIIncReqBatchProcessR."Document No.", FALSE);
+          END;
+
+        ELSE
+          BEGIN
+            IF _withErrorsV THEN BEGIN
+              ERROR(
+                'Task not implemented for table id "%1"',
+                _SIIIncReqBatchProcessR."Document Table ID");
+            END;
+          END;
+
+      END;
+    END;
+
+    LOCAL PROCEDURE Process_CalcPreventionDiscount@1000000011(VAR _SIIIncReqBatchProcessR@1000000004 : Record 50330;_withErrorsV@1000000001 : Boolean);
+    VAR
+      PreventionCalculationMgtL@1000000000 : Codeunit 50143;
+      salesHeaderL@1000000002 : Record 36;
+      salesHeaderArchL@1000000003 : Record 5107;
+    BEGIN
+      CASE _SIIIncReqBatchProcessR."Document Table ID" OF
+
+        0,
+        DATABASE::"Sales Header",
+        DATABASE::"Sales Header Archive":
+          BEGIN
+            IF salesHeaderL.GET(salesHeaderL."Document Type"::Order, _SIIIncReqBatchProcessR."Document No.") THEN BEGIN
+              PreventionCalculationMgtL.DoPreventionCalculation(salesHeaderL, FALSE);
+            END ELSE BEGIN
+              salesHeaderArchL.RESET;
+              salesHeaderArchL.SETRANGE("No.", _SIIIncReqBatchProcessR."Document No.");
+              IF salesHeaderArchL.FINDLAST THEN BEGIN
+                PreventionCalculationMgtL.DoPreventionCalculationArchive(salesHeaderArchL, FALSE);
+              END;
+            END;
+          END;
+
+        ELSE
+          BEGIN
+            IF _withErrorsV THEN BEGIN
+              ERROR(
+                'Task not implemented for table id "%1"',
+                _SIIIncReqBatchProcessR."Document Table ID");
+            END;
+          END;
+
+      END;
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation Tectura & Home24 NAV Team  |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      T0052       22.10.14  tec-cs    created
+    }
+    END.
+  }
+}
+

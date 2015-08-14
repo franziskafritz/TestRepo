@@ -1,0 +1,1606 @@
+OBJECT Codeunit 50168 SII Fill Log - Check
+{
+  OBJECT-PROPERTIES
+  {
+    Date=26.03.15;
+    Time=15:49:15;
+    Modified=Yes;
+    Version List=HME1985;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+            // Please do not use OnRun trigger
+            // Please do not use Global variables
+            // Please do not create functions, unless it's a new check function for new SII message
+            // Please do not create sophisticated logical forks.
+            // Think about creating new SII message if you really want to separate existing logic.
+            // Please keep this codeunit as simple as possible. It has to be easily debugged.
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      TextHME001@1000000000 : TextConst 'ENU=There is no %1 within the filter. Filters: %2';
+      TextHME002@1000000001 : TextConst 'ENU=%1 must not be %2 in %3';
+      TextHME003@1000000002 : TextConst 'ENU=%1 already exists:\%2\%3';
+      TextHME004@1000000003 : TextConst 'ENU=%1 already exists:\%2\%3\Do you want to create SII Message?';
+      TextHME005@1000000004 : TextConst 'ENU=There is no %1 with %2';
+
+    PROCEDURE CheckReturnOrderLabel@1000000004(VAR SalesHeaderR@1000000000 : Record 36) ProcessRecordO : Boolean;
+    VAR
+      SalesOrderL@1000000008 : Record 36;
+      SalesOrderArchiveL@1000000012 : Record 5107;
+      ReturnReasonL@1000000010 : Record 6635;
+      SIISetupL@1000000001 : Record 50140;
+      SalesLineL@1000000002 : Record 37;
+      SIIMessageL@1000000003 : Record 50141;
+      SIIActiveActionL@1000000004 : Record 50143;
+      SIIActiveChannelL@1000000006 : Record 50144;
+      SIILogManualL@1000000009 : Record 50155;
+      SIILogL@1000000005 : Record 50146;
+      SIILogArchiveL@1000000007 : Record 50147;
+      IsSalesLineExistsL@1000000011 : Boolean;
+    BEGIN
+      //*************************************************************************************//
+      //                            ORDERITEMRETURNINSTRUCTLABEL                             //
+      //*************************************************************************************//
+      //         Return process for parcel only orders. Sending labels to customer.          //
+      //*************************************************************************************//
+      //                                                                                     //
+      //  Function is called for one Return Order, which is passed via parameter.            //
+      //  Before sending any label we need to perform business and setup checks.             //
+      //  Function performes all checks in "READ UNCOMMITED" isolation level to avoid blocks //
+      //                                                                                     //
+      //  Business checks:                                                                   //
+      //  - "Document Type"="Return Order",                                                  //
+      //  - "Return Type"=Return,                                                            //
+      //  - "External Document No."<>'' and points to Sales Order,                           //
+      //  - All lines in return order have "Transp. Type"="Parcel Service"                   //
+      //  - All lines in return order have Active Channel                                    //
+      //                                                                                     //
+      //  System checks:                                                                     //
+      //  - SII Setup configured                                                             //
+      //  - SII Message configured and active                                                //
+      //  - SII Actions exist and active.                                                    //
+      //                                                                                     //
+      //  Parameters:                                                                        //
+      //  [in] SalesHeaderR - Return Order to check                                          //
+      //  [out] ProcessRecordO  - TRUE  - Process current Sales Order                        //
+      //                          FALSE - Do not process current Sales Order                 //
+      //                                  without raising a error.                           //
+      //                                                                                     //
+      //*************************************************************************************//
+
+      //Ensure that there were no modifications
+      CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+
+      //SalesHeader checks
+      SalesHeaderR.TESTFIELD("Document Type",SalesHeaderR."Document Type"::"Return Order");
+      SalesHeaderR.TESTFIELD("Return Type",SalesHeaderR."Return Type"::Return);
+
+      //Return Order must be linked to Sales Order
+      SalesHeaderR.TESTFIELD("External Document No.");
+      IF NOT SalesOrderL.GET(SalesOrderL."Document Type"::Order,SalesHeaderR."External Document No.") THEN BEGIN
+        SalesOrderArchiveL.RESET;
+        SalesOrderArchiveL.SETRANGE("Document Type",SalesOrderArchiveL."Document Type"::Order);
+        SalesOrderArchiveL.SETRANGE("No.",SalesHeaderR."External Document No.");
+        SalesOrderArchiveL.FINDFIRST;
+      END;
+
+      //Setup checks
+      SIISetupL.GET;
+      SIISetupL.TESTFIELD("Tr. Return Label Conf. Active",TRUE);
+      SIISetupL.TESTFIELD("Return Order Label NAV");
+      SIISetupL.TESTFIELD("Return Order Requested Shop");
+      IF NOT (SIISetupL.Mode IN [SIISetupL.Mode::"Test Offline",SIISetupL.Mode::"Test Online",SIISetupL.Mode::Active]) THEN
+        ERROR(STRSUBSTNO(TextHME002,SIISetupL.FIELDNAME(Mode),SIISetupL.Mode,SIISetupL.GETPOSITION(TRUE)));
+
+      //Get message
+      SIIMessageL.RESET;
+      SIIMessageL.SETRANGE("Website No.",SalesHeaderR."Website No.");
+      SIIMessageL.SETRANGE("Message Code NAV",SIISetupL."Return Order Label NAV");
+      SIIMessageL.FINDFIRST;
+      IF NOT (SIIMessageL.Mode IN [SIIMessageL.Mode::"Test Offline",SIIMessageL.Mode::"Test Online",SIIMessageL.Mode::Active]) THEN
+        ERROR(STRSUBSTNO(TextHME002,SIIMessageL.FIELDNAME(Mode),SIIMessageL.Mode,SIIMessageL.GETPOSITION(TRUE)));
+
+      //At least 1 Sales Line must exists
+      IsSalesLineExistsL := FALSE;
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type",SalesHeaderR."Document Type");
+      SalesLineL.SETRANGE("Document No.",SalesHeaderR."No.");
+      SalesLineL.SETRANGE(Type,SalesLineL.Type::Item);
+      SalesLineL.SETFILTER("No.",'<>%1','');
+      SalesLineL.SETFILTER(Quantity,'>%1',0);
+      SalesLineL.FINDSET(FALSE,FALSE);
+      REPEAT
+        //Check return reason.
+        SalesLineL.TESTFIELD("Return Reason Code");
+        ReturnReasonL.GET(SalesLineL."Return Reason Code");
+        IF ReturnReasonL."Use in FTTC Return Trigger" THEN BEGIN
+          // For this message, every Sales Line must have "Transp. Type"="Parcel Service"
+          // Use ORDERITEMRETURNINSTRUCTNOLABEL SII message if at least one NOT "Parcel Service" item exists in the Return Order
+          IF (SalesLineL."Transp. Type" <> SalesLineL."Transp. Type"::"Parcel Service") THEN
+            ERROR(STRSUBSTNO(TextHME002,SalesLineL.FIELDNAME("Transp. Type"),SalesLineL."Transp. Type",SalesLineL.GETPOSITION(TRUE)));
+
+          //Active channel must exist for Sales Line
+          SIIActiveChannelL.RESET;
+          SIIActiveChannelL.SETRANGE("Website No.",SIIMessageL."Website No.");
+          SIIActiveChannelL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+          SIIActiveChannelL.SETRANGE("Purchasing Code",SalesLineL."Purchasing Code");
+          SIIActiveChannelL.SETRANGE(Active,TRUE);
+          IF NOT SIIActiveChannelL.ISEMPTY THEN
+            IsSalesLineExistsL := TRUE;
+        END;
+      UNTIL SalesLineL.NEXT = 0;
+
+      IF NOT IsSalesLineExistsL THEN BEGIN
+        ProcessRecordO := FALSE;
+        EXIT;
+      END;
+
+      //At least 1 action must exist
+      SIIActiveActionL.RESET;
+      SIIActiveActionL.SETRANGE("Website No.",SIIMessageL."Website No.");
+      SIIActiveActionL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIIActiveActionL.SETRANGE(Active,TRUE);
+      IF SIIActiveActionL.ISEMPTY THEN
+        ERROR(STRSUBSTNO(TextHME001,SIIActiveActionL.TABLECAPTION,SIIActiveActionL.GETFILTERS));
+
+      // **************************************************************  //
+      //  Check if SII Log entry already exist for this Return Order.    //
+      //  Ask for further processing or raise error                      //
+      // **************************************************************  //
+
+      //SII Manual Log
+      SIILogManualL.RESET;
+      SIILogManualL.SETRANGE(AppDomain,SIIMessageL."Website No.");
+      SIILogManualL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIILogManualL.SETRANGE("Process Table No.",DATABASE::"Sales Header");
+      SIILogManualL.SETRANGE("Process Document Type",SalesHeaderR."Document Type");
+      SIILogManualL.SETRANGE("Process Document No.",SalesHeaderR."No.");
+      SIILogManualL.SETRANGE(Status,SIILogManualL.Status::Unprocessed);
+      SIILogManualL.SETFILTER(MessageMode,'<>%1',SIILogManualL.MessageMode::Inactive);
+      IF SIILogManualL.FINDLAST THEN BEGIN
+        IF NOT GUIALLOWED THEN
+          ERROR(TextHME003,SIILogManualL.TABLECAPTION,SIILogManualL.GETFILTERS,SIILogManualL.GETPOSITION);
+        CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+        IF NOT CONFIRM(TextHME004,TRUE,SIILogManualL.TABLECAPTION,SIILogManualL.GETFILTERS,SIILogManualL.GETPOSITION) THEN
+          ERROR('');
+      END;
+
+      //SII Log
+      SIILogL.RESET;
+      SIILogL.SETRANGE(AppDomain,SIIMessageL."Website No.");
+      SIILogL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIILogL.SETRANGE("Process Table No.",DATABASE::"Sales Header");
+      SIILogL.SETRANGE("Process Document Type",SalesHeaderR."Document Type");
+      SIILogL.SETRANGE("Process Document No.",SalesHeaderR."No.");
+      SIILogL.SETRANGE(Status,SIILogL.Status::Unprocessed);
+      SIILogL.SETFILTER(MessageMode,'<>%1',SIILogL.MessageMode::Inactive);
+      IF SIILogL.FINDLAST THEN BEGIN
+        IF NOT GUIALLOWED THEN
+          ERROR(TextHME003,SIILogL.TABLECAPTION,SIILogL.GETFILTERS,SIILogL.GETPOSITION);
+        CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+        IF NOT CONFIRM(TextHME004,TRUE,SIILogL.TABLECAPTION,SIILogL.GETFILTERS,SIILogL.GETPOSITION) THEN
+          ERROR('');
+      END;
+
+      //SII Log Archive
+      SIILogArchiveL.RESET;
+      SIILogArchiveL.SETRANGE(AppDomain,SIIMessageL."Website No.");
+      SIILogArchiveL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIILogArchiveL.SETRANGE("Process Table No.",DATABASE::"Sales Header");
+      SIILogArchiveL.SETRANGE("Process Document Type",SalesHeaderR."Document Type");
+      SIILogArchiveL.SETRANGE("Process Document No.",SalesHeaderR."No.");
+      SIILogArchiveL.SETFILTER(Status,'%1|%2',SIILogArchiveL.Status::Processed,SIILogArchiveL.Status::Commited);
+      IF SIILogArchiveL.FINDLAST THEN BEGIN
+        IF NOT GUIALLOWED THEN
+          ERROR(TextHME003,SIILogArchiveL.TABLECAPTION,SIILogArchiveL.GETFILTERS,SIILogArchiveL.GETPOSITION);
+        CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+        IF NOT CONFIRM(TextHME004,TRUE,SIILogArchiveL.TABLECAPTION,SIILogArchiveL.GETFILTERS,SIILogArchiveL.GETPOSITION) THEN
+          ERROR('');
+      END;
+
+      ProcessRecordO := TRUE;
+
+      //Ensure that there were no modifications
+      CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+    END;
+
+    PROCEDURE CheckReturnOrderInstruction@1000000000(VAR SalesHeaderR@1000000001 : Record 36) ProcessRecordO : Boolean;
+    VAR
+      SalesOrderL@1000000002 : Record 36;
+      SalesOrderArchiveL@1000000012 : Record 5107;
+      ReturnReasonL@1000000010 : Record 6635;
+      SIISetupL@1000000000 : Record 50140;
+      SIIMessageL@1000000003 : Record 50141;
+      SIIActiveChannelL@1000000005 : Record 50144;
+      SIIActiveActionL@1000000006 : Record 50143;
+      SalesLineL@1000000004 : Record 37;
+      SIILogManualL@1000000009 : Record 50155;
+      SIILogL@1000000008 : Record 50146;
+      SIILogArchiveL@1000000007 : Record 50147;
+      IsSalesLineExistsL@1000000011 : Boolean;
+    BEGIN
+      //*************************************************************************************//
+      //                           ORDERITEMRETURNINSTRUCTNOLABEL                            //
+      //*************************************************************************************//
+      //      Return process for all orders. Sending return instruction  to customer.        //
+      //*************************************************************************************//
+      //                                                                                     //
+      //  Function is called for one Return Order, which is passed via parameter.            //
+      //  Before sending return instructions to a customer we need to perform business and   //
+      //  setup checks.                                                                      //
+      //  Function performes all checks in "READ UNCOMMITED" isolation level to avoid blocks //
+      //                                                                                     //
+      //  Business checks:                                                                   //
+      //  - "Document Type"="Return Order",                                                  //
+      //  - "Return Type"=Return,                                                            //
+      //  - "External Document No."<>'' and points to Sales Order,                           //
+      //  - All lines in return order have Active Channel                                    //
+      //                                                                                     //
+      //  System checks:                                                                     //
+      //  - SII Setup configured                                                             //
+      //  - SII Message configured and active                                                //
+      //  - SII Actions exist and active.                                                    //
+      //                                                                                     //
+      //  Parameters:                                                                        //
+      //  [in] SalesHeaderR - Return Order to check                                          //
+      //  [out] ProcessRecordO  - TRUE  - Process current Sales Order                        //
+      //                          FALSE - Do not process current Sales Order                 //
+      //                                  without raising a error.                           //
+      //                                                                                     //
+      //*************************************************************************************//
+
+      //Ensure that there were no modifications
+      CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+
+      //SalesHeader checks
+      SalesHeaderR.TESTFIELD("Document Type",SalesHeaderR."Document Type"::"Return Order");
+      SalesHeaderR.TESTFIELD("Return Type",SalesHeaderR."Return Type"::Return);
+
+      //Return Order must be linked to Sales Order
+      SalesHeaderR.TESTFIELD("External Document No.");
+      IF NOT SalesOrderL.GET(SalesOrderL."Document Type"::Order,SalesHeaderR."External Document No.") THEN BEGIN
+        SalesOrderArchiveL.RESET;
+        SalesOrderArchiveL.SETRANGE("Document Type",SalesOrderArchiveL."Document Type"::Order);
+        SalesOrderArchiveL.SETRANGE("No.",SalesHeaderR."External Document No.");
+        SalesOrderArchiveL.FINDFIRST;
+      END;
+
+      //Setup checks
+      SIISetupL.GET;
+      SIISetupL.TESTFIELD("Tr. Return in Process Active",TRUE);
+      SIISetupL.TESTFIELD("Return Order Requested NAV");
+      SIISetupL.TESTFIELD("Return Order Requested Shop");
+      IF NOT (SIISetupL.Mode IN [SIISetupL.Mode::"Test Offline",SIISetupL.Mode::"Test Online",SIISetupL.Mode::Active]) THEN
+        ERROR(STRSUBSTNO(TextHME002,SIISetupL.FIELDNAME(Mode),SIISetupL.Mode,SIISetupL.GETPOSITION(TRUE)));
+
+      //Get message
+      SIIMessageL.RESET;
+      SIIMessageL.SETRANGE("Website No.",SalesHeaderR."Website No.");
+      SIIMessageL.SETRANGE("Message Code NAV",SIISetupL."Return Order Requested NAV");
+      SIIMessageL.FINDFIRST;
+      IF NOT (SIIMessageL.Mode IN [SIIMessageL.Mode::"Test Offline",SIIMessageL.Mode::"Test Online",SIIMessageL.Mode::Active]) THEN
+        ERROR(STRSUBSTNO(TextHME002,SIIMessageL.FIELDNAME(Mode),SIIMessageL.Mode,SIIMessageL.GETPOSITION(TRUE)));
+
+      //At least 1 Sales Line must exists
+      IsSalesLineExistsL := FALSE;
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type",SalesHeaderR."Document Type");
+      SalesLineL.SETRANGE("Document No.",SalesHeaderR."No.");
+      SalesLineL.SETRANGE(Type,SalesLineL.Type::Item);
+      SalesLineL.SETFILTER("No.",'<>%1','');
+      SalesLineL.SETFILTER(Quantity,'>%1',0);
+      SalesLineL.FINDSET(FALSE,FALSE);
+      REPEAT
+        //Check return reason.
+        SalesLineL.TESTFIELD("Return Reason Code");
+        ReturnReasonL.GET(SalesLineL."Return Reason Code");
+        IF ReturnReasonL."Use in FTTC Return Trigger" THEN BEGIN
+          //Active channel must exist for Sales Line
+          SIIActiveChannelL.RESET;
+          SIIActiveChannelL.SETRANGE("Website No.",SIIMessageL."Website No.");
+          SIIActiveChannelL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+          SIIActiveChannelL.SETRANGE("Purchasing Code",SalesLineL."Purchasing Code");
+          SIIActiveChannelL.SETRANGE(Active,TRUE);
+          IF NOT SIIActiveChannelL.ISEMPTY THEN
+            IsSalesLineExistsL := TRUE;
+        END;
+      UNTIL SalesLineL.NEXT = 0;
+
+      IF NOT IsSalesLineExistsL THEN BEGIN
+        ProcessRecordO := FALSE;
+        EXIT;
+      END;
+
+      //At least 1 action must exist
+      SIIActiveActionL.RESET;
+      SIIActiveActionL.SETRANGE("Website No.",SIIMessageL."Website No.");
+      SIIActiveActionL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIIActiveActionL.SETRANGE(Active,TRUE);
+      IF SIIActiveActionL.ISEMPTY THEN
+        ERROR(STRSUBSTNO(TextHME001,SIIActiveActionL.TABLECAPTION,SIIActiveActionL.GETFILTERS));
+
+      // **************************************************************  //
+      //  Check if SII Log entry already exist for this Return Order.    //
+      //  Ask for further processing or raise error                      //
+      // **************************************************************  //
+
+      //SII Manual Log
+      SIILogManualL.RESET;
+      SIILogManualL.SETRANGE(AppDomain,SIIMessageL."Website No.");
+      SIILogManualL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIILogManualL.SETRANGE("Process Table No.",DATABASE::"Sales Header");
+      SIILogManualL.SETRANGE("Process Document Type",SalesHeaderR."Document Type");
+      SIILogManualL.SETRANGE("Process Document No.",SalesHeaderR."No.");
+      SIILogManualL.SETRANGE(Status,SIILogManualL.Status::Unprocessed);
+      SIILogManualL.SETFILTER(MessageMode,'<>%1',SIILogManualL.MessageMode::Inactive);
+      IF SIILogManualL.FINDLAST THEN BEGIN
+        IF NOT GUIALLOWED THEN
+          ERROR(TextHME003,SIILogManualL.TABLECAPTION,SIILogManualL.GETFILTERS,SIILogManualL.GETPOSITION);
+        CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+        IF NOT CONFIRM(TextHME004,TRUE,SIILogManualL.TABLECAPTION,SIILogManualL.GETFILTERS,SIILogManualL.GETPOSITION) THEN
+          ERROR('');
+      END;
+
+
+      //SII Log
+      SIILogL.RESET;
+      SIILogL.SETRANGE(AppDomain,SIIMessageL."Website No.");
+      SIILogL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIILogL.SETRANGE("Process Table No.",DATABASE::"Sales Header");
+      SIILogL.SETRANGE("Process Document Type",SalesHeaderR."Document Type");
+      SIILogL.SETRANGE("Process Document No.",SalesHeaderR."No.");
+      SIILogL.SETRANGE(Status,SIILogL.Status::Unprocessed);
+      SIILogL.SETFILTER(MessageMode,'<>%1',SIILogL.MessageMode::Inactive);
+      IF SIILogL.FINDLAST THEN BEGIN
+        IF NOT GUIALLOWED THEN
+          ERROR(TextHME003,SIILogL.TABLECAPTION,SIILogL.GETFILTERS,SIILogL.GETPOSITION);
+        CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+        IF NOT CONFIRM(TextHME004,TRUE,SIILogL.TABLECAPTION,SIILogL.GETFILTERS,SIILogL.GETPOSITION) THEN
+          ERROR('');
+      END;
+
+      //SII Log Archive
+      SIILogArchiveL.RESET;
+      SIILogArchiveL.SETRANGE(AppDomain,SIIMessageL."Website No.");
+      SIILogArchiveL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIILogArchiveL.SETRANGE("Process Table No.",DATABASE::"Sales Header");
+      SIILogArchiveL.SETRANGE("Process Document Type",SalesHeaderR."Document Type");
+      SIILogArchiveL.SETRANGE("Process Document No.",SalesHeaderR."No.");
+      SIILogArchiveL.SETFILTER(Status,'%1|%2',SIILogArchiveL.Status::Processed,SIILogArchiveL.Status::Commited);
+      IF SIILogArchiveL.FINDLAST THEN BEGIN
+        IF NOT GUIALLOWED THEN
+          ERROR(TextHME003,SIILogArchiveL.TABLECAPTION,SIILogArchiveL.GETFILTERS,SIILogArchiveL.GETPOSITION);
+        CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+        IF NOT CONFIRM(TextHME004,TRUE,SIILogArchiveL.TABLECAPTION,SIILogArchiveL.GETFILTERS,SIILogArchiveL.GETPOSITION) THEN
+          ERROR('');
+      END;
+
+      ProcessRecordO := TRUE;
+
+      //Ensure that there were no modifications
+      CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+    END;
+
+    PROCEDURE CheckChangeOrderLabel@1000000001(VAR SalesHeaderR@1000000000 : Record 36) ProcessRecordO : Boolean;
+    VAR
+      SalesOrderL@1000000008 : Record 36;
+      SalesOrderArchiveL@1000000012 : Record 5107;
+      ReturnReasonL@1000000010 : Record 6635;
+      SIISetupL@1000000001 : Record 50140;
+      SalesLineL@1000000002 : Record 37;
+      SIIMessageL@1000000003 : Record 50141;
+      SIIActiveActionL@1000000004 : Record 50143;
+      SIIActiveChannelL@1000000006 : Record 50144;
+      SIILogManualL@1000000009 : Record 50155;
+      SIILogL@1000000005 : Record 50146;
+      SIILogArchiveL@1000000007 : Record 50147;
+      IsSalesLineExistsL@1000000011 : Boolean;
+    BEGIN
+      //*************************************************************************************//
+      //                            ORDERITEMCHANGEINSTRUCTLABEL                             //
+      //*************************************************************************************//
+      //         Change process for parcel only orders. Sending labels to customer.          //
+      //*************************************************************************************//
+      //                                                                                     //
+      //  Function is called for one Return Order, which is passed via parameter.            //
+      //  Before sending any label we need to perform business and setup checks.             //
+      //  Function performes all checks in "READ UNCOMMITED" isolation level to avoid blocks //
+      //                                                                                     //
+      //  Business checks:                                                                   //
+      //  - "Document Type"="Return Order",                                                  //
+      //  - "Return Type"=Change,                                                            //
+      //  - "External Document No."<>'' and points to Sales Order,                           //
+      //  - All lines in return order have "Transp. Type"="Parcel Service"                   //
+      //  - All lines in return order have Active Channel                                    //
+      //                                                                                     //
+      //  System checks:                                                                     //
+      //  - SII Setup configured                                                             //
+      //  - SII Message configured and active                                                //
+      //  - SII Actions exist and active.                                                    //
+      //                                                                                     //
+      //  Parameters:                                                                        //
+      //  [in] SalesHeaderR - Return Order to check                                          //
+      //  [out] ProcessRecordO  - TRUE  - Process current Sales Order                        //
+      //                          FALSE - Do not process current Sales Order                 //
+      //                                  without raising a error.                           //
+      //                                                                                     //
+      //*************************************************************************************//
+
+      //Ensure that there were no modifications
+      CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+
+      //SalesHeader checks
+      SalesHeaderR.TESTFIELD("Document Type",SalesHeaderR."Document Type"::"Return Order");
+      SalesHeaderR.TESTFIELD("Return Type",SalesHeaderR."Return Type"::Change);
+
+      //Return Order must be linked to Sales Order
+      SalesHeaderR.TESTFIELD("External Document No.");
+      IF NOT SalesOrderL.GET(SalesOrderL."Document Type"::Order,SalesHeaderR."External Document No.") THEN BEGIN
+        SalesOrderArchiveL.RESET;
+        SalesOrderArchiveL.SETRANGE("Document Type",SalesOrderArchiveL."Document Type"::Order);
+        SalesOrderArchiveL.SETRANGE("No.",SalesHeaderR."External Document No.");
+        SalesOrderArchiveL.FINDFIRST;
+      END;
+
+      //Setup checks
+      SIISetupL.GET;
+      SIISetupL.TESTFIELD("Tr. Change Label Conf. Active",TRUE);
+      SIISetupL.TESTFIELD("Change Return Req. Label NAV");
+      SIISetupL.TESTFIELD("Change Return Requested Shop");
+      IF NOT (SIISetupL.Mode IN [SIISetupL.Mode::"Test Offline",SIISetupL.Mode::"Test Online",SIISetupL.Mode::Active]) THEN
+        ERROR(STRSUBSTNO(TextHME002,SIISetupL.FIELDNAME(Mode),SIISetupL.Mode,SIISetupL.GETPOSITION(TRUE)));
+
+      //Get message
+      SIIMessageL.RESET;
+      SIIMessageL.SETRANGE("Website No.",SalesHeaderR."Website No.");
+      SIIMessageL.SETRANGE("Message Code NAV",SIISetupL."Change Return Req. Label NAV");
+      SIIMessageL.FINDFIRST;
+      IF NOT (SIIMessageL.Mode IN [SIIMessageL.Mode::"Test Offline",SIIMessageL.Mode::"Test Online",SIIMessageL.Mode::Active]) THEN
+        ERROR(STRSUBSTNO(TextHME002,SIIMessageL.FIELDNAME(Mode),SIIMessageL.Mode,SIIMessageL.GETPOSITION(TRUE)));
+
+      //At least 1 Sales Line must exists
+      IsSalesLineExistsL := FALSE;
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type",SalesHeaderR."Document Type");
+      SalesLineL.SETRANGE("Document No.",SalesHeaderR."No.");
+      SalesLineL.SETRANGE(Type,SalesLineL.Type::Item);
+      SalesLineL.SETFILTER("No.",'<>%1','');
+      SalesLineL.SETFILTER(Quantity,'>%1',0);
+      SalesLineL.FINDSET(FALSE,FALSE);
+      REPEAT
+        //Check return reason.
+        SalesLineL.TESTFIELD("Return Reason Code");
+        ReturnReasonL.GET(SalesLineL."Return Reason Code");
+        IF ReturnReasonL."Use in FTTC Change Trigger" THEN BEGIN
+          // For this message, every Sales Line must have "Transp. Type"="Parcel Service"
+          // Use ORDERITEMCHANGEINSTRUCTNOLABEL SII message if at least one NOT "Parcel Service" item exists in the Return Order
+          IF (SalesLineL."Transp. Type" <> SalesLineL."Transp. Type"::"Parcel Service") THEN
+            ERROR(STRSUBSTNO(TextHME002,SalesLineL.FIELDNAME("Transp. Type"),SalesLineL."Transp. Type",SalesLineL.GETPOSITION(TRUE)));
+
+          //Active channel must exist for Sales Line
+          SIIActiveChannelL.RESET;
+          SIIActiveChannelL.SETRANGE("Website No.",SIIMessageL."Website No.");
+          SIIActiveChannelL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+          SIIActiveChannelL.SETRANGE("Purchasing Code",SalesLineL."Purchasing Code");
+          SIIActiveChannelL.SETRANGE(Active,TRUE);
+          IF NOT SIIActiveChannelL.ISEMPTY THEN
+            IsSalesLineExistsL := TRUE;
+        END;
+      UNTIL SalesLineL.NEXT = 0;
+
+      IF NOT IsSalesLineExistsL THEN BEGIN
+        ProcessRecordO := FALSE;
+        EXIT;
+      END;
+
+      //At least 1 action must exist
+      SIIActiveActionL.RESET;
+      SIIActiveActionL.SETRANGE("Website No.",SIIMessageL."Website No.");
+      SIIActiveActionL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIIActiveActionL.SETRANGE(Active,TRUE);
+      IF SIIActiveActionL.ISEMPTY THEN
+        ERROR(STRSUBSTNO(TextHME001,SIIActiveActionL.TABLECAPTION,SIIActiveActionL.GETFILTERS));
+
+      // **************************************************************  //
+      //  Check if SII Log entry already exist for this Return Order.    //
+      //  Ask for further processing or raise error                      //
+      // **************************************************************  //
+
+      //SII Manual Log
+      SIILogManualL.RESET;
+      SIILogManualL.SETRANGE(AppDomain,SIIMessageL."Website No.");
+      SIILogManualL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIILogManualL.SETRANGE("Process Table No.",DATABASE::"Sales Header");
+      SIILogManualL.SETRANGE("Process Document Type",SalesHeaderR."Document Type");
+      SIILogManualL.SETRANGE("Process Document No.",SalesHeaderR."No.");
+      SIILogManualL.SETRANGE(Status,SIILogManualL.Status::Unprocessed);
+      SIILogManualL.SETFILTER(MessageMode,'<>%1',SIILogManualL.MessageMode::Inactive);
+      IF SIILogManualL.FINDLAST THEN BEGIN
+        IF NOT GUIALLOWED THEN
+          ERROR(TextHME003,SIILogManualL.TABLECAPTION,SIILogManualL.GETFILTERS,SIILogManualL.GETPOSITION);
+        CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+        IF NOT CONFIRM(TextHME004,TRUE,SIILogManualL.TABLECAPTION,SIILogManualL.GETFILTERS,SIILogManualL.GETPOSITION) THEN
+          ERROR('');
+      END;
+
+
+      //SII Log
+      SIILogL.RESET;
+      SIILogL.SETRANGE(AppDomain,SIIMessageL."Website No.");
+      SIILogL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIILogL.SETRANGE("Process Table No.",DATABASE::"Sales Header");
+      SIILogL.SETRANGE("Process Document Type",SalesHeaderR."Document Type");
+      SIILogL.SETRANGE("Process Document No.",SalesHeaderR."No.");
+      SIILogL.SETRANGE(Status,SIILogL.Status::Unprocessed);
+      SIILogL.SETFILTER(MessageMode,'<>%1',SIILogL.MessageMode::Inactive);
+      IF SIILogL.FINDLAST THEN BEGIN
+        IF NOT GUIALLOWED THEN
+          ERROR(TextHME003,SIILogL.TABLECAPTION,SIILogL.GETFILTERS,SIILogL.GETPOSITION);
+        CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+        IF NOT CONFIRM(TextHME004,TRUE,SIILogL.TABLECAPTION,SIILogL.GETFILTERS,SIILogL.GETPOSITION) THEN
+          ERROR('');
+      END;
+
+      //SII Log Archive
+      SIILogArchiveL.RESET;
+      SIILogArchiveL.SETRANGE(AppDomain,SIIMessageL."Website No.");
+      SIILogArchiveL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIILogArchiveL.SETRANGE("Process Table No.",DATABASE::"Sales Header");
+      SIILogArchiveL.SETRANGE("Process Document Type",SalesHeaderR."Document Type");
+      SIILogArchiveL.SETRANGE("Process Document No.",SalesHeaderR."No.");
+      SIILogArchiveL.SETFILTER(Status,'%1|%2',SIILogArchiveL.Status::Processed,SIILogArchiveL.Status::Commited);
+      IF SIILogArchiveL.FINDLAST THEN BEGIN
+        IF NOT GUIALLOWED THEN
+          ERROR(TextHME003,SIILogArchiveL.TABLECAPTION,SIILogArchiveL.GETFILTERS,SIILogArchiveL.GETPOSITION);
+        CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+        IF NOT CONFIRM(TextHME004,TRUE,SIILogArchiveL.TABLECAPTION,SIILogArchiveL.GETFILTERS,SIILogArchiveL.GETPOSITION) THEN
+          ERROR('');
+      END;
+
+      ProcessRecordO := TRUE;
+
+      //Ensure that there were no modifications
+      CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+    END;
+
+    PROCEDURE CheckChangeOrderInstruction@1000000002(VAR SalesHeaderR@1000000000 : Record 36) ProcessRecordO : Boolean;
+    VAR
+      SalesOrderL@1000000008 : Record 36;
+      SalesOrderArchiveL@1000000012 : Record 5107;
+      ReturnReasonL@1000000010 : Record 6635;
+      SIISetupL@1000000001 : Record 50140;
+      SalesLineL@1000000002 : Record 37;
+      SIIMessageL@1000000003 : Record 50141;
+      SIIActiveActionL@1000000004 : Record 50143;
+      SIIActiveChannelL@1000000006 : Record 50144;
+      SIILogManualL@1000000009 : Record 50155;
+      SIILogL@1000000005 : Record 50146;
+      SIILogArchiveL@1000000007 : Record 50147;
+      IsSalesLineExistsL@1000000011 : Boolean;
+    BEGIN
+      //*************************************************************************************//
+      //                            ORDERITEMCHANGEINSTRUCTNOLABEL                           //
+      //*************************************************************************************//
+      //      Change process for all orders. Sending change instruction  to customer.        //
+      //*************************************************************************************//
+      //                                                                                     //
+      //  Function is called for one Return Order, which is passed via parameter.            //
+      //  Before sending change instructions to the customer we need to perform business     //
+      //  and setup checks.                                                                  //
+      //  Function performes all checks in "READ UNCOMMITED" isolation level to avoid blocks //
+      //                                                                                     //
+      //  Business checks:                                                                   //
+      //  - "Document Type"="Return Order",                                                  //
+      //  - "Return Type"=Change,                                                            //
+      //  - "External Document No."<>'' and points to Sales Order,                           //
+      //  - All lines in return order have Active Channel                                    //
+      //                                                                                     //
+      //  System checks:                                                                     //
+      //  - SII Setup configured                                                             //
+      //  - SII Message configured and active                                                //
+      //  - SII Actions exist and active.                                                    //
+      //                                                                                     //
+      //  Parameters:                                                                        //
+      //  [in] SalesHeaderR - Return Order to check                                          //
+      //  [out] ProcessRecordO  - TRUE  - Process current Sales Order                        //
+      //                          FALSE - Do not process current Sales Order                 //
+      //                                  without raising a error.                           //
+      //                                                                                     //
+      //*************************************************************************************//
+
+      //Ensure that there were no modifications
+      CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+
+      //SalesHeader checks
+      SalesHeaderR.TESTFIELD("Document Type",SalesHeaderR."Document Type"::"Return Order");
+      SalesHeaderR.TESTFIELD("Return Type",SalesHeaderR."Return Type"::Change);
+
+      //Return Order must be linked to Sales Order
+      SalesHeaderR.TESTFIELD("External Document No.");
+      IF NOT SalesOrderL.GET(SalesOrderL."Document Type"::Order,SalesHeaderR."External Document No.") THEN BEGIN
+        SalesOrderArchiveL.RESET;
+        SalesOrderArchiveL.SETRANGE("Document Type",SalesOrderArchiveL."Document Type"::Order);
+        SalesOrderArchiveL.SETRANGE("No.",SalesHeaderR."External Document No.");
+        SalesOrderArchiveL.FINDFIRST;
+      END;
+
+      //Setup checks
+      SIISetupL.GET;
+      SIISetupL.TESTFIELD("Tr. Change Return Req. Active",TRUE);
+      SIISetupL.TESTFIELD("Change Return Requested NAV");
+      SIISetupL.TESTFIELD("Change Return Requested Shop");
+      IF NOT (SIISetupL.Mode IN [SIISetupL.Mode::"Test Offline",SIISetupL.Mode::"Test Online",SIISetupL.Mode::Active]) THEN
+        ERROR(STRSUBSTNO(TextHME002,SIISetupL.FIELDNAME(Mode),SIISetupL.Mode,SIISetupL.GETPOSITION(TRUE)));
+
+      //Get message
+      SIIMessageL.RESET;
+      SIIMessageL.SETRANGE("Website No.",SalesHeaderR."Website No.");
+      SIIMessageL.SETRANGE("Message Code NAV",SIISetupL."Change Return Requested NAV");
+      SIIMessageL.FINDFIRST;
+      IF NOT (SIIMessageL.Mode IN [SIIMessageL.Mode::"Test Offline",SIIMessageL.Mode::"Test Online",SIIMessageL.Mode::Active]) THEN
+        ERROR(STRSUBSTNO(TextHME002,SIIMessageL.FIELDNAME(Mode),SIIMessageL.Mode,SIIMessageL.GETPOSITION(TRUE)));
+
+      //At least 1 Sales Line must exists
+      IsSalesLineExistsL := FALSE;
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type",SalesHeaderR."Document Type");
+      SalesLineL.SETRANGE("Document No.",SalesHeaderR."No.");
+      SalesLineL.SETRANGE(Type,SalesLineL.Type::Item);
+      SalesLineL.SETFILTER("No.",'<>%1','');
+      SalesLineL.SETFILTER(Quantity,'>%1',0);
+      SalesLineL.FINDSET(FALSE,FALSE);
+      REPEAT
+        //Check return reason.
+        SalesLineL.TESTFIELD("Return Reason Code");
+        ReturnReasonL.GET(SalesLineL."Return Reason Code");
+        IF ReturnReasonL."Use in FTTC Change Trigger" THEN BEGIN
+          //Active channel must exist for Sales Line
+          SIIActiveChannelL.RESET;
+          SIIActiveChannelL.SETRANGE("Website No.",SIIMessageL."Website No.");
+          SIIActiveChannelL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+          SIIActiveChannelL.SETRANGE("Purchasing Code",SalesLineL."Purchasing Code");
+          SIIActiveChannelL.SETRANGE(Active,TRUE);
+          IF NOT SIIActiveChannelL.ISEMPTY THEN
+            IsSalesLineExistsL := TRUE;
+        END;
+      UNTIL SalesLineL.NEXT = 0;
+
+      IF NOT IsSalesLineExistsL THEN BEGIN
+        ProcessRecordO := FALSE;
+        EXIT;
+      END;
+
+      //At least 1 action must exist
+      SIIActiveActionL.RESET;
+      SIIActiveActionL.SETRANGE("Website No.",SIIMessageL."Website No.");
+      SIIActiveActionL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIIActiveActionL.SETRANGE(Active,TRUE);
+      IF SIIActiveActionL.ISEMPTY THEN
+        ERROR(STRSUBSTNO(TextHME001,SIIActiveActionL.TABLECAPTION,SIIActiveActionL.GETFILTERS));
+
+      // **************************************************************  //
+      //  Check if SII Log entry already exist for this Return Order.    //
+      //  Ask for further processing or raise error                      //
+      // **************************************************************  //
+
+      //SII Manual Log
+      SIILogManualL.RESET;
+      SIILogManualL.SETRANGE(AppDomain,SIIMessageL."Website No.");
+      SIILogManualL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIILogManualL.SETRANGE("Process Table No.",DATABASE::"Sales Header");
+      SIILogManualL.SETRANGE("Process Document Type",SalesHeaderR."Document Type");
+      SIILogManualL.SETRANGE("Process Document No.",SalesHeaderR."No.");
+      SIILogManualL.SETRANGE(Status,SIILogManualL.Status::Unprocessed);
+      SIILogManualL.SETFILTER(MessageMode,'<>%1',SIILogManualL.MessageMode::Inactive);
+      IF SIILogManualL.FINDLAST THEN BEGIN
+        IF NOT GUIALLOWED THEN
+          ERROR(TextHME003,SIILogManualL.TABLECAPTION,SIILogManualL.GETFILTERS,SIILogManualL.GETPOSITION);
+        CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+        IF NOT CONFIRM(TextHME004,TRUE,SIILogManualL.TABLECAPTION,SIILogManualL.GETFILTERS,SIILogManualL.GETPOSITION) THEN
+          ERROR('');
+      END;
+
+
+      //SII Log
+      SIILogL.RESET;
+      SIILogL.SETRANGE(AppDomain,SIIMessageL."Website No.");
+      SIILogL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIILogL.SETRANGE("Process Table No.",DATABASE::"Sales Header");
+      SIILogL.SETRANGE("Process Document Type",SalesHeaderR."Document Type");
+      SIILogL.SETRANGE("Process Document No.",SalesHeaderR."No.");
+      SIILogL.SETRANGE(Status,SIILogL.Status::Unprocessed);
+      SIILogL.SETFILTER(MessageMode,'<>%1',SIILogL.MessageMode::Inactive);
+      IF SIILogL.FINDLAST THEN BEGIN
+        IF NOT GUIALLOWED THEN
+          ERROR(TextHME003,SIILogL.TABLECAPTION,SIILogL.GETFILTERS,SIILogL.GETPOSITION);
+        CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+        IF NOT CONFIRM(TextHME004,TRUE,SIILogL.TABLECAPTION,SIILogL.GETFILTERS,SIILogL.GETPOSITION) THEN
+          ERROR('');
+      END;
+
+      //SII Log Archive
+      SIILogArchiveL.RESET;
+      SIILogArchiveL.SETRANGE(AppDomain,SIIMessageL."Website No.");
+      SIILogArchiveL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIILogArchiveL.SETRANGE("Process Table No.",DATABASE::"Sales Header");
+      SIILogArchiveL.SETRANGE("Process Document Type",SalesHeaderR."Document Type");
+      SIILogArchiveL.SETRANGE("Process Document No.",SalesHeaderR."No.");
+      SIILogArchiveL.SETFILTER(Status,'%1|%2',SIILogArchiveL.Status::Processed,SIILogArchiveL.Status::Commited);
+      IF SIILogArchiveL.FINDLAST THEN BEGIN
+        IF NOT GUIALLOWED THEN
+          ERROR(TextHME003,SIILogArchiveL.TABLECAPTION,SIILogArchiveL.GETFILTERS,SIILogArchiveL.GETPOSITION);
+        CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+        IF NOT CONFIRM(TextHME004,TRUE,SIILogArchiveL.TABLECAPTION,SIILogArchiveL.GETFILTERS,SIILogArchiveL.GETPOSITION) THEN
+          ERROR('');
+      END;
+
+      ProcessRecordO := TRUE;
+
+      //Ensure that there were no modifications
+      CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+    END;
+
+    PROCEDURE CheckOrderPicking@1000000005(VAR SalesHeaderR@1000000000 : Record 36) ProcessRecordO : Boolean;
+    VAR
+      SalesHeaderL@1000000002 : Record 36;
+      SIISetupL@1000000001 : Record 50140;
+      SIIMessageL@1000000003 : Record 50141;
+      SIIActiveActionL@1000000004 : Record 50143;
+      SIILogManualL@1000000009 : Record 50155;
+      SIILogL@1000000005 : Record 50146;
+      SIILogArchiveL@1000000007 : Record 50147;
+    BEGIN
+      //*************************************************************************************//
+      //                                    ORDERPICKING                                     //
+      //*************************************************************************************//
+      //  Payment update confirmation. Order commissioning process (picking) can be started. //
+      //*************************************************************************************//
+      //                                                                                     //
+      //  Function is called for one Sales Order, which is passed via parameter.             //
+      //  Before sending payment update confirmation to the shop we need to perform business //
+      //  and setup checks.                                                                  //
+      //                                                                                     //
+      //  "Processing By" of the SII message must be "Trigger" or "Both", otherwise          //
+      //  nothing will happen.                                                               //
+      //  Sales Order must be within SII Message filters, otherwise nothing will happen.     //
+      //                                                                                     //
+      //  Function performes all checks in "READ UNCOMMITED" isolation level to avoid blocks //
+      //                                                                                     //
+      //  Business checks:                                                                   //
+      //  - "Document Type"="Sales Order",                                                   //
+      //  - "External Document No."="No." that means that this is not a follow-up order      //
+      //                                                                                     //
+      //  System checks:                                                                     //
+      //  - SII Setup configured                                                             //
+      //  - SII Message configured and active                                                //
+      //                                                                                     //
+      //  Parameters:                                                                        //
+      //  [in]  SalesHeaderR    - Sales Order to check                                       //
+      //  [out] ProcessRecordO  - TRUE  - Process current Sales Order                        //
+      //                          FALSE - Do not process current Sales Order                 //
+      //                                  without raising a error.                           //
+      //                                                                                     //
+      //*************************************************************************************//
+
+      //H1784  24.11.14 MIK ++++++++++++++++++++++++++++++++++++
+
+      //Ensure that there were no modifications
+      CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+
+      //Setup checks
+      SIISetupL.GET;
+      SIISetupL.TESTFIELD("Payment Update Confirm. NAV");
+      SIISetupL.TESTFIELD("Payment Update Confirm. Shop");
+      IF NOT (SIISetupL.Mode IN [SIISetupL.Mode::"Test Offline",SIISetupL.Mode::"Test Online",SIISetupL.Mode::Active]) THEN
+        ERROR(STRSUBSTNO(TextHME002,SIISetupL.FIELDNAME(Mode),SIISetupL.Mode,SIISetupL.GETPOSITION(TRUE)));
+
+      //Get message
+      SIIMessageL.RESET;
+      SIIMessageL.SETRANGE("Website No.",SalesHeaderR."Website No.");
+      SIIMessageL.SETRANGE("Message Code NAV",SIISetupL."Payment Update Confirm. NAV");
+      SIIMessageL.FINDFIRST;
+      IF NOT (SIIMessageL.Mode IN [SIIMessageL.Mode::"Test Offline",SIIMessageL.Mode::"Test Online",SIIMessageL.Mode::Active]) THEN
+        ERROR(STRSUBSTNO(TextHME002,SIIMessageL.FIELDNAME(Mode),SIIMessageL.Mode,SIIMessageL.GETPOSITION(TRUE)));
+
+      //Proceed only if "Processing by" is 'Trigger' or 'Both'
+      IF NOT (SIIMessageL."Processing by" IN [SIIMessageL."Processing by"::Trigger,SIIMessageL."Processing by"::Both]) THEN BEGIN
+        ProcessRecordO := FALSE;
+        EXIT;
+      END;
+
+
+      //This message is valid only for Orders
+      SalesHeaderR.TESTFIELD("Document Type",SalesHeaderR."Document Type"::Order);
+
+      //Sales Order must be the one, that came from the shop (Not a follow-up order).
+      //This can be checked by comparing "No." and "External Document No.", they must be the same.
+      SalesHeaderR.TESTFIELD("No.",SalesHeaderR."External Document No.");
+
+
+      //Proceed only if Sales Order within the SII Message Filter
+      SalesHeaderL.RESET;
+      SalesHeaderL.FILTERGROUP(2);
+      SalesHeaderL.SETRANGE("Document Type",SalesHeaderR."Document Type");
+      SalesHeaderL.SETRANGE("No.",SalesHeaderR."No.");
+      SalesHeaderL.FILTERGROUP(0);
+      IF SIIMessageL."Order No. Filter" <> '' THEN
+        SalesHeaderL.SETFILTER("No.",SIIMessageL."Order No. Filter");
+      IF SIIMessageL."Order Date Filter" <> '' THEN
+        SalesHeaderL.SETFILTER("Order Date",SIIMessageL."Order Date Filter");
+      IF SIIMessageL."Payment Method Filter" <> '' THEN
+         SalesHeaderL.SETFILTER("Payment Method Code",SIIMessageL."Payment Method Filter");
+      IF SIIMessageL."Language Code Filter" <> '' THEN
+         SalesHeaderL.SETFILTER("Language Code",SIIMessageL."Language Code Filter");
+      IF SalesHeaderL.ISEMPTY THEN BEGIN
+        ProcessRecordO := FALSE;
+        EXIT;
+      END;
+
+      //At least 1 action must exist
+      SIIActiveActionL.RESET;
+      SIIActiveActionL.SETRANGE("Website No.",SIIMessageL."Website No.");
+      SIIActiveActionL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIIActiveActionL.SETRANGE(Active,TRUE);
+      IF SIIActiveActionL.ISEMPTY THEN
+        ERROR(STRSUBSTNO(TextHME001,SIIActiveActionL.TABLECAPTION,SIIActiveActionL.GETFILTERS));
+
+
+      // ************************************************************** //
+      //  Check if SII Log entry already exist for this Sales Order.    //
+      //  Ask for further processing or skip processing for this Order  //
+      // ************************************************************** //
+
+      //SII Manual Log
+      SIILogManualL.RESET;
+      SIILogManualL.SETRANGE(AppDomain,SIIMessageL."Website No.");
+      SIILogManualL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIILogManualL.SETRANGE("Process Table No.",DATABASE::"Sales Header");
+      SIILogManualL.SETRANGE("Process Document Type",SalesHeaderR."Document Type");
+      SIILogManualL.SETRANGE("Process Document No.",SalesHeaderR."No.");
+      SIILogManualL.SETRANGE(Status,SIILogManualL.Status::Unprocessed);
+      SIILogManualL.SETFILTER(MessageMode,'<>%1',SIILogManualL.MessageMode::Inactive);
+      IF SIILogManualL.FINDLAST THEN BEGIN
+        IF NOT GUIALLOWED THEN BEGIN
+          ProcessRecordO := FALSE;
+          EXIT;
+        END;
+        CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+        IF NOT CONFIRM(TextHME004,TRUE,SIILogManualL.TABLECAPTION,SIILogManualL.GETFILTERS,SIILogManualL.GETPOSITION) THEN BEGIN
+          ProcessRecordO := FALSE;
+          EXIT;
+        END;
+      END;
+
+
+      //SII Log
+      SIILogL.RESET;
+      SIILogL.SETRANGE(AppDomain,SIIMessageL."Website No.");
+      SIILogL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIILogL.SETRANGE("Process Table No.",DATABASE::"Sales Header");
+      SIILogL.SETRANGE("Process Document Type",SalesHeaderR."Document Type");
+      SIILogL.SETRANGE("Process Document No.",SalesHeaderR."No.");
+      SIILogL.SETRANGE(Status,SIILogL.Status::Unprocessed);
+      SIILogL.SETFILTER(MessageMode,'<>%1',SIILogL.MessageMode::Inactive);
+      IF SIILogL.FINDLAST THEN BEGIN
+        IF NOT GUIALLOWED THEN BEGIN
+          ProcessRecordO := FALSE;
+          EXIT;
+        END;
+        CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+        IF NOT CONFIRM(TextHME004,TRUE,SIILogL.TABLECAPTION,SIILogL.GETFILTERS,SIILogL.GETPOSITION) THEN BEGIN
+          ProcessRecordO := FALSE;
+          EXIT;
+        END;
+      END;
+
+      //SII Log Archive
+      SIILogArchiveL.RESET;
+      SIILogArchiveL.SETRANGE(AppDomain,SIIMessageL."Website No.");
+      SIILogArchiveL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIILogArchiveL.SETRANGE("Process Table No.",DATABASE::"Sales Header");
+      SIILogArchiveL.SETRANGE("Process Document Type",SalesHeaderR."Document Type");
+      SIILogArchiveL.SETRANGE("Process Document No.",SalesHeaderR."No.");
+      SIILogArchiveL.SETFILTER(Status,'%1|%2',SIILogArchiveL.Status::Processed,SIILogArchiveL.Status::Commited);
+      IF SIILogArchiveL.FINDLAST THEN BEGIN
+        IF NOT GUIALLOWED THEN BEGIN
+          ProcessRecordO := FALSE;
+          EXIT;
+        END;
+        CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+        IF NOT CONFIRM(TextHME004,TRUE,SIILogArchiveL.TABLECAPTION,SIILogArchiveL.GETFILTERS,SIILogArchiveL.GETPOSITION) THEN BEGIN
+          ProcessRecordO := FALSE;
+          EXIT;
+        END;
+      END;
+
+      ProcessRecordO := TRUE;
+
+      //Ensure that there were no modifications
+      CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+      //H1784  24.11.14 MIK ------------------------------------
+    END;
+
+    PROCEDURE CheckOrderPickingPrepayment@1000000003(VAR SalesHeaderR@1000000000 : Record 36) ProcessRecordO : Boolean;
+    VAR
+      SalesHeaderL@1000000002 : Record 36;
+      SIISetupL@1000000001 : Record 50140;
+      SIIMessageL@1000000003 : Record 50141;
+      SIIActiveActionL@1000000004 : Record 50143;
+      SIILogManualL@1000000009 : Record 50155;
+      SIILogL@1000000005 : Record 50146;
+      SIILogArchiveL@1000000007 : Record 50147;
+    BEGIN
+      //*************************************************************************************//
+      //                                 ORDERPICKINGPREPMT                                  //
+      //*************************************************************************************//
+      //  Payment update confirmation (For prepayment only).                                 //
+      //  Order commissioning process (picking) can be started.                              //
+      //*************************************************************************************//
+      //                                                                                     //
+      //  Function is called for one Sales Order, which is passed via parameter.             //
+      //  Before sending payment update confirmation to the shop we need to perform business //
+      //  and setup checks.                                                                  //
+      //                                                                                     //
+      //  "Processing By" of the SII message must be "Trigger" or "Both", otherwise          //
+      //  nothing will happen.                                                               //
+      //  Sales Order must be within SII Message filters, otherwise nothing will happen.     //
+      //                                                                                     //
+      //  Function performes all checks in "READ UNCOMMITED" isolation level to avoid blocks //
+      //                                                                                     //
+      //  Business checks:                                                                   //
+      //  - "Document Type"="Sales Order",                                                   //
+      //  - "External Document No."="No." that means that this is not a follow-up order      //
+      //                                                                                     //
+      //  System checks:                                                                     //
+      //  - SII Setup configured                                                             //
+      //  - SII Message configured and active                                                //
+      //                                                                                     //
+      //  Parameters:                                                                        //
+      //  [in]  SalesHeaderR    - Sales Order to check                                       //
+      //  [out] ProcessRecordO  - TRUE  - Process current Sales Order                        //
+      //                          FALSE - Do not process current Sales Order                 //
+      //                                  without raising a error.                           //
+      //                                                                                     //
+      //*************************************************************************************//
+
+      //H1784  24.11.14 MIK ++++++++++++++++++++++++++++++++++++
+
+      //Ensure that there were no modifications
+      CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+
+      //Setup checks
+      SIISetupL.GET;
+      SIISetupL.TESTFIELD("Payment Upd. Conf. Prepmt. NAV");
+      SIISetupL.TESTFIELD("Payment Update Confirm. Shop");
+      IF NOT (SIISetupL.Mode IN [SIISetupL.Mode::"Test Offline",SIISetupL.Mode::"Test Online",SIISetupL.Mode::Active]) THEN
+        ERROR(STRSUBSTNO(TextHME002,SIISetupL.FIELDNAME(Mode),SIISetupL.Mode,SIISetupL.GETPOSITION(TRUE)));
+
+      //Get message
+      SIIMessageL.RESET;
+      SIIMessageL.SETRANGE("Website No.",SalesHeaderR."Website No.");
+      SIIMessageL.SETRANGE("Message Code NAV",SIISetupL."Payment Upd. Conf. Prepmt. NAV");
+      SIIMessageL.FINDFIRST;
+      IF NOT (SIIMessageL.Mode IN [SIIMessageL.Mode::"Test Offline",SIIMessageL.Mode::"Test Online",SIIMessageL.Mode::Active]) THEN
+        ERROR(STRSUBSTNO(TextHME002,SIIMessageL.FIELDNAME(Mode),SIIMessageL.Mode,SIIMessageL.GETPOSITION(TRUE)));
+
+      //Proceed only if "Processing by" is 'Trigger' or 'Both'
+      IF NOT (SIIMessageL."Processing by" IN [SIIMessageL."Processing by"::Trigger,SIIMessageL."Processing by"::Both]) THEN BEGIN
+        ProcessRecordO := FALSE;
+        EXIT;
+      END;
+
+
+      //This message is valid only for Orders
+      SalesHeaderR.TESTFIELD("Document Type",SalesHeaderR."Document Type"::Order);
+
+      //Sales Order must be the one, that came from the shop (Not a follow-up order).
+      //This can be checked by comparing "No." and "External Document No.", they must be the same.
+      SalesHeaderR.TESTFIELD("No.",SalesHeaderR."External Document No.");
+
+
+      //Proceed only if Sales Order within the SII Message Filter
+      SalesHeaderL.RESET;
+      SalesHeaderL.FILTERGROUP(2);
+      SalesHeaderL.SETRANGE("Document Type",SalesHeaderR."Document Type");
+      SalesHeaderL.SETRANGE("No.",SalesHeaderR."No.");
+      SalesHeaderL.FILTERGROUP(0);
+      IF SIIMessageL."Order No. Filter" <> '' THEN
+        SalesHeaderL.SETFILTER("No.",SIIMessageL."Order No. Filter");
+      IF SIIMessageL."Order Date Filter" <> '' THEN
+        SalesHeaderL.SETFILTER("Order Date",SIIMessageL."Order Date Filter");
+      IF SIIMessageL."Payment Method Filter" <> '' THEN
+         SalesHeaderL.SETFILTER("Payment Method Code",SIIMessageL."Payment Method Filter");
+      IF SIIMessageL."Language Code Filter" <> '' THEN
+         SalesHeaderL.SETFILTER("Language Code",SIIMessageL."Language Code Filter");
+      IF SalesHeaderL.ISEMPTY THEN BEGIN
+        ProcessRecordO := FALSE;
+        EXIT;
+      END;
+
+      //At least 1 action must exist
+      SIIActiveActionL.RESET;
+      SIIActiveActionL.SETRANGE("Website No.",SIIMessageL."Website No.");
+      SIIActiveActionL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIIActiveActionL.SETRANGE(Active,TRUE);
+      IF SIIActiveActionL.ISEMPTY THEN
+        ERROR(STRSUBSTNO(TextHME001,SIIActiveActionL.TABLECAPTION,SIIActiveActionL.GETFILTERS));
+
+
+      // ************************************************************** //
+      //  Check if SII Log entry already exist for this Sales Order.    //
+      //  Ask for further processing or skip processing for this Order  //
+      // ************************************************************** //
+
+      //SII Manual Log
+      SIILogManualL.RESET;
+      SIILogManualL.SETRANGE(AppDomain,SIIMessageL."Website No.");
+      SIILogManualL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIILogManualL.SETRANGE("Process Table No.",DATABASE::"Sales Header");
+      SIILogManualL.SETRANGE("Process Document Type",SalesHeaderR."Document Type");
+      SIILogManualL.SETRANGE("Process Document No.",SalesHeaderR."No.");
+      SIILogManualL.SETRANGE(Status,SIILogManualL.Status::Unprocessed);
+      SIILogManualL.SETFILTER(MessageMode,'<>%1',SIILogManualL.MessageMode::Inactive);
+      IF SIILogManualL.FINDLAST THEN BEGIN
+        IF NOT GUIALLOWED THEN BEGIN
+          ProcessRecordO := FALSE;
+          EXIT;
+        END;
+        CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+        IF NOT CONFIRM(TextHME004,TRUE,SIILogManualL.TABLECAPTION,SIILogManualL.GETFILTERS,SIILogManualL.GETPOSITION) THEN BEGIN
+          ProcessRecordO := FALSE;
+          EXIT;
+        END;
+      END;
+
+
+      //SII Log
+      SIILogL.RESET;
+      SIILogL.SETRANGE(AppDomain,SIIMessageL."Website No.");
+      SIILogL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIILogL.SETRANGE("Process Table No.",DATABASE::"Sales Header");
+      SIILogL.SETRANGE("Process Document Type",SalesHeaderR."Document Type");
+      SIILogL.SETRANGE("Process Document No.",SalesHeaderR."No.");
+      SIILogL.SETRANGE(Status,SIILogL.Status::Unprocessed);
+      SIILogL.SETFILTER(MessageMode,'<>%1',SIILogL.MessageMode::Inactive);
+      IF SIILogL.FINDLAST THEN BEGIN
+        IF NOT GUIALLOWED THEN BEGIN
+          ProcessRecordO := FALSE;
+          EXIT;
+        END;
+        CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+        IF NOT CONFIRM(TextHME004,TRUE,SIILogL.TABLECAPTION,SIILogL.GETFILTERS,SIILogL.GETPOSITION) THEN BEGIN
+          ProcessRecordO := FALSE;
+          EXIT;
+        END;
+      END;
+
+      //SII Log Archive
+      SIILogArchiveL.RESET;
+      SIILogArchiveL.SETRANGE(AppDomain,SIIMessageL."Website No.");
+      SIILogArchiveL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIILogArchiveL.SETRANGE("Process Table No.",DATABASE::"Sales Header");
+      SIILogArchiveL.SETRANGE("Process Document Type",SalesHeaderR."Document Type");
+      SIILogArchiveL.SETRANGE("Process Document No.",SalesHeaderR."No.");
+      SIILogArchiveL.SETFILTER(Status,'%1|%2',SIILogArchiveL.Status::Processed,SIILogArchiveL.Status::Commited);
+      IF SIILogArchiveL.FINDLAST THEN BEGIN
+        IF NOT GUIALLOWED THEN BEGIN
+          ProcessRecordO := FALSE;
+          EXIT;
+        END;
+        CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+        IF NOT CONFIRM(TextHME004,TRUE,SIILogArchiveL.TABLECAPTION,SIILogArchiveL.GETFILTERS,SIILogArchiveL.GETPOSITION) THEN BEGIN
+          ProcessRecordO := FALSE;
+          EXIT;
+        END;
+      END;
+
+      ProcessRecordO := TRUE;
+
+      //Ensure that there were no modifications
+      CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+      //H1784  24.11.14 MIK ------------------------------------
+    END;
+
+    PROCEDURE CheckOrderItemDeliveryConfirm@1000000006(VAR ParcelStatusHistoryR@1000000000 : Record 80013;VAR CreateExtendedMailEntryR@1000000013 : Boolean) ProcessRecordO : Boolean;
+    VAR
+      SIISetupL@1000000001 : Record 50140;
+      SIIMessageL@1000000002 : Record 50141;
+      SIIActiveActionL@1000000005 : Record 50143;
+      SIIActiveChannelL@1000000012 : Record 50144;
+      SIILogManualL@1000000008 : Record 50155;
+      SIILineLogManualTriggerL@1000000009 : Record 50156;
+      SIILogL@1000000007 : Record 50146;
+      SIILineLogL@1000000010 : Record 50154;
+      SIILogArchiveL@1000000006 : Record 50147;
+      SIILineLogArchiveL@1000000011 : Record 50150;
+      SalesLineL@1000000003 : Record 37;
+      ShippingAgentL@1000000004 : Record 291;
+    BEGIN
+      //*************************************************************************************//
+      //                           ORDERITEMDELIVERYCONFIRMATION                             //
+      //*************************************************************************************//
+      // Shipping company has initiated delivery process. Tracking number has been assigned. //
+      //*************************************************************************************//
+      //                                                                                     //
+      //  Function is called for one Parcel Status History, which is passed via parameter.   //
+      //  Before sending tracking information to the shop we need to perform business        //
+      //  and setup checks.                                                                  //
+      //                                                                                     //
+      //  "Processing By" of the SII message must be "Trigger" or "Both", otherwise          //
+      //  nothing will happen.                                                               //
+      //                                                                                     //
+      //  Function performes all checks in "READ UNCOMMITED" isolation level to avoid blocks //
+      //                                                                                     //
+      //  Business checks:                                                                   //
+      //  - "Document Type"="Sales Order",                                                   //
+      //  - "Type" = item
+      //  - "Tracking Code" <> '',                                                           //
+      //  - "Piece Code" = '',                                                               //
+      //  - "Shipping Agent" <> '',                                                          //
+      //                                                                                     //
+      //  System checks:                                                                     //
+      //  - SII Setup configured                                                             //
+      //  - SII Message configured and active                                                //
+      //  - Shipping Agent configured for sending SII message                                //
+      //                                                                                     //
+      //  Parameters:                                                                        //
+      //  [in]  ParcelStatusHistoryR      - Parcel Status History to check                   //
+      //  [out] ProcessRecordO  - TRUE  - Process current Sales Line (Parcel Status History) //
+      //                          FALSE - Do not process current Sales Line                  //
+      //                                  without raising a error.                           //
+      //  [out] CreateExtendedMailEntryR  -                                                  //
+      //               TRUE  - update customer account in webshop & send email to customer   //
+      //               FALSE - update customer account in webshop                            //
+      //                                                                                     //
+      //                                                                                     //
+      //*************************************************************************************//
+
+      //H1878 05.12.14 MIK ++++++++++++++++++++++++++++++++++++
+
+      //Ensure that there were no modifications
+      CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+
+      //Document Type must be Order
+      IF NOT (ParcelStatusHistoryR."Document Type" IN [ParcelStatusHistoryR."Document Type"::Order]) THEN BEGIN
+        ProcessRecordO := FALSE;
+        EXIT;
+      END;
+
+      //Tracking Code must be filled
+      IF ParcelStatusHistoryR."Tracking Code" = '' THEN BEGIN
+        ProcessRecordO := FALSE;
+        EXIT;
+      END;
+
+      //Piece Code must be empty
+      IF ParcelStatusHistoryR."Piece Code" <> '' THEN BEGIN
+        ProcessRecordO := FALSE;
+        EXIT;
+      END;
+
+      //Shipping Agent must be filled
+      IF ParcelStatusHistoryR."Shipping Agent Code" = '' THEN BEGIN
+        ProcessRecordO := FALSE;
+        EXIT;
+      END;
+
+      //"Send Shipping Mail" must be TRUE for Shipping Agent
+      ShippingAgentL.GET(ParcelStatusHistoryR."Shipping Agent Code");
+      IF NOT ShippingAgentL."Send Shipping Mail" THEN BEGIN
+        ProcessRecordO := FALSE;
+        EXIT;
+      END;
+
+      //Get Sales Line associated with Parcel Status History.
+      //If it's not exist, it means it has been archived, so Sales Order has been invoiced and tracking update
+      //is not interesting anymore (it's too late)
+      IF NOT SalesLineL.GET(
+              ParcelStatusHistoryR."Document Type",
+              ParcelStatusHistoryR."Document No.",
+              ParcelStatusHistoryR."Document Line No.") THEN BEGIN
+        ProcessRecordO := FALSE;
+        EXIT;
+      END;
+
+      //Type must be Item
+      IF SalesLineL.Type <> SalesLineL.Type::Item THEN BEGIN
+        ProcessRecordO := FALSE;
+        EXIT;
+      END;
+
+      //Quantity of the Sales Line must be greater then 0
+      IF NOT (SalesLineL.Quantity>0) THEN BEGIN
+        ProcessRecordO := FALSE;
+        EXIT;
+      END;
+
+
+      //Setup checks
+      SIISetupL.GET;
+      SIISetupL.TESTFIELD("Shipment Confirmation NAV");
+      SIISetupL.TESTFIELD("Shipment Confirmation Shop");
+      IF NOT (SIISetupL.Mode IN [SIISetupL.Mode::"Test Offline",SIISetupL.Mode::"Test Online",SIISetupL.Mode::Active]) THEN BEGIN
+        ProcessRecordO := FALSE;
+        EXIT;
+      END;
+
+
+      //Calculate FlowField
+      SalesLineL.CALCFIELDS("Website No.");
+
+      //Get message
+      SIIMessageL.RESET;
+      SIIMessageL.SETRANGE("Website No.",SalesLineL."Website No.");
+      SIIMessageL.SETRANGE("Message Code NAV",SIISetupL."Shipment Confirmation NAV");
+      SIIMessageL.FINDFIRST;
+      IF NOT (SIIMessageL.Mode IN [SIIMessageL.Mode::"Test Offline",SIIMessageL.Mode::"Test Online",SIIMessageL.Mode::Active]) THEN
+      BEGIN
+        ProcessRecordO := FALSE;
+        EXIT;
+      END;
+
+      //Proceed only if "Processing by" is 'Trigger' or 'Both'
+      IF NOT (SIIMessageL."Processing by" IN [SIIMessageL."Processing by"::Trigger,SIIMessageL."Processing by"::Both]) THEN BEGIN
+        ProcessRecordO := FALSE;
+        EXIT;
+      END;
+
+      //Do not process old entries.
+      IF ParcelStatusHistoryR."Timestamp Interface" <> 0DT THEN BEGIN
+        IF NOT (DT2DATE(ParcelStatusHistoryR."Timestamp Interface") >=
+                CALCDATE(STRSUBSTNO('-%1D',SIIMessageL."Days Go Back DHL Parc. Stat."),WORKDATE)) THEN BEGIN
+          ProcessRecordO := FALSE;
+          EXIT;
+        END;
+      END;
+
+      //Active channel must exist
+      SIIActiveChannelL.RESET;
+      SIIActiveChannelL.SETRANGE("Website No.",SIIMessageL."Website No.");
+      SIIActiveChannelL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIIActiveChannelL.SETRANGE("Purchasing Code",SalesLineL."Purchasing Code");
+      SIIActiveChannelL.SETRANGE(Active,TRUE);
+      IF NOT SIIActiveChannelL.FINDFIRST THEN BEGIN
+        ProcessRecordO := FALSE;
+        EXIT;
+      END;
+
+      //At least 1 action must exist
+      SIIActiveActionL.RESET;
+      SIIActiveActionL.SETRANGE("Website No.",SIIMessageL."Website No.");
+      SIIActiveActionL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIIActiveActionL.SETRANGE(Active,TRUE);
+      IF SIIActiveActionL.ISEMPTY THEN BEGIN
+        ProcessRecordO := FALSE;
+        EXIT;
+      END;
+
+
+      // ************************************************************** //
+      //  Check if SII Log entry already exist for this Sales Line.     //
+      //  If it exists, skip processing.                                //
+      // ************************************************************** //
+
+      //SII Manual Log
+      SIILogManualL.RESET;
+      SIILogManualL.SETRANGE(AppDomain,SIIMessageL."Website No.");
+      SIILogManualL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIILogManualL.SETRANGE("Process Table No.",DATABASE::"Sales Header");
+      SIILogManualL.SETRANGE("Process Document Type",SalesLineL."Document Type");
+      SIILogManualL.SETRANGE("Process Document No.",SalesLineL."Document No.");
+      SIILogManualL.SETRANGE(Status,SIILogManualL.Status::Unprocessed);
+      SIILogManualL.SETFILTER(MessageMode,'<>%1',SIILogManualL.MessageMode::Inactive);
+      IF SIILogManualL.FINDSET(FALSE,FALSE) THEN
+        REPEAT
+          SIILineLogManualTriggerL.RESET;
+          SIILineLogManualTriggerL.SETRANGE("Entry No.",SIILogManualL."Entry No.");
+          SIILineLogManualTriggerL.SETRANGE("Process Document No.",SalesLineL."Document No.");
+          SIILineLogManualTriggerL.SETRANGE("Process Document Line No.",SalesLineL."Line No.");
+          IF NOT SIILineLogManualTriggerL.ISEMPTY THEN BEGIN
+            ProcessRecordO := FALSE;
+            EXIT;
+          END;
+        UNTIL SIILogManualL.NEXT = 0;
+
+
+      //SII Log
+      SIILogL.RESET;
+      SIILogL.SETRANGE(AppDomain,SIIMessageL."Website No.");
+      SIILogL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIILogL.SETRANGE("Process Table No.",DATABASE::"Sales Header");
+      SIILogL.SETRANGE("Process Document Type",SalesLineL."Document Type");
+      SIILogL.SETRANGE("Process Document No.",SalesLineL."Document No.");
+      SIILogL.SETRANGE(Status,SIILogL.Status::Unprocessed);
+      SIILogL.SETFILTER(MessageMode,'<>%1',SIILogL.MessageMode::Inactive);
+      IF SIILogL.FINDSET(FALSE,FALSE) THEN
+        REPEAT
+          SIILineLogL.RESET;
+          SIILineLogL.SETRANGE("Entry No.",SIILogL."Entry No.");
+          SIILineLogL.SETRANGE("Process Document No.",SalesLineL."Document No.");
+          SIILineLogL.SETRANGE("Process Document Line No.",SalesLineL."Line No.");
+          IF NOT SIILineLogL.ISEMPTY THEN BEGIN
+            ProcessRecordO := FALSE;
+            EXIT;
+          END;
+        UNTIL SIILogL.NEXT = 0;
+
+      //SII Log Archive
+      SIILogArchiveL.RESET;
+      SIILogArchiveL.SETRANGE(AppDomain,SIIMessageL."Website No.");
+      SIILogArchiveL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIILogArchiveL.SETRANGE("Process Table No.",DATABASE::"Sales Header");
+      SIILogArchiveL.SETRANGE("Process Document Type",SalesLineL."Document Type");
+      SIILogArchiveL.SETRANGE("Process Document No.",SalesLineL."Document No.");
+      SIILogArchiveL.SETFILTER(Status,'%1|%2',SIILogArchiveL.Status::Processed,SIILogArchiveL.Status::Commited);
+      IF SIILogArchiveL.FINDSET(FALSE,FALSE) THEN
+        REPEAT
+          SIILineLogArchiveL.RESET;
+          SIILineLogArchiveL.SETRANGE("Entry No.",SIILogArchiveL."Entry No.");
+          SIILineLogArchiveL.SETRANGE("Process Document No.",SalesLineL."Document No.");
+          SIILineLogArchiveL.SETRANGE("Process Document Line No.",SalesLineL."Line No.");
+          IF NOT SIILineLogArchiveL.ISEMPTY THEN BEGIN
+            ProcessRecordO := FALSE;
+            EXIT;
+          END;
+        UNTIL SIILogArchiveL.NEXT = 0;
+
+      ProcessRecordO := TRUE;
+      //Ensure that there were no modifications
+      CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+
+      //***********************************************************************//
+      //Sales Line will be processed. Now check whether to generate extended mail
+      //***********************************************************************//
+
+      IF ShippingAgentL."Block Delivery Conf. E-Mail" THEN BEGIN
+        CreateExtendedMailEntryR := FALSE;
+        EXIT;
+      END;
+      IF (SIIActiveChannelL."Shipm. Deliv. Days DHL Parc." <> 0) AND (ParcelStatusHistoryR."Timestamp Interface" <> 0DT) THEN BEGIN
+        IF WORKDATE - DT2DATE(ParcelStatusHistoryR."Timestamp Interface") <= SIIActiveChannelL."Shipm. Deliv. Days DHL Parc." THEN BEGIN
+          CreateExtendedMailEntryR := TRUE;
+          EXIT;
+        END;
+      END;
+
+      //H1878 05.12.14 MIK ------------------------------------
+    END;
+
+    PROCEDURE CheckOrderDunning@1000000009(IssuedReminderHeaderL@1000000000 : Record 297) ProcessRecordO : Boolean;
+    VAR
+      SalesHeaderL@1000000002 : Record 36;
+      SalesHeaderArchiveL@1000000012 : Record 5107;
+      SalesHeaderTempL@1000000008 : TEMPORARY Record 36;
+      SIISetupL@1000000001 : Record 50140;
+      SIIMessageL@1000000003 : Record 50141;
+      SIIActiveActionL@1000000004 : Record 50143;
+      SIILogManualL@1000000009 : Record 50155;
+      SIILogL@1000000005 : Record 50146;
+      SIILogArchiveL@1000000007 : Record 50147;
+      FPCMgtL@1000000006 : Codeunit 50003;
+    BEGIN
+      //*************************************************************************************//
+      //                                 ORDERITEMDUNNING                                    //
+      //*************************************************************************************//
+      //  Reminder Mail to Customer for not payed Orders.                                    //
+      //*************************************************************************************//
+      //                                                                                     //
+      //  Function is called for one Sales Order (the first on in the reminder),             //
+      //  which is passed via parameter.                                                     //
+      //  Before sending reminder mail to the shop we need to perform business               //
+      //  and setup checks.                                                                  //
+      //                                                                                     //
+      //  "Processing By" of the SII message must be "Trigger" or "Both", otherwise          //
+      //  nothing will happen.                                                               //
+      //  Sales Order must be within SII Message filters, otherwise nothing will happen.     //
+      //                                                                                     //
+      //  Function performes all checks in "READ UNCOMMITED" isolation level to avoid blocks //
+      //                                                                                     //
+      //  Business checks:                                                                   //
+      //  - "Document Type"="Sales Order",                                                   //
+      //  - "External Document No."="No." that means that this is not a follow-up order      //
+      //                                                                                     //
+      //  System checks:                                                                     //
+      //  - SII Setup configured                                                             //
+      //  - SII Message configured and active                                                //
+      //                                                                                     //
+      //  Parameters:                                                                        //
+      //  [in]  SalesOrderNoV   - Sales Order No. to check                                   //
+      //  [in]  ExternalDocNoV  - Sales Order External Doc. No.                              //
+      //  [in]  WebsiteNoV      - Sales Order Website No.                                    //
+      //  [in]  EmailV          - Sales Order Email                                          //
+      //  [out] ProcessRecordO  - TRUE  - Process current Sales Order                        //
+      //                          FALSE - Do not process current Sales Order                 //
+      //                                  without raising a error.                           //
+      //                                                                                     //
+      //*************************************************************************************//
+
+      //H1985  13.02.15 MBY ++++++++++++++++++++++++++++++++++++
+
+      //Ensure that there were no modifications
+      CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+
+      //Getting Sales Order
+      SalesHeaderL.RESET;
+      SalesHeaderL.SETRANGE("Document Type",SalesHeaderL."Document Type"::Order);
+      SalesHeaderL.SETRANGE("No.",IssuedReminderHeaderL."Order No.");
+      SalesHeaderL.SETRANGE("External Document No.",IssuedReminderHeaderL."Order No.");
+      IF NOT SalesHeaderL.FINDFIRST THEN BEGIN
+        SalesHeaderArchiveL.RESET;
+        SalesHeaderArchiveL.SETRANGE("Document Type",SalesHeaderArchiveL."Document Type"::Order);
+        SalesHeaderArchiveL.SETRANGE("No.",IssuedReminderHeaderL."Order No.");
+        SalesHeaderArchiveL.SETRANGE("External Document No.",IssuedReminderHeaderL."Order No.");
+        IF NOT SalesHeaderArchiveL.FINDLAST THEN BEGIN
+          ProcessRecordO := FALSE;
+          EXIT;
+        END;
+        SalesHeaderL.TRANSFERFIELDS(SalesHeaderArchiveL);
+      END;
+
+      SalesHeaderTempL := SalesHeaderL;
+      SalesHeaderTempL.INSERT;
+
+      //Setup checks
+      SIISetupL.GET;
+      SIISetupL.TESTFIELD("Reminder Mail NAV");
+      IF NOT (SIISetupL.Mode IN [SIISetupL.Mode::"Test Offline",SIISetupL.Mode::"Test Online",SIISetupL.Mode::Active]) THEN BEGIN
+        ProcessRecordO := FALSE;
+        EXIT;
+      END;
+
+      //Get message
+      SIIMessageL.RESET;
+      SIIMessageL.SETRANGE("Website No.",SalesHeaderL."Website No.");
+      SIIMessageL.SETRANGE("Message Code NAV",SIISetupL."Reminder Mail NAV");
+      IF NOT SIIMessageL.FINDFIRST THEN BEGIN
+        ProcessRecordO := FALSE;
+        EXIT;
+      END;
+      IF NOT (SIIMessageL.Mode IN [SIIMessageL.Mode::"Test Offline",SIIMessageL.Mode::"Test Online",SIIMessageL.Mode::Active]) THEN
+      BEGIN
+        ProcessRecordO := FALSE;
+        EXIT;
+      END;
+
+      SIIMessageL.TESTFIELD("Message Code Shop");
+
+      //Proceed only if "Processing by" is 'Trigger' or 'Both'
+      IF NOT (SIIMessageL."Processing by" IN [SIIMessageL."Processing by"::Trigger,SIIMessageL."Processing by"::Both]) THEN BEGIN
+        ProcessRecordO := FALSE;
+        EXIT;
+      END;
+
+
+      //Proceed only if Sales Order within the SII Message Filter
+      IF SIIMessageL."Order No. Filter" <> '' THEN
+        SalesHeaderTempL.SETFILTER("No.",SIIMessageL."Order No. Filter");
+      IF SIIMessageL."Order Date Filter" <> '' THEN
+        SalesHeaderTempL.SETFILTER("Order Date",SIIMessageL."Order Date Filter");
+      IF SIIMessageL."Payment Method Filter" <> '' THEN
+         SalesHeaderTempL.SETFILTER("Payment Method Code",SIIMessageL."Payment Method Filter");
+      IF SIIMessageL."Language Code Filter" <> '' THEN
+         SalesHeaderTempL.SETFILTER("Language Code",SIIMessageL."Language Code Filter");
+      IF SalesHeaderTempL.ISEMPTY THEN BEGIN
+        ProcessRecordO := FALSE;
+        EXIT;
+      END;
+
+      //At least 1 action must exist
+      SIIActiveActionL.RESET;
+      SIIActiveActionL.SETRANGE("Website No.",SIIMessageL."Website No.");
+      SIIActiveActionL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIIActiveActionL.SETRANGE(Active,TRUE);
+      IF SIIActiveActionL.ISEMPTY THEN
+        ERROR(STRSUBSTNO(TextHME001,SIIActiveActionL.TABLECAPTION,SIIActiveActionL.GETFILTERS));
+
+
+      // ************************************************************** //
+      //  Check if SII Log entry already exist for this Sales Order.    //
+      //  Ask for further processing or skip processing for this Order  //
+      // ************************************************************** //
+
+      //SII Manual Log
+      SIILogManualL.RESET;
+      SIILogManualL.SETRANGE(AppDomain,SIIMessageL."Website No.");
+      SIILogManualL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIILogManualL.SETRANGE("Process Table No.",DATABASE::"Sales Header");
+      SIILogManualL.SETRANGE("Process Document Type",SalesHeaderL."Document Type"::Order);
+      SIILogManualL.SETRANGE("Process Document No.",IssuedReminderHeaderL."Order No.");
+      SIILogManualL.SETRANGE(Status,SIILogManualL.Status::Unprocessed);
+      SIILogManualL.SETFILTER(MessageMode,'<>%1',SIILogManualL.MessageMode::Inactive);
+      IF SIILogManualL.FINDLAST THEN BEGIN
+        IF NOT GUIALLOWED THEN
+          FPCMgtL.SetHideValidationDialog;
+        CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+        IF NOT FPCMgtL.DisplayConfirm(
+                  TextHME004,
+                  TRUE,
+                  2,
+                  SIILogManualL.TABLECAPTION,
+                  SIILogManualL.GETPOSITION,'') THEN BEGIN
+          ProcessRecordO := FALSE;
+          EXIT;
+        END;
+      END;
+
+
+      //SII Log
+      SIILogL.RESET;
+      SIILogL.SETRANGE(AppDomain,SIIMessageL."Website No.");
+      SIILogL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIILogL.SETRANGE("Process Table No.",DATABASE::"Sales Header");
+      SIILogL.SETRANGE("Process Document Type",SalesHeaderL."Document Type"::Order);
+      SIILogL.SETRANGE("Process Document No.",IssuedReminderHeaderL."Order No.");
+      SIILogL.SETRANGE(Status,SIILogL.Status::Unprocessed);
+      SIILogL.SETFILTER(MessageMode,'<>%1',SIILogL.MessageMode::Inactive);
+      IF SIILogL.FINDLAST THEN BEGIN
+        IF NOT GUIALLOWED THEN
+          FPCMgtL.SetHideValidationDialog;
+        CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+        IF NOT FPCMgtL.DisplayConfirm(
+                  TextHME004,
+                  TRUE,
+                  2,
+                  SIILogL.TABLECAPTION,
+                  SIILogL.GETPOSITION,'') THEN BEGIN
+          ProcessRecordO := FALSE;
+          EXIT;
+        END;
+      END;
+
+      //SII Log Archive
+      SIILogArchiveL.RESET;
+      SIILogArchiveL.SETRANGE(AppDomain,SIIMessageL."Website No.");
+      SIILogArchiveL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIILogArchiveL.SETRANGE("Process Table No.",DATABASE::"Sales Header");
+      SIILogArchiveL.SETRANGE("Process Document Type",SalesHeaderL."Document Type"::Order);
+      SIILogArchiveL.SETRANGE("Process Document No.",IssuedReminderHeaderL."Order No.");
+      SIILogArchiveL.SETFILTER(Status,'%1|%2',SIILogArchiveL.Status::Processed,SIILogArchiveL.Status::Commited);
+      IF SIILogArchiveL.FINDLAST THEN BEGIN
+        IF NOT GUIALLOWED THEN
+          FPCMgtL.SetHideValidationDialog;
+        CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+        IF NOT FPCMgtL.DisplayConfirm(
+                  TextHME004,
+                  TRUE,
+                  2,
+                  SIILogArchiveL.TABLECAPTION,
+                  SIILogArchiveL.GETPOSITION,'') THEN BEGIN
+          ProcessRecordO := FALSE;
+          EXIT;
+        END;
+      END;
+
+      ProcessRecordO := TRUE;
+
+      //Ensure that there were no modifications
+      CURRENTTRANSACTIONTYPE := TRANSACTIONTYPE::Browse;
+      //H1985  13.02.15 MBY ------------------------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      H1687       10.11.14  MIK       FTTC3: SII Redesign
+      H1783       19.11.14  MIK       SII Redesign for the Return&Change messages (Label&Instruction)
+      H1784       24.11.14  MIK       SII Redesign for the message ORDERPICKING & ORDERPICKINGPREPMT
+      H1878       05.12.14  MIK       SII Redesign for the ORDERITEMDELIVERYCONFIRMATION
+                                        new functions: CheckOrderItemDeliveryConfirm
+      H1985       13.02.15  MBY       Sending reminders by SII
+    }
+    END.
+  }
+}
+

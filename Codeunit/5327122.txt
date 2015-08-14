@@ -1,0 +1,1002 @@
+OBJECT Codeunit 5327122 ACF Create Page Definition
+{
+  OBJECT-PROPERTIES
+  {
+    Date=04.04.13;
+    Time=00:00:00;
+    Version List=ACF3.02.03;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+            DEBUG := TRUE;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      WebPage@1000000005 : Record 5327100;
+      WebPageElement@1000000010 : Record 5327101;
+      WebPageElementMenu@1000000006 : Record 5327104;
+      WebPageElementField@1000000009 : Record 5327103;
+      WebPageElementTab@1000000020 : Record 5327102;
+      LinkedWebPage@1000000026 : Record 5327100;
+      WebUser@1000000007 : Record 5327140;
+      Language@1000000011 : Record 8;
+      Setup@1000000017 : Record 5327160;
+      Core@1000000022 : Codeunit 5327101;
+      WebDeskMgt@1000000023 : Codeunit 5327126;
+      Toolbox@1000000024 : Codeunit 5327123;
+      XMLDoc@1000000001 : Codeunit 5327129;
+      XMLCurrNode@1000000003 : Codeunit 5327130;
+      XMLNewNode@1000000002 : Codeunit 5327130;
+      XMLMenuNode@1000000015 : Codeunit 5327130;
+      XMLParentNode@1000000016 : Codeunit 5327130;
+      XMLBranchNodeList@1000000012 : Codeunit 5327131;
+      XMLEntryNodeList@1000000014 : Codeunit 5327131;
+      XMLCDATA@5326062 : Codeunit 5327132;
+      AutomationWrapper@5326064 : Codeunit 5327154;
+      IsCard@1000000021 : Boolean;
+      DEBUG@1000000013 : Boolean;
+      GlobLang@1000000018 : Integer;
+      GlobLanguageCode@1000000025 : Code[10];
+      FieldType@5326063 : 'TableFilter,RecordID,Text,Date,Time,DateFormula,Decimal,Binary,BLOB,Boolean,Integer,Code,Option,BigInteger,GUID,DateTime';
+
+    PROCEDURE GetPageXML@1000000012(VAR PageXML@1000000002 : BigText;WebPageCode@1000000001 : Code[20];SessionID@1000000000 : Text[64]);
+    VAR
+      WDMultilanguage@1000000003 : Record 5327131;
+      RecRef@1000000004 : RecordRef;
+      InStr@1000000005 : InStream;
+      OutStr@1000000008 : OutStream;
+      FileName@1000000007 : Text[250];
+      TempFile@1000000006 : File;
+    BEGIN
+      // Called by external codeunit
+      // Input: Web Page Code (only in current web user language)
+      // Output: XML definition of Web Page (in pageXML)
+
+      Core.""('GetPageXML', STRSUBSTNO('BEGIN WebPage: %1', WebPageCode));
+      WebUser.SETCURRENTKEY("Session ID");
+      WebUser.SETRANGE("Session ID",SessionID);
+      WebUser.FINDFIRST;
+
+      WebPageElement.FINDFIRST;
+
+      RecRef.GETTABLE(WebPageElement);
+
+      //No caching at the moment.
+      // Get Web Page definition from cache, if exits
+      //IF WDMultilanguage.GET(RecRef.RECORDID, 0, WebUser."User Language") THEN BEGIN
+      //  Core.Log('GetPageXML', 'Found Cached XML');
+      //  WDMultilanguage.CALCFIELDS("Blob Value");
+      //  WDMultilanguage."Blob Value".CREATEINSTREAM(InStr);
+      //
+      //  TempFile.CREATETEMPFILE;
+      //  FileName := TempFile.NAME;
+      //  TempFile.CLOSE;
+      //  TempFile.CREATE(FileName);
+      //  TempFile.CREATEOUTSTREAM(OutStr);
+      //  COPYSTREAM(OutStr, InStr);
+      //  TempFile.CLOSE();
+      //  !!CREATE(AnveoAutomation);
+      //  !!PageXML.ADDTEXT(AnveoAutomation.encodeFromFile(FileName));
+      //  !!CLEAR(AnveoAutomation);
+      //END
+      //ELSE BEGIN
+        Core.""('GetPageXML', 'Create XML');
+        CreatePageXML(PageXML, WebPageCode, WebUser."User Language");
+      //END;
+
+      Core.""('GetPageXML', 'END');
+    END;
+
+    PROCEDURE CreatePageXML@1000000000(VAR PageXML@1000000000 : BigText;WebPageCode@1000000001 : Code[20];LanguageCode@1000000002 : Code[10]);
+    VAR
+      Multilanguage@1000000006 : Record 5327131;
+      FileName@1000000009 : Text[250];
+      TempFile@1000000008 : File;
+      RecRef@1000000005 : RecordRef;
+      FldRef@1000000003 : FieldRef;
+      InStr@1000000004 : InStream;
+      OutStr@1000000007 : OutStream;
+    BEGIN
+      Core.""('CreatePageXML', 'BEGIN');
+      // Creates XML definition
+      GlobLanguageCode := LanguageCode;
+
+      Setup.GET;
+
+      GlobLang := GLOBALLANGUAGE();
+
+      IF NOT Language.GET(LanguageCode) THEN
+        Language.GET(Setup."Default Language");
+
+      IF GlobLang <> Language."Windows Language ID" THEN
+        GLOBALLANGUAGE(Language."Windows Language ID");
+
+      WebPage.GET(WebPageCode);
+
+      WebPageElement.SETRANGE("Web Page Code", WebPage.Code);
+      WebPageElement.SETFILTER("Element Type", '%1|%2', WebPageElement."Element Type"::"List Mobile",
+                                WebPageElement."Element Type"::"Card Mobile");
+
+      IF NOT WebPageElement.FINDFIRST THEN BEGIN
+        IF GlobLang <> GLOBALLANGUAGE THEN
+          GLOBALLANGUAGE(GlobLang);
+        EXIT;
+      END;
+
+      IsCard := WebPageElement."Element Type" = WebPageElement."Element Type"::"Card Mobile";
+
+      WebPageElementMenu.SETRANGE("Web Page Code", WebPage.Code);
+      WebPageElementMenu.SETRANGE("Web Page Element Line No.", WebPageElement."Line No.");
+      WebPageElementMenu.SETCURRENTKEY("Web Page Code", "Web Page Element Line No.", "Sorting Text");
+
+
+      WebPageElementField.RESET;
+      WebPageElementField.SETRANGE("Web Page Code", WebPage.Code);
+      WebPageElementField.SETRANGE("Web Page Element Line No.", WebPageElement."Line No.");
+      WebPageElementField.SETFILTER(Type, '%1|%2', WebPageElementField.Type::Field,WebPageElementField.Type::"Virtual Field");
+      //WebPageElementField.SETRANGE(Visibility, WebPageElementField.Visibility::Visible);
+      //WebPageElementField.SETFILTER("Field No.", '<>%1', 0);
+      WebPageElementField.SETCURRENTKEY(Position);
+
+      WebPageElementTab.SETRANGE("Web Page Code", WebPage.Code);
+      WebPageElementTab.SETRANGE("Web Page Element Line No.", WebPageElement."Line No.");
+      WebPageElementTab.SETCURRENTKEY(Position);
+
+      Core.""('CreatePageXML', 'Create XML Doc');
+      XMLDoc.CreateDoc();
+      Core.""('CreatePageXML', 'Processing Instruction');
+      XMLDoc.CreateProcessingInstruction('xml', 'version="1.0" encoding="UTF-8"');
+      Core.""('CreatePageXML', 'Create Element');
+      XMLDoc.CreateElement(XMLCurrNode, 'Page');
+      Core.""('CreatePageXML', 'Adding Attribute');
+      XMLCurrNode.AddAttribute('WebPageCode', WebPage.Code);
+      XMLCurrNode.AddAttribute('LineNo', FORMAT(WebPageElement."Line No."));
+
+      AutomationWrapper.""();
+
+      IF WebPageElement."Element Type" = WebPageElement."Element Type"::"List Mobile" THEN
+
+        XMLCurrNode.AddAttribute('Type', '1')
+      ELSE BEGIN
+
+
+      //  IF WebPageElement.Readonly THEN
+      //    XMLNewNode.AddAttribute('Type', '3')
+      //  ELSE
+          XMLCurrNode.AddAttribute('Type', '2');
+      END;
+      XMLCurrNode.AddAttribute('Version', FORMAT(WebPage."Public Version"));
+      XMLCurrNode.AddAttribute('LanguageID', FORMAT(Language."Windows Language ID"));
+      XMLCurrNode.AddAttribute('BuildForWebPageGUI', '2');
+
+      RecRef.GETTABLE(WebPage);
+      FldRef := RecRef.FIELD(10);
+      XMLCurrNode.AddAttribute('Title', GetMLText(RecRef, FldRef));
+      RecRef.CLOSE();
+
+      Core.""('CreatePageXML', 'Appending first node');
+      XMLDoc.AppendChild(XMLCurrNode);
+      Core.""('CreatePageXML', 'First node appended');
+
+      Header();
+      Body();
+
+      TempFile.CREATETEMPFILE;
+      FileName := TempFile.NAME;
+      TempFile.CLOSE;
+      XMLDoc.SaveFilename(FileName);
+
+      //IF WebUser.Logging AND WebDeskMgt.IsACF THEN
+      Setup.GET;
+      IF Setup."Server Logging" THEN
+        XMLDoc.SaveFilename(Setup."Logging Folder" +
+         FORMAT(CURRENTDATETIME, 0,'<Year4>.<Month,2>.<Day,2> <Hours24,2>.<Minutes,2>.<Seconds,2>,<Thousands,3>') +
+        ' PAGE '+WebPageCode+'.xml');
+
+
+      IF ISSERVICETIER THEN
+        AutomationWrapper.""(FileName, PageXML)
+      ELSE BEGIN
+        TempFile.OPEN(FileName);
+        TempFile.CREATEINSTREAM(InStr);
+        PageXML.READ(InStr);
+        TempFile.CLOSE();
+      END;
+
+      FILE.ERASE(FileName);
+
+      //Save generated XML
+      RecRef.GETTABLE(WebPageElement);
+      Multilanguage.INIT;
+      Multilanguage."Record ID" := RecRef.RECORDID;
+      Multilanguage."Field ID" := 0;
+      Multilanguage.Language := LanguageCode;
+      Multilanguage."Blob Value".CREATEOUTSTREAM(OutStr);
+      PageXML.WRITE(OutStr);
+
+      IF NOT Multilanguage.INSERT(TRUE) THEN
+        Multilanguage.MODIFY(TRUE);
+
+      AutomationWrapper.""();
+
+      IF GlobLang <> GLOBALLANGUAGE THEN
+        GLOBALLANGUAGE(GlobLang);
+
+      Core.""('CreatePageXML', 'END');
+    END;
+
+    LOCAL PROCEDURE Header@1000000017();
+    VAR
+      RecRef@1000000000 : RecordRef;
+      FldRef@1000000001 : FieldRef;
+    BEGIN
+      XMLDoc.CreateElement(XMLNewNode, 'Header');
+
+      IF WebPageElement."Element Type" = WebPageElement."Element Type"::"Card Mobile" THEN BEGIN
+        XMLNewNode.AddAttribute('CardTitleField', WebPageElement.GetMobileCardTitleFieldString);
+        XMLNewNode.AddAttribute('TitleFieldSeparator', ' ');
+      END;
+      XMLCurrNode.AppendAndSetChild(XMLNewNode);
+      XMLDoc.CreateElement(XMLNewNode, 'HeaderMenuItem');
+      XMLCurrNode.AppendAndSetChild(XMLNewNode);
+      XMLDoc.CreateElement(XMLNewNode, 'Title');
+      RecRef.GETTABLE(WebPage);
+      FldRef := RecRef.FIELD(10);
+      XMLNewNode.SetText(WebPage.RemoveVarsFromDescription(GetMLText(RecRef, FldRef)) +
+        Toolbox.""(Core.""('MOBILEMENU')));
+      RecRef.CLOSE();
+
+      XMLCurrNode.AppendChild(XMLNewNode);
+      XMLDoc.CreateElement(XMLNewNode, 'Structure');
+      XMLCurrNode.AppendAndSetChild(XMLNewNode);
+
+      Menu(FALSE);
+
+      XMLDoc.SelectSingleNode(XMLCurrNode, './/Header');
+      XMLDoc.SelectSingleNode(XMLMenuNode, './/HeaderMenuItem');
+
+      XMLMenuNode.SelectNodes(XMLEntryNodeList, './/MenuEntry');
+
+      IF XMLEntryNodeList.GetLength = 0 THEN
+        XMLCurrNode.RemoveChild(XMLMenuNode);
+
+      IF WebPageElement."Element Type" = WebPageElement."Element Type"::"List Mobile" THEN
+        FilterMenu();
+
+      XMLDoc.SelectSingleNode(XMLCurrNode, './/Page');
+    END;
+
+    LOCAL PROCEDURE Body@1000000018();
+    BEGIN
+      XMLDoc.CreateElement(XMLNewNode,'Body');
+      XMLCurrNode.AppendAndSetChild(XMLNewNode);
+      DataSource();
+      IF NOT IsCard THEN BEGIN
+        OnItemTab();
+
+        XMLDoc.SelectSingleNode(XMLCurrNode, './/OnItemTab');
+        XMLDoc.SelectSingleNode(XMLMenuNode, './/Action  [@Type = ''1'']');
+
+        XMLMenuNode.SelectNodes(XMLEntryNodeList, './/MenuEntry');
+
+        IF XMLEntryNodeList.GetLength = 0 THEN
+          XMLCurrNode.RemoveChild(XMLMenuNode);
+      END;
+    END;
+
+    LOCAL PROCEDURE Menu@1000000001(IsLineMenu@1000000005 : Boolean);
+    VAR
+      Multilanguage@1000000001 : Record 5327131;
+      SecurityMgt@1000000007 : Codeunit 5327120;
+      RecRef@1000000003 : RecordRef;
+      LastEntryLevel@1000000000 : Integer;
+      i@1000000004 : Integer;
+      MenuCaption@1000000002 : Text[250];
+      ShowLine@1000000006 : Boolean;
+    BEGIN
+      LastEntryLevel := -1;
+
+      WebPageElementMenu.SETCURRENTKEY("Web Page Code","Web Page Element Line No.","Sorting Text");
+
+      IF WebPageElementMenu.FINDSET THEN REPEAT
+        ShowLine := TRUE;
+
+        IF WebPageElement."Element Type" IN [WebPageElement."Element Type"::"List Mobile",WebPageElement."Element Type"::List] THEN BEGIN
+          IF IsLineMenu THEN
+            ShowLine := WebPageElementMenu."Line choice required" OR WebPageElementMenu.IsMenuBranch()
+          ELSE
+            ShowLine := (NOT WebPageElementMenu."Line choice required") OR WebPageElementMenu.IsMenuBranch()
+        END;
+
+        IF WebPageElementMenu."Linked Web Page" <> '' THEN BEGIN
+          // Do not test Web User Right here as Web Page Definition is unique for all users.
+          // ShowLine := SecurityMgt.GetWebPageRead(WebPageElementMenu."Linked Web Page");
+          //ShowLine := TRUE;
+          LinkedWebPage.GET(WebPageElementMenu."Linked Web Page");
+          ShowLine := ShowLine AND LinkedWebPage.HasMobileElements();
+        END;
+
+        IF ShowLine THEN BEGIN
+          RecRef.GETTABLE(WebPageElementMenu);
+          IF Multilanguage.GET(RecRef.RECORDID, WebPageElementMenu.FIELDNO(Description), Language.Code) THEN
+            MenuCaption := Multilanguage.Value
+          ELSE
+            MenuCaption := WebPageElementMenu.Description;
+
+          IF WebPageElementMenu.IsMenuBranch() THEN
+            XMLDoc.CreateElement(XMLNewNode, 'MenuBranch')
+          ELSE
+            XMLDoc.CreateElement(XMLNewNode, 'MenuEntry');
+
+          XMLNewNode.AddAttribute('WebPageCode', WebPageElementMenu."Web Page Code");
+          XMLNewNode.AddAttribute('Caption', Toolbox.""(MenuCaption));
+          XMLNewNode.AddAttribute('WebPageElementLineNo', FORMAT(WebPageElementMenu."Web Page Element Line No."));
+          XMLNewNode.AddAttribute('icon', WebPageElementMenu."Icon Description");
+          XMLNewNode.AddAttribute('EntryNo', FORMAT(WebPageElementMenu."Entry No."));
+          XMLNewNode.AddAttribute('FunctionCode', FORMAT(WebPageElementMenu."Function Code"));
+
+          IF LastEntryLevel >= WebPageElementMenu.Level THEN BEGIN
+            FOR i := 0 TO (LastEntryLevel - WebPageElementMenu.Level) DO BEGIN
+              XMLCurrNode.ParentNode(XMLCurrNode);
+            END;
+          END;
+
+          XMLCurrNode.AppendAndSetChild(XMLNewNode);
+
+          LastEntryLevel := WebPageElementMenu.Level;
+        END;
+      UNTIL WebPageElementMenu.NEXT = 0;
+
+      //Remove Empty Branches
+      XMLDoc.SelectNodes(XMLBranchNodeList, './/MenuBranch');
+      FOR i := 1 TO XMLBranchNodeList.GetLength DO BEGIN
+        XMLBranchNodeList.Item(XMLMenuNode, i-1);
+        XMLMenuNode.SelectNodes(XMLEntryNodeList, './/MenuEntry');
+        IF XMLEntryNodeList.GetLength = 0 THEN BEGIN
+          XMLMenuNode.ParentNode(XMLParentNode);
+          XMLParentNode.RemoveChild(XMLMenuNode);
+        END;
+      END;
+
+      WebPageElementMenu.SETRANGE("Line choice required");
+    END;
+
+    LOCAL PROCEDURE FilterMenu@1000000006();
+    BEGIN
+      XMLDoc.CreateElement(XMLNewNode, 'FilterMenu');
+      XMLCurrNode.AppendAndSetChild(XMLNewNode);
+      Fields(TRUE);
+    END;
+
+    LOCAL PROCEDURE DataSource@1000000029();
+    VAR
+      InStream@1000000001 : InStream;
+      ItemTemplateTxt@1000000000 : Text[1024];
+      WidthUnitOfMeasure@1000000002 : Text[30];
+    BEGIN
+      Core.""('DataSource', 'BEGIN');
+      XMLDoc.CreateElement(XMLNewNode, 'DataSource');
+
+      IF WebPageElement."Element Type" = WebPageElement."Element Type"::"List Mobile" THEN
+        XMLNewNode.AddAttribute('PagingCounter', FORMAT(WebPageElement.GetPagingCounter));
+
+      XMLCurrNode.AppendAndSetChild(XMLNewNode);
+      XMLDoc.CreateElement(XMLNewNode, 'Fields');
+      XMLCurrNode.AppendAndSetChild(XMLNewNode);
+
+      Fields(FALSE);
+
+      XMLCurrNode.ParentNode(XMLCurrNode);
+
+      IF NOT IsCard THEN BEGIN
+        XMLDoc.CreateElement(XMLNewNode, 'ItemTemplate');
+        CASE WebPageElement."Unit Of Measure" OF
+          WebPageElement."Unit Of Measure"::"%": WidthUnitOfMeasure := '%';
+          WebPageElement."Unit Of Measure"::Pixel: WidthUnitOfMeasure := 'px';
+        END;
+        IF WebPageElement.Width = 0 THEN BEGIN
+          WebPageElement.Width := 100;
+          WebPageElement."Unit Of Measure":=WebPageElement."Unit Of Measure"::"%";
+          WebPageElement.MODIFY;
+        END;
+
+        XMLNewNode.AddAttribute('Width', FORMAT(WebPageElement.Width)+WidthUnitOfMeasure);
+        XMLDoc.CreateCDataSection(XMLCDATA, GetHTMLTemplate());
+        XMLNewNode.AppendCDATANode(XMLCDATA);
+        XMLCurrNode.AppendChild(XMLNewNode);
+      END;
+
+      XMLDoc.CreateElement(XMLNewNode, 'AdditionalSettings');
+      XMLCurrNode.AppendChild(XMLNewNode);
+      XMLDoc.SelectSingleNode(XMLCurrNode, './/Body');
+      Core.""('DataSource', 'END');
+    END;
+
+    LOCAL PROCEDURE Fields@1000000087(IsFilterFields@1000000000 : Boolean);
+    VAR
+      Multilanguage@1000000007 : Record 5327131;
+      VirtualTable@5326064 : Record 5327180;
+      VirtualField@5326063 : Record 5327181;
+      Field@5326070 : Record 2000000041;
+      RecRef@1000000002 : RecordRef;
+      FldRef@1000000001 : FieldRef;
+      DateTimeFormat@1000000009 : Text[1024];
+      DateTimeArray@1000000010 : ARRAY [100] OF Text[30];
+      DateTimeFormatOut@1000000011 : Text[1024];
+      TabCaption@5326068 : Text[1024];
+      RemainingCaption@5326067 : Text[1024];
+      ActualCaption@5326066 : Text[1024];
+      FieldCaption@5326062 : Text[1024];
+      i@1000000012 : Integer;
+      OptionInteger@5326069 : Integer;
+      AddEmptyOptionValue@5326065 : Boolean;
+    BEGIN
+      Core.""('Fields','BEGIN');
+
+      //IF WebPageElement."Element Type" = WebPageElement."Element Type"::"Card Mobile" THEN BEGIN
+
+        //internal Fields
+      //END;
+
+      IF IsFilterFields THEN BEGIN
+        IF WebPageElementField.FINDSET THEN REPEAT
+          IF Field.GET(WebPageElementField."Table No.", WebPageElementField."Field No.") THEN
+            WebPageElementField.MARK(WebPageElementField."Filter allowed" OR WebPageElementField."Sorting allowed");
+        UNTIL WebPageElementField.NEXT = 0;
+        WebPageElementField.MARKEDONLY(TRUE);
+        IF WebPageElementField.FINDFIRST THEN BEGIN
+          XMLDoc.CreateElement(XMLNewNode, 'Options');
+          //XMLNewNode.AddAttribute('PressedColumnId', FORMAT(WebPageElementField."Field No."));
+          XMLNewNode.AddAttribute('PressedColumnId', WebPageElementField."Field Name");
+          XMLCurrNode.AppendAndSetChild(XMLNewNode);
+        END;
+      END
+      ELSE BEGIN
+        WebPageElementField.SETRANGE(Visibility, WebPageElementField.Visibility::Visible);
+        IF IsCard THEN BEGIN
+          XMLDoc.CreateElement(XMLNewNode, 'WebPageElementTab');
+          XMLNewNode.AddAttribute('WebPageCode', WebPageElement."Web Page Code");
+          XMLNewNode.AddAttribute('Caption', '');
+          XMLNewNode.AddAttribute('WebPageElementLineNo', FORMAT(WebPageElement."Line No."));
+          XMLNewNode.AddAttribute('Position', '-1');
+          XMLNewNode.AddAttribute('icon', '');
+          XMLCurrNode.AppendAndSetChild(XMLNewNode);
+        END;
+        XMLDoc.CreateElement(XMLNewNode, 'Item');
+        XMLNewNode.AddAttribute('ColumnId', 'PK');
+        XMLNewNode.AddAttribute('FieldType', '1');
+        XMLCurrNode.AppendChild(XMLNewNode);
+        XMLDoc.CreateElement(XMLNewNode, 'Item');
+        XMLNewNode.AddAttribute('ColumnId', 'timestamp');
+        XMLNewNode.AddAttribute('FieldType', '1');
+        XMLCurrNode.AppendChild(XMLNewNode);
+      END;
+
+      IF WebPageElementTab.FINDSET OR (WebPageElement."Element Type" = WebPageElement."Element Type"::"List Mobile") THEN REPEAT
+        IF IsCard THEN BEGIN
+          WebPageElementField.SETRANGE(Code, WebPageElementTab.Code);
+          RecRef.GETTABLE(WebPageElementTab);
+          IF Multilanguage.GET(RecRef.RECORDID, WebPageElementTab.FIELDNO(Title), Language.Code) THEN
+            TabCaption := Multilanguage.Value
+          ELSE
+            TabCaption := WebPageElementTab.Title;
+          RecRef.CLOSE();
+
+          XMLCurrNode.ParentNode(XMLCurrNode);
+          XMLDoc.CreateElement(XMLNewNode, 'WebPageElementTab');
+          XMLNewNode.AddAttribute('WebPageCode', WebPageElementTab."Web Page Code");
+          XMLNewNode.AddAttribute('Caption', AutomationWrapper.""(TabCaption));
+          XMLNewNode.AddAttribute('WebPageElementLineNo', FORMAT(WebPageElementTab."Web Page Element Line No."));
+          XMLNewNode.AddAttribute('Position', FORMAT(WebPageElementTab.Position));
+          XMLNewNode.AddAttribute('icon', WebPageElementTab."Icon Description");
+          XMLCurrNode.AppendAndSetChild(XMLNewNode);
+        END;
+
+        IF WebPageElementField.FINDSET THEN REPEAT
+          IF ((WebPageElementField."Field No." <> 0) OR (WebPageElementField.Type = WebPageElementField.Type::"Virtual Field")) AND
+              Field.GET(WebPageElementField."Table No.", WebPageElementField."Field No.") THEN BEGIN
+            GetFieldType(WebPageElementField);
+
+            XMLDoc.CreateElement(XMLNewNode, 'Item');
+            XMLNewNode.AddAttribute('ColumnId', FORMAT(WebPageElementField."Field Name"));
+            IF (WebPageElementField."HTML Layout" = WebPageElementField."HTML Layout"::"Linked DropDown") AND IsCard THEN
+              XMLNewNode.AddAttribute('FieldType', '10001') //the first 1 means text,000 fill, last 1 linked
+            ELSE
+              CASE FieldType OF
+                FieldType::Text, FieldType::Code: XMLNewNode.AddAttribute('FieldType', '1');
+                FieldType::Option: XMLNewNode.AddAttribute('FieldType', '2');
+                FieldType::Date: XMLNewNode.AddAttribute('FieldType', '3');
+                FieldType::Integer, FieldType::Decimal: BEGIN
+                  IF IsFilterFields OR (WebPageElementField.Readonly = WebPageElementField.Readonly::"Read Only") THEN
+                    XMLNewNode.AddAttribute('FieldType', '1')
+                  ELSE
+                    XMLNewNode.AddAttribute('FieldType', '4');
+                END;
+                FieldType::Boolean: XMLNewNode.AddAttribute('FieldType', '5');
+                FieldType::DateTime: XMLNewNode.AddAttribute('FieldType', '6');
+                FieldType::Time: XMLNewNode.AddAttribute('FieldType', '7');  //SR 23.09.2011 add
+                FieldType::DateFormula: XMLNewNode.AddAttribute('FieldType', '8');  //SR 23.09.2011 add
+                FieldType::BLOB:
+                  CASE WebPageElementField."HTML Layout" OF
+                    WebPageElementField."HTML Layout"::"Text Field":XMLNewNode.AddAttribute('FieldType', '10');
+                    WebPageElementField."HTML Layout"::"Text Area":XMLNewNode.AddAttribute('FieldType', '11');
+                    WebPageElementField."HTML Layout"::Picture:XMLNewNode.AddAttribute('FieldType', '12');
+                  END;
+              END;
+
+            IF IsCard THEN BEGIN
+              IF WebPageElementField.Readonly = WebPageElementField.Readonly::"Read Only" THEN
+                XMLNewNode.AddAttribute('Editable', 'false')
+              ELSE
+                XMLNewNode.AddAttribute('Editable', 'true');
+              IF WebPageElementField."Field Font Color" <> '' THEN
+                XMLNewNode.AddAttribute('FontColor', WebPageElementField."Field Font Color")
+              ELSE
+                XMLNewNode.AddAttribute('FontColor', Setup."Def. Field Font Color");
+              IF WebPageElementField."Field Background Color" <> '' THEN
+                XMLNewNode.AddAttribute('BackgroundColor', WebPageElementField."Field Background Color")
+              ELSE
+                XMLNewNode.AddAttribute('BackgroundColor', Setup."Def. Field Background Color");
+            END;
+
+            IF IsFilterFields THEN BEGIN
+              IF (WebPageElementField."Sorting allowed") THEN
+                XMLNewNode.AddAttribute('SortingAllowed', 'true')
+              ELSE
+                XMLNewNode.AddAttribute('SortingAllowed', 'false');
+
+              IF (WebPageElementField."Filter allowed") THEN
+                XMLNewNode.AddAttribute('FilterAllowed', 'true')
+              ELSE
+                XMLNewNode.AddAttribute('FilterAllowed', 'false');
+            END;
+
+            XMLCurrNode.AppendAndSetChild(XMLNewNode);
+            XMLDoc.CreateElement(XMLNewNode, 'LabelValue');
+            IF IsCard THEN BEGIN
+              IF WebPageElementField."Label Color" <> '' THEN
+                XMLNewNode.AddAttribute('FontColor', WebPageElementField."Label Color")
+              ELSE
+                XMLNewNode.AddAttribute('FontColor', Setup."Def. Field Background Color");
+            END;
+
+            //V3.00 MB+
+            //RecRef.GETTABLE(WebPageElementField);
+            //IF WDMultilanguage.GET(RecRef.RECORDID, WebPageElementField.FIELDNO("Field WD Description"), Language.Code) THEN
+            //  FieldCaption := WDMultilanguage.Value
+            //ELSE
+            //  FieldCaption := Field."Field Caption";
+            //RecRef.CLOSE();
+            FieldCaption := WebPageElementField.GetDescription();
+            //V3.00 MB-
+
+            XMLNewNode.SetText(AutomationWrapper.""(FieldCaption));
+            XMLCurrNode.AppendChild(XMLNewNode);
+            IF FieldType = FieldType::Boolean THEN BEGIN
+              XMLDoc.CreateElement(XMLNewNode, 'YES');
+              XMLNewNode.SetText(FORMAT(TRUE));
+              XMLCurrNode.AppendChild(XMLNewNode);
+              XMLDoc.CreateElement(XMLNewNode, 'NO');
+              XMLNewNode.SetText(FORMAT(FALSE));
+              XMLCurrNode.AppendChild(XMLNewNode);
+            END;
+            IF FieldType = FieldType::Option THEN BEGIN
+              XMLDoc.CreateElement(XMLNewNode, 'Options');
+              XMLCurrNode.AppendAndSetChild(XMLNewNode);
+              IF IsFilterFields THEN BEGIN
+                XMLDoc.CreateElement(XMLNewNode, 'Option');
+                //XMLNewNode.AddAttribute('value', '-1');
+                XMLNewNode.AddAttribute('value', '');
+                XMLCurrNode.AppendChild(XMLNewNode);
+              END;
+
+              //V3.00 NP+
+              CLEAR(OptionInteger);
+              IF WebPageElementField.Type = WebPageElementField.Type::Field THEN BEGIN
+              //V3.00 NP+
+                RecRef.OPEN(WebPageElement."Table No.");
+                FldRef := RecRef.FIELD(WebPageElementField."Field No.");
+                RemainingCaption := FldRef.OPTIONCAPTION;
+                RecRef.CLOSE();
+              //V3.00 NP+
+              END ELSE IF WebPageElementField.Type = WebPageElementField.Type::"Virtual Field" THEN BEGIN
+                Core.""('Fields', 'Field is virtual...');
+
+                // Virtual Data Mgt: Get FldRef on ACF Virtual Data-Field with corresponding data type depending on Virtual Field def.
+                VirtualTable.GET(WebPageElementField."Virtual Table Code");
+                VirtualField.GET(WebPageElementField."Virtual Table Code", WebPageElementField."Virtual Field Code");
+                AddEmptyOptionValue := VirtualField."Add empty value";
+                IF VirtualField."Option String" <> '' THEN BEGIN
+                  Core.""('Fields', 'Using individual Option String...');
+                  Core.""('Fields', FORMAT(GLOBALLANGUAGE));
+                  RecRef.GETTABLE(VirtualField);
+                  IF Multilanguage.GET(RecRef.RECORDID, VirtualField.FIELDNO("Option String"), Language.Code) THEN
+                    RemainingCaption := Multilanguage.Value
+                  ELSE
+                    RemainingCaption := VirtualField."Option String";
+                  RecRef.CLOSE;
+                END ELSE BEGIN
+                  IF (VirtualTable."Linked Table No." = 0) OR (VirtualField."Linked Field No."=0) THEN BEGIN
+                    Core.""('Fields', 'Virtual Field is not linked. Using RecRef of Virtual Data Table...');
+                    RecRef.OPEN(DATABASE::"ACF Virtual Data");
+                    VirtualField.getFldRefFromOpenRecRef(RecRef,FldRef);
+                  END ELSE BEGIN
+                    Core.""('Fields', 'Virtual Field is linked to real Field in Table...');
+                    RecRef.OPEN(VirtualTable."Linked Table No.");
+                    FldRef := RecRef.FIELD(VirtualField."Linked Field No.");
+                  END;
+                  RemainingCaption := FldRef.OPTIONCAPTION;
+                  RecRef.CLOSE;
+                END;
+              END;
+              //V3.00 NP+
+
+              REPEAT
+                IF STRPOS(RemainingCaption, ',') > 0 THEN BEGIN
+                  ActualCaption := Toolbox.""(RemainingCaption,1,',',FALSE);
+                  IF STRPOS(RemainingCaption, ',') < STRLEN(RemainingCaption) THEN
+                    RemainingCaption := COPYSTR(RemainingCaption, STRPOS(RemainingCaption, ',') + 1)
+                  ELSE
+                    RemainingCaption := '';
+                END
+                ELSE BEGIN
+                  ActualCaption := RemainingCaption;
+                  RemainingCaption := '';
+                END;
+                IF ActualCaption <> '' THEN BEGIN
+                  XMLDoc.CreateElement(XMLNewNode, 'Option');
+                  XMLNewNode.AddAttribute('value', FORMAT(OptionInteger));
+                  //V2.10 MB+
+                  //XMLNewNode.text := AnveoAutomation.HTMLencodeString(ActualCaption);
+                  XMLNewNode.SetText(EscapeOptionString(ActualCaption));
+                  //V2.10 MB-
+                  XMLCurrNode.AppendChild(XMLNewNode);
+                  OptionInteger += 1;
+                END;
+              UNTIL RemainingCaption = '';
+              XMLCurrNode.ParentNode(XMLCurrNode);
+            END;
+            IF FieldType = FieldType::Decimal THEN BEGIN
+              XMLDoc.CreateElement(XMLNewNode, 'DecimalPlaces');
+              XMLNewNode.SetText(FORMAT(WebPageElementField."Decimal Precision Edit"));
+              XMLCurrNode.AppendChild(XMLNewNode);
+              XMLDoc.CreateElement(XMLNewNode, 'DecimalSeparator');
+              XMLNewNode.SetText(FORMAT(Core.""('FORMATDECIMALSEPARATOR')));
+              XMLCurrNode.AppendChild(XMLNewNode);
+            END;
+            IF (FieldType = FieldType::Date) OR (FieldType = FieldType::DateTime) OR
+               (FieldType = FieldType::Time) THEN BEGIN
+               //SR Change 26.09.2011
+               XMLDoc.CreateElement(XMLNewNode, 'DYN_Format');
+               CASE FieldType OF
+                  FieldType::Date : XMLNewNode.SetText('Y-m-dT00:00:00');
+                  FieldType::DateTime: XMLNewNode.SetText('Y-m-dTH:i:s');
+                  FieldType::Time: XMLNewNode.SetText('H:i:s');
+               END;
+              XMLCurrNode.AppendChild(XMLNewNode);
+
+               XMLDoc.CreateElement(XMLNewNode, 'Format');
+               CASE(FieldType) OF
+                  FieldType::Date : XMLNewNode.SetText(Core.""('FORMATDATE'));
+                  FieldType::DateTime: XMLNewNode.SetText(Core.""('FORMATDATETIME'));
+                  FieldType::Time: XMLNewNode.SetText(Core.""('FORMATTIME'));
+               END;
+              XMLCurrNode.AppendChild(XMLNewNode);
+
+
+              XMLDoc.CreateElement(XMLNewNode, 'DatePicker');
+              XMLCurrNode.AppendAndSetChild(XMLNewNode);
+              XMLDoc.CreateElement(XMLNewNode, 'DoneTxt');
+              XMLNewNode.SetText(Core.""('WINDOWOKBUTTON'));
+              XMLCurrNode.AppendChild(XMLNewNode);
+              XMLDoc.CreateElement(XMLNewNode, 'CancelTxt');
+              XMLNewNode.SetText(Core.""('WINDOWCANCELBUTTON'));
+              XMLCurrNode.AppendChild(XMLNewNode);
+              //V3.00 NP+
+              XMLDoc.CreateElement(XMLNewNode, 'ClearTxt');
+              XMLNewNode.SetText(Core.""('WINDOWCLEARBUTTON'));
+              XMLCurrNode.AppendChild(XMLNewNode);
+              //V3.00 NP-
+              XMLDoc.CreateElement(XMLNewNode, 'yearFrom');
+              XMLNewNode.SetText('2000'); //TODO
+              XMLCurrNode.AppendChild(XMLNewNode);
+              XMLDoc.CreateElement(XMLNewNode, 'yearTo');
+              XMLNewNode.SetText('2020'); //TODO
+              XMLCurrNode.AppendChild(XMLNewNode);
+
+              XMLDoc.CreateElement(XMLNewNode, 'slotOrderFormat');
+              CASE FieldType OF
+                FieldType::Date :      DateTimeFormat := Core.""('FORMATDATE');
+                FieldType::DateTime: DateTimeFormat := Core.""('FORMATDATETIME');
+                FieldType::Time:      DateTimeFormat := Core.""('FORMATTIME');
+              END;
+              //DateTimeFormat example data: m/d/Y H:i:s or d.m.Y H:i:s
+              IF STRPOS(DateTimeFormat,'Y')<>0 THEN DateTimeArray[STRPOS(DateTimeFormat,'Y')] := '"year"';
+              IF STRPOS(DateTimeFormat,'y')<>0 THEN DateTimeArray[STRPOS(DateTimeFormat,'y')] := '"year"';
+              IF STRPOS(DateTimeFormat,'m')<>0 THEN DateTimeArray[STRPOS(DateTimeFormat,'m')] := '"month"';
+              IF STRPOS(DateTimeFormat,'d')<>0 THEN DateTimeArray[STRPOS(DateTimeFormat,'d')] := '"day"';
+              IF STRPOS(DateTimeFormat,'H')<>0 THEN DateTimeArray[STRPOS(DateTimeFormat,'H')] := '"hour"';
+              IF STRPOS(DateTimeFormat,'i')<>0 THEN DateTimeArray[STRPOS(DateTimeFormat,'i')] := '"minutes"';
+              IF STRPOS(DateTimeFormat,'s')<>0 THEN DateTimeArray[STRPOS(DateTimeFormat,'s')] := '"seconds"';
+              CLEAR(DateTimeFormatOut);
+              FOR i := 1 TO STRLEN(DateTimeFormat) DO BEGIN
+                IF DateTimeArray[i] <> '' THEN DateTimeFormatOut := DateTimeFormatOut + DateTimeArray[i]+',';
+              END;
+              DateTimeFormatOut := COPYSTR(DateTimeFormatOut, 1, STRLEN(DateTimeFormatOut)-1);
+              XMLNewNode.SetText(DateTimeFormatOut);
+
+              XMLCurrNode.AppendChild(XMLNewNode);
+              XMLCurrNode.ParentNode(XMLCurrNode);
+            END;
+
+            XMLCurrNode.ParentNode(XMLCurrNode);
+          END;
+        UNTIL WebPageElementField.NEXT = 0;
+      UNTIL (WebPageElementTab.NEXT = 0) OR (WebPageElement."Element Type" = WebPageElement."Element Type"::"List Mobile");
+
+
+      IF IsFilterFields THEN
+        IF NOT WebPageElementField.ISEMPTY THEN
+          XMLCurrNode.ParentNode(XMLCurrNode);
+
+      IF IsCard THEN
+        XMLCurrNode.ParentNode(XMLCurrNode);
+
+      WebPageElementField.MARKEDONLY(FALSE);
+      Core.""('Fields','END');
+    END;
+
+    LOCAL PROCEDURE OnItemTab@1000000037();
+    VAR
+      RecRef@1000000000 : RecordRef;
+      FldRef@1000000001 : FieldRef;
+    BEGIN
+      XMLDoc.CreateElement(XMLNewNode, 'OnItemTab');
+      XMLCurrNode.AppendAndSetChild(XMLNewNode);
+
+      IF (WebPageElement."Double Click Web Page Code" <> '') OR (WebPageElement."Double Click Function Code" <> '') THEN BEGIN
+        XMLDoc.CreateElement(XMLNewNode, 'Action');
+        XMLNewNode.AddAttribute('Type', '0'); //Disclosure Button
+        XMLCurrNode.AppendAndSetChild(XMLNewNode);
+        XMLDoc.CreateElement(XMLNewNode, 'DirectAction');
+        XMLNewNode.AddAttribute('WebPageCode', WebPageElement."Double Click Web Page Code");
+        XMLNewNode.AddAttribute('FunctionCode', WebPageElement."Double Click Function Code");
+        //XMLNewNode.AddAttribute('EntryNo', '2052'); //This is not a menu so no entry no.
+        XMLNewNode.AddAttribute('WebPageElementLineNo', FORMAT(WebPageElement."Line No."));
+        XMLCurrNode.AppendAndSetChild(XMLNewNode);
+        //next Action
+        XMLDoc.SelectSingleNode(XMLCurrNode, './/OnItemTab');  //Add SR go back
+      END;
+
+      XMLDoc.CreateElement(XMLNewNode, 'Action');
+      XMLNewNode.AddAttribute('Type', '1'); //Line Menu
+      XMLCurrNode.AppendAndSetChild(XMLNewNode);
+      XMLDoc.CreateElement(XMLNewNode, 'LineMenuItem');
+      XMLCurrNode.AppendAndSetChild(XMLNewNode);
+      XMLDoc.CreateElement(XMLNewNode, 'Title');
+      RecRef.GETTABLE(WebPage);
+      FldRef := RecRef.FIELD(10);
+
+      XMLNewNode.SetText(GetMLText(RecRef, FldRef) + Toolbox.""(Core.""('MOBILELINEMENU')));
+
+      RecRef.CLOSE();
+
+      XMLCurrNode.AppendChild(XMLNewNode);
+      XMLDoc.CreateElement(XMLNewNode, 'Structure');
+      XMLCurrNode.AppendAndSetChild(XMLNewNode);
+      Menu(TRUE);
+    END;
+
+    LOCAL PROCEDURE GetMLText@1000000002(RecRef@1000000001 : RecordRef;FldRef@1000000002 : FieldRef) : Text[250];
+    VAR
+      WDMultilanguage@1000000000 : Record 5327131;
+    BEGIN
+      IF WDMultilanguage.GET(RecRef.RECORDID, FldRef.NUMBER, GlobLanguageCode) THEN
+        EXIT(Toolbox.""(WDMultilanguage.Value))
+      ELSE
+        EXIT(Toolbox.""(FORMAT(FldRef.VALUE)));
+    END;
+
+    LOCAL PROCEDURE GetHTMLTemplate@1000000003() HTMLTemplateText : Text[1024];
+    VAR
+      WDMultilanguage@1000000001 : Record 5327131;
+      RecRef@1000000000 : RecordRef;
+      InStr@1000000002 : InStream;
+    BEGIN
+      RecRef.GETTABLE(WebPageElement);
+
+      IF WDMultilanguage.GET(RecRef.RECORDID, -1, Language.Code) THEN BEGIN
+        WDMultilanguage.CALCFIELDS("Blob Value");
+        IF WDMultilanguage."Blob Value".HASVALUE THEN BEGIN
+          WDMultilanguage."Blob Value".CREATEINSTREAM(InStr);
+          InStr.READTEXT(HTMLTemplateText);
+          CLEAR(InStr);
+        END;
+      END
+      ELSE BEGIN
+        HTMLTemplateText := CreateHTMLTemplate(WebPageElement, Language.Code);
+      END;
+    END;
+
+    PROCEDURE CreateMLHTMLTemplate@1000000014(WebPageElement@1000000000 : Record 5327101);
+    VAR
+      Language@1000000005 : Record 8;
+      WDMultilanguage@1000000003 : Record 5327131;
+      tmpLanguage@1000000001 : TEMPORARY Record 8;
+      HTMLTemplateBigText@1000000002 : BigText;
+      RecRef@1000000004 : RecordRef;
+      OutStr@1000000006 : OutStream;
+    BEGIN
+      Setup.GET;
+
+      IF WebUser.FINDSET THEN REPEAT
+        tmpLanguage.Code := WebUser."User Language";
+        IF tmpLanguage.INSERT THEN ;
+      UNTIL WebUser.NEXT = 0;
+
+      RecRef.GETTABLE(WebPageElement);
+      GlobLang := GLOBALLANGUAGE;
+
+      IF tmpLanguage.FINDSET THEN REPEAT
+        IF NOT Language.GET(tmpLanguage.Code) THEN
+          Language.GET(Setup."Default Language");
+
+        GLOBALLANGUAGE(Language."Windows Language ID");
+        WDMultilanguage.INIT;
+        WDMultilanguage."Record ID" := RecRef.RECORDID;
+        WDMultilanguage."Field ID" := -1;
+        WDMultilanguage.Language := Language.Code;
+        WDMultilanguage."Blob Value".CREATEOUTSTREAM(OutStr);
+        CLEAR(HTMLTemplateBigText);
+        HTMLTemplateBigText.ADDTEXT(CreateHTMLTemplate(WebPageElement, tmpLanguage.Code));
+        HTMLTemplateBigText.WRITE(OutStr);
+        IF NOT WDMultilanguage.INSERT(TRUE) THEN
+          WDMultilanguage.MODIFY(TRUE);
+      UNTIL tmpLanguage.NEXT = 0;
+
+      GLOBALLANGUAGE(GlobLang);
+    END;
+
+    LOCAL PROCEDURE CreateHTMLTemplate@1000000005(WebPageElement@1000000008 : Record 5327101;LanguageCode@1000000007 : Code[10]) HTMLTemplateText : Text[1024];
+    VAR
+      WebPageElementField@1000000001 : Record 5327103;
+      Multilanguage@1000000004 : Record 5327131;
+      RecRef@1000000005 : RecordRef;
+      FldRef@1000000006 : FieldRef;
+      Style@1000000002 : Text[1024];
+      TotalWidth@1000000000 : Integer;
+      TableAlignment@1000000009 : Text[30];
+      CloseTD@1000000010 : Boolean;
+    BEGIN
+      GlobLanguageCode := LanguageCode;
+      WebPageElement.TESTFIELD("Element Type", WebPageElement."Element Type"::"List Mobile");
+
+      WebPageElementField.SETRANGE("Web Page Code", WebPageElement."Web Page Code");
+      WebPageElementField.SETRANGE("Web Page Element Line No.", WebPageElement."Line No.");
+      WebPageElementField.SETFILTER(Type, '%1|%2' ,WebPageElementField.Type::Field, WebPageElementField.Type::"Virtual Field");
+      WebPageElementField.SETRANGE(Visibility, WebPageElementField.Visibility::Visible);
+      //WebPageElementField.SETFILTER("Field No.", '<>%1', 0);
+      WebPageElementField.SETCURRENTKEY(Position);
+
+      IF WebPageElement."Table Layout" THEN BEGIN
+        HTMLTemplateText += '<table width="100%" border="0"><tr>';
+        CLEAR(TotalWidth);
+        IF WebPageElementField.FINDSET THEN REPEAT
+          IF (WebPageElementField."Field No." <> 0) OR (WebPageElementField.Type = WebPageElementField.Type::"Virtual Field") THEN
+            TotalWidth := TotalWidth + WebPageElementField.Width;
+            IF WebPageElementField.Width = 0 THEN
+              TotalWidth := TotalWidth + 20 // Default Value, used to make sure that TotalWidth is > 0
+        UNTIL WebPageElementField.NEXT=0;
+      END;
+
+      IF WebPageElementField.FINDSET THEN REPEAT
+        IF (WebPageElementField."Field No." <> 0) OR (WebPageElementField.Type = WebPageElementField.Type::"Virtual Field") THEN BEGIN
+          IF WebPageElement."Table Layout" THEN BEGIN
+            IF CloseTD AND (NOT WebPageElementField."Link with Previous Field") THEN
+              HTMLTemplateText += '</td>';
+
+            IF NOT WebPageElementField."Link with Previous Field" THEN BEGIN
+              CLEAR(TableAlignment);
+              IF WebPageElementField."Table Alignment" = WebPageElementField."Table Alignment"::Right THEN
+                TableAlignment := 'right';
+              HTMLTemplateText += STRSUBSTNO('<td width="%1%" align="%2">', (WebPageElementField.Width * 100) DIV TotalWidth,
+                TableAlignment);
+            END;
+          END;
+
+          CLEAR(Style);
+          IF WebPageElementField.Bold THEN
+            Style := 'font-weight:bold;';
+          IF WebPageElementField."Font Size %" <> 0 THEN
+            Style += 'font-size:' + FORMAT(WebPageElementField."Font Size %") + '%;';
+          IF COPYSTR(WebPageElementField."Field Font Color",1,1) <> '#' THEN
+            WebPageElementField."Field Font Color" := '#'+WebPageElementField."Field Font Color";
+          IF WebPageElementField."Field Font Color" <> '#' THEN
+            Style += 'color:' + WebPageElementField."Field Font Color";
+          IF Style <> '' THEN
+            Style := ' style="' + Style + '"';
+
+          HTMLTemplateText += '<span' + Style + '>';
+          HTMLTemplateText += '{' + FORMAT(WebPageElementField."Field Name") + '}';
+          HTMLTemplateText += '</span>';
+
+          IF WebPageElement."Table Layout" THEN
+            CloseTD := TRUE;
+        END;
+      UNTIL WebPageElementField.NEXT = 0;
+      IF CloseTD THEN
+        HTMLTemplateText += '</td>';
+
+      IF WebPageElement."Table Layout" THEN BEGIN
+        HTMLTemplateText += '</tr></table>';
+      END;
+    END;
+
+    PROCEDURE EscapeOptionString@5326066(OptionValue@5326062 : Text[1024]) EscapedValue : Text[1024];
+    VAR
+      i@5326063 : Integer;
+    BEGIN
+      FOR i := 1 TO STRLEN(OptionValue) DO BEGIN
+        IF OptionValue[i] = '''' THEN
+          EscapedValue += '\';
+        EscapedValue += FORMAT(OptionValue[i]);
+      END;
+    END;
+
+    PROCEDURE GetFieldType@5326062(WebPageElementField@5326062 : Record 5327103);
+    VAR
+      VirtualField@5326063 : Record 5327181;
+      Field@5326064 : Record 2000000041;
+    BEGIN
+      IF WebPageElementField.Type = WebPageElementField.Type::Field THEN BEGIN
+        Field.GET(WebPageElementField."Table No.", WebPageElementField."Field No.");
+        CASE Field.Type OF
+          Field.Type::TableFilter: FieldType := FieldType::TableFilter;
+          Field.Type::RecordID: FieldType := FieldType::RecordID;
+          Field.Type::Text: FieldType := FieldType::Text; //2009 Version
+          //Field.Type::Text, Field.Type::OemText: FieldType := FieldType::Text; //2013 Version
+          Field.Type::Date: FieldType := FieldType::Date;
+          Field.Type::Time: FieldType := FieldType::Time;
+          Field.Type::DateFormula: FieldType := FieldType::DateFormula;
+          Field.Type::Decimal: FieldType := FieldType::Decimal;
+          Field.Type::Binary: FieldType := FieldType::Binary;
+          Field.Type::BLOB: FieldType := FieldType::BLOB;
+          Field.Type::Boolean: FieldType := FieldType::Boolean;
+          Field.Type::Integer: FieldType := FieldType::Integer;
+          Field.Type::Code: FieldType := FieldType::Code; //2009 Version
+          //Field.Type::Code, Field.Type::OemCode: FieldType := FieldType::Code; //2013 Version
+          Field.Type::Option: FieldType := FieldType::Option;
+          Field.Type::BigInteger: FieldType := FieldType::BigInteger;
+          Field.Type::GUID: FieldType := FieldType::GUID;
+          Field.Type::DateTime: FieldType := FieldType::DateTime;
+        END;
+      END
+      ELSE IF WebPageElementField.Type = WebPageElementField.Type::"Virtual Field" THEN BEGIN
+        VirtualField.GET(WebPageElementField."Virtual Table Code", WebPageElementField."Virtual Field Code");
+        CASE VirtualField."Data type" OF
+          VirtualField."Data type"::Text: FieldType := FieldType::Text;
+          VirtualField."Data type"::Date: FieldType := FieldType::Date;
+          VirtualField."Data type"::Time: FieldType := FieldType::Time;
+          VirtualField."Data type"::Decimal: FieldType := FieldType::Decimal;
+          VirtualField."Data type"::Boolean: FieldType := FieldType::Boolean;
+          VirtualField."Data type"::Integer: FieldType := FieldType::Integer;
+          VirtualField."Data type"::Code: FieldType := FieldType::Code;
+          VirtualField."Data type"::Option: FieldType := FieldType::Option;
+          VirtualField."Data type"::BigInteger: FieldType := FieldType::BigInteger;
+          VirtualField."Data type"::DateTime: FieldType := FieldType::DateTime;
+        END;
+      END;
+    END;
+
+    BEGIN
+    {
+      2009/2013 Differences: search for "2009 Version" / "2013 Version"
+    }
+    END.
+  }
+}
+

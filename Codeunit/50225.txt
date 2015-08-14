@@ -1,0 +1,371 @@
+OBJECT Codeunit 50225 Inventory Costing
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02.09.13;
+    Time=14:59:54;
+    Version List=HME0513;
+  }
+  PROPERTIES
+  {
+    Subtype=Test;
+    OnRun=BEGIN
+            isInitialized := FALSE;
+            RANDOMIZE(1);  // Use Randomize to generate the seed for RANDOM function.
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      LibrarySCM@1002 : Codeunit 50210;
+      LibraryUtility@1003 : Codeunit 50206;
+      Assert@1001 : Codeunit 50200;
+      isInitialized@1000 : Boolean;
+      ErrMessageGLEntryNoRowExist@1005 : TextConst 'ENU=G/L Entry for WIP Account must not exist.';
+      ErrMessageInvAmountDoNotMatch@1004 : TextConst 'ENU=The Inventory amount totals must be equal.';
+
+    [Normal]
+    LOCAL PROCEDURE Initialize@110();
+    VAR
+      BackupManagement@1000 : Codeunit 50201;
+    BEGIN
+      // Initialize setup.
+      IF isInitialized THEN
+        EXIT;
+
+      // Setup Demonstration data.
+      BackupManagement.DefaultFixture;
+      isInitialized := TRUE;
+      COMMIT;
+    END;
+
+    [Test]
+    [HandlerFunctions(ConfirmHandler)]
+    PROCEDURE PostCostYes@20();
+    BEGIN
+      // Covers documents 3477.
+      // Automatic Cost Post True.
+      FIFOAutomaticCostPostToGL(TRUE,TRUE,FALSE,FALSE);
+    END;
+
+    [Test]
+    [HandlerFunctions(ConfirmHandler)]
+    PROCEDURE PostCostNo@1();
+    BEGIN
+      // Covers documents 3478.
+      // Automatic Cost Post False.
+      FIFOAutomaticCostPostToGL(FALSE,TRUE,FALSE,FALSE);
+    END;
+
+    [Test]
+    [HandlerFunctions(ConfirmHandler)]
+    PROCEDURE PostCostYesCostDiff@8();
+    BEGIN
+      // Covers documents 3479.
+      // Automatic Cost Post True,Fasle if Cost different from expected.
+      FIFOAutomaticCostPostToGL(TRUE,FALSE,FALSE,FALSE);
+    END;
+
+    [Test]
+    [HandlerFunctions(ConfirmHandler)]
+    PROCEDURE PostCostNoCostDiff@3();
+    BEGIN
+      // Covers documents 3480.
+      // Automatic Cost Post False, False if Cost different from expected.
+      FIFOAutomaticCostPostToGL(FALSE,FALSE,FALSE,FALSE);
+    END;
+
+    [Test]
+    [HandlerFunctions(ConfirmHandler)]
+    PROCEDURE PostCostYesPartialRecvInv@9();
+    BEGIN
+      // Covers documents 3481.
+      // Automatic Cost Post True, partial receive and Invoice of Purchase Order.
+      FIFOAutomaticCostPostToGL(TRUE,TRUE,TRUE,FALSE);
+    END;
+
+    [Test]
+    [HandlerFunctions(ConfirmHandler)]
+    PROCEDURE PostCostNoPartialRecvInv@4();
+    BEGIN
+      // Covers documents 3482.
+      // Automatic Cost Post False, partial receive and Invoice of Purchase Order.
+      FIFOAutomaticCostPostToGL(FALSE,TRUE,TRUE,FALSE);
+    END;
+
+    [Test]
+    [HandlerFunctions(ConfirmHandler)]
+    PROCEDURE PostCostYesTwicePartialRecvInv@10();
+    BEGIN
+      // Covers documents 3483.
+      // Automatic Cost Post True, twice partial receive and Invoice of Purchase Order.
+      FIFOAutomaticCostPostToGL(TRUE,TRUE,TRUE,TRUE);
+    END;
+
+    [Test]
+    [HandlerFunctions(ConfirmHandler)]
+    PROCEDURE PostCostNoTwicePartialRecvInv@19();
+    BEGIN
+      // Covers documents 3484.
+      // Automatic Cost Post False, twice partial receive and Invoice of Purchase Order.
+      FIFOAutomaticCostPostToGL(FALSE,TRUE,TRUE,TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE FIFOAutomaticCostPostToGL@6(AutomaticCostPosting@1000 : Boolean;CostExpected@1001 : Boolean;PartialRecvInv@1016 : Boolean;MultiplePartialRecvInv@1017 : Boolean);
+    VAR
+      InventorySetup@1014 : Record 313;
+      Item@1013 : Record 27;
+      PurchaseHeader@1012 : Record 38;
+      PurchaseLine@1011 : Record 39;
+      PurchInvHeader@1010 : Record 122;
+      ItemNo@1009 : Code[20];
+      ItemNo2@1008 : Code[20];
+      ItemNo3@1007 : Code[20];
+      FlushingMethod@1006 : 'Manual,Forward,Backward';
+      AutomaticCostAdjustment@1005 : 'Never,Day,Week,Month,Quarter,Year,Always';
+      AverageCostCalcType@1004 : ' ,Item,Item & Location & Variant';
+      AverageCostPeriod@1003 : ' ,Day,Week,Month,Quarter,Year,Accounting Period';
+      DummyBool@1102601000 : Boolean;
+    BEGIN
+      // Steps describing the sequence of actions for Test Case.
+
+      // make sure a confrim dialog is ALWAYS raised
+      DummyBool := CONFIRM('');
+
+      // 1. Create required Inventory setups.
+      // Update Inventory Setup True if Automatic cost posting.
+      Initialize;
+      LibrarySCM.UpdateInventorySetup(
+        InventorySetup,AutomaticCostPosting,FALSE,AutomaticCostAdjustment::Never,AverageCostCalcType::Item,AverageCostPeriod::Day);
+
+      // Create Items with Costing Method FIFO, False if Cost is different from expected.
+      CreateItem(Item,Item."Costing Method"::FIFO,Item."Reordering Policy"::"Lot-for-Lot",FlushingMethod::Forward,'','',CostExpected);
+      ItemNo := Item."No.";
+      CLEAR(Item);
+      CreateItem(Item,Item."Costing Method"::FIFO,Item."Reordering Policy"::"Lot-for-Lot",FlushingMethod::Forward,'','',CostExpected);
+      ItemNo2 := Item."No.";
+      CLEAR(Item);
+      CreateItem(Item,Item."Costing Method"::FIFO,Item."Reordering Policy"::"Lot-for-Lot",FlushingMethod::Forward,'','',CostExpected);
+      ItemNo3 := Item."No.";
+
+      // 2.1 Execute: Create and Post Purchase Order, True if partial receive and Invoice.
+      // Post Inventory Cost to GL if Automatic Cost Posting True.
+      CreatePurchaseOrder(PurchaseHeader,PurchaseLine,ItemNo,ItemNo2,ItemNo3,RANDOM(100) + 50,PartialRecvInv);
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,TRUE,TRUE);
+      IF NOT AutomaticCostPosting THEN
+        PostInventoryCostToGL(PurchaseHeader."No.");
+
+      // 3.1 Verify: Verify General Ledger Entries that WIP Account does not exist and Total Inventory amount equals calculated amount.
+      PurchInvHeader.SETRANGE("Order No.",PurchaseHeader."No.");
+      PurchInvHeader.FINDFIRST;
+      VerifyInvtAmountGLEntry(PurchInvHeader."No.",ItemNo);
+
+      // 2.2. Execute: Update and Post Purchase Order with Partial Quantity.
+      // Post Inventory Cost to GL if Automatic Cost Posting True.
+      // 3.2. Verify: Verify General Ledger Entries that WIP Account does not exist and Total Inventory amount equals calculated amount.
+      IF MultiplePartialRecvInv THEN BEGIN
+        UpdatePurchaseHeader(PurchaseHeader."No.",ItemNo,ItemNo2,ItemNo3);
+        IF NOT AutomaticCostPosting THEN
+          PostInventoryCostToGL(PurchaseHeader."No.");
+        PurchInvHeader.SETRANGE("Order No.",PurchaseHeader."No.");
+        PurchInvHeader.FINDLAST;
+        VerifyInvtAmountGLEntry(PurchInvHeader."No.",ItemNo);
+      END;
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreateItem@7(VAR Item@1008 : Record 27;ItemCostingMethod@1001 : 'Standard,Average';ItemReorderPolicy@1002 : Option;FlushingMethod@1003 : Option;RoutingNo@1004 : Code[20];ProductionBOMNo@1005 : Code[20];CostExpected@1000 : Boolean);
+    BEGIN
+      // Create Item with required fields where random and other values are not important for test.
+      LibrarySCM.CreateItemManufacturing(Item,ItemCostingMethod,0,ItemReorderPolicy,FlushingMethod,RoutingNo,ProductionBOMNo);
+      Item.VALIDATE("Overhead Rate",RANDOM(5));
+      Item.VALIDATE("Indirect Cost %",RANDOM(5));
+      IF  NOT CostExpected THEN
+        Item.VALIDATE("Unit Cost",RANDOM(10));
+      Item.MODIFY(TRUE);
+    END;
+
+    LOCAL PROCEDURE CreatePurchaseOrder@26(VAR PurchaseHeader@1002 : Record 38;VAR PurchaseLine@1003 : Record 39;ItemNo@1000 : Code[20];ItemNo2@1001 : Code[20];ItemNo3@1006 : Code[20];Quantity@1004 : Decimal;PartialRecvInv@1005 : Boolean);
+    BEGIN
+      // Create Purchase Header.
+      LibrarySCM.CreatePurchaseHeader(
+        PurchaseHeader,PurchaseHeader."Document Type"::Order,LibrarySCM.SelectVendor);
+      PurchaseHeader.VALIDATE(
+        "Vendor Invoice No.",LibraryUtility.GenerateRandomCode(PurchaseHeader.FIELDNO("Vendor Invoice No."),DATABASE::"Purchase Header")
+      );
+      PurchaseHeader.MODIFY(TRUE);
+
+      // Create Purchase Lines.
+      CreatePurchaseLine(PurchaseLine,PurchaseHeader,ItemNo,Quantity,PartialRecvInv);
+      CreatePurchaseLine(PurchaseLine,PurchaseHeader,ItemNo2,Quantity,PartialRecvInv);
+      CreatePurchaseLine(PurchaseLine,PurchaseHeader,ItemNo3,Quantity,PartialRecvInv);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CreatePurchaseLine@14(VAR PurchaseLine@1005 : Record 39;PurchaseHeader@1004 : Record 38;ItemNo@1003 : Code[20];Qty@1002 : Decimal;PartialRecvInv@1000 : Boolean);
+    BEGIN
+      LibrarySCM.CreatePurchaseLine(PurchaseHeader,PurchaseLine,PurchaseLine.Type::Item,ItemNo,Qty);
+
+      IF PartialRecvInv THEN
+        PurchaseLine.VALIDATE("Qty. to Receive",Qty - 5);
+      PurchaseLine.MODIFY(TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE UpdatePurchaseHeader@17(PurchaseOrderNo@1004 : Code[20];ItemNo@1003 : Code[20];ItemNo2@1002 : Code[20];ItemNo3@1005 : Code[20]);
+    VAR
+      PurchaseHeader@1000 : Record 38;
+    BEGIN
+      // Update Purchase Header with new vendor Invoice.
+      PurchaseHeader.GET(PurchaseHeader."Document Type"::Order,PurchaseOrderNo);
+      PurchaseHeader.VALIDATE(
+        "Vendor Invoice No.",LibraryUtility.GenerateRandomCode(PurchaseHeader.FIELDNO("Vendor Invoice No."),DATABASE::"Purchase Header")
+      );
+      PurchaseHeader.MODIFY(TRUE);
+
+      // Update Purchase Lines with partial quantity,value used are important for test.
+      UpdatePurchaseLine(PurchaseHeader."No.",ItemNo,2);
+      UpdatePurchaseLine(PurchaseHeader."No.",ItemNo2,0);
+      UpdatePurchaseLine(PurchaseHeader."No.",ItemNo3,5);
+
+      // Post Purchase order.
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,TRUE,TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE UpdatePurchaseLine@12(PurchaseOrderNo@1004 : Code[20];ItemNo@1003 : Code[20];QtyToReceive@1001 : Decimal);
+    VAR
+      PurchaseLine@1000 : Record 39;
+    BEGIN
+      PurchaseLine.SETRANGE("Document Type",PurchaseLine."Document Type"::Order);
+      PurchaseLine.SETRANGE("Document No.",PurchaseOrderNo);
+      PurchaseLine.SETRANGE(Type,PurchaseLine.Type::Item);
+      PurchaseLine.SETRANGE("No.",ItemNo);
+      PurchaseLine.FINDFIRST;
+      PurchaseLine.VALIDATE("Qty. to Receive",PurchaseLine."Qty. to Receive" - QtyToReceive);
+      PurchaseLine.MODIFY(TRUE);
+    END;
+
+    [Normal]
+    PROCEDURE PostInventoryCostToGL@18(PurchaseOrderNo@1001 : Code[20]);
+    VAR
+      FilePath@1000 : Text[1024];
+    BEGIN
+      FilePath := TEMPORARYPATH + PurchaseOrderNo + '.html';
+      LibrarySCM.PostInvtCostToGL(FALSE,'',FilePath);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE SelectGLEntry@37(VAR GLEntry@1000 : Record 17;InventoryPostingSetupAccount@1002 : Code[20];PurchaseInvoiceNo@1003 : Code[20]);
+    BEGIN
+      // Select set of G/L Entries for the specified Account.
+      GLEntry.SETRANGE("Document No.",PurchaseInvoiceNo);
+      GLEntry.SETRANGE("G/L Account No.",InventoryPostingSetupAccount);
+      GLEntry.FINDSET;
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE SelectInventoryPostingSetup@2(VAR InventoryPostingSetup@1002 : Record 5813;ItemNo@1000 : Code[20]);
+    VAR
+      Item@1001 : Record 27;
+    BEGIN
+      Item.GET(ItemNo);
+      InventoryPostingSetup.SETRANGE("Invt. Posting Group Code",Item."Inventory Posting Group");
+      InventoryPostingSetup.FINDFIRST;
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE CalculateGLEntryTotalAmount@74(VAR GLEntry@1001 : Record 17) : Decimal;
+    VAR
+      TotalAmount@1002 : Decimal;
+    BEGIN
+      REPEAT
+        TotalAmount += GLEntry.Amount;
+      UNTIL GLEntry.NEXT = 0;
+      EXIT(TotalAmount);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE DirectIndirectItemCost@11(PurchaseInvoiceNo@1000 : Code[20]) : Decimal;
+    VAR
+      PurchInvLine@1001 : Record 123;
+      DirectIndirectPOCost@1002 : Decimal;
+    BEGIN
+      // Calculate Direct and Indirect Cost purchase order Cost.
+      PurchInvLine.SETRANGE("Document No.",PurchaseInvoiceNo);
+      PurchInvLine.SETRANGE(Type,PurchInvLine.Type::Item);
+      IF PurchInvLine.FINDSET THEN
+        REPEAT
+          DirectIndirectPOCost +=
+            (PurchInvLine.Quantity * PurchInvLine."Direct Unit Cost") +
+            (PurchInvLine.Quantity *
+             ((PurchInvLine."Indirect Cost %" / 100) * PurchInvLine."Direct Unit Cost" + PurchInvLine."Overhead Rate"));
+        UNTIL PurchInvLine.NEXT = 0;
+
+      EXIT(DirectIndirectPOCost);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE VerifyWIPAccountNotInGLEntry@45(PurchaseInvoiceNo@1001 : Code[20];ItemNo@1000 : Code[20]);
+    VAR
+      InventoryPostingSetup@1004 : Record 5813;
+      GLEntry@1003 : Record 17;
+    BEGIN
+      SelectInventoryPostingSetup(InventoryPostingSetup,ItemNo);
+      GLEntry.SETRANGE("Document No.",PurchaseInvoiceNo);
+      GLEntry.SETRANGE("G/L Account No.",InventoryPostingSetup."WIP Account");
+
+      // Verify no row exist for WIP Account in G/L Entry.
+      Assert.IsFalse(GLEntry.FINDFIRST,ErrMessageGLEntryNoRowExist);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE VerifyInvtAmountGLEntry@5(PurchaseInvoiceNo@1000 : Code[20];ItemNo@1001 : Code[20]);
+    VAR
+      GLEntry@1003 : Record 17;
+      InventoryPostingSetup@1004 : Record 5813;
+    BEGIN
+      SelectInventoryPostingSetup(InventoryPostingSetup,ItemNo);
+
+      // Verify that no row exists for WIP Account.
+      VerifyWIPAccountNotInGLEntry(PurchaseInvoiceNo,ItemNo);
+
+      // Verify sum of Inventory Account amounts equal to calculated amount.
+      SelectGLEntry(GLEntry,InventoryPostingSetup."Inventory Account",PurchaseInvoiceNo);
+      VerifyTotalInvtAmount(CalculateGLEntryTotalAmount(GLEntry),PurchaseInvoiceNo);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE VerifyTotalInvtAmount@23(TotalAmount@1000 : Decimal;PurchaseInvoiceNo@1001 : Code[20]);
+    VAR
+      CalculatedInventoryAmount@1004 : Decimal;
+    BEGIN
+      CalculatedInventoryAmount := DirectIndirectItemCost(PurchaseInvoiceNo);
+
+      // Verify Inventory Account amounts and calculated Inventory amounts are equal.
+      Assert.AreEqual(TotalAmount,CalculatedInventoryAmount,ErrMessageInvAmountDoNotMatch);
+    END;
+
+    [ConfirmHandler]
+    PROCEDURE ConfirmHandler@1102601000(Question@1102601000 : Text[1024];VAR Reply@1102601001 : Boolean);
+    BEGIN
+      Reply := TRUE
+    END;
+
+    BEGIN
+    {
+      Test for Inventory Costing:
+        1. Test FIFO Costing with Automatic Cost Posting True.
+        2. Test FIfO Costing with Automatic Cost Posting False.
+        3. Test FIFO Costing with Automatic Cost Posting True and Cost different from expected.
+        4. Test FIFO Costing with Automatic Cost Posting False and Cost different from expected.
+        5. Test FIFO Costing with Automatic Cost Posting True, partial receive and Invoice.
+        6. Test FIFO Costing with Automatic Cost Posting False, partial receive and Invoice.
+        7. Test FIFO Costing with Automatic Cost Posting True, partial receive and Invoice twice.
+    }
+    END.
+  }
+}
+

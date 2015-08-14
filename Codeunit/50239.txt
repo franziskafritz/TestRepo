@@ -1,0 +1,455 @@
+OBJECT Codeunit 50239 Inbound EDI IFTSTA
+{
+  OBJECT-PROPERTIES
+  {
+    Date=12.03.15;
+    Time=12:51:28;
+    Modified=Yes;
+    Version List=JCL,P1289,T0060;
+  }
+  PROPERTIES
+  {
+    OnRun=VAR
+            rInbEDIIFTSTAHeader@1000000000 : Record 50205;
+          BEGIN
+            rInbEDIIFTSTAHeader.SETRANGE("Process Status",rInbEDIIFTSTAHeader."Process Status"::New);
+            IF rInbEDIIFTSTAHeader.FINDFIRST THEN BEGIN
+              REPEAT
+                InsertDHLParcelHistoryTable(rInbEDIIFTSTAHeader);
+              UNTIL rInbEDIIFTSTAHeader.NEXT = 0;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      RecRef@1000000001 : RecordRef;
+      CUParcelStatusHistoryMgmt@1000000002 : Codeunit 80011;
+      FPCGeneralSetup@1000000003 : Record 50055;
+      rEDIPartner@1000000004 : Record 82851;
+
+    PROCEDURE InsertDHLParcelHistoryTable@1000000000(VAR pInbEDIIFTSTAHeader@1000000000 : Record 50205);
+    VAR
+      rSalesHeader@1000000001 : Record 36;
+      rSalesLine@1000000010 : Record 37;
+      rInbEDIIFTSTALine@1000000003 : Record 50206;
+      rSalesHeaderArchive@1000000004 : Record 5107;
+      rSalesLineArchive@1000000005 : Record 5108;
+      bUseHistory@1000000006 : Boolean;
+      bToPost@1000000007 : Boolean;
+      rDHLStatusCode@1000000008 : Record 50028;
+      cSalesPost@1000000009 : Codeunit 80;
+      "--- P1280 Locals ---"@1000000011 : Integer;
+      RHDSalesExportHeader@1000000012 : Record 50181;
+      RHDSalesLineReference@1000000016 : Record 80011;
+      DDHeader@1000000002 : Record 50061;
+      DDLine@1000000014 : Record 50062;
+      SalesOrderLinesFound@1000000013 : Boolean;
+      "--- P1286 Locals ---"@1000000015 : Integer;
+      SalesOrderNo@1000000017 : Code[20];
+      "****CC************************"@1000000018 : Integer;
+      MPPostingMgtL@1000000019 : Codeunit 50501;
+    BEGIN
+      bUseHistory := FALSE;
+      bToPost := FALSE;
+
+      FPCGeneralSetup.GET;
+      rEDIPartner.GET(pInbEDIIFTSTAHeader."EDI Partner");
+
+      rInbEDIIFTSTALine.SETRANGE("Entry No.",pInbEDIIFTSTAHeader."Entry No.");
+      IF rInbEDIIFTSTALine.FINDFIRST THEN BEGIN
+        //S,gob-Fuchs,06.10.14,P1286
+        IF STRLEN(pInbEDIIFTSTAHeader."Sales Order No.") > 3 THEN
+          SalesOrderNo := COPYSTR(pInbEDIIFTSTAHeader."Sales Order No.",1,STRLEN(pInbEDIIFTSTAHeader."Sales Order No.") - 3)
+        ELSE
+          SalesOrderNo := pInbEDIIFTSTAHeader."Sales Order No.";
+        //E,gob-Fuchs,06.10.14,P1286
+        IF rSalesHeader.GET(rSalesHeader."Document Type"::Order,SalesOrderNo) THEN BEGIN //P1286
+          bUseHistory := FALSE;
+
+          rSalesLine.SuspendStatusCheck(TRUE);
+          rSalesLine.SETRANGE("Document Type",rSalesHeader."Document Type");
+          rSalesLine.SETRANGE("Document No.",rSalesHeader."No.");
+          IF NOT rSalesLine.ISEMPTY THEN BEGIN
+            rSalesLine.MODIFYALL("Qty. to Invoice",0);
+            rSalesLine.MODIFYALL("Qty. to Invoice (Base)",0);
+          END;
+          rSalesLine.RESET();
+        END ELSE BEGIN
+          // Hier im Sales Header Archive suchen
+          rSalesHeaderArchive.SETRANGE("Document Type",rSalesHeaderArchive."Document Type"::Order);
+          rSalesHeaderArchive.SETRANGE("No.",SalesOrderNo); //P1286
+          IF rSalesHeaderArchive.FINDLAST() THEN BEGIN
+            bUseHistory := TRUE;
+          END ELSE BEGIN
+            rInbEDIIFTSTALine."Process Status" := rInbEDIIFTSTALine."Process Status"::Error;
+            rInbEDIIFTSTALine."Error Reason" := 'No Sales Header found.';
+            rInbEDIIFTSTALine.MODIFY;
+
+            //S,06.10.14,gob-Fuchs,P1286
+            pInbEDIIFTSTAHeader."Process Status" := pInbEDIIFTSTAHeader."Process Status"::Error;
+            pInbEDIIFTSTAHeader."Error Reason" := 'No Sales Header found.';
+            pInbEDIIFTSTAHeader.MODIFY;
+            //E,06.10.14,gob-Fuchs,P1286
+            EXIT;
+          END;
+        END;
+
+        REPEAT
+          IF NOT bUseHistory THEN BEGIN
+            IF rSalesLine.GET(rSalesHeader."Document Type",rSalesHeader."No.",rInbEDIIFTSTALine."Sales Order Line No.") THEN BEGIN
+              //S,gob-Fuchs,16.09.14,P1280
+              //Source Code moved to function CreateHistoryFromSalesLine to avoid redundant source code
+              CreateHistoryFromSalesLine(rSalesLine,rInbEDIIFTSTALine);
+              //E,gob-Fuchs,16.09.14,P1280
+
+              rDHLStatusCode.GET(rEDIPartner."DHL Event Code Filter",rInbEDIIFTSTALine."Status Code");
+              IF rDHLStatusCode."Post at IFTSTA" THEN BEGIN
+                bToPost := TRUE;
+                rSalesLine.SuspendStatusCheck(TRUE);
+                rSalesLine.VALIDATE("Qty. to Invoice",rSalesLine.Quantity);
+                rSalesLine.MODIFY(FALSE);
+              END;
+            END ELSE BEGIN
+              //S,gob-Fuchs,16.09.14,P1280
+
+              //Find Sales Line by Long Order No. via Interfaces
+              SalesOrderLinesFound := FALSE; //Flag to skip source code
+
+              //Check for Rhenus Interface
+              RHDSalesExportHeader.SETCURRENTKEY("Rhenus Order No.");
+              RHDSalesExportHeader.SETRANGE("Rhenus Order No.",pInbEDIIFTSTAHeader."Sales Order No."); //find Long Order No.
+              IF RHDSalesExportHeader.FINDLAST THEN //last one
+                //If Transmission Mode ist Delete then complete order was deleted, we should not get any IFTSTA for it
+                //If Transmission Mode is Update then all RHD Sales Export Lines are active lines, if a single line was canceled
+                //it's simply missing
+                IF RHDSalesExportHeader."Transmission Mode" <> RHDSalesExportHeader."Transmission Mode"::Delete THEN BEGIN
+                    //Get RHD Sales Line Reference belonging to RHD Sales Export Header
+                    //RHD Sales Export Line is not needed, because we only need to find Sales Lines
+                    RHDSalesLineReference.SETRANGE("Attached to Entry No.",RHDSalesExportHeader."Entry No.");
+                    IF RHDSalesLineReference.FIND('-') THEN
+                      REPEAT
+                        //if we find now the Sales Line we crete History Records for each line
+                        IF rSalesLine.GET(rSalesHeader."Document Type",RHDSalesExportHeader."Document No.",
+                          RHDSalesLineReference."Attached to Sales Line No.") THEN
+
+                          BEGIN
+                            CreateHistoryFromSalesLine(rSalesLine,rInbEDIIFTSTALine);
+                            SalesOrderLinesFound := TRUE; //at least one line found
+                          END;
+                      UNTIL RHDSalesLineReference.NEXT = 0;
+                END;
+
+              //PrÅfung DocData Schnttstelle
+              //Long Order No. for DocData is always different to Rhenus Long Order Nos.
+              IF NOT SalesOrderLinesFound THEN BEGIN //if already found with rhenus interface it's not needed to look for DocData
+                DDHeader.SETCURRENTKEY("No.","Record ID","DD Status");
+                DDHeader.SETRANGE("No.",pInbEDIIFTSTAHeader."Sales Order No.");
+                DDHeader.SETRANGE("Record ID",'51'); //yes I don't like hard coded source code also, but there is no setup for it
+                IF DDHeader.FINDFIRST THEN BEGIN //first one, there can be only one with the same Long Order No.
+                  DDLine.SETCURRENTKEY("Header Entry No.");
+                  DDLine.SETRANGE("Header Entry No.",DDHeader."Entry No.");
+                  IF DDLine.FINDSET THEN
+                    REPEAT
+                      //if we find now the Sales Line we crete History Records for each line
+                      IF rSalesLine.GET(rSalesHeader."Document Type",DDHeader."Order No. Navision",DDLine."Line No.") THEN
+                        BEGIN
+                          CreateHistoryFromSalesLine(rSalesLine,rInbEDIIFTSTALine);
+                          SalesOrderLinesFound := TRUE; //at least one line found
+                        END;
+                    UNTIL DDLine.NEXT = 0;
+                END;
+              END;
+
+              IF NOT SalesOrderLinesFound THEN BEGIN
+                //Original Source Code for
+                //IF rSalesLine.GET(rSalesHeader."Document Type",rSalesHeader."No.",rInbEDIIFTSTALine."Sales Order Line No.") THEN BEGIN
+                //END ELSE
+                //only used if new source code doesn't find any Sales Lines
+                rInbEDIIFTSTALine."Process Status" := rInbEDIIFTSTALine."Process Status"::Error;
+                rInbEDIIFTSTALine."Error Reason" := 'No Sales Lines found.';
+                rInbEDIIFTSTALine.MODIFY;
+              END;
+              //E,gob-Fuchs,16.09.14,P1280
+            END;
+          END ELSE BEGIN
+            IF rSalesLineArchive.GET(
+              rSalesHeaderArchive."Document Type",
+              rSalesHeaderArchive."No.",
+              rSalesHeaderArchive."Doc. No. Occurrence",
+              rSalesHeaderArchive."Version No.",
+              rInbEDIIFTSTALine."Sales Order Line No.") THEN BEGIN
+
+              //S,gob-Fuchs,16.09.14,P1280
+              //source code moved to function CreateHistoryFromArchivedLine
+              CreateHistoryFromArchivedLine(rSalesLineArchive,rInbEDIIFTSTALine);
+              //E,gob-Fuchs,16.09.14,P1280
+            END ELSE BEGIN
+              //S,gob-Fuchs,16.09.14,P1280
+              //Same for Sales Archive
+
+              //Find Sales Line by Long Order No. via Interfaces
+              SalesOrderLinesFound := FALSE; //Flag to skip source code
+
+              //Check for Rhenus Interface
+              RHDSalesExportHeader.SETCURRENTKEY("Rhenus Order No.");
+              RHDSalesExportHeader.SETRANGE("Rhenus Order No.",pInbEDIIFTSTAHeader."Sales Order No."); //find Long Order No.
+              IF RHDSalesExportHeader.FINDLAST THEN //last one
+                //If Transmission Mode ist Delete then complete order was deleted, we should not get any IFTSTA for it
+                //If Transmission Mode is Update then all RHD Sales Export Lines are active lines, if a single line was canceled
+                //it's simply missing
+                IF RHDSalesExportHeader."Transmission Mode" <> RHDSalesExportHeader."Transmission Mode"::Delete THEN BEGIN
+                    //Get RHD Sales Line Reference belonging to RHD Sales Export Header
+                    //RHD Sales Export Line is not needed, because we only need to find Sales Lines
+                    RHDSalesLineReference.SETRANGE("Attached to Entry No.",RHDSalesExportHeader."Entry No.");
+                    IF RHDSalesLineReference.FIND('-') THEN
+                      REPEAT
+                        //if we find now the Sales Line we crete History Records for each line
+                        IF rSalesLineArchive.GET(rSalesHeaderArchive."Document Type",rSalesHeaderArchive."No.",
+                          rSalesHeaderArchive."Doc. No. Occurrence",rSalesHeaderArchive."Version No.",
+                          RHDSalesLineReference."Attached to Sales Line No.") THEN
+                          BEGIN
+                            CreateHistoryFromArchivedLine(rSalesLineArchive,rInbEDIIFTSTALine);
+                            SalesOrderLinesFound := TRUE; //at least one line found
+                          END;
+                      UNTIL RHDSalesLineReference.NEXT = 0;
+                END;
+
+              //PrÅfung DocData Schnttstelle
+              //Long Order No. for DocData is always different to Rhenus Long Order Nos.
+              IF NOT SalesOrderLinesFound THEN BEGIN //if already found with rhenus interface it's not needed to look for DocData
+                DDHeader.SETCURRENTKEY("No.","Record ID","DD Status");
+                DDHeader.SETRANGE("No.",pInbEDIIFTSTAHeader."Sales Order No.");
+                DDHeader.SETRANGE("Record ID",'51'); //yes I don't like hard coded source code also, but there is no setup for it
+                IF DDHeader.FINDFIRST THEN BEGIN //first one, there can be only one with the same Long Order No.
+                  DDLine.SETCURRENTKEY("Header Entry No.");
+                  DDLine.SETRANGE("Header Entry No.",DDHeader."Entry No.");
+                  IF DDLine.FINDSET THEN
+                    REPEAT
+                      //if we find now the Sales Line we crete History Records for each line
+                      IF rSalesLineArchive.GET(rSalesHeaderArchive."Document Type",rSalesHeaderArchive."No.",
+                        rSalesHeaderArchive."Doc. No. Occurrence",rSalesHeaderArchive."Version No.",
+                        DDLine."Line No.") THEN
+                        BEGIN
+                          CreateHistoryFromArchivedLine(rSalesLineArchive,rInbEDIIFTSTALine);
+                          SalesOrderLinesFound := TRUE; //at least one line found
+                        END;
+                    UNTIL DDLine.NEXT = 0;
+                END;
+              END;
+
+              IF NOT SalesOrderLinesFound THEN BEGIN
+                //Original Source Code for
+                //IF rSalesLine.GET(rSalesHeader."Document Type",rSalesHeader."No.",rInbEDIIFTSTALine."Sales Order Line No.") THEN BEGIN
+                //END ELSE
+                //only used if new source code doesn't find any Sales Lines
+                rInbEDIIFTSTALine."Process Status" := rInbEDIIFTSTALine."Process Status"::Error;
+                rInbEDIIFTSTALine."Error Reason" := 'No Sales Lines found.';
+                rInbEDIIFTSTALine.MODIFY;
+              END;
+              //E,gob-Fuchs,16.09.14,P1280
+            END;
+          END;
+        UNTIL rInbEDIIFTSTALine.NEXT = 0;
+      END ELSE BEGIN
+        pInbEDIIFTSTAHeader."Process Status" := pInbEDIIFTSTAHeader."Process Status"::Error;
+        pInbEDIIFTSTAHeader."Error Reason" := 'No Status Lines found.';
+        pInbEDIIFTSTAHeader.MODIFY;
+      END;
+
+      rInbEDIIFTSTALine.SETRANGE("Entry No.",pInbEDIIFTSTAHeader."Entry No.");
+      rInbEDIIFTSTALine.SETRANGE("Process Status",rInbEDIIFTSTALine."Process Status"::Error);
+      IF rInbEDIIFTSTALine.FINDFIRST THEN BEGIN
+        pInbEDIIFTSTAHeader."Process Status" := pInbEDIIFTSTAHeader."Process Status"::Error;
+        pInbEDIIFTSTAHeader."Error Reason" := 'One or more Error Lines found.';
+        pInbEDIIFTSTAHeader.MODIFY;
+      END ELSE BEGIN
+        IF bToPost THEN BEGIN
+          rSalesHeader.SetHideValidationDialog(TRUE);
+          rSalesHeader.SuspendStatusCheck(TRUE);
+          rSalesHeader.VALIDATE("Posting Date",rInbEDIIFTSTALine."Status Date");
+          rSalesHeader.MODIFY(FALSE);
+          COMMIT;
+          rSalesHeader.GET(rSalesHeader."Document Type",rSalesHeader."No.");
+          rSalesHeader.Invoice := TRUE;
+          //T0060 02.03.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+          IF MPPostingMgtL.RUN(rSalesHeader) THEN BEGIN
+          //T0060 02.03.15 CC-GH ---------------------------------------------------
+
+            pInbEDIIFTSTAHeader."Process Status" := pInbEDIIFTSTAHeader."Process Status"::Processed;
+            pInbEDIIFTSTAHeader.MODIFY;
+          END ELSE BEGIN
+            pInbEDIIFTSTAHeader."Process Status" := pInbEDIIFTSTAHeader."Process Status"::Error;
+            pInbEDIIFTSTAHeader."Error Reason" := COPYSTR('Error at posting: ' + GETLASTERRORTEXT(),1,250);
+            pInbEDIIFTSTAHeader.MODIFY;
+            CLEARLASTERROR();
+          END;
+        END ELSE BEGIN
+          pInbEDIIFTSTAHeader."Process Status" := pInbEDIIFTSTAHeader."Process Status"::Processed;
+          pInbEDIIFTSTAHeader.MODIFY;
+        END;
+      END;
+    END;
+
+    PROCEDURE CreateHistoryFromSalesLine@1000000001(rSalesLine@1000000000 : Record 37;VAR rInbEDIIFTSTALine@1000000003 : Record 50206);
+    VAR
+      rDHLParcelsStatusHistory@1000000002 : Record 50021;
+    BEGIN
+      //P1280
+      IF FPCGeneralSetup."Active Parcel Status History" IN
+        [FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New"]
+      THEN BEGIN
+        rDHLParcelsStatusHistory.INIT;
+        rDHLParcelsStatusHistory."Entry No." := 0;
+        rDHLParcelsStatusHistory."Document No." := rSalesLine."Document No.";
+        rDHLParcelsStatusHistory."Document Line No." := rSalesLine."Line No.";
+        rDHLParcelsStatusHistory."Document Type" := rDHLParcelsStatusHistory."Document Type"::Order;
+        rDHLParcelsStatusHistory."Status Event" := rEDIPartner."DHL Event Code Filter";
+        rDHLParcelsStatusHistory."Status Code" := rInbEDIIFTSTALine."Status Code";
+        rDHLParcelsStatusHistory."VIR Status Comment" :=
+          rInbEDIIFTSTALine."Status Remark" + rInbEDIIFTSTALine."Status Remark 2" + rInbEDIIFTSTALine."Status Remark 3";
+        rDHLParcelsStatusHistory."Shipping Agent" := COPYSTR(rInbEDIIFTSTALine."EDI Partner",1,10);
+        IF (rInbEDIIFTSTALine."Status Date" <> 0D) AND (rInbEDIIFTSTALine."Status Time" <> 0T) THEN
+          rDHLParcelsStatusHistory."Time Stamp" := CREATEDATETIME(rInbEDIIFTSTALine."Status Date",
+            rInbEDIIFTSTALine."Status Time")
+        ELSE
+          rDHLParcelsStatusHistory."Time Stamp" := CREATEDATETIME(TODAY,0T);
+        rDHLParcelsStatusHistory."Import Time Stamp" := CURRENTDATETIME;
+        rDHLParcelsStatusHistory.INSERT(TRUE);
+      END;
+
+      IF FPCGeneralSetup."Active Parcel Status History" IN
+        [FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+        FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History"]
+      THEN BEGIN
+        CLEAR(CUParcelStatusHistoryMgmt);
+        RecRef.GETTABLE(rSalesLine);
+        IF (rInbEDIIFTSTALine."Status Date" <> 0D) AND (rInbEDIIFTSTALine."Status Time" <> 0T) THEN
+          CUParcelStatusHistoryMgmt.SetDateTimeGlobal(
+            CREATEDATETIME(rInbEDIIFTSTALine."Status Date",rInbEDIIFTSTALine."Status Time"))
+        ELSE
+          CUParcelStatusHistoryMgmt.SetDateTimeGlobal(CREATEDATETIME(TODAY,0T));
+        // S/P1293
+        IF rInbEDIIFTSTALine."Avise Date" <> 0D THEN
+          CUParcelStatusHistoryMgmt.SetDateGlobals(0D,rInbEDIIFTSTALine."Avise Date",0D);
+        // E/P1293
+        CUParcelStatusHistoryMgmt.FillHistoryByDocLine(
+          RecRef,                                   // Rec
+          1,                                        // p_Command
+          0,                                        // p_InfoDirection::  Incoming,Outgoing
+          1,                                        // p_UsedInterface::  ,EDI,DHL,DocData,Drop Shipment,Rhenus,UPS
+          COPYSTR(rInbEDIIFTSTALine."EDI Partner",1,10),          // p_ShippingAgentCode
+          '',                                       // p_TrackingCode
+          '',                                       // p_PieceCode
+          rInbEDIIFTSTALine."Status Code",          // p_StatusCode
+          rInbEDIIFTSTALine."Status Code",          // p_StatusRICCode
+          rInbEDIIFTSTALine."Status Remark" +
+          rInbEDIIFTSTALine."Status Remark 2" +
+          rInbEDIIFTSTALine."Status Remark 3" +
+          rInbEDIIFTSTALine."Status Remark 4",      // p_Comment
+          0);                                       // p_HowToHandleStatusDescription
+      END;
+      rInbEDIIFTSTALine."Process Status" := rInbEDIIFTSTALine."Process Status"::Processed;
+      rInbEDIIFTSTALine.MODIFY;
+    END;
+
+    PROCEDURE CreateHistoryFromArchivedLine@1000000002(rSalesLineArchive@1000000001 : Record 5108;VAR rInbEDIIFTSTALine@1000000000 : Record 50206);
+    VAR
+      rDHLParcelsStatusHistory@1000000002 : Record 50021;
+    BEGIN
+      //P1280
+      IF FPCGeneralSetup."Active Parcel Status History" IN
+        [FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New"]
+      THEN BEGIN
+        rDHLParcelsStatusHistory.INIT;
+        rDHLParcelsStatusHistory."Entry No." := 0;
+        rDHLParcelsStatusHistory."Document No." := rSalesLineArchive."Document No.";
+        rDHLParcelsStatusHistory."Document Line No." := rSalesLineArchive."Line No.";
+        rDHLParcelsStatusHistory."Document Type" := rDHLParcelsStatusHistory."Document Type"::Order;
+        rDHLParcelsStatusHistory."Status Event" := rEDIPartner."DHL Event Code Filter";
+        rDHLParcelsStatusHistory."Status Code" := rInbEDIIFTSTALine."Status Code";
+        rDHLParcelsStatusHistory."VIR Status Comment" :=
+          rInbEDIIFTSTALine."Status Remark" + rInbEDIIFTSTALine."Status Remark 2" + rInbEDIIFTSTALine."Status Remark 3";
+        rDHLParcelsStatusHistory."Shipping Agent" := COPYSTR(rInbEDIIFTSTALine."EDI Partner",1,10);
+        IF (rInbEDIIFTSTALine."Status Date" <> 0D) AND (rInbEDIIFTSTALine."Status Time" <> 0T) THEN
+          rDHLParcelsStatusHistory."Time Stamp" :=
+            CREATEDATETIME(rInbEDIIFTSTALine."Status Date",rInbEDIIFTSTALine."Status Time")
+        ELSE
+          rDHLParcelsStatusHistory."Time Stamp" := CREATEDATETIME(TODAY,0T);
+        rDHLParcelsStatusHistory."Import Time Stamp" := CURRENTDATETIME;
+        rDHLParcelsStatusHistory.INSERT(TRUE);
+      END;
+
+      IF FPCGeneralSetup."Active Parcel Status History" IN
+        [FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+        FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History"]
+      THEN BEGIN
+        CLEAR(CUParcelStatusHistoryMgmt);
+        RecRef.GETTABLE(rSalesLineArchive);
+        IF (rInbEDIIFTSTALine."Status Date" <> 0D) AND (rInbEDIIFTSTALine."Status Time" <> 0T) THEN
+          CUParcelStatusHistoryMgmt.SetDateTimeGlobal(
+            CREATEDATETIME(rInbEDIIFTSTALine."Status Date",rInbEDIIFTSTALine."Status Time"))
+        ELSE
+          CUParcelStatusHistoryMgmt.SetDateTimeGlobal(CREATEDATETIME(TODAY,0T));
+        // S/P1293
+        IF rInbEDIIFTSTALine."Avise Date" <> 0D THEN
+          CUParcelStatusHistoryMgmt.SetDateGlobals(0D,rInbEDIIFTSTALine."Avise Date",0D);
+        // E/P1293
+        CUParcelStatusHistoryMgmt.FillHistoryByDocLine(
+          RecRef,                                   // Rec
+          1,                                        // p_Command
+          0,                                        // p_InfoDirection::  Incoming,Outgoing
+          1,                                        // p_UsedInterface::  ,EDI,DHL,DocData,Drop Shipment,Rhenus,UPS
+          COPYSTR(rInbEDIIFTSTALine."EDI Partner",1,10),          // p_ShippingAgentCode
+          '',                                       // p_TrackingCode
+          '',                                       // p_PieceCode
+          rInbEDIIFTSTALine."Status Code",          // p_StatusCode
+          rInbEDIIFTSTALine."Status Code",          // p_StatusRICCode
+          rInbEDIIFTSTALine."Status Remark" +
+          rInbEDIIFTSTALine."Status Remark 2" +
+          rInbEDIIFTSTALine."Status Remark 3" +
+          rInbEDIIFTSTALine."Status Remark 4",      // p_Comment
+          0);                                       // p_HowToHandleStatusDescription
+      END;
+      rInbEDIIFTSTALine."Process Status" := rInbEDIIFTSTALine."Process Status"::Processed;
+      rInbEDIIFTSTALine.MODIFY;
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------------+
+      |       GOB Software & Systeme GmbH & Co. KG       |
+      +--------------------------------------------------+
+      |                      home24                      |
+      +--------------------------------------------------+
+
+      Project   Date          Consultant  Comment
+      --------------------------------------------------------
+      P1183     28.01.2014    gob-dst     Objekt angelegt
+      P1280     16.09.2014    gob-Fuchs   Anpassung fÅr den Fall, dass keine Zeilenreferenz zurÅck Åbermittelt wird
+      P1286     06.10.2014    gob-Fuchs   PrÅfung ob Sales Order No. <> ''
+                                          Unbenutzen Varibale gHistory entfernt
+      P1293     14.11.2014    gob-lku     Use Avisdate for ADD
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation Tectura & Home24 NAV Team  |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      T0060       02.03.15  CC-GH     Special handling for Marketplace
+    }
+    END.
+  }
+}
+

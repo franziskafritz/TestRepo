@@ -1,0 +1,371 @@
+OBJECT Codeunit 50073 SC Service
+{
+  OBJECT-PROPERTIES
+  {
+    Date=05.11.13;
+    Time=18:44:38;
+    Modified=Yes;
+    Version List=HME0348,P0651,GOB;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=BEGIN
+            CheckShipment;
+
+            SCQueueLog.RESET;
+            SCQueueLog.SETRANGE(Direction,SCQueueLog.Direction::Outgoing);
+            SCQueueLog.SETRANGE(Status,SCQueueLog.Status::New);
+            IF SCQueueLog.FIND('-') THEN
+              REPEAT
+                CLEARLASTERROR;
+                CLEAR(SCWebServiceMailOut);
+                COMMIT;
+                IF SCWebServiceMailOut.RUN(SCQueueLog) THEN BEGIN
+                  SCQueueLogSucc := SCQueueLog;
+                  SCQueueLogSucc.FIND;
+                  SCQueueLogSucc.Status := SCQueueLogSucc.Status::Transfered;
+                  SCQueueLogSucc."Processed at" := CREATEDATETIME(WORKDATE,TIME);
+                  SCQueueLogSucc.MODIFY;
+                  SCQueueLineLog.SETRANGE("Attached to Entry No.",SCQueueLog."Entry No.");
+                  IF NOT SCQueueLineLog.ISEMPTY THEN
+                    SCQueueLineLog.MODIFYALL(Status,SCQueueLogSucc.Status);
+                END ELSE BEGIN
+                  SCQueueLogError := SCQueueLog;
+                  SCQueueLogError.FIND;
+                  SCQueueLogError.Status := SCQueueLogError.Status::Error;
+                  SCQueueLogError."Error Text" := COPYSTR(GETLASTERRORTEXT,1,250);
+                  SCQueueLogError."Processed at" := CREATEDATETIME(WORKDATE,TIME);
+                  SCQueueLogError."Error Source" := SCWebServiceMailOut.GetErrorSource;
+                  SCQueueLogError.MODIFY;
+                  SCQueueLineLog.SETRANGE("Attached to Entry No.",SCQueueLog."Entry No.");
+                  IF NOT SCQueueLineLog.ISEMPTY THEN
+                    SCQueueLineLog.MODIFYALL(Status,SCQueueLogError.Status);
+                END;
+              UNTIL SCQueueLog.NEXT = 0;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      SalesHeader@1000000009 : Record 36;
+      SCQueueSetup@1000000006 : Record 50101;
+      SCCode@1000000007 : Record 50102;
+      SCQueueLog@1000000000 : Record 50103;
+      SCQueueLogSucc@1000000001 : Record 50103;
+      SCQueueLogError@1000000002 : Record 50103;
+      SCQueueLogNew@1000000013 : Record 50103;
+      SCQueueLineLog@1000000005 : Record 50104;
+      SCWebServiceMailOut@1000000003 : Codeunit 50074;
+      ErrorSource@1000000004 : ' ,NAV,Connection,Shop,UMS';
+      HeaderCreated@1000000008 : Boolean;
+      Text001@1000000010 : TextConst 'ENU=The Customer %1 does not exist!';
+      Text002@1000000011 : TextConst 'ENU=The Customer %2 has no E-Mail Adress!';
+      GlobalEntryNo@1000000012 : Integer;
+      FPCGeneralSetup@1000000014 : Record 50055;
+
+    PROCEDURE CheckShipment@1000000000();
+    VAR
+      SalesLineL@1000000003 : Record 37;
+      SCCodeActiveChannelL@1000000001 : Record 50107;
+      TrackingIDL@1000000000 : Text[40];
+      ShippingAgentL@1000000002 : Code[20];
+    BEGIN
+      SCQueueSetup.GET;
+      IF SCQueueSetup."Shop Connector active" = SCQueueSetup."Shop Connector active"::No THEN
+        EXIT;
+
+      SCCode.GET(SCQueueSetup."Shipment Mail Code");
+      IF SCCode."Shop Connector active" = SCCode."Shop Connector active"::No THEN
+        EXIT;
+
+      SalesHeader.SETRANGE(Status,SalesHeader.Status::Released);
+      SalesHeader.SETRANGE(Kommissionierung,TRUE);
+      //H0013  04.10.12  ABR  ++++++++++++++++++++++++++++++++++++++++
+      SalesHeader.SETRANGE("XML Kommissionierung",TRUE);
+      //H0013  04.10.12  ABR  ----------------------------------------
+      IF SCCode."Starting Date" <> 0D THEN
+        SalesHeader.SETFILTER("Order Date",'%1..',SCCode."Starting Date");
+      IF SalesHeader.FIND('-') THEN
+        REPEAT
+          HeaderCreated := FALSE;
+          SalesLineL.SETRANGE("Document Type",SalesHeader."Document Type");
+          SalesLineL.SETRANGE("Document No.",SalesHeader."No.");
+          SalesLineL.SETRANGE(Type,SalesLineL.Type::Item);
+          SalesLineL.SETFILTER("No.",'<>%1','');
+          //H0348  13.05.13  ABR  ++++++++++++++++++++++++++++++
+          {
+          //H0348  13.05.13  ABR  ------------------------------
+          SalesLineL.SETFILTER("Line Status",'<>%1','CANCELED');
+          //H0348  13.05.13  ABR  ++++++++++++++++++++++++++++++
+          }
+          SalesLineL.SETFILTER(Quantity,'<>%1',0);
+          //H0348  13.05.13  ABR  ------------------------------
+          IF SalesLineL.FIND('-') THEN
+            REPEAT
+              //H0282  08.04.13  ABR  ++++++++++++++++++++++++++++++++++
+              IF DoSendShipmentLine(SalesLineL,TrackingIDL,ShippingAgentL) THEN
+                CreateShipmentLogLine(SalesLineL,TrackingIDL,ShippingAgentL);
+              //H0282  08.04.13  ABR  ----------------------------------
+            UNTIL SalesLineL.NEXT = 0;
+          IF HeaderCreated THEN
+            GlobalEntryNo +=1;
+        UNTIL SalesHeader.NEXT = 0;
+    END;
+
+    PROCEDURE DoSendShipmentLine@1000000001(SalesLineV@1000000000 : Record 37;VAR TrackingIDR@1000000003 : Text[40];VAR ShippingAgentR@1000000005 : Code[20]) : Boolean;
+    VAR
+      ShippingAgentL@1000000006 : Record 291;
+      SCQueueLineLogL@1000000001 : Record 50104;
+      SCCodeActiveChannelL@1000000002 : Record 50107;
+      DHLParcelsStatusHistoryL@1000000004 : Record 50021;
+      ParcelStatusHistory@1000000007 : Record 80013;
+    BEGIN
+      //S/P1133
+      FPCGeneralSetup.GET;
+      //E/P1133
+
+      //Check if Channel is activated
+      SCCodeActiveChannelL.SETRANGE("Shop Connector Code",SCQueueSetup."Shipment Mail Code");
+      SCCodeActiveChannelL.SETRANGE("Purchasing Code",SalesLineV."Purchasing Code");
+      SCCodeActiveChannelL.SETRANGE(Active,TRUE);
+      IF SCCodeActiveChannelL.ISEMPTY THEN
+        EXIT(FALSE);
+
+      SCQueueLineLogL.SETRANGE("Source Type",DATABASE::"Sales Line");
+      SCQueueLineLogL.SETRANGE("Source Subtype",SalesLineV."Document Type");
+      SCQueueLineLogL.SETRANGE("Source ID",SalesLineV."Document No.");
+      SCQueueLineLogL.SETRANGE("Source Ref. No.",SalesLineV."Line No.");
+      //H0016  08.10.12  ABR  ++++++++++++++++++++++++++++++++++++++++
+      {
+      //H0016  08.10.12  ABR  ----------------------------------------
+      SCQueueLineLogL.SETFILTER(Status,'%1|%2|%3',
+                                     SCQueueLineLogL.Status::Transfered,
+                                     SCQueueLineLogL.Status::Commited,
+                                     SCQueueLineLogL.Status::Warning);
+      //H0016  08.10.12  ABR  ++++++++++++++++++++++++++++++++++++++++
+      }
+      //H0016  08.10.12  ABR  ----------------------------------------
+      IF NOT SCQueueLineLogL.ISEMPTY THEN
+        EXIT(FALSE);
+
+      //S/P1133
+      CASE FPCGeneralSetup."Active Parcel Status History" OF
+        FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old":
+          BEGIN
+      //E/P1133
+            //Check Delivery
+            DHLParcelsStatusHistoryL.SETFILTER("DHL Shipment Code",'<>%1','');
+            DHLParcelsStatusHistoryL.SETFILTER("Piece-Code (Identifier)",'%1','');
+            DHLParcelsStatusHistoryL.SETRANGE("Document Type",DHLParcelsStatusHistoryL."Document Type"::Order);
+            DHLParcelsStatusHistoryL.SETRANGE("Document No.",SalesLineV."Document No.");
+            DHLParcelsStatusHistoryL.SETRANGE("Document Line No.",SalesLineV."Line No.");
+            IF DHLParcelsStatusHistoryL.FINDFIRST THEN BEGIN
+              //H0016  08.10.12  ABR  ++++++++++++++++++++++++++++++++++++++++
+              IF DHLParcelsStatusHistoryL."Time Stamp" < CREATEDATETIME(CALCDATE('<-2D>',WORKDATE),TIME) THEN
+                EXIT(FALSE);
+              //H0016  08.10.12  ABR  ----------------------------------------
+
+              //P0651  08.01.13  ABR  ++++++++++++++++++++++++++++++++++++++++
+              IF ShippingAgentL.GET(DHLParcelsStatusHistoryL."Shipping Agent") THEN
+                IF NOT ShippingAgentL."Send Shipping Mail" THEN
+                  EXIT(FALSE);
+              //P0651  08.01.13  ABR  ----------------------------------------
+
+              TrackingIDR := DHLParcelsStatusHistoryL."DHL Shipment Code";
+
+              //H0282  08.04.13  ABR  ++++++++++++++++++++++++++++++++++
+              CASE DHLParcelsStatusHistoryL."Shipping Agent" OF
+                'DHL','DBG','': ShippingAgentR := 'DHL';
+                'UPS','': ShippingAgentR := 'UPS';
+              ELSE
+                EXIT(FALSE);
+              END;
+              //H0282  08.04.13  ABR  ----------------------------------
+
+              EXIT(TRUE);
+            END;
+      //S/P1133
+          END;
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+        FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History":
+          BEGIN
+            ParcelStatusHistory.SETCURRENTKEY("Document No.","Document Line No.","Document Type");
+            ParcelStatusHistory.SETRANGE("Document No.",SalesLineV."Document No.");
+            ParcelStatusHistory.SETRANGE("Document Line No.",SalesLineV."Line No.");
+            ParcelStatusHistory.SETRANGE("Document Type",SalesLineV."Document Type");
+            ParcelStatusHistory.SETFILTER("Tracking Code",'<>%1','');
+            ParcelStatusHistory.SETFILTER("Piece Code",'%1','');
+            IF ParcelStatusHistory.FINDFIRST THEN BEGIN
+              IF ParcelStatusHistory."Timestamp Insert" < CREATEDATETIME(CALCDATE('<-2D>',WORKDATE),TIME) THEN
+                EXIT(FALSE);
+              IF ShippingAgentL.GET(ParcelStatusHistory."Shipping Agent Code") THEN
+                IF NOT ShippingAgentL."Send Shipping Mail" THEN
+                  EXIT(FALSE);
+              TrackingIDR := ParcelStatusHistory."Tracking Code";
+              CASE ParcelStatusHistory."Shipping Agent Code" OF
+                'DHL','DBG','': ShippingAgentR := 'DHL';
+                'UPS','': ShippingAgentR := 'UPS';
+              ELSE
+                EXIT(FALSE);
+              END;
+              EXIT(TRUE);
+            END;
+          END;
+      END;
+      //E/P1133
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE CreateShipmentLogHeader@1000000008(SalesLineV@1000000000 : Record 37);
+    VAR
+      CustomerL@1000000003 : Record 18;
+      ContactL@1000000004 : Record 5050;
+      SCQueueLogL@1000000001 : Record 50103;
+      eBayNavCAccountL@1000000002 : Record 5251550;
+    BEGIN
+      SetGlobalEntryNo;
+
+      SCQueueLogNew.INIT;
+      SCQueueLogNew."Entry No." := GlobalEntryNo;
+      SCQueueLogNew."Website No." := SalesHeader."Website No.";
+      SCQueueLogNew.Direction := SCQueueLogNew.Direction::Outgoing;
+      SCQueueLogNew.Status := SCQueueLogNew.Status::New;
+      SCQueueLogNew.Action := SCQueueLogNew.Action::Automatic;
+      SCQueueLogNew."Created at" := CREATEDATETIME(WORKDATE,TIME);
+      SCQueueLogNew."Source Type" := DATABASE::"Sales Header";
+      SCQueueLogNew."Source Subtype" := SalesLineV."Document Type";
+      SCQueueLogNew."Source ID" := SalesLineV."Document No.";
+      SCQueueLogNew."Recipient Type" := SCQueueLogNew."Recipient Type"::Customer;
+      SCQueueLogNew."Recipient No." := SalesHeader."Sell-to Customer No.";
+
+      IF NOT CustomerL.GET(SalesHeader."Sell-to Customer No.") THEN BEGIN
+        SCQueueLogNew.Status := SCQueueLogNew.Status::Error;
+        SCQueueLogNew."Error Text" := STRSUBSTNO(Text001,SalesHeader."Sell-to Customer No.");
+        SCQueueLogNew."Error Source" := SCQueueLogNew."Error Source"::NAV;
+      END ELSE BEGIN
+        SCQueueLogNew."Recipient E-Mail Adress" := CustomerL."E-Mail";
+        IF (SCQueueLogNew."Recipient E-Mail Adress" = '') AND
+           (ContactL.GET(CustomerL."Primary Contact No.")) THEN
+          SCQueueLogNew."Recipient E-Mail Adress" := ContactL."E-Mail";
+
+        IF SCQueueLogNew."Recipient E-Mail Adress" = '' THEN BEGIN
+          SCQueueLogNew.Status := SCQueueLogNew.Status::Error;
+          SCQueueLogNew."Error Text" := STRSUBSTNO(Text002,SalesHeader."Sell-to Customer No.");
+          SCQueueLogNew."Error Source" := SCQueueLogNew."Error Source"::NAV;
+        END;
+      END;
+
+      //H0013  04.10.12  ABR  ++++++++++++++++++++++++++++++++++++++++
+      //Check NAV Connector Acc. No.
+      eBayNavCAccountL.SETRANGE("Customer No.",SalesHeader."Sell-to Customer No.");
+      IF eBayNavCAccountL.FINDFIRST THEN BEGIN
+        IF eBayNavCAccountL."External Account No." <> SalesHeader."Sell-to Customer No." THEN BEGIN
+          SCQueueLogNew."Recipient No." := eBayNavCAccountL."External Account No.";
+          SCQueueLogNew."Recipient E-Mail Adress" := eBayNavCAccountL."E-Mail";
+        END;
+      END;
+      //H0013  04.10.12  ABR  ----------------------------------------
+
+      IF SCQueueSetup."Shop Connector active" = SCQueueSetup."Shop Connector active"::Test THEN
+        SCQueueLogNew."Recipient E-Mail Adress" := SCCode."Test E-Mail Adress";
+
+      IF SCCode."Shop Connector active" = SCCode."Shop Connector active"::Test THEN
+        SCQueueLogNew."Recipient E-Mail Adress" := SCCode."Test E-Mail Adress";
+
+      SCQueueLogNew."Shop Connector Code" := SCCode.Code;
+      SCQueueLogNew.INSERT;
+      HeaderCreated := TRUE;
+    END;
+
+    PROCEDURE CreateShipmentLogLine@1000000009(SalesLineV@1000000000 : Record 37;TrackingIDV@1000000001 : Text[40];ShippingAgentV@1000000004 : Code[20]);
+    VAR
+      PurchasingL@1000000003 : Record 5721;
+      SCQueueLineLogL@1000000002 : Record 50104;
+    BEGIN
+      IF NOT PurchasingL.GET(SalesLineV."Purchasing Code") THEN
+        EXIT;
+
+      IF NOT HeaderCreated THEN
+        CreateShipmentLogHeader(SalesLineV);
+
+      SCQueueLineLogL.INIT;
+      SCQueueLineLogL."Attached to Entry No." := SCQueueLogNew."Entry No.";
+      SCQueueLineLogL."Line No." := SalesLineV."Line No.";
+      SCQueueLineLogL.Status := SCQueueLogNew.Status;
+      SCQueueLineLogL."Source Type" := DATABASE::"Sales Line";
+      SCQueueLineLogL."Source Subtype" := SalesLineV."Document Type";
+      SCQueueLineLogL."Source ID" := SalesLineV."Document No.";
+      SCQueueLineLogL."Source Ref. No." := SalesLineV."Line No.";
+      SCQueueLineLogL."Recipient Type" := SCQueueLogNew."Recipient Type";
+      SCQueueLineLogL."Recipient No." := SCQueueLogNew."Recipient No.";
+      SCQueueLineLogL."Recipient E-Mail Adress" := SCQueueLogNew."Recipient E-Mail Adress";
+      SCQueueLineLogL.Type := SalesLineV.Type;
+      SCQueueLineLogL."No." := SalesLineV."No.";
+      SCQueueLineLogL."Tracking No." := TrackingIDV;
+      //H0282  08.04.13  ABR  ++++++++++++++++++++++++++++++++++
+      {
+      //H0282  08.04.13  ABR  ----------------------------------
+      SCQueueLineLogL."Shipping Agent Code" := PurchasingL."Shipping Agent Code";
+      //H0282  08.04.13  ABR  ++++++++++++++++++++++++++++++++++
+      }
+      SCQueueLineLogL."Shipping Agent Code" := ShippingAgentV;
+      //H0282  08.04.13  ABR  ----------------------------------
+      SCQueueLineLogL."Purchasing Code" := SalesLineV."Purchasing Code";
+      SCQueueLineLogL.INSERT;
+    END;
+
+    PROCEDURE SetGlobalEntryNo@1000000022();
+    VAR
+      SCQueueLogL@1000000000 : Record 50103;
+    BEGIN
+      //A/gob-adb/18.04.13
+      SCQueueLogL.LOCKTABLE;
+      //E/gob-adb/18.04.13
+      IF SCQueueLogL.FINDLAST THEN
+        GlobalEntryNo := SCQueueLogL."Entry No." +1
+      ELSE
+        GlobalEntryNo := 1;
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation GOB & Home24 NAV Team      |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      P1133       05.11.13  gob-mlan  - Redesign of "DHL Parcel Status History"
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+
+      *** Module: Shop Connector - Create Shipping Mails ***
+      H0007       27.09.12 ABR       Created
+      H0013       04.10.12 ABR       No Shipment Mail for SO
+      H0016       08.10.12 ABR       Filter Lines and set Entry No.
+      P0651       08.01.13 ABR       Send only allowed Shipping Agents
+      H0282       08.04.13 ABR       Send UPS Tracking Info
+      H0348       13.05.13 ABR       Filter Canceled Lines with new Definition
+
+      *** Module: Miscellaneous
+      P0890       18.04.13 gob-adb   LOCKTABLE inserted
+    }
+    END.
+  }
+}
+

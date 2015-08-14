@@ -1,0 +1,1736 @@
+OBJECT Codeunit 50156 RHD Purchase Interface Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02.12.14;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=GOB,HME1796;
+  }
+  PROPERTIES
+  {
+    TableNo=50180;
+    OnRun=BEGIN
+            // H0854 12022014 DMA +++++++++++++++++++++++++++++++
+            CASE "Record Type" OF
+              'WEM':
+                BEGIN
+            // H0854 12022014 DMA -------------------------------
+                  ProcessWEMLine(Rec);
+            // H0854 12022014 DMA +++++++++++++++++++++++++++++++
+                END;
+              'PSE':
+                BEGIN
+                  ProcessPSELine(Rec);
+                END;
+              'WMP':
+                BEGIN
+                  ProcessWMPLine(Rec);
+                END;
+            END;
+            // H0854 12022014 DMA -------------------------------
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      GOB001@1000000000 : TextConst 'DEU=Unterlieferung in %1 vorhanden: %2, %3 (offene Menge: %4, gelieferte Menge: %5)!;ENU=Underdelivery exists for %1: %2, %3 (Outstanding Qty.: %4, Qty. received: %5)!';
+      GOB002@1000000001 : TextConst 'DEU=öberlieferung in %1 vorhanden: %2, %3 (offene Menge: %4, gelieferte Menge: %5)!;ENU=Overdelivery exists for %1: %2, %3 (Outstanding Qty.: %4, Qty. received: %5)!';
+      GOB003@1000000002 : TextConst 'DEU=Es wurde keine %1 zu %2, %3 gefunden!;ENU=No %1 for %2, %3 found!';
+      GOB004@1000000003 : TextConst 'DEU=Eintrag %1: Teilabschluss vorhanden (%2, %3)!;ENU=Entry No. %1: Partially Completed (%2, %3)!';
+      GOB005@1000000004 : TextConst 'DEU=%1 %2 konnte nicht gefunden werden!;ENU=%1 %2 not found!';
+      GOB006@1000000005 : TextConst 'DEU=Eintrag %1: BeschÑdigte Menge (%2 StÅck) vorhanden (%3, %4)!;ENU=Entry No. %1: Damaged items (%2 pieces) exist (%3, %4)!';
+      "**HME*************"@1000000006 : TextConst;
+      HMETxt001@1000000007 : TextConst 'ENU=No sellable Location could be found for Branch Code %1';
+      HMETxt002@1000000008 : TextConst 'ENU=No unsellable Location could be found for Branch Code %1';
+
+    PROCEDURE "--- PO ---"@1000000012();
+    BEGIN
+    END;
+
+    PROCEDURE TriggerRhenusInterface@1000000000(p_PurchaseLine@1000000000 : Record 39;p_EntryType@1000000003 : 'New,Cancel,Update') : Text[100];
+    VAR
+      IsRhenusPosition@1000000001 : Boolean;
+      WasAlreadyInInterface@1000000002 : Boolean;
+      Text0001@1000000004 : TextConst 'DEU=WEA Cancel successfully created.;ENU=WEA Cancel successfully created.';
+      Text0002@1000000005 : TextConst 'DEU=WEA Update successfully created.;ENU=WEA Update successfully created.';
+      Text0003@1000000006 : TextConst 'DEU=WEA successfully created.;ENU=WEA successfully created.';
+      Text0004@1000000007 : TextConst 'DEU=No WEA needed.;ENU=No WEA needed.';
+    BEGIN
+      // Check if Purchase Lines have Rhenus Positions
+      IsRhenusPosition := CheckForRhenusPosition(p_PurchaseLine);
+      // Check if Line was alredy in Interface
+      WasAlreadyInInterface := CheckIfWasAlreayInInterface(p_PurchaseLine);
+
+      IF IsRhenusPosition THEN BEGIN
+        IF WasAlreadyInInterface THEN BEGIN
+          IF p_EntryType = p_EntryType::Cancel THEN BEGIN
+            FillNewOrderForPOLine(p_PurchaseLine,p_EntryType::Cancel);
+            EXIT(Text0001);
+          END ELSE BEGIN
+            IF FillNewOrderForPOLine(p_PurchaseLine,p_EntryType::Update) THEN
+              EXIT(Text0002)
+            ELSE
+              EXIT(Text0004);
+          END;
+        END ELSE BEGIN
+          //S/P1193
+          IF p_EntryType = p_EntryType::New THEN BEGIN
+          //E/P1193
+            FillNewOrderForPOLine(p_PurchaseLine,p_EntryType);
+            EXIT(Text0003);
+          //S/P1193
+          END;
+          //E/P1193
+        END;
+      END;
+
+      // If no more Rhenus Positions and Order was in Interface Cancel Transmission oder Insert Cancel Records
+      IF NOT IsRhenusPosition AND WasAlreadyInInterface THEN BEGIN
+        FillNewOrderForPOLine(p_PurchaseLine,p_EntryType::Cancel);
+        EXIT(Text0001);
+      END;
+
+      EXIT(Text0004);
+    END;
+
+    PROCEDURE FillNewOrderForPOLine@1000000015(p_PurchaseLine@1000000002 : Record 39;p_EntryType@1000000003 : 'New,Cancel,Update') : Boolean;
+    VAR
+      RHDPurchExportHeader@1000000000 : Record 50178;
+      RHDPurchExportHeader2@1000000006 : Record 50178;
+      RHDPurchExportLine@1000000008 : Record 50179;
+      PurchaseHeader@1000000001 : Record 38;
+      RHDSetup@1000000004 : Record 50177;
+      Item@1000000005 : Record 27;
+      RHDSalesExportHeader@1000000010 : Record 50181;
+      RHDSalesExportLine@1000000009 : Record 50182;
+      RHDSalesExportLine2@1000000011 : Record 50182;
+      IsUpdateNeccessary@1000000007 : Boolean;
+    BEGIN
+      PurchaseHeader.GET(p_PurchaseLine."Document Type",p_PurchaseLine."Document No.");
+      RHDSetup.GET;
+      RHDSetup.TESTFIELD("Record Type WEA");
+
+      IsUpdateNeccessary := IsUpdateEntry(p_PurchaseLine);
+
+      IF (p_EntryType = p_EntryType::Update) AND (NOT IsUpdateNeccessary) THEN
+        EXIT(FALSE);
+
+      // S/P1239
+      IF (p_EntryType = p_EntryType::Cancel) AND (p_PurchaseLine."Outstanding Quantity" = 0) THEN
+        EXIT(FALSE);
+      // E/P1239
+
+      RHDPurchExportHeader.RESET;
+      RHDPurchExportHeader."Entry No." := RHDPurchExportHeader.GetNextEntryNo;
+      RHDPurchExportHeader.INSERT;
+      RHDPurchExportHeader."Document Type" := PurchaseHeader."Document Type";
+      RHDPurchExportHeader."Document No." := PurchaseHeader."No.";
+      RHDPurchExportHeader."Sequence No." := GetSequenceNo(p_PurchaseLine);
+      RHDPurchExportHeader."Rhenus Order No." := RHDPurchExportHeader."Document No." + RHDPurchExportHeader."Sequence No.";
+      RHDPurchExportHeader."Transmission Mode" := p_EntryType;
+      RHDPurchExportHeader."Branch Code" := GetBrachCodeFromPurchasingCode(p_PurchaseLine."Purchasing Code");
+
+      IF RHDPurchExportHeader."Branch Code" = '' THEN
+        RHDPurchExportHeader."Branch Code" := GetBranchCodeFromLocationCode(p_PurchaseLine."Location Code");
+
+      IF (p_EntryType = p_EntryType::Cancel) AND (RHDPurchExportHeader."Branch Code" = '') THEN BEGIN
+        RHDPurchExportHeader2.SETRANGE("Document Type",RHDPurchExportHeader."Document Type");
+        RHDPurchExportHeader2.SETRANGE("Rhenus Order No.",RHDPurchExportHeader."Rhenus Order No.");
+        IF RHDPurchExportHeader2.FINDLAST THEN
+          RHDPurchExportHeader."Branch Code" := RHDPurchExportHeader2."Branch Code";
+      END;
+
+      RHDPurchExportHeader."Record Type" := RHDSetup."Record Type WEA";
+      RHDPurchExportHeader.Status := RHDPurchExportHeader.Status::Creation;
+      RHDPurchExportHeader."Insert Timestamp" := CURRENTDATETIME;
+      RHDPurchExportHeader."Process Timestamp" := 0DT;
+      RHDPurchExportHeader.Filename := '';
+      RHDPurchExportHeader.MODIFY;
+
+      RHDPurchExportLine.RESET;
+      RHDPurchExportLine."Entry No." := RHDPurchExportHeader."Entry No.";
+      RHDPurchExportLine."Entry Line No." := 10000;
+      RHDPurchExportLine.INSERT;
+      RHDPurchExportLine."Attached to Document Type" := p_PurchaseLine."Document Type";
+      RHDPurchExportLine."Attached to Document No." := p_PurchaseLine."Document No.";
+      RHDPurchExportLine."Attached to Document Line No." := p_PurchaseLine."Line No.";
+      RHDPurchExportLine."Sequence No." := RHDPurchExportHeader."Sequence No.";
+      RHDPurchExportLine."Record Type" := RHDSetup."Record Type WEA";
+      RHDPurchExportLine.Type := RHDPurchExportLine.Type::Item;
+      RHDPurchExportLine."Pos. No." := 1;
+      RHDPurchExportLine."No." := p_PurchaseLine."No.";
+      RHDPurchExportLine.Description := p_PurchaseLine.Description;
+      RHDPurchExportLine."Attached to Pos. No." := 0;
+      RHDPurchExportLine.Quantity := p_PurchaseLine."Outstanding Quantity"; //p_PurchaseLine.Quantity;
+      RHDPurchExportLine."Location Code" := p_PurchaseLine."Location Code";
+      RHDPurchExportLine.Crossdock := p_PurchaseLine."Special Order";
+      RHDPurchExportLine."Sales Order No." := p_PurchaseLine."Special Order Sales No.";
+      RHDPurchExportLine."Sales Order Line No." := p_PurchaseLine."Special Order Sales Line No.";
+      RHDPurchExportLine."Partial Delivery" := FALSE;
+      Item.GET(p_PurchaseLine."No.");
+      RHDPurchExportLine."Unit Volume" := Item."Unit Volume";
+      RHDPurchExportLine."Unit Weight" := Item."Net Weight";
+
+      RHDSalesExportLine.RESET;
+      RHDSalesExportLine.SETRANGE("Purchase Order No.",p_PurchaseLine."Document No.");
+      //A,gob-dst,12.02.2014,P1200
+      //RHDSalesExportLine.SETRANGE("Purch. Order Line No.",p_PurchaseLine."Line No.");
+      //E,gob-dst,12.02.2014,P1200
+      RHDSalesExportLine.SETRANGE(Type,RHDSalesExportLine.Type::Item);
+      RHDSalesExportLine.SETRANGE(Crossdock,TRUE);
+      IF RHDSalesExportLine.FINDLAST THEN BEGIN
+        RHDSalesExportLine2.RESET;
+        RHDSalesExportLine2.SETRANGE("Entry No.",RHDSalesExportLine."Entry No.");
+        RHDSalesExportLine2.SETRANGE("Attached to Pos. No.",RHDSalesExportLine."Pos. No.");
+        IF RHDSalesExportLine2.FINDFIRST THEN
+          RHDPurchExportLine.Barcode := RHDSalesExportLine2.Barcode;
+        IF RHDSalesExportHeader.GET(RHDSalesExportLine."Entry No.") THEN BEGIN
+          IF STRPOS(RHDSalesExportHeader."Rhenus Order No.",RHDPurchExportLine."Sales Order No.") > 0 THEN
+            // S/P1157
+            // RHDPurchExportLine."Sales Order No." := RHDSalesExportHeader."Rhenus Order No.";
+            RHDPurchExportLine."Rhenus Sales Order No." := RHDSalesExportHeader."Rhenus Order No.";
+            // E/P1157
+        END;
+      END ELSE BEGIN
+        RHDPurchExportLine.Barcode := '';
+      END;
+      //S/P1160
+      // Only Fill Sales Order No if Real Crossdock, not fpr Channel 99
+      // S/P1157
+      //IF RHDPurchExportLine."Rhenus Sales Order No." = '' THEN BEGIN
+        //RHDSalesExportHeader.SETRANGE("Document Type",RHDSalesExportHeader."Document Type"::Order);
+        //RHDSalesExportHeader.SETRANGE("Document No.",RHDPurchExportLine."Sales Order No.");
+        //IF RHDSalesExportHeader.FINDLAST THEN
+          //RHDPurchExportLine."Rhenus Sales Order No." := RHDSalesExportHeader."Rhenus Order No.";
+      //END;
+      //E/P1160
+      // E/P1157
+      RHDPurchExportLine."Purchasing Code" := p_PurchaseLine."Purchasing Code";
+      RHDPurchExportLine.Amount := p_PurchaseLine."Line Amount";
+      Item.CALCFIELDS("Parcels Number");
+      RHDPurchExportLine."No. of Packages" := Item."Parcels Number";
+      RHDPurchExportLine."Promised Receipt Date" := p_PurchaseLine."Expected Receipt Date";
+      RHDPurchExportLine.MODIFY;
+      RHDPurchExportHeader.Status := RHDPurchExportHeader.Status::Unprocessed;
+      RHDPurchExportHeader.MODIFY;
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE CheckForRhenusPosition@1000000006(p_PurchaseLine@1000000000 : Record 39) : Boolean;
+    VAR
+      PurchaseLine@1000000001 : Record 39;
+    BEGIN
+      IF p_PurchaseLine."Purchasing Code" <> '' THEN BEGIN
+        IF GetBrachCodeFromPurchasingCode(p_PurchaseLine."Purchasing Code") <> '' THEN
+          EXIT(TRUE);
+      END ELSE
+       IF GetBranchCodeFromLocationCode(p_PurchaseLine."Location Code") <> '' THEN
+         EXIT(TRUE);
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE CheckIfWasAlreayInInterface@1000000004(p_PurchaseLine@1000000000 : Record 39) : Boolean;
+    VAR
+      RHDPurchExportLine@1000000001 : Record 50179;
+    BEGIN
+      RHDPurchExportLine.RESET;
+      RHDPurchExportLine.SETCURRENTKEY("Attached to Document Type","Attached to Document No.","Attached to Document Line No.");
+      RHDPurchExportLine.SETRANGE("Attached to Document Type",p_PurchaseLine."Document Type");
+      RHDPurchExportLine.SETRANGE("Attached to Document No.",p_PurchaseLine."Document No.");
+      RHDPurchExportLine.SETRANGE("Attached to Document Line No.",p_PurchaseLine."Line No.");
+      EXIT(NOT RHDPurchExportLine.ISEMPTY);
+    END;
+
+    PROCEDURE IsUpdateEntry@1000000005(p_PurchaseLine@1000000000 : Record 39) : Boolean;
+    VAR
+      PurchaseHeader@1000000001 : Record 38;
+      RHDPurchExportLine@1000000002 : Record 50179;
+      RHDPurchExportHeader@1000000003 : Record 50178;
+      Item@1000000004 : Record 27;
+    BEGIN
+      PurchaseHeader.GET(p_PurchaseLine."Document Type",p_PurchaseLine."Document No.");
+
+      RHDPurchExportLine.RESET;
+      RHDPurchExportLine.SETRANGE("Attached to Document Type",p_PurchaseLine."Document Type");
+      RHDPurchExportLine.SETRANGE("Attached to Document No.",p_PurchaseLine."Document No.");
+      RHDPurchExportLine.SETRANGE("Attached to Document Line No.",p_PurchaseLine."Line No.");
+      IF RHDPurchExportLine.ISEMPTY THEN
+        EXIT(FALSE)
+      ELSE BEGIN
+        RHDPurchExportLine.FINDLAST;
+        Item.GET(p_PurchaseLine."No.");
+        Item.CALCFIELDS("Parcels Number");
+
+        //S/P1200
+        //IF (RHDPurchExportLine."No." <> p_PurchaseLine."No.") OR
+        IF ((RHDPurchExportLine."No." <> p_PurchaseLine."No.") OR
+        //E/P1200
+          (RHDPurchExportLine.Description <> p_PurchaseLine.Description) OR
+          (RHDPurchExportLine.Quantity <> p_PurchaseLine.Quantity) OR
+          (RHDPurchExportLine."Location Code" <> p_PurchaseLine."Location Code") OR
+          (RHDPurchExportLine.Crossdock <> p_PurchaseLine."Special Order") OR
+          (RHDPurchExportLine."Sales Order No." <> p_PurchaseLine."Special Order Sales No.") OR
+          (RHDPurchExportLine."Sales Order Line No." <> p_PurchaseLine."Special Order Sales Line No.") OR
+          (RHDPurchExportLine."Unit Volume" <> Item."Unit Volume") OR
+          (RHDPurchExportLine."Unit Weight" <> Item."Net Weight") OR
+          (RHDPurchExportLine."Purchasing Code" <> p_PurchaseLine."Purchasing Code") OR
+          (RHDPurchExportLine.Amount <> p_PurchaseLine."Line Amount") OR
+          (RHDPurchExportLine."No. of Packages" <> Item."Parcels Number") OR
+          //S/P1200
+          //(RHDPurchExportLine."Promised Receipt Date" <> p_PurchaseLine."Expected Receipt Date") THEN
+          (RHDPurchExportLine."Promised Receipt Date" <> p_PurchaseLine."Expected Receipt Date")) AND
+          (p_PurchaseLine."Outstanding Quantity" <> 0) THEN
+          //E/P1200
+          EXIT(TRUE);
+
+        RHDPurchExportHeader.GET(RHDPurchExportLine."Entry No.");
+        //S/P1200
+        //IF RHDPurchExportHeader."Branch Code" <> GetBrachCodeFromPurchasingCode(p_PurchaseLine."Purchasing Code") THEN
+        //  EXIT(TRUE);
+        IF p_PurchaseLine."Purchasing Code" <> '' THEN BEGIN
+          IF RHDPurchExportHeader."Branch Code" <> GetBrachCodeFromPurchasingCode(p_PurchaseLine."Purchasing Code") THEN
+            EXIT(TRUE);
+        END ELSE BEGIN
+          IF RHDPurchExportHeader."Branch Code" <> GetBranchCodeFromLocationCode(p_PurchaseLine."Location Code") THEN
+            EXIT(TRUE);
+        END;
+        //E/P1200
+      END;
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE GetSequenceNo@1000000008(p_PurchLine@1000000000 : Record 39) : Code[10];
+    VAR
+      RHDPurchExportLine@1000000001 : Record 50179;
+      iHighestSequence@1000000002 : Integer;
+      iCurrentSequence@1000000003 : Integer;
+      sHighestSequence@1000000004 : Code[10];
+    BEGIN
+      RHDPurchExportLine.RESET;
+      RHDPurchExportLine.SETRANGE("Attached to Document Type",p_PurchLine."Document Type");
+      RHDPurchExportLine.SETRANGE("Attached to Document No.",p_PurchLine."Document No.");
+      RHDPurchExportLine.SETRANGE("Attached to Document Line No.",p_PurchLine."Line No.");
+      IF RHDPurchExportLine.FINDLAST THEN
+        EXIT(RHDPurchExportLine."Sequence No.")
+      ELSE BEGIN
+        RHDPurchExportLine.SETRANGE("Attached to Document Line No.");
+        IF RHDPurchExportLine.FIND('-') THEN BEGIN
+          iHighestSequence := 0;
+          iCurrentSequence := 0;
+          sHighestSequence := '';
+          REPEAT
+            IF RHDPurchExportLine."Sequence No." <> '' THEN
+              EVALUATE(iCurrentSequence,RHDPurchExportLine."Sequence No.")
+            ELSE
+              iCurrentSequence := 0;
+
+            IF iHighestSequence < iCurrentSequence THEN BEGIN
+              iHighestSequence := iCurrentSequence;
+              sHighestSequence := RHDPurchExportLine."Sequence No.";
+            END;
+          UNTIL RHDPurchExportLine.NEXT = 0;
+          EXIT(INCSTR(sHighestSequence));
+        END;
+      END;
+
+      EXIT('001');
+    END;
+
+    PROCEDURE "--- Transfer ---"@1000000013();
+    BEGIN
+    END;
+
+    PROCEDURE TriggerRhenusInterfaceTransfer@1000000009(p_TransferLine@1000000000 : Record 5741;p_EntryType@1000000003 : 'New,Cancel,Update') : Text[100];
+    VAR
+      IsRhenusPosition@1000000001 : Boolean;
+      WasAlreadyInInterface@1000000002 : Boolean;
+      Text0001@1000000004 : TextConst 'DEU=WEA Cancel successfully created.;ENU=WEA Cancel successfully created.';
+      Text0002@1000000005 : TextConst 'DEU=WEA Update successfully created.;ENU=WEA Update successfully created.';
+      Text0003@1000000006 : TextConst 'DEU=WEA successfully created.;ENU=WEA successfully created.';
+      Text0004@1000000007 : TextConst 'DEU=No WEA needed.;ENU=No WEA needed.';
+    BEGIN
+      // Check if Purchase Lines have Rhenus Positions
+      IsRhenusPosition := CheckForRhenusPositionTransfer(p_TransferLine);
+      // Check if Line was alredy in Interface
+      WasAlreadyInInterface := CheckIfAlreayInInterfaceTransf(p_TransferLine);
+
+      IF IsRhenusPosition THEN BEGIN
+        IF WasAlreadyInInterface THEN BEGIN
+          IF p_EntryType = p_EntryType::Cancel THEN BEGIN
+            FillNewOrderForTransferLine(p_TransferLine,p_EntryType::Cancel);
+            EXIT(Text0001);
+          END ELSE BEGIN
+            IF FillNewOrderForTransferLine(p_TransferLine,p_EntryType::Update) THEN
+              EXIT(Text0002)
+            ELSE
+              EXIT(Text0004);
+          END;
+        END ELSE BEGIN
+          FillNewOrderForTransferLine(p_TransferLine,p_EntryType);
+          EXIT(Text0003);
+        END;
+      END;
+
+      // If no more Rhenus Positions and Order was in Interface Cancel Transmission oder Insert Cancel Records
+      IF NOT IsRhenusPosition AND WasAlreadyInInterface THEN BEGIN
+        FillNewOrderForTransferLine(p_TransferLine,p_EntryType::Cancel);
+        EXIT(Text0001);
+      END;
+
+      EXIT(Text0004);
+    END;
+
+    PROCEDURE FillNewOrderForTransferLine@1000000014(p_TransferLine@1000000002 : Record 5741;p_EntryType@1000000003 : 'New,Cancel,Update') : Boolean;
+    VAR
+      TransferHeader@1000000014 : Record 5740;
+      RHDPurchExportHeader@1000000000 : Record 50178;
+      RHDPurchExportHeader2@1000000006 : Record 50178;
+      RHDPurchExportLine@1000000008 : Record 50179;
+      PurchaseHeader@1000000001 : Record 38;
+      PurchaseHeaderArchive@1000000012 : Record 5109;
+      PurchaseLine@1000000010 : Record 39;
+      PurchaseLineArchive@1000000009 : Record 5110;
+      RHDSetup@1000000004 : Record 50177;
+      Item@1000000005 : Record 27;
+      IsUpdateNeccessary@1000000007 : Boolean;
+      bUseArchive@1000000013 : Boolean;
+      "*** HME ***"@1000000011 : Integer;
+      WarehouseSetupL@1000000017 : Record 5769;
+      ItemLedgerEntryL@1000000016 : Record 32;
+      IsWithoutPurchaseOrderL@1000000015 : Boolean;
+    BEGIN
+      IF NOT PurchaseHeader.GET(PurchaseHeader."Document Type"::Order,p_TransferLine."Purchase Order No.") THEN BEGIN
+        PurchaseHeaderArchive.SETRANGE("Document Type",PurchaseHeaderArchive."Document Type"::Order);
+        PurchaseHeaderArchive.SETRANGE("No.",p_TransferLine."Purchase Order No.");
+        //H0919 20140318  DMA ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        //PurchaseHeaderArchive.FINDLAST;
+        //H0919 20140318  DMA ----------------------------------------------------------
+
+        //H0919 20140318  DMA ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        IF NOT PurchaseHeaderArchive.FINDLAST THEN BEGIN
+          IsWithoutPurchaseOrderL := TRUE;
+          bUseArchive := FALSE;
+        END ELSE
+        //H0919 20140318  DMA ----------------------------------------------------------
+
+        bUseArchive := TRUE;
+      END;
+
+      TransferHeader.GET(p_TransferLine."Document No.");
+
+      //H0919 20140318  DMA ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF IsWithoutPurchaseOrderL THEN BEGIN
+      END ELSE
+      //H0919 20140318  DMA ----------------------------------------------------------
+
+      IF bUseArchive THEN BEGIN
+        PurchaseLineArchive.SETRANGE("Document Type",PurchaseLineArchive."Document Type"::Order);
+        PurchaseLineArchive.SETRANGE("Document No.",p_TransferLine."Purchase Order No.");
+        PurchaseLineArchive.SETRANGE("Line No.",p_TransferLine."Purchase Order Line No.");
+        PurchaseLineArchive.SETRANGE("Version No.",PurchaseHeaderArchive."Version No.");
+        PurchaseLineArchive.FINDLAST;
+      END ELSE
+        PurchaseLine.GET(
+          PurchaseLine."Document Type"::Order,p_TransferLine."Purchase Order No.",p_TransferLine."Purchase Order Line No.");
+
+      RHDSetup.GET;
+      RHDSetup.TESTFIELD("Record Type WEA");
+
+      IsUpdateNeccessary := IsUpdateEntryTransfer(p_TransferLine);
+
+      IF (p_EntryType = p_EntryType::Update) AND (NOT IsUpdateNeccessary) THEN
+        EXIT(FALSE);
+
+      //H0919 20140318  DMA ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF IsWithoutPurchaseOrderL THEN BEGIN
+        RHDPurchExportHeader.RESET;
+        RHDPurchExportHeader."Entry No." := RHDPurchExportHeader.GetNextEntryNo;
+        RHDPurchExportHeader.INSERT;
+        RHDPurchExportHeader."Document Type" := RHDPurchExportHeader."Document Type"::"Transfer Order";
+        RHDPurchExportHeader."Document No." := TransferHeader."No.";
+        RHDPurchExportHeader."Sequence No." := GetSequenceNoTransfer(p_TransferLine);
+        RHDPurchExportHeader."Rhenus Order No." := RHDPurchExportHeader."Document No." + RHDPurchExportHeader."Sequence No.";
+        RHDPurchExportHeader."Transmission Mode" := p_EntryType;
+        RHDPurchExportHeader."Branch Code" := GetBranchCodeFromLocationCode(TransferHeader."Transfer-to Code");
+        RHDPurchExportHeader."Transfer No." := p_TransferLine."Document No.";
+
+        IF (p_EntryType = p_EntryType::Cancel) AND (RHDPurchExportHeader."Branch Code" = '') THEN BEGIN
+          RHDPurchExportHeader2.SETRANGE("Document Type",RHDPurchExportHeader."Document Type");
+          RHDPurchExportHeader2.SETRANGE("Rhenus Order No.",RHDPurchExportHeader."Rhenus Order No.");
+          IF RHDPurchExportHeader2.FINDLAST THEN
+            RHDPurchExportHeader."Branch Code" := RHDPurchExportHeader2."Branch Code";
+        END;
+
+        RHDPurchExportHeader."Record Type" := RHDSetup."Record Type WEA";
+        RHDPurchExportHeader.Status := RHDPurchExportHeader.Status::Creation;
+        RHDPurchExportHeader."Insert Timestamp" := CURRENTDATETIME;
+        RHDPurchExportHeader."Process Timestamp" := 0DT;
+        RHDPurchExportHeader.Filename := '';
+        RHDPurchExportHeader.MODIFY;
+
+        RHDPurchExportLine.RESET;
+        RHDPurchExportLine."Entry No." := RHDPurchExportHeader."Entry No.";
+        RHDPurchExportLine."Entry Line No." := 10000;
+        RHDPurchExportLine.INSERT;
+        RHDPurchExportLine."Attached to Document Type" := RHDPurchExportLine."Attached to Document Type"::"Transfer Order";
+        RHDPurchExportLine."Attached to Document No." := p_TransferLine."Document No.";
+        RHDPurchExportLine."Attached to Document Line No." := p_TransferLine."Line No.";
+        RHDPurchExportLine."Sequence No." := RHDPurchExportHeader."Sequence No.";
+        RHDPurchExportLine."Record Type" := RHDSetup."Record Type WEA";
+        RHDPurchExportLine.Type := RHDPurchExportLine.Type::Item;
+        RHDPurchExportLine."Pos. No." := 1;
+        RHDPurchExportLine."No." := p_TransferLine."Item No.";
+        RHDPurchExportLine.Description := p_TransferLine.Description;
+        RHDPurchExportLine."Attached to Pos. No." := 0;
+        RHDPurchExportLine.Quantity := p_TransferLine.Quantity;
+        RHDPurchExportLine."Location Code" := p_TransferLine."Transfer-from Code";
+        RHDPurchExportLine."Partial Delivery" := FALSE;
+        Item.GET(p_TransferLine."Item No.");
+        RHDPurchExportLine."Unit Volume" := Item."Unit Volume";
+        RHDPurchExportLine."Unit Weight" := Item."Net Weight";
+
+        RHDPurchExportLine."Transfer No." := p_TransferLine."Document No.";
+
+        RHDPurchExportLine."Purchasing Code" := ''; //TODO: Check what to do with this!!! This needs maybe communication with rhenus.
+        RHDPurchExportLine.Amount := 0; //TODO: Check what to do with this!!!
+        Item.CALCFIELDS("Parcels Number");
+        RHDPurchExportLine."No. of Packages" := Item."Parcels Number";
+        RHDPurchExportLine."Promised Receipt Date" := TransferHeader."Receipt Date";
+        RHDPurchExportLine.MODIFY;
+
+        RHDPurchExportHeader.Status := RHDPurchExportHeader.Status::Unprocessed;
+        RHDPurchExportHeader.MODIFY;
+
+      END ELSE
+      //H0919 20140318  DMA ----------------------------------------------------------
+
+      IF bUseArchive THEN BEGIN
+        RHDPurchExportHeader.RESET;
+        RHDPurchExportHeader."Entry No." := RHDPurchExportHeader.GetNextEntryNo;
+        RHDPurchExportHeader.INSERT;
+        RHDPurchExportHeader."Document Type" := RHDPurchExportHeader."Document Type"::Order;
+        RHDPurchExportHeader."Document No." := TransferHeader."Purchase Order No.";
+        RHDPurchExportHeader."Sequence No." := GetSequenceNoTransfer(p_TransferLine);
+        RHDPurchExportHeader."Rhenus Order No." := RHDPurchExportHeader."Document No." + RHDPurchExportHeader."Sequence No.";
+        RHDPurchExportHeader."Transmission Mode" := p_EntryType;
+        //RHDPurchExportHeader."Branch Code" := GetBrachCodeFromPurchasingCode(PurchaseLineArchive."Purchasing Code");
+        //IF RHDPurchExportHeader."Branch Code" = '' THEN begin
+        RHDPurchExportHeader."Branch Code" := GetBranchCodeFromLocationCode(TransferHeader."Transfer-to Code");
+        //end;
+        RHDPurchExportHeader."Transfer No." := p_TransferLine."Document No.";
+
+        IF (p_EntryType = p_EntryType::Cancel) AND (RHDPurchExportHeader."Branch Code" = '') THEN BEGIN
+          RHDPurchExportHeader2.SETRANGE("Document Type",RHDPurchExportHeader."Document Type");
+          RHDPurchExportHeader2.SETRANGE("Rhenus Order No.",RHDPurchExportHeader."Rhenus Order No.");
+          IF RHDPurchExportHeader2.FINDLAST THEN
+            RHDPurchExportHeader."Branch Code" := RHDPurchExportHeader2."Branch Code";
+        END;
+
+        RHDPurchExportHeader."Record Type" := RHDSetup."Record Type WEA";
+        RHDPurchExportHeader.Status := RHDPurchExportHeader.Status::Creation;
+        RHDPurchExportHeader."Insert Timestamp" := CURRENTDATETIME;
+        RHDPurchExportHeader."Process Timestamp" := 0DT;
+        RHDPurchExportHeader.Filename := '';
+        RHDPurchExportHeader.MODIFY;
+
+        RHDPurchExportLine.RESET;
+        RHDPurchExportLine."Entry No." := RHDPurchExportHeader."Entry No.";
+        RHDPurchExportLine."Entry Line No." := 10000;
+        RHDPurchExportLine.INSERT;
+        RHDPurchExportLine."Attached to Document Type" := PurchaseLineArchive."Document Type";
+        RHDPurchExportLine."Attached to Document No." := PurchaseLineArchive."Document No.";
+        RHDPurchExportLine."Attached to Document Line No." := PurchaseLineArchive."Line No.";
+        RHDPurchExportLine."Sequence No." := RHDPurchExportHeader."Sequence No.";
+        RHDPurchExportLine."Record Type" := RHDSetup."Record Type WEA";
+        RHDPurchExportLine.Type := RHDPurchExportLine.Type::Item;
+        RHDPurchExportLine."Pos. No." := 1;
+        RHDPurchExportLine."No." := p_TransferLine."Item No.";
+        RHDPurchExportLine.Description := p_TransferLine.Description;
+        RHDPurchExportLine."Attached to Pos. No." := 0;
+        RHDPurchExportLine.Quantity := p_TransferLine.Quantity;
+        RHDPurchExportLine."Location Code" := PurchaseLineArchive."Location Code";
+        //RHDPurchExportLine.Crossdock := p_PurchaseLine."Special Order";
+        //RHDPurchExportLine."Sales Order No." := p_PurchaseLine."Special Order Sales No.";
+        //RHDPurchExportLine."Sales Order Line No." := p_PurchaseLine."Special Order Sales Line No.";
+        RHDPurchExportLine."Partial Delivery" := FALSE;
+        Item.GET(PurchaseLineArchive."No.");
+        RHDPurchExportLine."Unit Volume" := Item."Unit Volume";
+        RHDPurchExportLine."Unit Weight" := Item."Net Weight";
+
+        RHDPurchExportLine."Transfer No." := p_TransferLine."Document No.";
+
+        RHDPurchExportLine."Purchasing Code" := PurchaseLineArchive."Purchasing Code";
+        RHDPurchExportLine.Amount := PurchaseLineArchive."Line Amount";
+        Item.CALCFIELDS("Parcels Number");
+        RHDPurchExportLine."No. of Packages" := Item."Parcels Number";
+        // S/P1218
+        //RHDPurchExportLine."Promised Receipt Date" := PurchaseLineArchive"Expected Receipt Date";
+        RHDPurchExportLine."Promised Receipt Date" := TransferHeader."Receipt Date";
+        // E/P1218
+        RHDPurchExportLine.MODIFY;
+
+        RHDPurchExportHeader.Status := RHDPurchExportHeader.Status::Unprocessed;
+        RHDPurchExportHeader.MODIFY;
+      END ELSE BEGIN
+        RHDPurchExportHeader.RESET;
+        RHDPurchExportHeader."Entry No." := RHDPurchExportHeader.GetNextEntryNo;
+        RHDPurchExportHeader.INSERT;
+        RHDPurchExportHeader."Document Type" := PurchaseHeader."Document Type";
+        RHDPurchExportHeader."Document No." := PurchaseHeader."No.";
+        RHDPurchExportHeader."Sequence No." := GetSequenceNoTransfer(p_TransferLine);
+        RHDPurchExportHeader."Rhenus Order No." := RHDPurchExportHeader."Document No." + RHDPurchExportHeader."Sequence No.";
+        RHDPurchExportHeader."Transmission Mode" := p_EntryType;
+        //RHDPurchExportHeader."Branch Code" := GetBrachCodeFromPurchasingCode(PurchaseLine."Purchasing Code");
+        //IF RHDPurchExportHeader."Branch Code" = '' THEN
+        RHDPurchExportHeader."Branch Code" := GetBranchCodeFromLocationCode(TransferHeader."Transfer-to Code");
+        RHDPurchExportHeader."Transfer No." := p_TransferLine."Document No.";
+
+        IF (p_EntryType = p_EntryType::Cancel) AND (RHDPurchExportHeader."Branch Code" = '') THEN BEGIN
+          RHDPurchExportHeader2.SETRANGE("Document Type",RHDPurchExportHeader."Document Type");
+          RHDPurchExportHeader2.SETRANGE("Rhenus Order No.",RHDPurchExportHeader."Rhenus Order No.");
+          IF RHDPurchExportHeader2.FINDLAST THEN
+            RHDPurchExportHeader."Branch Code" := RHDPurchExportHeader2."Branch Code";
+        END;
+
+        RHDPurchExportHeader."Record Type" := RHDSetup."Record Type WEA";
+        RHDPurchExportHeader.Status := RHDPurchExportHeader.Status::Creation;
+        RHDPurchExportHeader."Insert Timestamp" := CURRENTDATETIME;
+        RHDPurchExportHeader."Process Timestamp" := 0DT;
+        RHDPurchExportHeader.Filename := '';
+        RHDPurchExportHeader.MODIFY;
+
+        RHDPurchExportLine.RESET;
+        RHDPurchExportLine."Entry No." := RHDPurchExportHeader."Entry No.";
+        RHDPurchExportLine."Entry Line No." := 10000;
+        RHDPurchExportLine.INSERT;
+        RHDPurchExportLine."Attached to Document Type" := PurchaseLine."Document Type";
+        RHDPurchExportLine."Attached to Document No." := PurchaseLine."Document No.";
+        RHDPurchExportLine."Attached to Document Line No." := PurchaseLine."Line No.";
+        RHDPurchExportLine."Sequence No." := RHDPurchExportHeader."Sequence No.";
+        RHDPurchExportLine."Record Type" := RHDSetup."Record Type WEA";
+        RHDPurchExportLine.Type := RHDPurchExportLine.Type::Item;
+        RHDPurchExportLine."Pos. No." := 1;
+        RHDPurchExportLine."No." := p_TransferLine."Item No.";
+        RHDPurchExportLine.Description := p_TransferLine.Description;
+        RHDPurchExportLine."Attached to Pos. No." := 0;
+        // S/P1212
+        //RHDPurchExportLine.Quantity := p_TransferLine."Qty. to Ship";
+        RHDPurchExportLine.Quantity := p_TransferLine.Quantity;
+        // E/P1212
+        RHDPurchExportLine."Location Code" := PurchaseLine."Location Code";
+        RHDPurchExportLine."Partial Delivery" := FALSE;
+        Item.GET(PurchaseLine."No.");
+        RHDPurchExportLine."Unit Volume" := Item."Unit Volume";
+        RHDPurchExportLine."Unit Weight" := Item."Net Weight";
+
+        RHDPurchExportLine."Transfer No." := p_TransferLine."Document No.";
+
+        RHDPurchExportLine."Purchasing Code" := PurchaseLine."Purchasing Code";
+        RHDPurchExportLine.Amount := PurchaseLine."Line Amount";
+        Item.CALCFIELDS("Parcels Number");
+        RHDPurchExportLine."No. of Packages" := Item."Parcels Number";
+        // S/P1218
+        //RHDPurchExportLine."Promised Receipt Date" := PurchaseLine."Expected Receipt Date";
+        RHDPurchExportLine."Promised Receipt Date" := TransferHeader."Receipt Date";
+        // E/P1218
+        RHDPurchExportLine.MODIFY;
+
+        RHDPurchExportHeader.Status := RHDPurchExportHeader.Status::Unprocessed;
+        RHDPurchExportHeader.MODIFY;
+      END;
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE CheckForRhenusPositionTransfer@1000000016(p_TransferLine@1000000000 : Record 5741) : Boolean;
+    VAR
+      TransferHeader@1000000001 : Record 5740;
+    BEGIN
+      IF TransferHeader.GET(p_TransferLine."Document No.") THEN BEGIN
+        IF GetBranchCodeFromLocationCode(TransferHeader."Transfer-to Code") <> '' THEN
+          EXIT(TRUE);
+      END;
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE CheckIfAlreayInInterfaceTransf@1000000017(p_TransferLine@1000000000 : Record 5741) : Boolean;
+    VAR
+      RHDPurchExportLine@1000000001 : Record 50179;
+    BEGIN
+      RHDPurchExportLine.RESET;
+      RHDPurchExportLine.SETCURRENTKEY("Attached to Document Type","Attached to Document No.","Attached to Document Line No.");
+
+      //H0919 20140318 DMA +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF p_TransferLine."Purchase Order No." <> '' THEN
+      BEGIN
+      //H0919 20140318 DMA ---------------------------------------------------------------------------
+
+        RHDPurchExportLine.SETRANGE("Attached to Document Type",RHDPurchExportLine."Attached to Document Type"::Order);
+        RHDPurchExportLine.SETRANGE("Attached to Document No.",p_TransferLine."Purchase Order No.");
+        RHDPurchExportLine.SETRANGE("Attached to Document Line No.",p_TransferLine."Purchase Order Line No.");
+
+      //H0919 20140318 DMA +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      END
+      ELSE
+      BEGIN
+        RHDPurchExportLine.SETRANGE("Attached to Document Type",RHDPurchExportLine."Attached to Document Type"::"Transfer Order");
+        RHDPurchExportLine.SETRANGE("Attached to Document No.",p_TransferLine."Document No.");
+        RHDPurchExportLine.SETRANGE("Attached to Document Line No.",p_TransferLine."Line No.");
+      END;
+      //H0919 20140318 DMA ---------------------------------------------------------------------------
+
+      RHDPurchExportLine.SETRANGE("Transfer No.",p_TransferLine."Document No.");
+      EXIT(NOT RHDPurchExportLine.ISEMPTY);
+    END;
+
+    PROCEDURE IsUpdateEntryTransfer@1000000018(p_TransferLine@1000000000 : Record 5741) : Boolean;
+    VAR
+      TransferHeader@1000000007 : Record 5740;
+      PurchaseHeader@1000000001 : Record 38;
+      PurchaseHeaderArchive@1000000005 : Record 5109;
+      RHDPurchExportLine@1000000002 : Record 50179;
+      RHDPurchExportHeader@1000000003 : Record 50178;
+      Item@1000000004 : Record 27;
+      bUseArchive@1000000006 : Boolean;
+      "*** H0919 ***"@1000000009 : Integer;
+      IsWithoutPurchaseOrderL@1000000008 : Boolean;
+    BEGIN
+      IF NOT PurchaseHeader.GET(PurchaseHeader."Document Type"::Order,p_TransferLine."Purchase Order No.") THEN BEGIN
+        PurchaseHeaderArchive.SETRANGE("Document Type",PurchaseHeaderArchive."Document Type"::Order);
+        PurchaseHeaderArchive.SETRANGE("No.",p_TransferLine."Purchase Order No.");
+        //H0919 20140319 DMA +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        //PurchaseHeaderArchive.FINDLAST();
+        //H0919 20140319 DMA -----------------------------------------------------------------
+        //H0919 20140319 DMA +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        IF PurchaseHeaderArchive.FINDLAST() THEN BEGIN
+        //H0919 20140319 DMA -----------------------------------------------------------------
+          bUseArchive := TRUE;
+        //H0919 20140319 DMA +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        END ELSE BEGIN
+          bUseArchive := FALSE;
+          IsWithoutPurchaseOrderL := TRUE;
+        END;
+        //H0919 20140319 DMA -----------------------------------------------------------------
+      END;
+
+      TransferHeader.GET(p_TransferLine."Document No.");
+
+      RHDPurchExportLine.RESET;
+
+      //H0919 20140319 DMA +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF IsWithoutPurchaseOrderL THEN
+      BEGIN
+        RHDPurchExportLine.SETRANGE("Attached to Document Type",RHDPurchExportLine."Attached to Document Type"::"Transfer Order");
+        RHDPurchExportLine.SETRANGE("Attached to Document No.",p_TransferLine."Document No.");
+        RHDPurchExportLine.SETRANGE("Attached to Document Line No.",p_TransferLine."Line No.");
+      END ELSE BEGIN
+      //H0919 20140319 DMA -----------------------------------------------------------------
+
+      RHDPurchExportLine.SETRANGE("Attached to Document Type",RHDPurchExportLine."Attached to Document Type"::Order);
+      RHDPurchExportLine.SETRANGE("Attached to Document No.",p_TransferLine."Purchase Order No.");
+      RHDPurchExportLine.SETRANGE("Attached to Document Line No.",p_TransferLine."Purchase Order Line No.");
+
+      //H0919 20140319 DMA +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      END;
+      //H0919 20140319 DMA -----------------------------------------------------------------
+      // S/P1212
+      RHDPurchExportLine.SETRANGE("Transfer No.",p_TransferLine."Document No.");
+      // E/P1212
+      IF RHDPurchExportLine.ISEMPTY THEN
+        EXIT(FALSE)
+      ELSE BEGIN
+        RHDPurchExportLine.FINDLAST;
+        Item.GET(p_TransferLine."Item No.");
+        Item.CALCFIELDS("Parcels Number");
+
+        IF (RHDPurchExportLine."No." <> p_TransferLine."Item No.") OR
+          (RHDPurchExportLine.Description <> p_TransferLine.Description) OR
+          (RHDPurchExportLine.Quantity <> p_TransferLine.Quantity) OR
+          (RHDPurchExportLine."Location Code" <> TransferHeader."Transfer-to Code") OR
+      //    (RHDPurchExportLine.Crossdock <> p_PurchaseLine."Special Order") OR
+      //    (RHDPurchExportLine."Sales Order No." <> p_PurchaseLine."Special Order Sales No.") OR
+      //    (RHDPurchExportLine."Sales Order Line No." <> p_PurchaseLine."Special Order Sales Line No.") OR
+          (RHDPurchExportLine."Unit Volume" <> Item."Unit Volume") OR
+          (RHDPurchExportLine."Unit Weight" <> Item."Net Weight") OR
+      //    (RHDPurchExportLine."Purchasing Code" <> p_PurchaseLine."Purchasing Code") OR
+      //    (RHDPurchExportLine.Amount <> p_PurchaseLine."Line Amount") OR
+          (RHDPurchExportLine."No. of Packages" <> Item."Parcels Number") OR
+          (RHDPurchExportLine."Promised Receipt Date" <> p_TransferLine."Receipt Date") THEN
+          EXIT(TRUE);
+
+        RHDPurchExportHeader.GET(RHDPurchExportLine."Entry No.");
+        IF RHDPurchExportHeader."Branch Code" <> GetBranchCodeFromLocationCode(TransferHeader."Transfer-to Code") THEN
+          EXIT(TRUE);
+      END;
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE GetSequenceNoTransfer@1000000019(p_TransferLine@1000000000 : Record 5741) : Code[10];
+    VAR
+      RHDPurchExportLine@1000000001 : Record 50179;
+      iHighestSequence@1000000002 : Integer;
+      iCurrentSequence@1000000003 : Integer;
+      sHighestSequence@1000000004 : Code[10];
+    BEGIN
+      RHDPurchExportLine.RESET;
+
+      //H0919 20140319 DMA ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF (p_TransferLine."Purchase Order No." = '') AND (p_TransferLine."Purchase Order Line No." = 0 ) THEN
+      BEGIN
+        RHDPurchExportLine.SETRANGE("Attached to Document Type",RHDPurchExportLine."Attached to Document Type"::"Transfer Order");
+        RHDPurchExportLine.SETRANGE("Attached to Document No.",p_TransferLine."Document No.");
+        RHDPurchExportLine.SETRANGE("Attached to Document Line No.",p_TransferLine."Line No.");
+      END ELSE BEGIN
+      //H0919 20140319 DMA ----------------------------------------------------------------------------------------
+
+      RHDPurchExportLine.SETRANGE("Attached to Document Type",RHDPurchExportLine."Attached to Document Type"::Order);
+      RHDPurchExportLine.SETRANGE("Attached to Document No.",p_TransferLine."Purchase Order No.");
+      RHDPurchExportLine.SETRANGE("Attached to Document Line No.",p_TransferLine."Purchase Order Line No.");
+
+      //H0919 20140319 DMA ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      END;
+      //H0919 20140319 DMA ----------------------------------------------------------------------------------------
+
+      IF RHDPurchExportLine.FINDLAST THEN
+        EXIT(RHDPurchExportLine."Sequence No.")
+      ELSE BEGIN
+        RHDPurchExportLine.SETRANGE("Attached to Document Line No.");
+        IF RHDPurchExportLine.FIND('-') THEN BEGIN
+          iHighestSequence := 0;
+          iCurrentSequence := 0;
+          sHighestSequence := '';
+          REPEAT
+            IF RHDPurchExportLine."Sequence No." <> '' THEN
+              EVALUATE(iCurrentSequence,RHDPurchExportLine."Sequence No.")
+            ELSE
+              iCurrentSequence := 0;
+
+            IF iHighestSequence < iCurrentSequence THEN BEGIN
+              iHighestSequence := iCurrentSequence;
+              sHighestSequence := RHDPurchExportLine."Sequence No.";
+            END;
+          UNTIL RHDPurchExportLine.NEXT = 0;
+          EXIT(INCSTR(sHighestSequence));
+        END;
+      END;
+
+      EXIT('001');
+    END;
+
+    PROCEDURE "--- Service Functions ---"@1000000010();
+    BEGIN
+    END;
+
+    PROCEDURE GetBrachCodeFromPurchasingCode@1000000001(p_PurchasingCode@1000000000 : Code[10]) : Code[10];
+    VAR
+      Purchasing@1000000001 : Record 5721;
+    BEGIN
+      IF Purchasing.GET(p_PurchasingCode) THEN
+        EXIT(Purchasing."RHE Branch Code");
+
+      EXIT('');
+    END;
+
+    PROCEDURE GetBranchCodeFromLocationCode@1000000007(p_LocationCode@1000000000 : Code[10]) : Code[10];
+    VAR
+      Location@1000000001 : Record 14;
+    BEGIN
+      IF Location.GET(p_LocationCode) THEN
+        //H1796 24.11.14 DMA +++++++++++++
+        IF Location."Rhenus Location" THEN
+        //H1796 24.11.14 DMA -------------
+          EXIT(Location."Branch Code");
+
+      EXIT('');
+    END;
+
+    PROCEDURE UpdateStatusUploaded@1000000003(p_Filename@1000000000 : Text[30]);
+    VAR
+      RHDPurchExportHeader@1000000001 : Record 50178;
+    BEGIN
+      RHDPurchExportHeader.RESET;
+      //RHDPurchExportHeader.SETCURRENTKEY(Filename);
+      //S/P1193
+      //RHDPurchExportHeader.SETRANGE(Filename,p_Filename);
+      RHDPurchExportHeader.SETFILTER(Filename,'%1','*' + p_Filename);
+      //E/P1193
+      IF RHDPurchExportHeader.FINDSET THEN BEGIN
+        RHDPurchExportHeader.Status := RHDPurchExportHeader.Status::Uploaded;
+        RHDPurchExportHeader.MODIFY;
+      END;
+    END;
+
+    PROCEDURE "--- Inbound Functions ---"@1000000011();
+    BEGIN
+    END;
+
+    PROCEDURE ProcessWEMLine@1000000002(RHDPurchaseImportV@1000000000 : Record 50180) : Boolean;
+    VAR
+      RHDPurchaseJobQueueMgt@1000000003 : Codeunit 50154;
+      PurchPost@1000000004 : Codeunit 90;
+      TransferOrderPostReceipt@1000000005 : Codeunit 5705;
+      SalesLine@1000000008 : Record 37;
+      PurchaseHeader@1000000006 : Record 38;
+      PurchaseLine@1000000001 : Record 39;
+      rRHDPurchExportHeader@1000000010 : Record 50178;
+      rRHDPurchExportLine@1000000009 : Record 50179;
+      "*** HME0919 ***"@1000000011 : Integer;
+      TransferHeaderL@1000000012 : Record 5740;
+      TransferLineL@1000000013 : Record 5741;
+      TransferOrderPostReceiptL@1000000014 : Codeunit 5705;
+    BEGIN
+      PurchaseLine.SETRANGE("Document Type",PurchaseLine."Document Type"::Order);
+      PurchaseLine.SETRANGE("Document No.",RHDPurchaseImportV."Receipt No.");
+      IF PurchaseLine.ISEMPTY THEN
+        PurchaseLine.SETRANGE("Document No.",COPYSTR(RHDPurchaseImportV."Receipt No.",1,
+                              STRLEN(RHDPurchaseImportV."Receipt No.") - 3));
+      PurchaseLine.SETRANGE("No.",RHDPurchaseImportV."Item No.");
+
+      rRHDPurchExportHeader.SETRANGE("Rhenus Order No.",RHDPurchaseImportV."Receipt No.");
+      rRHDPurchExportHeader.FINDLAST();
+      rRHDPurchExportLine.SETRANGE("Entry No.",rRHDPurchExportHeader."Entry No.");
+      rRHDPurchExportLine.FINDLAST();
+      PurchaseLine.SETRANGE("Line No.",rRHDPurchExportLine."Attached to Document Line No.");
+
+      //H1423 29.10.14 EHN +++++++++++++++++++++++++++++++++++
+      IF rRHDPurchExportHeader."Document Type" = rRHDPurchExportHeader."Document Type"::"Transfer Order" THEN BEGIN
+        TransferHeaderL.RESET;
+        TransferHeaderL.SETRANGE("No.",rRHDPurchExportHeader."Document No.");
+        IF TransferHeaderL.FINDFIRST THEN BEGIN
+          TransferLineL.RESET;
+          TransferLineL.SETRANGE("Document No.",TransferHeaderL."No.");
+          TransferLineL.SETRANGE("Derived From Line No.",0);
+          TransferLineL.FIND('-');
+          REPEAT
+            TransferLineL.VALIDATE("Qty. to Receive",0);
+            TransferLineL.MODIFY;
+          UNTIL TransferLineL.NEXT = 0;
+
+          TransferLineL.SETRANGE("Line No.",rRHDPurchExportLine."Attached to Document Line No.");
+          TransferLineL.SETRANGE("Item No.",RHDPurchaseImportV."Item No.");
+          IF TransferLineL.FINDFIRST THEN BEGIN
+            REPEAT
+              IF TransferLineL."Line No." = rRHDPurchExportLine."Attached to Document Line No." THEN BEGIN
+                IF RHDPurchaseImportV."Partially Completed" THEN
+                  RHDPurchaseJobQueueMgt.CreateLogProcessWMP(TRUE,STRSUBSTNO(GOB004,RHDPurchaseImportV."Entry No.",
+                    TransferLineL."Document No.",TransferLineL."Line No."),RHDPurchaseImportV.Filename);
+                IF RHDPurchaseImportV."Qty. Damaged" <> 0 THEN
+                  RHDPurchaseJobQueueMgt.CreateLogProcessWMP(TRUE,
+                    STRSUBSTNO(GOB006,RHDPurchaseImportV."Entry No.",
+                    RHDPurchaseImportV."Qty. Damaged",TransferLineL."Document No.",TransferLineL."Line No."),
+                    RHDPurchaseImportV.Filename);
+                IF RHDPurchaseImportV.Quantity < TransferLineL."Qty. in Transit" THEN
+                  RHDPurchaseJobQueueMgt.CreateLogProcessWMP(FALSE,
+                    STRSUBSTNO(GOB001,PurchaseHeader.TABLECAPTION,PurchaseLine."Document No.",
+                    TransferLineL."Line No.",TransferLineL."Qty. in Transit",RHDPurchaseImportV.Quantity),
+                    RHDPurchaseImportV.Filename);
+                IF (RHDPurchaseImportV.Quantity > TransferLineL."Qty. in Transit") THEN
+                  RHDPurchaseJobQueueMgt.CreateLogProcessWMP(FALSE,
+                    STRSUBSTNO(GOB002,PurchaseHeader.TABLECAPTION,PurchaseLine."Document No.",
+                    TransferLineL."Line No.",TransferLineL."Qty. in Transit",RHDPurchaseImportV.Quantity),
+                    RHDPurchaseImportV.Filename);
+                TransferLineL.VALIDATE("Qty. to Receive",RHDPurchaseImportV.Quantity);
+              END ELSE BEGIN
+                TransferLineL.VALIDATE("Qty. to Receive",0);
+              END;
+              TransferLineL."Record Entry No." := RHDPurchaseImportV."Entry No.";
+              TransferLineL."Record Table Id" := DATABASE::"RHD Purchase Import";
+
+              TransferLineL.MODIFY;
+            UNTIL TransferLineL.NEXT = 0;
+
+            TransferHeaderL.GET(TransferLineL."Document No.");
+            TransferHeaderL.VALIDATE("Posting Date",RHDPurchaseImportV."Receipt Date");
+            TransferOrderPostReceiptL.SetHideValidationDialog(TRUE);
+            TransferOrderPostReceiptL.RUN(TransferHeaderL);
+
+          END;
+        END ELSE BEGIN
+          TransferHeaderL.FINDFIRST;
+        END;
+      END ELSE
+      //H1423 29.10.14 EHN -----------------------------------
+
+      //H1423 21.10.14 EHN ++++++++++++++++++++++
+      IF PurchaseLine.FINDFIRST THEN BEGIN
+      //H1423 21.10.14 EHN ----------------------
+        IF PurchaseLine."Transfer Order No." = '' THEN BEGIN
+          // kein Transfer Order vorhanden
+          // Qty. to Receive fÅr alle Zeilen auf 0 setzen
+          PurchaseLine.SETRANGE("No.");
+          // S/P1200
+          PurchaseLine.SETRANGE("Line No.");
+          // E/P1200
+          //PurchaseLine.SETRANGE("Rhenus Seq. No.");
+          PurchaseLine.FIND('-');
+          REPEAT
+            PurchaseLine.VALIDATE("Qty. to Receive",0);
+            PurchaseLine.VALIDATE("Qty. to Invoice",0);
+            PurchaseLine.MODIFY;
+          UNTIL PurchaseLine.NEXT = 0;
+
+          // S/P1200
+          PurchaseLine.SETRANGE("Line No.",rRHDPurchExportLine."Attached to Document Line No.");
+          // E/P1200
+          PurchaseLine.SETRANGE("No.",RHDPurchaseImportV."Item No.");
+          // PurchaseLine.SETRANGE("Rhenus Seq. No.",COPYSTR(parRHDPurchaseImport."Receipt No.",
+          //                      STRLEN(parRHDPurchaseImport."Receipt No.") - 3, 3));
+          PurchaseLine.FINDFIRST;
+
+          // wenn Teilabschluss oder Damaged, dann Log erzeugen
+          IF RHDPurchaseImportV."Partially Completed" THEN
+            //S/P1193
+            RHDPurchaseJobQueueMgt.CreateLogProcessWEM(TRUE,STRSUBSTNO(GOB004,RHDPurchaseImportV."Entry No.",
+                                   PurchaseLine."Document No.",PurchaseLine."Line No."),RHDPurchaseImportV.Filename);
+            //E/P1193
+          IF RHDPurchaseImportV."Qty. Damaged" <> 0 THEN
+            //S/P1193
+            RHDPurchaseJobQueueMgt.CreateLogProcessWEM(TRUE,
+                                   STRSUBSTNO(GOB006,RHDPurchaseImportV."Entry No.",
+                                   RHDPurchaseImportV."Qty. Damaged",PurchaseLine."Document No.",PurchaseLine."Line No."),
+                                   RHDPurchaseImportV.Filename);
+            //E/P1193
+
+          IF RHDPurchaseImportV.Quantity < PurchaseLine."Outstanding Quantity" THEN
+            // Unterlieferung
+            //S/P1193
+            RHDPurchaseJobQueueMgt.CreateLogProcessWEM(FALSE,
+                                   STRSUBSTNO(GOB001,PurchaseHeader.TABLECAPTION,PurchaseLine."Document No.",
+                                   PurchaseLine."Line No.",PurchaseLine."Outstanding Quantity",RHDPurchaseImportV.Quantity),
+                                   RHDPurchaseImportV.Filename);
+            //E/P1193
+
+          //S/P1193
+          IF (RHDPurchaseImportV.Quantity > PurchaseLine."Outstanding Quantity") THEN BEGIN
+            // öberlieferung
+            RHDPurchaseJobQueueMgt.CreateLogProcessWEM(FALSE,
+                                   STRSUBSTNO(GOB002,PurchaseHeader.TABLECAPTION,PurchaseLine."Document No.",
+                                   PurchaseLine."Line No.",PurchaseLine."Outstanding Quantity",RHDPurchaseImportV.Quantity),
+                                   RHDPurchaseImportV.Filename);
+            IF PurchaseLine."Outstanding Quantity" <= 0 THEN
+              RHDPurchaseImportV.Quantity := 0
+            ELSE
+              RHDPurchaseImportV.Quantity := PurchaseLine."Outstanding Quantity";
+          END;
+          //E/P1193
+
+          //H1331 070714 EHN ++++++++++++++++++++++
+          PurchaseLine."Record Entry No." := RHDPurchaseImportV."Entry No.";
+          PurchaseLine."Record Table Id" := DATABASE::"RHD Purchase Import";
+          //H1331 070714 EHN ----------------------
+          PurchaseLine.VALIDATE("Qty. to Receive",RHDPurchaseImportV.Quantity);
+          PurchaseLine.MODIFY;
+
+          COMMIT;
+          PurchaseHeader.GET(PurchaseLine."Document Type",PurchaseLine."Document No.");
+          //S/P1193
+          PurchaseHeader.VALIDATE("Posting Date",RHDPurchaseImportV."Receipt Date");
+          //E/P1193
+          PurchaseHeader.Receive := TRUE;
+          PurchaseHeader.Invoice := FALSE;
+          PurchPost.RUN(PurchaseHeader);
+        END ELSE BEGIN
+
+          // Transfer Order
+          TransferLineL.SETRANGE("Document No.",PurchaseLine."Transfer Order No.");
+          TransferLineL.SETRANGE("Line No.",PurchaseLine."Transfer Order Line No.");
+          TransferLineL.SETRANGE("Item No.",RHDPurchaseImportV."Item No.");
+          //H1423 21.10.14 EHN +++++++++++++++++++++++
+          TransferLineL.SETRANGE("Derived From Line No.",0);
+          //H1423 21.10.14 EHN -----------------------
+          IF NOT TransferLineL.ISEMPTY THEN BEGIN
+
+            TransferLineL.SETRANGE("Line No.");
+            TransferLineL.SETRANGE("Item No.");
+            TransferLineL.FIND('-');
+            REPEAT
+              TransferLineL.VALIDATE("Qty. to Receive",0);
+              TransferLineL.MODIFY;
+            UNTIL TransferLineL.NEXT = 0;
+
+            TransferLineL.SETRANGE("Line No.",PurchaseLine."Transfer Order Line No.");
+            TransferLineL.SETRANGE("Item No.",RHDPurchaseImportV."Item No.");
+            TransferLineL.FINDFIRST;
+
+            // wenn Teilabschluss oder Damaged, dann Log erzeugen
+            IF RHDPurchaseImportV."Partially Completed" THEN
+              //S/P1193
+              RHDPurchaseJobQueueMgt.CreateLogProcessWEM(
+                TRUE,
+                STRSUBSTNO(GOB004,RHDPurchaseImportV."Entry No.",TransferLineL."Document No.",TransferLineL."Line No."),
+                RHDPurchaseImportV.Filename);
+              //E/P1193
+            IF RHDPurchaseImportV."Qty. Damaged" <> 0 THEN
+              //S/P1193
+              RHDPurchaseJobQueueMgt.CreateLogProcessWEM(
+                TRUE,
+                STRSUBSTNO(GOB006,RHDPurchaseImportV."Entry No.",
+                  RHDPurchaseImportV."Qty. Damaged",TransferLineL."Document No.",TransferLineL."Line No."),
+                RHDPurchaseImportV.Filename);
+              //E/P1193
+            //H1423,P1193 21.10.14 EHN ++++++++++++++++++++++++++++++++++++++++++
+            IF RHDPurchaseImportV.Quantity < TransferLineL."Qty. in Transit" THEN
+              RHDPurchaseJobQueueMgt.CreateLogProcessWEM(
+                FALSE,
+                STRSUBSTNO(GOB001,TransferHeaderL.TABLECAPTION,TransferLineL."Document No.",
+                           TransferLineL."Line No.",TransferLineL."Qty. in Transit",RHDPurchaseImportV.Quantity),
+                RHDPurchaseImportV.Filename);
+            IF RHDPurchaseImportV.Quantity > TransferLineL."Qty. in Transit" THEN BEGIN
+              RHDPurchaseJobQueueMgt.CreateLogProcessWEM(
+                FALSE,
+                STRSUBSTNO(GOB002,TransferHeaderL.TABLECAPTION,TransferLineL."Document No.",
+                           TransferLineL."Line No.",TransferLineL."Qty. in Transit",RHDPurchaseImportV.Quantity),
+                RHDPurchaseImportV.Filename);
+
+              IF TransferLineL."Qty. in Transit" <= 0 THEN
+                RHDPurchaseImportV.Quantity := 0
+              ELSE
+                RHDPurchaseImportV.Quantity := TransferLineL."Qty. in Transit";
+            END;
+            //H1423,P1193 21.10.14 EHN ------------------------------------------
+            //H1331 070714 EHN ++++++++++++++++++++++
+            TransferLineL."Record Entry No." := RHDPurchaseImportV."Entry No.";
+            TransferLineL."Record Table Id" := DATABASE::"RHD Purchase Import";
+            //H1331 070714 EHN ----------------------
+            TransferLineL.VALIDATE("Qty. to Receive",RHDPurchaseImportV.Quantity);
+            TransferLineL.MODIFY;
+            COMMIT;
+
+            TransferHeaderL.GET(TransferLineL."Document No.");
+            //S/P1193
+            TransferHeaderL.VALIDATE("Posting Date",RHDPurchaseImportV."Receipt Date");
+            //E/P1193
+            TransferOrderPostReceipt.SetHideValidationDialog(TRUE);
+            TransferOrderPostReceipt.RUN(TransferHeaderL);
+          END ELSE
+            TransferLineL.FINDFIRST;
+        END;
+      END ELSE
+        PurchaseLine.FINDFIRST;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE "*** HME ***"@1000000020();
+    BEGIN
+    END;
+
+    PROCEDURE ProcessPSELine@1000000023(Rec@1000000000 : Record 50180) : Boolean;
+    VAR
+      RHDPurchaseImportL@1000000001 : Record 50180;
+      RHDSetupL@1000000002 : Record 50177;
+      RHDItemLedgerEntryLinkL@1000000005 : Record 50213;
+      ItemJournalLineL@1000000003 : Record 83;
+      RecRef@1000000009 : RecordRef;
+      LibraryUtilityL@1000000010 : Codeunit 50206;
+      RHDGenMgtL@1000000006 : Codeunit 50157;
+      ItemJournalLineNoL@1000000004 : Integer;
+      ItemJournalDocumentNoL@1000000007 : Code[20];
+      NoSeriesManagementL@1000000008 : Codeunit 396;
+      SellableLocationCodeL@1000000011 : Code[10];
+      UnsellableLocationCodeL@1000000012 : Code[10];
+      RHDPurchaseJobQueueMgtL@1000000013 : Codeunit 50154;
+    BEGIN
+      RHDPurchaseImportL.RESET;
+      IF RHDPurchaseImportL.GET(Rec."Parent Entry No.") THEN
+      BEGIN
+        //H0854 01.08.14 EHN ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        SellableLocationCodeL := GetSellableLocation(RHDPurchaseImportL."Branch Code");
+        IF SellableLocationCodeL = '' THEN BEGIN
+          RHDPurchaseJobQueueMgtL.CreateLogProcessWMP(FALSE,STRSUBSTNO(HMETxt001,RHDPurchaseImportL."Branch Code"),
+                                                      RHDPurchaseImportL.Filename);
+          RHDPurchaseImportL."Error Description 1" := STRSUBSTNO(HMETxt001,RHDPurchaseImportL."Branch Code");
+          RHDPurchaseImportL.MODIFY;
+          EXIT(FALSE);
+        END;
+        UnsellableLocationCodeL := GetUnsellableLocation(RHDPurchaseImportL."Branch Code");
+        IF UnsellableLocationCodeL = '' THEN BEGIN
+          RHDPurchaseJobQueueMgtL.CreateLogProcessWMP(FALSE,STRSUBSTNO(HMETxt002,RHDPurchaseImportL."Branch Code"),
+                                                      RHDPurchaseImportL.Filename);
+          RHDPurchaseImportL."Error Description 1" := STRSUBSTNO(HMETxt002,RHDPurchaseImportL."Branch Code");
+          RHDPurchaseImportL.MODIFY;
+          EXIT(FALSE);
+        END;
+        //H0854 01.08.14 EHN ----------------------------------------------------------------
+        //H0854 12.09.14 DMA ++++++++++++++++++++++++++++++++++++++
+        //EVERYTHING MOVED TO WMP PROCESSING AS WE HAVE LINE FOR UNSELLABLE QTY. IN FILE
+        {
+        IF RHDPurchaseImportL."Qty. Damaged" <> 0 THEN
+        BEGIN
+          RHDSetupL.GET;
+          ItemJournalLineL.RESET;
+          ItemJournalLineL.SETRANGE("Journal Template Name",'UMLAGERUNG');
+          ItemJournalLineL.SETRANGE("Journal Batch Name",'RHENUS');
+          ItemJournalLineL.SETRANGE("Entry Type",ItemJournalLineL."Entry Type"::Transfer);
+          //H0854 01.08.14 EHN ++++++++++++++++++++++++++++++++++++++++++++++++++++
+          //ItemJournalLineL.SETRANGE("Location Code",RHDSetupL."Sellable Location Code");
+          //ItemJournalLineL.SETRANGE("New Location Code",RHDSetupL."Unsellable Location Code");
+          ItemJournalLineL.SETRANGE("Location Code",SellableLocationCodeL);
+          ItemJournalLineL.SETRANGE("New Location Code",UnsellableLocationCodeL);
+          //H0854 01.08.14 EHN ----------------------------------------------------
+          ItemJournalLineL.SETRANGE("Item No.",RHDPurchaseImportL."Item No.");
+          ItemJournalLineL.SETRANGE(Quantity,RHDPurchaseImportL."Qty. Damaged");
+          IF NOT ItemJournalLineL.FINDFIRST THEN BEGIN
+            ItemJournalDocumentNoL := NoSeriesManagementL.GetNextNo(RHDSetupL."Transfer Item Journal Nos.",WORKDATE,FALSE);
+
+            ItemJournalLineL.RESET;
+            ItemJournalLineL.INIT;
+            ItemJournalLineL.VALIDATE("Journal Template Name",'UMLAGERUNG');
+            ItemJournalLineL.VALIDATE("Journal Batch Name",'RHENUS');
+            RecRef.GETTABLE(ItemJournalLineL);
+            ItemJournalLineL.VALIDATE("Line No.",LibraryUtilityL.GetNewLineNo(RecRef,ItemJournalLineL.FIELDNO("Line No.")));
+            ItemJournalLineL.INSERT(TRUE);
+            ItemJournalLineL.VALIDATE("Document No.",ItemJournalDocumentNoL);
+            ItemJournalLineL.VALIDATE("Posting Date",RHDPurchaseImportL."Receipt Date");
+            ItemJournalLineL.VALIDATE("Entry Type",ItemJournalLineL."Entry Type"::Transfer);
+            ItemJournalLineL.VALIDATE("Item No.",RHDPurchaseImportL."Item No.");
+            //H0854 01.08.14 EHN ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            //ItemJournalLineL.VALIDATE("Location Code",RHDSetupL."Sellable Location Code");
+            //ItemJournalLineL.VALIDATE("New Location Code",RHDSetupL."Unsellable Location Code");
+            ItemJournalLineL.VALIDATE("Location Code",SellableLocationCodeL);
+            ItemJournalLineL.VALIDATE("New Location Code",UnsellableLocationCodeL);
+            //H0854 01.08.14 EHN ----------------------------------------------------------
+            ItemJournalLineL.VALIDATE(Quantity,RHDPurchaseImportL."Qty. Damaged");
+            ItemJournalLineL."Record Entry No." := RHDPurchaseImportL."Entry No.";
+            ItemJournalLineL."Record Table Id" := DATABASE::"RHD Purchase Import";
+            ItemJournalLineL.MODIFY(TRUE);
+
+            Rec."Import Status" := Rec."Import Status"::Processed;
+            Rec."Process Timestamp" := CURRENTDATETIME;
+            Rec.MODIFY;
+            //H0854 01.08.14 EHN +++++++
+            EXIT(TRUE);
+            //H0854 01.08.14 EHN -------
+          END;
+        END;
+        }
+        Rec."Import Status" := Rec."Import Status"::Processed;
+        Rec."Process Timestamp" := CURRENTDATETIME;
+        Rec.MODIFY;
+
+        //H0854 12.09.14 DMA --------------------------------------
+      END;
+    END;
+
+    PROCEDURE ProcessWMPLine@1000000026(RHDPurchaseImportV@1000000000 : Record 50180) : Boolean;
+    VAR
+      RHDPurchaseJobQueueMgt@1000000023 : Codeunit 50154;
+      PurchPost@1000000022 : Codeunit 90;
+      TransferOrderPostReceipt@1000000021 : Codeunit 5705;
+      SalesLine@1000000020 : Record 37;
+      PurchaseHeader@1000000019 : Record 38;
+      PurchaseLine@1000000018 : Record 39;
+      rRHDPurchExportHeader@1000000015 : Record 50178;
+      rRHDPurchExportLine@1000000014 : Record 50179;
+      "*** HME0919 ***"@1000000013 : Integer;
+      TransferHeaderL@1000000012 : Record 5740;
+      TransferLineL@1000000011 : Record 5741;
+      RHDSetupL@1000000010 : Record 50177;
+      ItemJournalL@1000000009 : Record 83;
+      NoSeriesManagementL@1000000006 : Codeunit 396;
+      ItemJnlPostLine@1000000005 : Codeunit 22;
+      TransferOrderPostReceiptL@1000000004 : Codeunit 5705;
+      ItemJnlPostBatch@1000000025 : Codeunit 23;
+      ItemJournalDocumentNoL@1000000002 : Code[10];
+      ItemJournalLineNoL@1000000001 : Integer;
+    BEGIN
+      PurchaseLine.SETRANGE("Document Type",PurchaseLine."Document Type"::Order);
+      PurchaseLine.SETRANGE("Document No.",RHDPurchaseImportV."Receipt No.");
+      IF PurchaseLine.ISEMPTY THEN
+        PurchaseLine.SETRANGE("Document No.",COPYSTR(RHDPurchaseImportV."Receipt No.",1,
+                              STRLEN(RHDPurchaseImportV."Receipt No.") - 3));
+
+      PurchaseLine.SETRANGE("No.",RHDPurchaseImportV."Item No.");
+
+      rRHDPurchExportHeader.SETRANGE("Rhenus Order No.",RHDPurchaseImportV."Receipt No.");
+      rRHDPurchExportHeader.FINDLAST;
+      rRHDPurchExportLine.SETRANGE("Entry No.",rRHDPurchExportHeader."Entry No.");
+      rRHDPurchExportLine.FINDLAST;
+      PurchaseLine.SETRANGE("Line No.",rRHDPurchExportLine."Attached to Document Line No.");
+
+      //H0919 20140326 DMA +++++++++++++++++++++++++++++++++++
+      IF rRHDPurchExportHeader."Document Type" = rRHDPurchExportHeader."Document Type"::"Transfer Order" THEN BEGIN
+        TransferHeaderL.RESET;
+        TransferHeaderL.SETRANGE("No.",rRHDPurchExportHeader."Document No.");
+        IF TransferHeaderL.FINDFIRST THEN BEGIN
+          TransferLineL.RESET;
+          TransferLineL.SETRANGE("Document No.",TransferHeaderL."No.");
+          //H1423 21.10.14 EHN +++++++++++++++++++++++
+          TransferLineL.SETRANGE("Derived From Line No.",0);
+          TransferLineL.FIND('-');
+          REPEAT
+            TransferLineL.VALIDATE("Qty. to Receive",0);
+            TransferLineL.MODIFY;
+          UNTIL TransferLineL.NEXT = 0;
+
+          TransferLineL.SETRANGE("Line No.",rRHDPurchExportLine."Attached to Document Line No.");
+          TransferLineL.SETRANGE("Item No.",RHDPurchaseImportV."Item No.");
+          //H1423 21.10.14 EHN -----------------------
+          IF TransferLineL.FINDFIRST THEN BEGIN
+            REPEAT
+              IF TransferLineL."Line No." = rRHDPurchExportLine."Attached to Document Line No." THEN BEGIN
+                IF RHDPurchaseImportV."Partially Completed" THEN
+                  RHDPurchaseJobQueueMgt.CreateLogProcessWMP(TRUE,STRSUBSTNO(GOB004,RHDPurchaseImportV."Entry No.",
+                    TransferLineL."Document No.",TransferLineL."Line No."),RHDPurchaseImportV.Filename);
+                IF RHDPurchaseImportV."Qty. Damaged" <> 0 THEN
+                  RHDPurchaseJobQueueMgt.CreateLogProcessWMP(TRUE,
+                    STRSUBSTNO(GOB006,RHDPurchaseImportV."Entry No.",
+                    RHDPurchaseImportV."Qty. Damaged",TransferLineL."Document No.",TransferLineL."Line No."),
+                    RHDPurchaseImportV.Filename);
+                //H1423 21.10.14 EHN ++++++++++++++++++++++++++++++++++++++++++++++++
+                IF RHDPurchaseImportV.Quantity < TransferLineL."Qty. in Transit" THEN
+                  RHDPurchaseJobQueueMgt.CreateLogProcessWMP(FALSE,
+                    STRSUBSTNO(GOB001,PurchaseHeader.TABLECAPTION,PurchaseLine."Document No.",
+                    TransferLineL."Line No.",TransferLineL."Qty. in Transit",RHDPurchaseImportV.Quantity),
+                    RHDPurchaseImportV.Filename);
+                IF (RHDPurchaseImportV.Quantity > TransferLineL."Qty. in Transit") THEN
+                  RHDPurchaseJobQueueMgt.CreateLogProcessWMP(FALSE,
+                    STRSUBSTNO(GOB002,PurchaseHeader.TABLECAPTION,PurchaseLine."Document No.",
+                    TransferLineL."Line No.",TransferLineL."Qty. in Transit",RHDPurchaseImportV.Quantity),
+                    RHDPurchaseImportV.Filename);
+                //H1423 21.10.14 EHN ------------------------------------------------
+                TransferLineL.VALIDATE("Qty. to Receive",RHDPurchaseImportV.Quantity);
+              END ELSE BEGIN
+                TransferLineL.VALIDATE("Qty. to Receive",0);
+              END;
+              //H1331 070714 EHN ++++++++++++++++++++++
+              TransferLineL."Record Entry No." := RHDPurchaseImportV."Entry No.";
+              TransferLineL."Record Table Id" := DATABASE::"RHD Purchase Import";
+              //H1331 070714 EHN ----------------------
+
+              TransferLineL.MODIFY;
+            UNTIL TransferLineL.NEXT = 0;
+
+            TransferHeaderL.GET(TransferLineL."Document No.");
+            TransferHeaderL.VALIDATE("Posting Date",RHDPurchaseImportV."Receipt Date");
+            TransferOrderPostReceiptL.SetHideValidationDialog(TRUE);
+            TransferOrderPostReceiptL.RUN(TransferHeaderL);
+
+          END;
+        END ELSE BEGIN
+          TransferHeaderL.FINDFIRST;
+        END;
+      END ELSE
+      //H0919 20140326 DMA -----------------------------------
+
+      //H1423 21.10.14 EHN ++++++++++++++++++++++
+      IF PurchaseLine.FINDFIRST THEN BEGIN
+      //H1423 21.10.14 EHN ----------------------
+        IF PurchaseLine."Transfer Order No." = '' THEN BEGIN
+          // kein Transfer Order vorhanden
+          // Qty. to Receive fÅr alle Zeilen auf 0 setzen
+          PurchaseLine.SETRANGE("No.");
+          PurchaseLine.SETRANGE("Line No.");
+          PurchaseLine.FINDFIRST;
+          REPEAT
+            PurchaseLine.VALIDATE("Qty. to Receive",0);
+            PurchaseLine.VALIDATE("Qty. to Invoice",0);
+            PurchaseLine.MODIFY;
+          UNTIL PurchaseLine.NEXT = 0;
+
+          PurchaseLine.SETRANGE("Line No.",rRHDPurchExportLine."Attached to Document Line No.");
+          PurchaseLine.SETRANGE("No.",RHDPurchaseImportV."Item No.");
+          PurchaseLine.FINDFIRST;
+
+          // wenn Teilabschluss oder Damaged, dann Log erzeugen
+          IF RHDPurchaseImportV."Partially Completed" THEN
+            RHDPurchaseJobQueueMgt.CreateLogProcessWMP(TRUE,STRSUBSTNO(GOB004,RHDPurchaseImportV."Entry No.",
+                                   PurchaseLine."Document No.",PurchaseLine."Line No."),RHDPurchaseImportV.Filename);
+          IF RHDPurchaseImportV."Qty. Damaged" <> 0 THEN
+            RHDPurchaseJobQueueMgt.CreateLogProcessWMP(TRUE,
+                                   STRSUBSTNO(GOB006,RHDPurchaseImportV."Entry No.",
+                                   RHDPurchaseImportV."Qty. Damaged",PurchaseLine."Document No.",PurchaseLine."Line No."),
+                                   RHDPurchaseImportV.Filename);
+          IF RHDPurchaseImportV.Quantity < PurchaseLine."Outstanding Quantity" THEN // Unterlieferung
+            RHDPurchaseJobQueueMgt.CreateLogProcessWMP(FALSE,
+                                   STRSUBSTNO(GOB001,PurchaseHeader.TABLECAPTION,PurchaseLine."Document No.",
+                                   PurchaseLine."Line No.",PurchaseLine."Outstanding Quantity",RHDPurchaseImportV.Quantity),
+                                   RHDPurchaseImportV.Filename);
+          IF (RHDPurchaseImportV.Quantity > PurchaseLine."Outstanding Quantity") THEN BEGIN // öberlieferung
+            RHDPurchaseJobQueueMgt.CreateLogProcessWMP(FALSE,
+                                   STRSUBSTNO(GOB002,PurchaseHeader.TABLECAPTION,PurchaseLine."Document No.",
+                                   PurchaseLine."Line No.",PurchaseLine."Outstanding Quantity",RHDPurchaseImportV.Quantity),
+                                   RHDPurchaseImportV.Filename);
+            IF PurchaseLine."Outstanding Quantity" <= 0 THEN
+              RHDPurchaseImportV.Quantity := 0
+            ELSE
+              RHDPurchaseImportV.Quantity := PurchaseLine."Outstanding Quantity";
+          END;
+          //H1331 070714 EHN ++++++++++++++++++++++
+          PurchaseLine."Record Entry No." := RHDPurchaseImportV."Entry No.";
+          PurchaseLine."Record Table Id" := DATABASE::"RHD Purchase Import";
+          //H1331 070714 EHN ----------------------
+
+          RHDSetupL.GET;
+
+          IF RHDPurchaseImportV."Stock Type" = RHDSetupL."Unsellable Stock Type" THEN BEGIN
+            IF PurchaseLine."Unsellable Quantity" = 0 THEN
+              PurchaseLine."Unsellable Quantity" := RHDPurchaseImportV.Quantity
+            ELSE
+              PurchaseLine."Unsellable Quantity" := PurchaseLine."Unsellable Quantity" + RHDPurchaseImportV.Quantity;
+          END;
+
+          PurchaseLine.VALIDATE("Qty. to Receive",RHDPurchaseImportV.Quantity);
+          PurchaseLine.MODIFY;
+          //COMMIT;
+
+          PurchaseHeader.GET(PurchaseLine."Document Type",PurchaseLine."Document No.");
+          PurchaseHeader.VALIDATE("Posting Date",RHDPurchaseImportV."Receipt Date");
+          PurchaseHeader.Receive := TRUE;
+          PurchaseHeader.Invoice := FALSE;
+          PurchPost.RUN(PurchaseHeader);
+
+          IF RHDPurchaseImportV."Stock Type" = RHDSetupL."Unsellable Stock Type" THEN BEGIN
+            ItemJournalDocumentNoL := NoSeriesManagementL.GetNextNo(RHDSetupL."Transfer Item Journal Nos.",WORKDATE,TRUE);
+
+            ItemJournalL.RESET;
+            ItemJournalL.SETRANGE("Journal Template Name",'UMLAGERUNG');
+            ItemJournalL.SETRANGE("Journal Batch Name",'RHENUS');
+            IF ItemJournalL.FINDLAST THEN
+              ItemJournalLineNoL := ItemJournalL."Line No." + 10000
+            ELSE
+              ItemJournalLineNoL := 10000;
+
+            ItemJournalL.RESET;
+            ItemJournalL.LOCKTABLE;
+
+            ItemJournalL.INIT;
+            ItemJournalL.VALIDATE("Journal Template Name",'UMLAGERUNG');
+            ItemJournalL.VALIDATE("Journal Batch Name",'RHENUS');
+            ItemJournalL.VALIDATE("Line No.",ItemJournalLineNoL);
+            ItemJournalL.INSERT(TRUE);
+            ItemJournalL.VALIDATE("Entry Type",ItemJournalL."Entry Type"::Transfer);
+            ItemJournalL.VALIDATE("Document No.",ItemJournalDocumentNoL);
+            ItemJournalL.VALIDATE("Posting Date", RHDPurchaseImportV."Receipt Date");
+            ItemJournalL.VALIDATE("Item No.",RHDPurchaseImportV."Item No.");
+            ItemJournalL."Shortcut Dimension 2 Code" := RHDPurchaseImportV."Item No.";
+            ItemJournalL.VALIDATE("Location Code",GetSellableLocation(RHDPurchaseImportV."Branch Code"));
+            ItemJournalL.VALIDATE("New Location Code",GetUnsellableLocation(RHDPurchaseImportV."Branch Code"));
+            ItemJournalL.VALIDATE(Quantity,ABS(RHDPurchaseImportV.Quantity));
+            ItemJournalL."Record Entry No." := RHDPurchaseImportV."Entry No.";
+            ItemJournalL."Record Table Id" := DATABASE::"RHD Purchase Import";
+            ItemJournalL.MODIFY(TRUE);
+            ItemJnlPostBatch.RUN(ItemJournalL);
+
+          END;
+
+        END ELSE BEGIN
+
+          // Transfer Order
+          TransferLineL.SETRANGE("Document No.",PurchaseLine."Transfer Order No.");
+          TransferLineL.SETRANGE("Line No.",PurchaseLine."Transfer Order Line No.");
+          TransferLineL.SETRANGE("Item No.",RHDPurchaseImportV."Item No.");
+          //H1423 21.10.14 EHN +++++++++++++++++++++++
+          TransferLineL.SETRANGE("Derived From Line No.",0);
+          //H1423 21.10.14 EHN -----------------------
+          IF NOT TransferLineL.ISEMPTY THEN BEGIN
+
+            TransferLineL.SETRANGE("Line No.");
+            TransferLineL.SETRANGE("Item No.");
+            TransferLineL.FIND('-');
+            REPEAT
+              TransferLineL.VALIDATE("Qty. to Receive",0);
+              TransferLineL.MODIFY;
+            UNTIL TransferLineL.NEXT = 0;
+
+            TransferLineL.SETRANGE("Line No.",PurchaseLine."Transfer Order Line No.");
+            TransferLineL.SETRANGE("Item No.",RHDPurchaseImportV."Item No.");
+            TransferLineL.FINDFIRST;
+
+            // wenn Teilabschluss oder Damaged, dann Log erzeugen
+            IF RHDPurchaseImportV."Partially Completed" THEN
+              RHDPurchaseJobQueueMgt.CreateLogProcessWMP(
+                TRUE,
+                STRSUBSTNO(GOB004,RHDPurchaseImportV."Entry No.",TransferLineL."Document No.",TransferLineL."Line No."),
+                RHDPurchaseImportV.Filename);
+            IF RHDPurchaseImportV."Qty. Damaged" <> 0 THEN
+              RHDPurchaseJobQueueMgt.CreateLogProcessWMP(
+                TRUE,
+                STRSUBSTNO(GOB006,RHDPurchaseImportV."Entry No.",
+                  RHDPurchaseImportV."Qty. Damaged",TransferLineL."Document No.",TransferLineL."Line No."),
+                RHDPurchaseImportV.Filename);
+            //H1423 21.10.14 EHN ++++++++++++++++++++++++++++++++++++++++++++
+            IF RHDPurchaseImportV.Quantity < TransferLineL."Qty. in Transit" THEN
+              RHDPurchaseJobQueueMgt.CreateLogProcessWMP(
+                FALSE,
+                STRSUBSTNO(GOB001,TransferHeaderL.TABLECAPTION,TransferLineL."Document No.",
+                           TransferLineL."Line No.",TransferLineL."Qty. in Transit",RHDPurchaseImportV.Quantity),
+                RHDPurchaseImportV.Filename);
+            IF RHDPurchaseImportV.Quantity > TransferLineL."Qty. in Transit" THEN BEGIN
+              RHDPurchaseJobQueueMgt.CreateLogProcessWMP(
+                FALSE,
+                STRSUBSTNO(GOB002,TransferHeaderL.TABLECAPTION,TransferLineL."Document No.",
+                           TransferLineL."Line No.",TransferLineL."Qty. in Transit",RHDPurchaseImportV.Quantity),
+                RHDPurchaseImportV.Filename);
+
+              IF TransferLineL."Qty. in Transit" <= 0 THEN
+                RHDPurchaseImportV.Quantity := 0
+              ELSE
+              RHDPurchaseImportV.Quantity := TransferLineL."Qty. in Transit";
+            END;
+            //H1423 21.10.14 EHN --------------------------------------------
+
+            //H1331 070714 EHN ++++++++++++++++++++++
+            TransferLineL."Record Entry No." := RHDPurchaseImportV."Entry No.";
+            TransferLineL."Record Table Id" := DATABASE::"RHD Purchase Import";
+            //H1331 070714 EHN ----------------------
+
+            TransferLineL.VALIDATE("Qty. to Receive",RHDPurchaseImportV.Quantity);
+            TransferLineL.MODIFY;
+            COMMIT;
+
+            TransferHeaderL.GET(TransferLineL."Document No.");
+            TransferHeaderL.VALIDATE("Posting Date",RHDPurchaseImportV."Receipt Date");
+            TransferOrderPostReceipt.SetHideValidationDialog(TRUE);
+            TransferOrderPostReceipt.RUN(TransferHeaderL);
+          END ELSE
+            TransferLineL.FINDFIRST;
+        END;
+      END ELSE
+        PurchaseLine.FINDFIRST;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE ProcessUMPLine@1000000022(VAR RecR@1000000000 : Record 50211) : Boolean;
+    VAR
+      RHDSetupL@1000000003 : Record 50177;
+      TransferHeaderL@1000000002 : Record 5740;
+      TransferLineL@1000000001 : Record 5741;
+      ItemJournalL@1000000006 : Record 83;
+      RHDItemLedgerEntryLinkL@1000000004 : Record 50213;
+      RecRef@1000000016 : RecordRef;
+      LibraryUtilityL@1000000015 : Codeunit 50206;
+      NoSeriesManagementL@1000000008 : Codeunit 396;
+      cRHDGenMgtL@1000000009 : Codeunit 50157;
+      ERR_NOTHING_TO_DO@1000000010 : TextConst 'ENU=There is nothing to post. Entry %1 has %2 %3.';
+      RHDPurchaseJobQueueMgtL@1000000011 : Codeunit 50154;
+      ItemJournalDocumentNo@1000000012 : Code[20];
+      ResultL@1000000005 : Boolean;
+      SellableLocationCodeL@1000000013 : Code[10];
+      UnsellableLocationCodeL@1000000007 : Code[10];
+    BEGIN
+      //DO NOTHING FOR NOW
+      RHDSetupL.GET;
+      IF RecR."Record Type" = 'UMP' THEN BEGIN
+        IF RecR.Quantity <> 0 THEN BEGIN
+          IF (RecR."Relocation Reason" = RecR."Relocation Reason"::Disposal)
+            AND (RecR."Inventory Type" = '') THEN BEGIN
+
+            ItemJournalDocumentNo := NoSeriesManagementL.GetNextNo(RHDSetupL."Transfer Item Journal Nos.",WORKDATE,FALSE);
+
+            ItemJournalL.RESET;
+            ItemJournalL.INIT;
+            ItemJournalL.VALIDATE("Journal Template Name",'UMLAGERUNG');
+            ItemJournalL.VALIDATE("Journal Batch Name",'RHENUS');
+            RecRef.GETTABLE(ItemJournalL);
+            ItemJournalL.VALIDATE("Line No.",LibraryUtilityL.GetNewLineNo(RecRef,ItemJournalL.FIELDNO("Line No.")));
+            ResultL := ItemJournalL.INSERT(TRUE);
+            ItemJournalL.VALIDATE("Document No.",ItemJournalDocumentNo);
+            ItemJournalL.VALIDATE("Entry Type",ItemJournalL."Entry Type"::"Negative Adjmt.");
+            ItemJournalL.VALIDATE("Posting Date",VARIANT2DATE(RecR."Entry Timestamp"));
+            ItemJournalL.VALIDATE("Item No.",RecR."Item No.");
+            ItemJournalL.VALIDATE(Quantity,ABS(RecR.Quantity));
+            ItemJournalL."Record Entry No." := RecR."Entry No.";
+            ItemJournalL."Record Table Id" := DATABASE::"RHD UMP Import Line";
+            ResultL := ResultL AND ItemJournalL.MODIFY(TRUE);
+
+          END ELSE BEGIN
+            //H0854 01.08.14 EHN +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            SellableLocationCodeL := GetSellableLocation(RecR."Branch Code");
+            IF SellableLocationCodeL = '' THEN BEGIN
+              RHDPurchaseJobQueueMgtL.CreateLogProcessUMP(FALSE,STRSUBSTNO(HMETxt001,RecR."Branch Code"),RecR."File Name");
+              RecR."Error Description 1" := STRSUBSTNO(HMETxt001,RecR."Branch Code");
+              RecR.MODIFY;
+              EXIT(FALSE);
+            END;
+            UnsellableLocationCodeL := GetUnsellableLocation(RecR."Branch Code");
+            IF UnsellableLocationCodeL = '' THEN BEGIN
+              RHDPurchaseJobQueueMgtL.CreateLogProcessUMP(FALSE,STRSUBSTNO(HMETxt002,RecR."Branch Code"),RecR."File Name");
+              RecR."Error Description 1" := STRSUBSTNO(HMETxt002,RecR."Branch Code");
+              RecR.MODIFY;
+              EXIT(FALSE);
+            END;
+            //H0854 01.08.14 EHN -----------------------------------------------------------
+            IF RecR."Item Type" = RecR."Item Type"::Unsellable THEN BEGIN
+
+              ItemJournalDocumentNo := NoSeriesManagementL.GetNextNo(RHDSetupL."Transfer Item Journal Nos.",WORKDATE,FALSE);
+
+              ItemJournalL.RESET;
+              ItemJournalL.INIT;
+              ItemJournalL.VALIDATE("Journal Template Name",'UMLAGERUNG');
+              ItemJournalL.VALIDATE("Journal Batch Name",'RHENUS');
+              RecRef.GETTABLE(ItemJournalL);
+              ItemJournalL.VALIDATE("Line No.",LibraryUtilityL.GetNewLineNo(RecRef,ItemJournalL.FIELDNO("Line No.")));
+              ResultL := ItemJournalL.INSERT(TRUE);
+              ItemJournalL.VALIDATE("Entry Type",ItemJournalL."Entry Type"::Transfer);
+              ItemJournalL.VALIDATE("Document No.",ItemJournalDocumentNo);
+              ItemJournalL.VALIDATE("Posting Date",VARIANT2DATE(RecR."Entry Timestamp"));
+              ItemJournalL.VALIDATE("Item No.",RecR."Item No.");
+              ItemJournalL.VALIDATE(Quantity,ABS(RecR.Quantity));
+              //H0854 01.08.14 EHN +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+              //ItemJournalL.VALIDATE("Location Code",RHDSetupL."Sellable Location Code");
+              //ItemJournalL.VALIDATE("New Location Code",RHDSetupL."Unsellable Location Code");
+              ItemJournalL.VALIDATE("Location Code",SellableLocationCodeL);
+              ItemJournalL.VALIDATE("New Location Code",UnsellableLocationCodeL);
+              //H0854 01.08.14 EHN -------------------------------------------------------------
+              ItemJournalL."Record Entry No." := RecR."Entry No.";
+              ItemJournalL."Record Table Id" := DATABASE::"RHD UMP Import Line";
+              ResultL := ResultL AND ItemJournalL.MODIFY(TRUE);
+
+            END ELSE BEGIN
+
+              ItemJournalDocumentNo := NoSeriesManagementL.GetNextNo(RHDSetupL."Transfer Item Journal Nos.",WORKDATE,FALSE);
+
+              ItemJournalL.RESET;
+              ItemJournalL.INIT;
+              ItemJournalL.VALIDATE("Journal Template Name",'UMLAGERUNG');
+              ItemJournalL.VALIDATE("Journal Batch Name",'RHENUS');
+              RecRef.GETTABLE(ItemJournalL);
+              ItemJournalL.VALIDATE("Line No.",LibraryUtilityL.GetNewLineNo(RecRef,ItemJournalL.FIELDNO("Line No.")));
+              ResultL := ItemJournalL.INSERT(TRUE);
+              ItemJournalL.VALIDATE("Entry Type",ItemJournalL."Entry Type"::Transfer);
+              ItemJournalL.VALIDATE("Document No.",ItemJournalDocumentNo);
+              ItemJournalL.VALIDATE("Posting Date",VARIANT2DATE(RecR."Entry Timestamp"));
+              ItemJournalL.VALIDATE("Item No.",RecR."Item No.");
+              ItemJournalL.VALIDATE(Quantity,ABS(RecR.Quantity));
+              //H0857 01.08.14 EHN +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+              //ItemJournalL.VALIDATE("Location Code",RHDSetupL."Unsellable Location Code");
+              //ItemJournalL.VALIDATE("New Location Code",RHDSetupL."Sellable Location Code");
+              ItemJournalL.VALIDATE("Location Code",UnsellableLocationCodeL);
+              ItemJournalL.VALIDATE("New Location Code",SellableLocationCodeL);
+              //H0857 01.08.14 EHN -------------------------------------------------------
+              ItemJournalL."Record Entry No." := RecR."Entry No.";
+              ItemJournalL."Record Table Id" := DATABASE::"RHD UMP Import Line";
+              ResultL := ResultL AND ItemJournalL.MODIFY(TRUE);
+
+            END;
+          END;
+        END ELSE BEGIN
+          RecR."Error Description 1" := STRSUBSTNO(ERR_NOTHING_TO_DO,RecR."Entry No.",RecR.FIELDCAPTION(Quantity),RecR.Quantity);
+          RecR.MODIFY;
+        END;
+      END;
+
+      EXIT (ResultL);
+    END;
+
+    PROCEDURE ProcessBMPLine@1000000021(Rec@1000000000 : Record 50212) : Boolean;
+    VAR
+      WebShopStockL@1000000002 : Record 50132;
+      RHDSetupL@1000000005 : Record 50177;
+      LocationL@1000000004 : Record 14;
+      RHDPurchaseJobQueueMgtL@1000000003 : Codeunit 50154;
+      SellableLocationCodeL@1000000001 : Code[10];
+    BEGIN
+      RHDSetupL.GET;
+      //H0854 01.08.14 EHN ++++++++++++++++++++++++++++++++++++++
+      SellableLocationCodeL := GetSellableLocation(Rec."Branch Code");
+      IF SellableLocationCodeL = '' THEN BEGIN
+        RHDPurchaseJobQueueMgtL.CreateLogProcessBMP(FALSE,STRSUBSTNO(HMETxt001,Rec."Branch Code"));
+        Rec."Error Description 1" := STRSUBSTNO(HMETxt001,Rec."Branch Code");
+        Rec.MODIFY;
+        EXIT(FALSE);
+      END;
+      //H0854 01.08.14 EHN --------------------------------------
+      LocationL.RESET;
+      //H0854 01.08.14 EHN +++++++++++++++++++++++++++++++++++++++
+      //LocationL.SETRANGE(Code,RHDSetupL."Sellable Location Code");
+      LocationL.SETRANGE(Code,SellableLocationCodeL);
+      //H0854 01.08.14 EHN ---------------------------------------
+      IF LocationL.FINDFIRST THEN;
+
+      WebShopStockL.RESET;
+      WebShopStockL.SETRANGE("Item No.",Rec."Item No.");
+      WebShopStockL.SETRANGE("Stock Location",LocationL."WebShop Location Code");
+      IF WebShopStockL.FINDFIRST THEN BEGIN
+        REPEAT
+          WebShopStockL.Inventory := Rec.Quantity;
+          IF NOT Rec.MODIFY THEN BEGIN
+            RHDPurchaseJobQueueMgtL.CreateLogProcessBMP(FALSE,COPYSTR(GETLASTERRORTEXT,1,1000));
+            EXIT(FALSE);
+          END;
+        UNTIL WebShopStockL.NEXT = 0;
+      END;
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE GetSellableLocation@1000000024(BranchCode@1000000000 : Code[10]) : Code[10];
+    VAR
+      LocationL@1000000001 : Record 14;
+    BEGIN
+      //H0854 01.08.14 EHN --------------------------------------
+      LocationL.RESET;
+      LocationL.SETRANGE("Branch Code",BranchCode);
+      LocationL.SETRANGE("Is Sellable Location",TRUE);
+      IF LocationL.FINDFIRST THEN
+        EXIT(LocationL.Code)
+      ELSE
+        EXIT('');
+      //H0854 01.08.14 EHN +++++++++++++++++++++++++++++++++++++++
+    END;
+
+    PROCEDURE GetUnsellableLocation@1000000027(BranchCode@1000000000 : Code[10]) : Code[10];
+    VAR
+      LocationL@1000000001 : Record 14;
+    BEGIN
+      //H0854 01.08.14 EHN --------------------------------------
+      LocationL.RESET;
+      LocationL.SETRANGE("Branch Code",BranchCode);
+      LocationL.SETRANGE("Is Unsellable Location",TRUE);
+      IF LocationL.FINDFIRST THEN
+        EXIT(LocationL.Code)
+      ELSE
+        EXIT('');
+      //H0854 01.08.14 EHN +++++++++++++++++++++++++++++++++++++++
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------------+
+      |                   ∏  Copyright                   |
+      |       GOB Software & Systeme GmbH & Co. KG       |
+      +--------------------------------------------------+
+      |                      home24                      |
+      +--------------------------------------------------+
+
+      Project   Date        Consultant  Comment
+      ------------------------------------------------------
+      P1100     11.09.2013  gob-dst     RHD Redesign
+      P1109     23.10.2013  gob-dst     Funktion ProcessWEMLine
+      P1157     27.11.2013  gob-ael     Rhenus Order No. in separates Feld Åbernehmen
+      P1193     05.02.2014  gob-dst     Funktion UpdateStatusUploaded angepasst, Buchungsdatum vor Buchung setzen
+                                        öberlieferungen fÅr Bestellungen abfangen
+      P1200     12.02.2014  gob-dst     Hotfix WEA Export fÅr CD
+      P1212     27.02.2014  gob-dst     Hotfix WEA Export fÅr Containerbestellungen
+      P1218     07.03.2014  gob-dst     Hotfix WEA Export fÅr Containerbestellungen (Lieferdatum)
+      P1239     07.04.2014  gob-dst     WEA nicht senden bei Cancel und Restbestellmenge = 0
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+      H0584       12.02.14 DMA       Processing of PSE records
+      H0586       12.02.14 DMA       Processing of UMP files
+      H0587       12.02.14 DMA       Processing of BMP files
+      H0919       26.03.14 DMA       Processing of transfer orders without prochase order
+      H0924       03.04.14 DMA       Control Posting Dates, allready done by P1193
+      H1331       07.07.14 EHN       Fill values into fields : "Record Entry No.", "Record Table Id"
+      H1423       22.10.14 EHN       Fix WMP process for posting receipt of transfer order
+      H1796       24.11.14 DMA       BUG: Prevent WEA Creation for Lines where Branch Code is not equal to the used function,CODECHANGE
+    }
+    END.
+  }
+}
+

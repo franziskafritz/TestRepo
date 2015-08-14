@@ -1,0 +1,1166 @@
+OBJECT Codeunit 5157852 G/L OpenEntriesTools
+{
+  OBJECT-PROPERTIES
+  {
+    Date=28.06.12;
+    Time=14:32:13;
+    Version List=OPP7.02.03,6.0,GOB1.00;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 17=rimd,
+                TableData 5157852=rimd;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      OPplusLicenseInfo@5157802 : Codeunit 5158000;
+      GenJnlCheckLine@1000000001 : Codeunit 11;
+      MaxPostingDate@1000000000 : Date;
+      DocNo@1000000002 : Code[20];
+      PDate@1000000003 : Date;
+
+    PROCEDURE PostGLAccOE@1000000000(VAR GLEntry@1000000000 : Record 17;GenJnlLine@1000000001 : Record 81;NextTransactionNo@1000000006 : Integer);
+    VAR
+      CVLedgEntryBuf@1000000004 : Record 382;
+      DtldCVLedgEntryBuf@1000000003 : TEMPORARY Record 383;
+      DtldGLEntry@1000000002 : Record 5157852;
+      ReversedGLEntry@1000000005 : Record 17;
+      PIPEntry@5157802 : Record 5157914;
+    BEGIN
+      WITH GenJnlLine DO BEGIN
+        IF GLEntry.Amount = 0 THEN
+          EXIT;
+        DtldGLEntry.LOCKTABLE;
+        DtldCVLedgEntryBuf.DELETEALL;
+        DtldCVLedgEntryBuf.INIT;
+        DtldCVLedgEntryBuf."Cust. Ledger Entry No." := GLEntry."Entry No.";
+        DtldCVLedgEntryBuf."Entry Type" := DtldCVLedgEntryBuf."Entry Type"::"Initial Entry";
+        DtldCVLedgEntryBuf."Posting Date" := "Posting Date";
+        DtldCVLedgEntryBuf."Document Type" := "Document Type";
+        DtldCVLedgEntryBuf."Document No." := "Document No.";
+        DtldCVLedgEntryBuf.Amount := GLEntry.Amount;
+        DtldCVLedgEntryBuf."Customer No." := GLEntry."G/L Account No.";
+        DtldCVLedgEntryBuf."User ID" := USERID;
+        DtldCVLedgEntryBuf."Initial Entry Due Date" := "Due Date";
+        DtldCVLedgEntryBuf."Initial Entry Global Dim. 1" := GLEntry."Global Dimension 1 Code";
+        DtldCVLedgEntryBuf."Initial Entry Global Dim. 2" := GLEntry."Global Dimension 2 Code";
+        DtldCVLedgEntryBuf."Initial Document Type" := "Document Type";
+
+        GLEntry."Applies-to Doc. Type" := "Applies-to Doc. Type";
+        GLEntry."Applies-to Doc. No." := "Applies-to Doc. No.";
+        GLEntry."Applies-to ID" := "Applies-to ID";
+
+        TransferGLEntry(CVLedgEntryBuf,GLEntry,TRUE);
+
+        InsertDtldCVLedgEntry(DtldCVLedgEntryBuf,CVLedgEntryBuf);
+        CVLedgEntryBuf.Open := CVLedgEntryBuf."Remaining Amount" <> 0;
+        CVLedgEntryBuf.Positive := CVLedgEntryBuf."Remaining Amount" > 0;
+
+        IF GLEntry.Open AND GLEntry.Reversed AND (GLEntry."Reversed Entry No." <> 0) THEN BEGIN
+          IF ReversedGLEntry.GET(GLEntry."Reversed Entry No.") THEN BEGIN
+            GLEntry."Applies-to Doc. Type" := ReversedGLEntry."Document Type";
+            GLEntry."Applies-to Doc. No." := ReversedGLEntry."Document No.";
+            GenJnlLine."Applies-to Doc. Type" := ReversedGLEntry."Document Type";
+            GenJnlLine."Applies-to Doc. No." := ReversedGLEntry."Document No.";
+            GenJnlLine."ID Applied-Entry" := ReversedGLEntry."Entry No.";
+          END;
+        END;
+
+        IF (GenJnlLine."Applied Account Type" = GenJnlLine."Applied Account Type"::"G/L Account") AND
+           (GenJnlLine."Applied Account No." = GLEntry."G/L Account No.")
+        THEN
+          ApplyGLEntry(
+            CVLedgEntryBuf,DtldCVLedgEntryBuf,GenJnlLine);
+
+        TransferGLEntry(CVLedgEntryBuf,GLEntry,FALSE);
+
+        IF OPplusLicenseInfo.IsPmt THEN
+          IF PIPEntry.GET(GLEntry."Entry No.") THEN BEGIN
+            PIPEntry.Open := GLEntry.Open;
+            PIPEntry.MODIFY;
+          END;
+
+        PostDtldGLEntries(
+          GenJnlLine,DtldCVLedgEntryBuf,NextTransactionNo);
+
+        DtldCVLedgEntryBuf.DELETEALL;
+
+      END;
+    END;
+
+    PROCEDURE ApplyGLEntry@1000000001(VAR NewCVLedgEntryBuf@1000 : Record 382;VAR DtldCVLedgEntryBuf@1001 : Record 383;GenJnlLine@1002 : Record 81);
+    VAR
+      OldGLEntry@1005 : Record 17;
+      OldCVLedgEntryBuf@1006 : Record 382;
+      OldCVLedgEntryBuf2@1007 : Record 382;
+      TempOldGLEntry@1000000000 : TEMPORARY Record 17;
+      Completed@1009 : Boolean;
+      AppliedAmount@1010 : Decimal;
+      OldAppliedAmount@1012 : Decimal;
+      TempAmount@1013 : Decimal;
+      NewRemainingAmtBeforeAppln@1014 : Decimal;
+      OldRemainingAmtBeforeAppln@1016 : Decimal;
+      ApplyingDate@1017 : Date;
+    BEGIN
+      IF (NewCVLedgEntryBuf."Remaining Amount" = 0) THEN
+        EXIT;
+
+      IF (GenJnlLine."Applies-to Doc. No." = '') AND (GenJnlLine."Applies-to ID" = '') THEN
+        EXIT;
+
+      NewRemainingAmtBeforeAppln := NewCVLedgEntryBuf."Remaining Amount";
+
+      ApplyingDate := GenJnlLine."Posting Date";
+
+      IF GenJnlLine."Applies-to Doc. No." <> '' THEN BEGIN
+        // Find the entry to be applied to
+        OldGLEntry.RESET;
+        OldGLEntry.SETCURRENTKEY("Document No.","Document Type","G/L Account No.");
+        OldGLEntry.SETRANGE("Document Type",GenJnlLine."Applies-to Doc. Type");
+        OldGLEntry.SETRANGE("Document No.",GenJnlLine."Applies-to Doc. No.");
+        OldGLEntry.SETRANGE("G/L Account No.",NewCVLedgEntryBuf."CV No.");
+        OldGLEntry.SETRANGE(Open,TRUE);
+        IF GenJnlLine."ID Applied-Entry" <> 0 THEN BEGIN
+          OldGLEntry.SETRANGE("Entry No.",GenJnlLine."ID Applied-Entry");
+          OldGLEntry.FINDFIRST;
+        END ELSE BEGIN
+          OldGLEntry.FINDFIRST;
+          OldGLEntry.TESTFIELD(Positive,NOT NewCVLedgEntryBuf.Positive);
+        END;
+        IF OldGLEntry."Posting Date" > ApplyingDate THEN
+          ApplyingDate := OldGLEntry."Posting Date";
+        TempOldGLEntry := OldGLEntry;
+        TempOldGLEntry.INSERT;
+      END ELSE BEGIN
+        // Find the first old entry (Invoice) which the new entry (Payment) should apply to
+        OldGLEntry.RESET;
+        OldGLEntry.SETCURRENTKEY("G/L Account No.","Applies-to ID",Open,Positive);
+        TempOldGLEntry.SETCURRENTKEY("G/L Account No.","Applies-to ID",Open,Positive);
+        OldGLEntry.SETRANGE("G/L Account No.",NewCVLedgEntryBuf."CV No.");
+        OldGLEntry.SETRANGE("Applies-to ID",GenJnlLine."Applies-to ID");
+        OldGLEntry.SETRANGE(Open,TRUE);
+        OldGLEntry.SETFILTER("Entry No.",'<>%1',NewCVLedgEntryBuf."Entry No.");
+
+        IF OldGLEntry.FINDSET(FALSE,FALSE) THEN
+          REPEAT
+            IF OldGLEntry."Posting Date" > ApplyingDate THEN
+              ApplyingDate := OldGLEntry."Posting Date";
+            TempOldGLEntry := OldGLEntry;
+            TempOldGLEntry.INSERT;
+          UNTIL OldGLEntry.NEXT=0;
+
+        TempOldGLEntry.SETRANGE(Positive,NewCVLedgEntryBuf."Remaining Amount" > 0);
+
+        IF TempOldGLEntry.FIND('-') THEN BEGIN
+          TempAmount := NewCVLedgEntryBuf."Remaining Amount";
+          TempOldGLEntry.SETRANGE(Positive);
+          TempOldGLEntry.FIND('-');
+          REPEAT
+            TempOldGLEntry.CALCFIELDS("Remaining Amount");
+            TempAmount := TempAmount + TempOldGLEntry."Remaining Amount";
+          UNTIL TempOldGLEntry.NEXT = 0;
+          TempOldGLEntry.SETRANGE(Positive,TempAmount < 0);
+        END ELSE
+          TempOldGLEntry.SETRANGE(Positive);
+
+        IF NOT TempOldGLEntry.FIND('-') THEN
+          EXIT;
+      END;
+
+      GenJnlLine."Posting Date" := ApplyingDate;
+      // Apply the new entry (Payment) to the old entries (Invoices) one at a time
+      REPEAT
+        TempOldGLEntry.CALCFIELDS("Remaining Amount");
+        TempOldGLEntry.COPYFILTER(Positive,OldCVLedgEntryBuf.Positive);
+        TransferGLEntry(OldCVLedgEntryBuf,TempOldGLEntry,TRUE);
+        OldRemainingAmtBeforeAppln := OldCVLedgEntryBuf."Remaining Amount";
+
+        OldCVLedgEntryBuf2 := OldCVLedgEntryBuf;
+        OldCVLedgEntryBuf.COPYFILTER(Positive,OldCVLedgEntryBuf2.Positive);
+
+        FindAmtForAppln(
+          NewCVLedgEntryBuf,OldCVLedgEntryBuf2,
+          AppliedAmount,OldAppliedAmount);
+
+        CalcApplication(
+          NewCVLedgEntryBuf,OldCVLedgEntryBuf,DtldCVLedgEntryBuf,
+          GenJnlLine,AppliedAmount,OldAppliedAmount);
+
+        TransferGLEntry(OldCVLedgEntryBuf,TempOldGLEntry,FALSE);
+        OldGLEntry := TempOldGLEntry;
+        OldGLEntry."Applies-to ID" := '';
+        OldGLEntry.MODIFY;
+
+        TempOldGLEntry.DELETE;
+
+        // Find the next old entry for application of the new entry
+        IF GenJnlLine."Applies-to Doc. No." <> '' THEN
+          Completed := TRUE
+        ELSE
+          IF TempOldGLEntry.GETFILTER(TempOldGLEntry.Positive) <> '' THEN BEGIN
+            IF TempOldGLEntry.NEXT = 1 THEN
+              Completed := FALSE
+            ELSE BEGIN
+              TempOldGLEntry.SETRANGE(Positive);
+              TempOldGLEntry.FIND('-');
+              TempOldGLEntry.CALCFIELDS("Remaining Amount");
+              Completed := TempOldGLEntry."Remaining Amount" * NewCVLedgEntryBuf."Remaining Amount" >= 0;
+            END
+          END ELSE BEGIN
+            IF NewCVLedgEntryBuf.Open THEN
+              Completed := TempOldGLEntry.NEXT = 0
+            ELSE
+              Completed := TRUE;
+          END;
+      UNTIL Completed;
+
+      DtldCVLedgEntryBuf.SETCURRENTKEY("Cust. Ledger Entry No.","Entry Type");
+      DtldCVLedgEntryBuf.SETRANGE("Cust. Ledger Entry No.",NewCVLedgEntryBuf."Entry No.");
+      DtldCVLedgEntryBuf.SETRANGE(
+        "Entry Type",
+        DtldCVLedgEntryBuf."Entry Type"::Application);
+      DtldCVLedgEntryBuf.CALCSUMS(Amount);
+
+      NewCVLedgEntryBuf."Applies-to ID" := '';
+    END;
+
+    PROCEDURE FindAmtForAppln@1000000007(VAR NewCVLedgEntryBuf@1000 : Record 382;VAR OldCVLedgEntryBuf2@1002 : Record 382;VAR AppliedAmount@1003 : Decimal;VAR OldAppliedAmount@1005 : Decimal);
+    BEGIN
+      IF OldCVLedgEntryBuf2.GETFILTER(Positive) <> '' THEN
+        AppliedAmount := -OldCVLedgEntryBuf2."Remaining Amount"
+      ELSE
+        IF ABS(NewCVLedgEntryBuf."Remaining Amount") < ABS(OldCVLedgEntryBuf2."Remaining Amount") THEN
+          AppliedAmount := NewCVLedgEntryBuf."Remaining Amount"
+        ELSE
+          AppliedAmount := -OldCVLedgEntryBuf2."Remaining Amount";
+
+      OldAppliedAmount := AppliedAmount;
+    END;
+
+    LOCAL PROCEDURE CalcApplication@55(VAR NewCVLedgEntryBuf@1000 : Record 382;VAR OldCVLedgEntryBuf@1001 : Record 382;VAR DtldCVLedgEntryBuf@1002 : Record 383;GenJnlLine@1003 : Record 81;AppliedAmount@1004 : Decimal;OldAppliedAmount@1006 : Decimal);
+    BEGIN
+      IF AppliedAmount = 0 THEN
+        EXIT;
+
+      InitNewCVLedgEntry(DtldCVLedgEntryBuf,GenJnlLine);
+      InitOldCVLedgEntry(DtldCVLedgEntryBuf,OldCVLedgEntryBuf);
+      DtldCVLedgEntryBuf."Entry Type" := DtldCVLedgEntryBuf."Entry Type"::Application;
+      DtldCVLedgEntryBuf."Applied CV Ledger Entry No." := NewCVLedgEntryBuf."Entry No.";
+      DtldCVLedgEntryBuf.Amount := OldAppliedAmount;
+      InsertDtldCVLedgEntry(DtldCVLedgEntryBuf,OldCVLedgEntryBuf);
+
+      OldCVLedgEntryBuf.Open := OldCVLedgEntryBuf."Remaining Amount" <> 0;
+      IF NOT OldCVLedgEntryBuf.Open THEN BEGIN
+        OldCVLedgEntryBuf."Closed by Entry No." := NewCVLedgEntryBuf."Entry No.";
+        OldCVLedgEntryBuf."Closed at Date" := GenJnlLine."Posting Date";
+        OldCVLedgEntryBuf."Closed by Amount" := -OldAppliedAmount;
+      END;
+
+      InitNewCVLedgEntry(DtldCVLedgEntryBuf,GenJnlLine);
+      InitOldCVLedgEntry(DtldCVLedgEntryBuf,NewCVLedgEntryBuf);
+      DtldCVLedgEntryBuf."Entry Type" := DtldCVLedgEntryBuf."Entry Type"::Application;
+      DtldCVLedgEntryBuf."Applied CV Ledger Entry No." := NewCVLedgEntryBuf."Entry No.";
+      DtldCVLedgEntryBuf.Amount := -AppliedAmount;
+      InsertDtldCVLedgEntry(DtldCVLedgEntryBuf,NewCVLedgEntryBuf);
+
+      NewCVLedgEntryBuf.Open := NewCVLedgEntryBuf."Remaining Amount" <> 0;
+      IF NOT NewCVLedgEntryBuf.Open AND OldCVLedgEntryBuf.Open THEN BEGIN
+        NewCVLedgEntryBuf."Closed by Entry No." := OldCVLedgEntryBuf."Entry No.";
+        NewCVLedgEntryBuf."Closed at Date" := GenJnlLine."Posting Date";
+        NewCVLedgEntryBuf."Closed by Amount" := AppliedAmount;
+      END;
+    END;
+
+    PROCEDURE InitNewCVLedgEntry@1000000006(VAR InitDtldCVLedgEntryBuf@1000 : Record 383;GenJnlLine@1001 : Record 81);
+    BEGIN
+      InitDtldCVLedgEntryBuf.INIT;
+      InitDtldCVLedgEntryBuf."Posting Date" := GenJnlLine."Posting Date";
+      InitDtldCVLedgEntryBuf."Document Type" := GenJnlLine."Document Type";
+      InitDtldCVLedgEntryBuf."Document No." := GenJnlLine."Document No.";
+      InitDtldCVLedgEntryBuf."User ID" := USERID;
+    END;
+
+    PROCEDURE InitOldCVLedgEntry@1000000005(VAR InitDtldCVLedgEntryBuf@1000 : Record 383;OldCVLedgEntryBuf@1001 : Record 382);
+    BEGIN
+      InitDtldCVLedgEntryBuf."Cust. Ledger Entry No." := OldCVLedgEntryBuf."Entry No.";
+      InitDtldCVLedgEntryBuf."Customer No." := OldCVLedgEntryBuf."CV No.";
+      InitDtldCVLedgEntryBuf."Currency Code" := OldCVLedgEntryBuf."Currency Code";
+      InitDtldCVLedgEntryBuf."Initial Entry Due Date" := OldCVLedgEntryBuf."Due Date";
+      InitDtldCVLedgEntryBuf."Initial Entry Global Dim. 1" := OldCVLedgEntryBuf."Global Dimension 1 Code";
+      InitDtldCVLedgEntryBuf."Initial Entry Global Dim. 2" := OldCVLedgEntryBuf."Global Dimension 2 Code";
+      InitDtldCVLedgEntryBuf."Initial Document Type" := OldCVLedgEntryBuf."Document Type";
+    END;
+
+    LOCAL PROCEDURE InsertDtldCVLedgEntry@53(VAR DtldCVLedgEntryBuf@1000 : Record 383;VAR CVLedgEntryBuf@1001 : Record 382);
+    VAR
+      NewDtldCVLedgEntryBuf@1002 : Record 383;
+      NextDtldBufferEntryNo@1003 : Integer;
+    BEGIN
+      IF (DtldCVLedgEntryBuf.Amount = 0) THEN
+        EXIT;
+
+      DtldCVLedgEntryBuf.TESTFIELD("Entry Type" );
+
+      NewDtldCVLedgEntryBuf.INIT;
+      NewDtldCVLedgEntryBuf := DtldCVLedgEntryBuf;
+
+      IF NextDtldBufferEntryNo = 0 THEN BEGIN
+        DtldCVLedgEntryBuf.RESET;
+        IF DtldCVLedgEntryBuf.FINDLAST THEN
+          NextDtldBufferEntryNo := DtldCVLedgEntryBuf."Entry No." + 1
+        ELSE
+          NextDtldBufferEntryNo := 1;
+      END;
+
+      DtldCVLedgEntryBuf.RESET;
+      DtldCVLedgEntryBuf.SETRANGE("Cust. Ledger Entry No.",CVLedgEntryBuf."Entry No.");
+      DtldCVLedgEntryBuf.SETRANGE("Entry Type",NewDtldCVLedgEntryBuf."Entry Type");
+      DtldCVLedgEntryBuf.SETRANGE("Posting Date",NewDtldCVLedgEntryBuf."Posting Date");
+      DtldCVLedgEntryBuf.SETRANGE("Document Type",NewDtldCVLedgEntryBuf."Document Type");
+      DtldCVLedgEntryBuf.SETRANGE("Document No.",NewDtldCVLedgEntryBuf."Document No.");
+      DtldCVLedgEntryBuf.SETRANGE("Customer No.",NewDtldCVLedgEntryBuf."Customer No.");
+      DtldCVLedgEntryBuf.SETRANGE("Gen. Posting Type",NewDtldCVLedgEntryBuf."Gen. Posting Type");
+      DtldCVLedgEntryBuf.SETRANGE(
+        "Gen. Bus. Posting Group",NewDtldCVLedgEntryBuf."Gen. Bus. Posting Group");
+      DtldCVLedgEntryBuf.SETRANGE(
+        "Gen. Prod. Posting Group",NewDtldCVLedgEntryBuf."Gen. Prod. Posting Group");
+      DtldCVLedgEntryBuf.SETRANGE(
+        "VAT Bus. Posting Group",NewDtldCVLedgEntryBuf."VAT Bus. Posting Group");
+      DtldCVLedgEntryBuf.SETRANGE(
+        "VAT Prod. Posting Group",NewDtldCVLedgEntryBuf."VAT Prod. Posting Group");
+      DtldCVLedgEntryBuf.SETRANGE("Tax Area Code",NewDtldCVLedgEntryBuf."Tax Area Code");
+      DtldCVLedgEntryBuf.SETRANGE("Tax Liable",NewDtldCVLedgEntryBuf."Tax Liable");
+      DtldCVLedgEntryBuf.SETRANGE("Tax Group Code",NewDtldCVLedgEntryBuf."Tax Group Code");
+      DtldCVLedgEntryBuf.SETRANGE("Use Tax",NewDtldCVLedgEntryBuf."Use Tax");
+
+      IF DtldCVLedgEntryBuf.FINDFIRST THEN BEGIN
+        DtldCVLedgEntryBuf.Amount := DtldCVLedgEntryBuf.Amount + NewDtldCVLedgEntryBuf.Amount;
+        DtldCVLedgEntryBuf.MODIFY;
+      END ELSE BEGIN
+        NewDtldCVLedgEntryBuf."Entry No." := NextDtldBufferEntryNo;
+        NextDtldBufferEntryNo := NextDtldBufferEntryNo + 1;
+        DtldCVLedgEntryBuf := NewDtldCVLedgEntryBuf;
+        DtldCVLedgEntryBuf.INSERT;
+      END;
+
+      CVLedgEntryBuf."Remaining Amount" := NewDtldCVLedgEntryBuf.Amount + CVLedgEntryBuf."Remaining Amount";
+      IF DtldCVLedgEntryBuf."Entry Type" = DtldCVLedgEntryBuf."Entry Type"::"Initial Entry" THEN BEGIN
+        CVLedgEntryBuf."Original Amount" := NewDtldCVLedgEntryBuf.Amount;
+      END;
+      DtldCVLedgEntryBuf.RESET;
+    END;
+
+    PROCEDURE TransferGLEntry@1000000003(VAR CVLedgEntryBuf@1000 : Record 382;VAR GLEntry@1001 : Record 17;GLToCV@1002 : Boolean);
+    VAR
+      PIPEntry@5157802 : Record 5157914;
+    BEGIN
+      IF GLToCV THEN BEGIN
+
+        CVLedgEntryBuf."Entry No." := GLEntry."Entry No.";
+        CVLedgEntryBuf."CV No." := GLEntry."G/L Account No.";
+        CVLedgEntryBuf."Posting Date" := GLEntry."Posting Date";
+        CVLedgEntryBuf."Document Type" := GLEntry."Document Type";
+        CVLedgEntryBuf."Document No." := GLEntry."Document No.";
+        CVLedgEntryBuf.Amount := GLEntry.Amount;
+        CVLedgEntryBuf."Remaining Amount" := GLEntry."Remaining Amount";
+        CVLedgEntryBuf."Applies-to Doc. Type" := GLEntry."Applies-to Doc. Type";
+        CVLedgEntryBuf."Applies-to Doc. No." := GLEntry."Applies-to Doc. No.";
+        CVLedgEntryBuf.Open := GLEntry.Open;
+        CVLedgEntryBuf.Positive := GLEntry.Positive;
+        CVLedgEntryBuf."Closed by Entry No." := GLEntry."Closed by Entry No.";
+        CVLedgEntryBuf."Closed at Date" := GLEntry."Closed at Date";
+        CVLedgEntryBuf."Closed by Amount" := GLEntry."Closed by Amount";
+        CVLedgEntryBuf."Applies-to ID" := GLEntry."Applies-to ID";
+        CVLedgEntryBuf."Debit Amount" := GLEntry."Debit Amount";
+        CVLedgEntryBuf."Credit Amount" := GLEntry."Credit Amount";
+        CVLedgEntryBuf."Document Date" := GLEntry."Document Date";
+
+      END ELSE BEGIN
+
+        GLEntry.Amount := CVLedgEntryBuf.Amount;
+        GLEntry."Remaining Amount" := CVLedgEntryBuf."Remaining Amount";
+        GLEntry."Applies-to Doc. Type" := CVLedgEntryBuf."Applies-to Doc. Type";
+        GLEntry."Applies-to Doc. No." := CVLedgEntryBuf."Applies-to Doc. No.";
+        GLEntry.Open := CVLedgEntryBuf.Open;
+        GLEntry.Positive := CVLedgEntryBuf.Positive;
+        GLEntry."Closed by Entry No." := CVLedgEntryBuf."Closed by Entry No.";
+        GLEntry."Closed at Date" := CVLedgEntryBuf."Closed at Date";
+        GLEntry."Closed by Amount" := CVLedgEntryBuf."Closed by Amount";
+        IF OPplusLicenseInfo.IsPmt THEN
+          IF PIPEntry.GET(GLEntry."Entry No.") THEN BEGIN
+            PIPEntry.Open := GLEntry.Open;
+            PIPEntry."Closed by Entry No." := GLEntry."Closed by Entry No.";
+            PIPEntry."Closed at Date" := GLEntry."Closed at Date";
+            PIPEntry.MODIFY;
+          END;
+        GLEntry."Applies-to ID" := CVLedgEntryBuf."Applies-to ID";
+        GLEntry."Debit Amount" := CVLedgEntryBuf."Debit Amount";
+        GLEntry."Credit Amount" := CVLedgEntryBuf."Credit Amount";
+
+      END;
+    END;
+
+    PROCEDURE GLUpdateDebitCredit@1000000002(Correction@1000 : Boolean;VAR DtldGLEntry@1001 : Record 5157852);
+    BEGIN
+      WITH DtldGLEntry DO BEGIN
+        IF (Amount > 0) AND NOT Correction OR
+           (Amount < 0) AND Correction
+        THEN BEGIN
+          "Debit Amount" := Amount;
+          "Credit Amount" := 0;
+        END ELSE BEGIN
+          "Debit Amount" := 0;
+          "Credit Amount" := -Amount;
+        END;
+      END;
+    END;
+
+    PROCEDURE SetApplId@1(VAR GLEntry@1000 : Record 17;ApplyingGLEntry@5157802 : Record 17;AppliedAmount@5157803 : Decimal;AppliesToID@1001 : Code[20]);
+    VAR
+      GLEntryApplID@1000000000 : Code[20];
+    BEGIN
+      GLEntry.LOCKTABLE;
+      IF GLEntry.FIND('-') THEN BEGIN
+        // Make Applies-to ID
+        IF GLEntry."Applies-to ID" <> '' THEN
+          GLEntryApplID := ''
+        ELSE BEGIN
+          GLEntryApplID := AppliesToID;
+          IF GLEntryApplID = '' THEN BEGIN
+            GLEntryApplID := USERID;
+            IF GLEntryApplID = '' THEN
+              GLEntryApplID := '***';
+          END;
+        END;
+
+        // Set Applies-to ID
+        REPEAT
+          GLEntry.TESTFIELD(Open,TRUE);
+          GLEntry."Applies-to ID" := GLEntryApplID;
+          // Set Amount to Apply
+          IF ((GLEntry."Amount to Apply" <> 0) AND (GLEntryApplID = '')) OR
+            (GLEntryApplID = '')
+          THEN
+            GLEntry."Amount to Apply" := 0
+          ELSE
+            IF GLEntry."Amount to Apply" = 0 THEN BEGIN
+              GLEntry.CALCFIELDS("Remaining Amount");
+              GLEntry."Amount to Apply" := GLEntry."Remaining Amount"
+            END;
+
+          IF GLEntry."Entry No." = ApplyingGLEntry."Entry No." THEN
+            GLEntry."Applying Entry" := ApplyingGLEntry."Applying Entry";
+          GLEntry.MODIFY;
+        UNTIL GLEntry.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE "GLEntry-Apply Posted Entr"@1000000008(VAR REC@1000000000 : Record 17;GainLossAmt@5157806 : Decimal);
+    VAR
+      EntriesToApply@1000000009 : Record 17;
+      EntriesToApplyTemp@5157807 : TEMPORARY Record 17;
+      GLOpenEntriesSetup@1000000007 : Record 5157853;
+      GenJnlLine@1000000006 : Record 81;
+      GLAcc@5157804 : Record 15;
+      PostApplication@1000000005 : Form 579;
+      GenJnlPostLine@1000000004 : Codeunit 12;
+      Window@1000000003 : Dialog;
+      ApplicationDate@5157802 : Date;
+      AccNo@5157805 : Code[20];
+      EntryNoBeforeApplication@1000000002 : Integer;
+      EntryNoAfterApplication@1000000001 : Integer;
+      Text001@1000000013 : TextConst 'DEU=Ausgleich wird gebucht...;ENU=Posting application...';
+      Text002@1000000012 : TextConst 'DEU=Der Ausgleich ist gebucht worden.;ENU=The application was successfully posted.';
+      Text003@1000000011 : TextConst 'DEU=Das eingegebene %1 darf nicht vor dem %2 im %3 liegen.;ENU=The %1 entered must not be before the %2 on the %3.';
+      Text004@1000000010 : TextConst 'DEU=Der Ausgleich ist gebucht worden, aber es wurden keine Posten ausgeglichen.;ENU=The application was successfully posted though no entries have been applied.';
+      Text005@5157803 : TextConst 'DEU=Das in der Einrichtung fÅ±r Sachkonten - Offene Posten angegebene Ausgleichskonto %1 existiert nicht.;ENU=Account %1 does not exixt. Please check G/L Ledger OpenEntries Setup.';
+      Currency@5157808 : Record 4;
+    BEGIN
+      WITH REC DO BEGIN
+        GET("Entry No.");
+
+        ApplicationDate := 0D;
+        EntriesToApplyTemp.DELETEALL;
+        EntriesToApply.SETCURRENTKEY("G/L Account No.","Applies-to ID");
+        EntriesToApply.SETRANGE("G/L Account No.","G/L Account No.");
+        EntriesToApply.SETRANGE("Applies-to ID","Applies-to ID");
+        EntriesToApply.SETRANGE(Open,TRUE);
+        EntriesToApply.FINDSET(FALSE,FALSE);
+        REPEAT
+          EntriesToApplyTemp := EntriesToApply;
+          IF EntriesToApplyTemp."Global Dimension 1 Code" = '' THEN
+            EntriesToApplyTemp."Global Dimension 1 Code" := "Global Dimension 1 Code";
+          IF EntriesToApplyTemp."Global Dimension 2 Code" = '' THEN
+            EntriesToApplyTemp."Global Dimension 2 Code" := "Global Dimension 2 Code";
+          EntriesToApplyTemp.INSERT;
+          IF EntriesToApply."Posting Date" > ApplicationDate THEN
+            ApplicationDate := EntriesToApply."Posting Date";
+        UNTIL EntriesToApply.NEXT = 0;
+        //A/gob-czi/P0517/12112012
+        IF (DocNo = '') AND (PDate = 0D) THEN BEGIN
+        //E/gob-czi/P0517/12112012
+
+        PostApplication.SetValues("Document No.",ApplicationDate);
+        PostApplication.LOOKUPMODE(TRUE);
+        IF ACTION::LookupOK = PostApplication.RUNMODAL THEN BEGIN
+          GenJnlLine.INIT;
+          PostApplication.GetValues(GenJnlLine."Document No.",GenJnlLine."Posting Date");
+          IF GenJnlLine."Posting Date" < ApplicationDate THEN
+            ERROR(
+              Text003,
+              GenJnlLine.FIELDCAPTION("Posting Date"),FIELDCAPTION("Posting Date"),TABLECAPTION);
+        END ELSE
+          EXIT;
+
+        //A/gob-czi/P0517/12112012
+        END ELSE BEGIN
+          GenJnlLine.INIT;
+          GenJnlLine."Document No." := DocNo;
+          GenJnlLine."Posting Date" := PDate;
+        END;
+
+        DocNo := GenJnlLine."Document No.";
+        PDate := GenJnlLine."Posting Date";
+        //E/gob-czi/P0517/12112012
+
+        Window.OPEN(Text001);
+
+        GLOpenEntriesSetup.GET;
+        AccNo := '';
+        GenJnlLine."Account Type" := GenJnlLine."Account Type"::"G/L Account";
+        GenJnlLine."Applied Account Type" := GenJnlLine."Applied Account Type"::"G/L Account";
+        GenJnlLine."Account No." := "G/L Account No.";
+        GenJnlLine."Applied Account No." := "G/L Account No.";
+        IF (GLOpenEntriesSetup."Balance Account Application" <> '') AND (GenJnlLine.Amount = 0) THEN BEGIN
+          IF GLAcc.GET(GLOpenEntriesSetup."Balance Account Application") THEN
+            AccNo := GLOpenEntriesSetup."Balance Account Application"
+          ELSE
+            ERROR(Text005,GLOpenEntriesSetup."Balance Account Application");
+        END;
+        GenJnlLine.Correction := ("Debit Amount" < 0) OR ("Credit Amount" < 0);
+        GenJnlLine."Document Type" := "Document Type";
+        GenJnlLine.Description := Description;
+        GenJnlLine."Shortcut Dimension 1 Code" := "Global Dimension 1 Code";
+        GenJnlLine."Shortcut Dimension 2 Code" := "Global Dimension 2 Code";
+        GenJnlLine."Source Type" := GenJnlLine."Source Type"::" ";
+        GenJnlLine."Source No." := "G/L Account No.";
+        GenJnlLine."Source Code" := GLOpenEntriesSetup."G/L Entry Application";
+        GenJnlLine."System-Created Entry" := TRUE;
+
+        EntryNoBeforeApplication := FindLastApplDtldGLEntry;
+
+        GenJnlPostLine.GLPostApplyGLEntry(GenJnlLine,REC,AccNo);
+
+        EntryNoAfterApplication := FindLastApplDtldGLEntry;
+        IF EntryNoAfterApplication = EntryNoBeforeApplication THEN
+          ERROR(Text004);
+
+        // Post Gain/Loss
+        IF GainLossAmt <> 0 THEN BEGIN
+          GenJnlLine."ID Applied-Entry" := 0;
+          GenJnlLine."Applies-to Doc. No." := '';
+          GenJnlLine."Applies-to Doc. Type" := 0;
+          GenJnlLine."Applies-to ID" := '';
+
+          IF EntriesToApplyTemp.FINDSET(FALSE,FALSE) THEN
+            REPEAT
+              EntriesToApplyTemp.CALCFIELDS("Remaining Amount");
+              IF (EntriesToApplyTemp."Remaining Amount" = GainLossAmt) AND (GenJnlLine."ID Applied-Entry" = 0) THEN BEGIN
+                GenJnlLine."Applies-to Doc. No." := EntriesToApplyTemp."Document No.";
+                GenJnlLine."Applies-to Doc. Type" := EntriesToApplyTemp."Document Type";
+                GenJnlLine."ID Applied-Entry" := EntriesToApplyTemp."Entry No.";
+              END;
+            UNTIL EntriesToApplyTemp.NEXT = 0;
+
+          Currency.GET("Orig. Currency Code");
+          Currency.TESTFIELD("Realized G/L Gains Account");
+          Currency.TESTFIELD("Realized G/L Losses Account");
+          GenJnlLine."Posting Payment Discount" := 0;
+          GenJnlLine."Posting Payment Discount %" := 0;
+          GenJnlLine."Bal. Account No." := "G/L Account No.";
+          IF GainLossAmt > 0 THEN
+            GenJnlLine."Account No." := Currency."Realized G/L Gains Account"
+          ELSE
+            GenJnlLine."Account No." := Currency."Realized G/L Losses Account";
+          GenJnlLine."Currency Code" := "Orig. Currency Code";
+          GenJnlLine."Source Currency Code" := "Orig. Currency Code";
+          GenJnlLine."Currency Factor" := 1;
+          GenJnlLine."Allow Zero-Amount Posting" := TRUE;
+          GenJnlLine.VALIDATE(Amount,0);
+          GenJnlLine."Currency Factor" := 0;
+          GenJnlLine."Amount (LCY)" := GainLossAmt;
+          GenJnlLine.UpdateLineBalance;
+          GenJnlPostLine.RUN(GenJnlLine);
+        END;
+
+        COMMIT;
+        Window.CLOSE;
+        MESSAGE(Text002);
+      END;
+    END;
+
+    LOCAL PROCEDURE FindLastApplDtldGLEntry@1000000004() : Integer;
+    VAR
+      DtldGLEntry@1000 : Record 5157852;
+    BEGIN
+      DtldGLEntry.LOCKTABLE;
+      IF DtldGLEntry.FINDLAST THEN
+        EXIT(DtldGLEntry."Entry No.")
+      ELSE
+        EXIT(0);
+    END;
+
+    LOCAL PROCEDURE FindLastApplEntry@2(GLEntryNo@1002 : Integer) : Integer;
+    VAR
+      DtldGLEntry@1001 : Record 5157852;
+      ApplicationEntryNo@1000 : Integer;
+    BEGIN
+      DtldGLEntry.SETCURRENTKEY("Gen. Ledger Entry No.","Entry Type");
+      DtldGLEntry.SETRANGE("Gen. Ledger Entry No.",GLEntryNo);
+      DtldGLEntry.SETRANGE("Entry Type",DtldGLEntry."Entry Type"::Application);
+      ApplicationEntryNo := 0;
+      IF DtldGLEntry.FINDSET(FALSE,FALSE) THEN
+        REPEAT
+          IF (DtldGLEntry."Entry No." > ApplicationEntryNo) AND NOT DtldGLEntry.Unapplied THEN
+            ApplicationEntryNo := DtldGLEntry."Entry No.";
+        UNTIL DtldGLEntry.NEXT = 0;
+      EXIT(ApplicationEntryNo);
+    END;
+
+    PROCEDURE GLEntryEdit@1000000009(VAR REC@1000000000 : Record 17);
+    VAR
+      RecRef@1000000004 : RecordRef;
+      xRecRef@1000000005 : RecordRef;
+      GenLedgEntry@1000000003 : Record 17;
+      ChangeLogMgt@1000000001 : Codeunit 423;
+    BEGIN
+      GenLedgEntry := REC;
+      GenLedgEntry.LOCKTABLE;
+      GenLedgEntry.FIND;
+      xRecRef.GETTABLE(GenLedgEntry);
+      GenLedgEntry.Description := REC.Description;
+      IF GenLedgEntry.Open THEN
+        GenLedgEntry."Applies-to ID" := REC."Applies-to ID";
+      GenLedgEntry."External Document No." := REC."External Document No.";
+      GenLedgEntry."Amount to Apply" := REC."Amount to Apply"; // PMT CC
+      GenLedgEntry."Applying Entry" := REC."Applying Entry"; // PMT CC
+      GenLedgEntry.MODIFY;
+      REC := GenLedgEntry;
+      RecRef.GETTABLE(GenLedgEntry);
+      ChangeLogMgt.LogModification(RecRef,xRecRef);
+    END;
+
+    LOCAL PROCEDURE FindLastTransactionNo@6(GLEntryNo@1002 : Integer) : Integer;
+    VAR
+      DtldGLEntry@1001 : Record 5157852;
+      LastTransactionNo@1000 : Integer;
+    BEGIN
+      DtldGLEntry.SETCURRENTKEY("Gen. Ledger Entry No.","Entry Type");
+      DtldGLEntry.SETRANGE("Gen. Ledger Entry No.",GLEntryNo);
+      LastTransactionNo := 0;
+      IF DtldGLEntry.FINDSET(FALSE,FALSE) THEN
+        REPEAT
+          IF (DtldGLEntry."Transaction No." > LastTransactionNo) AND NOT DtldGLEntry.Unapplied THEN
+            LastTransactionNo := DtldGLEntry."Transaction No.";
+        UNTIL DtldGLEntry.NEXT = 0;
+      EXIT(LastTransactionNo);
+    END;
+
+    PROCEDURE UnApplyGLEntry@7(GLEntryNo@1000 : Integer);
+    VAR
+      GLEntry@1003 : Record 17;
+      DtldGLEntry@1002 : Record 5157852;
+      ApplicationEntryNo@1001 : Integer;
+      Text001@1000000000 : TextConst 'DEU=%1 Nr. %2 verfÅgt Åber keinen Ausgleichsposten.;ENU=%1 No. %2 does not have an application entry.';
+    BEGIN
+      // CheckReversal(GLEntryNo);
+      ApplicationEntryNo := FindLastApplEntry(GLEntryNo);
+      IF ApplicationEntryNo = 0 THEN
+        ERROR(Text001,GLEntry.TABLECAPTION,GLEntryNo);
+      DtldGLEntry.GET(ApplicationEntryNo);
+      UnApplyGLAccount(DtldGLEntry);
+    END;
+
+    PROCEDURE UnApplyDtldGLEntry@3(DtldGLEntry@1000 : Record 5157852);
+    VAR
+      ApplicationEntryNo@1001 : Integer;
+      Text001@1000000000 : TextConst 'DEU=Bevor Sie den Ausgleich fÅr diesen Posten aufheben kînnen, mÅssen Sie den Ausgleich fÅr alle Ausgleichsposten aufheben, die nach diesem Posten gebucht wurden.;ENU=Before you can unapply this entry, you must first unapply all application entries that were posted after this entry.';
+    BEGIN
+      DtldGLEntry.TESTFIELD("Entry Type",DtldGLEntry."Entry Type"::Application);
+      DtldGLEntry.TESTFIELD(Unapplied,FALSE);
+      ApplicationEntryNo := FindLastApplEntry(DtldGLEntry."Gen. Ledger Entry No.");
+
+      IF DtldGLEntry."Entry No." <> ApplicationEntryNo THEN
+        ERROR(Text001);
+      // CheckReversal(DtldGLEntry."Gen. Ledger Entry No.");
+      UnApplyGLAccount(DtldGLEntry);
+    END;
+
+    LOCAL PROCEDURE UnApplyGLAccount@19(DtldGLEntry@1000000000 : Record 5157852);
+    VAR
+      UnapplyGLEntries@1000 : Form 5157855;
+    BEGIN
+      WITH DtldGLEntry DO BEGIN
+        TESTFIELD("Entry Type","Entry Type"::Application);
+        TESTFIELD(Unapplied,FALSE);
+        UnapplyGLEntries.SetDtldGLEntry("Entry No.");
+        UnapplyGLEntries.LOOKUPMODE(TRUE);
+        UnapplyGLEntries.RUNMODAL;
+      END;
+    END;
+
+    PROCEDURE PostUnApplyGLAcc@4(VAR DtldGLEntryBuf@1008 : Record 5157852;DtldGLEntry2@1007 : Record 5157852;VAR DocNo@1000 : Code[20];VAR PostingDate@1001 : Date);
+    VAR
+      GLAcc@5157803 : Record 15;
+      GLEntry@1019 : Record 17;
+      GLOpenEntriesSetup@1017 : Record 5157853;
+      GenJnlLine@1016 : Record 81;
+      DtldGLEntry@1014 : Record 5157852;
+      GenJnlPostLine@1002 : Codeunit 12;
+      DateComprReg@1005 : Record 87;
+      AccNo@5157804 : Code[20];
+      Window@1012 : Dialog;
+      ApplicationEntryNo@1010 : Integer;
+      LastTransactionNo@1003 : Integer;
+      Text001@1000000000 : TextConst 'DEU=Es kann kein Ausgleich aufgehoben werden.;ENU=There is nothing to unapply.';
+      Text002@1000000002 : TextConst 'DEU=Zum Aufheben des Ausgleichs fÅr diese Posten bucht das Programm Korrekturposten.\;ENU=To unapply these entries, the program will post correcting entries.\';
+      Text003@1000000001 : TextConst 'DEU=Bevor Sie den Ausgleich fÅr diesen Posten aufheben kînnen, mÅssen Sie den Ausgleich fÅr alle Ausgleichsposten in %1 Nr. %2 aufheben, die nach diesem Posten gebucht wurden.;ENU=Before you can unapply this entry, you must first unapply all application entries in %1 No. %2 that were posted after this entry.';
+      Text004@1000000004 : TextConst 'DEU=Soll der Ausgleich fÅr diese Posten aufgehoben werden?;ENU=Do you want to unapply the entries?';
+      Text005@1000000003 : TextConst 'DEU=Ausgleich wird aufgehoben und Buchung erfolgt...;ENU=Unapplying and posting...';
+      Text006@1000000005 : TextConst 'DEU=Das aktuellste %3 muss ein Ausgleich in %1 Nr. %2 sein.;ENU=The latest %3 must be an application in %1 No. %2.';
+      Text007@1000000006 : TextConst 'DEU=Der Ausgleich fÅr diese Posten wurde erfolgreich aufgehoben.;ENU=The entries were successfully unapplied.';
+      Text008@5157802 : TextConst 'DEU=Das in der Einrichtung fÅ±r Sachkonten - Offene Posten angegebene Ausgleichskonto %1 existiert nicht.;ENU=Account %1 does not exixt. Please check G/L Ledger OpenEntries Setup.';
+    BEGIN
+      IF NOT DtldGLEntryBuf.FINDFIRST THEN
+        ERROR(Text001);
+      IF NOT CONFIRM(Text002 + Text004,FALSE) THEN
+        EXIT;
+      MaxPostingDate := 0D;
+      GLEntry.LOCKTABLE;
+      DtldGLEntry.LOCKTABLE;
+      GLEntry.GET(DtldGLEntry2."Gen. Ledger Entry No.");
+      CheckPostingDate(PostingDate,'',0);
+      DtldGLEntry.SETCURRENTKEY("Transaction No.","G/L Account No.","Entry Type");
+      DtldGLEntry.SETRANGE("Transaction No.",DtldGLEntry2."Transaction No.");
+      DtldGLEntry.SETRANGE("G/L Account No.",DtldGLEntry2."G/L Account No.");
+      IF DtldGLEntry.FINDSET THEN
+        REPEAT
+          IF (DtldGLEntry."Entry Type" <> DtldGLEntry."Entry Type"::"Initial Entry") AND
+             NOT DtldGLEntry.Unapplied
+          THEN BEGIN
+            // CheckReversal(DtldGLEntry."Gen. Ledger Entry No.");
+            IF DtldGLEntry."Entry Type" = DtldGLEntry."Entry Type"::Application THEN BEGIN
+              ApplicationEntryNo :=
+                FindLastApplEntry(DtldGLEntry."Gen. Ledger Entry No.");
+              IF (ApplicationEntryNo <> 0) AND (ApplicationEntryNo <> DtldGLEntry."Entry No.") THEN
+                ERROR(Text003,GLEntry.TABLECAPTION,DtldGLEntry."Gen. Ledger Entry No.");
+            END;
+            LastTransactionNo := FindLastTransactionNo(DtldGLEntry."Gen. Ledger Entry No.");
+            IF (LastTransactionNo <> 0) AND (LastTransactionNo <> DtldGLEntry."Transaction No.") THEN
+              ERROR(
+                Text006,
+                GLEntry.TABLECAPTION,
+                DtldGLEntry."Gen. Ledger Entry No.",
+                GLEntry.FIELDCAPTION("Transaction No."));
+          END;
+        UNTIL DtldGLEntry.NEXT = 0;
+
+      DateComprReg.CheckMaxDateCompressed(MaxPostingDate,0);
+
+      WITH DtldGLEntry2 DO BEGIN
+        GLOpenEntriesSetup.GET;
+        GLEntry.GET("Gen. Ledger Entry No.");
+        GenJnlLine."Document No." := DocNo;
+        GenJnlLine."Posting Date" := PostingDate;
+        GenJnlLine."Account Type" := GenJnlLine."Account Type"::"G/L Account";
+        GenJnlLine."Account No." := "G/L Account No.";
+        GenJnlLine.Correction := TRUE;
+        GenJnlLine."Document Type" := GenJnlLine."Document Type"::" ";
+        GenJnlLine.Description := GLEntry.Description;
+        GenJnlLine."Shortcut Dimension 1 Code" := GLEntry."Global Dimension 1 Code";
+        GenJnlLine."Shortcut Dimension 2 Code" := GLEntry."Global Dimension 2 Code";
+        GenJnlLine."Source Code" := GLOpenEntriesSetup."Unapplied G/L Entry Appln.";
+        GenJnlLine."System-Created Entry" := TRUE;
+        IF (GLOpenEntriesSetup."Balance Account Application" <> '') AND (GenJnlLine.Amount = 0) THEN BEGIN
+          IF GLAcc.GET(GLOpenEntriesSetup."Balance Account Application") THEN
+            GenJnlLine."Account No." := GLOpenEntriesSetup."Balance Account Application"
+          ELSE
+            ERROR(Text008,GLOpenEntriesSetup."Balance Account Application");
+        END;
+        Window.OPEN(Text005);
+        GenJnlPostLine.UnapplyGLEntry(GenJnlLine,DtldGLEntry2);
+        DtldGLEntryBuf.DELETEALL;
+        DocNo := '';
+        PostingDate := 0D;
+        COMMIT;
+        Window.CLOSE;
+        MESSAGE(Text007);
+      END;
+    END;
+
+    PROCEDURE CheckReversal@9(GLEntryNo@1000 : Integer);
+    VAR
+      GLEntry@1001 : Record 17;
+      Text001@1000000000 : TextConst 'DEU=Sie kînnen den Ausgleich fÅr %1 Nr. %2 nicht aufheben, weil der Posten bereits Gegenstand einer Stornierung war.;ENU=You cannot unapply %1 No. %2 because the entry has been involved in a reversal.';
+    BEGIN
+      GLEntry.GET(GLEntryNo);
+      IF GLEntry.Reversed THEN
+        ERROR(Text001,GLEntry.TABLECAPTION,GLEntryNo);
+    END;
+
+    LOCAL PROCEDURE CheckPostingDate@5(PostingDate@1001 : Date;Caption@1002 : Text[50];EntryNo@1003 : Integer);
+    VAR
+      GLEntry@1004 : Record 17;
+      Text001@1000000001 : TextConst 'DEU=%1 liegt nicht innerhalb des zulÑssigen Buchungsdatumsbereichs in %2 Nr. %3.;ENU=%1 is not within your range of allowed posting dates in %2 No. %3.';
+      Text002@1000000000 : TextConst 'DEU=%1 liegt nicht innerhalb des zugelassenen Buchungszeitraums.;ENU=%1 is not within your range of allowed posting dates.';
+    BEGIN
+      IF GenJnlCheckLine.DateNotAllowed(PostingDate) THEN BEGIN
+        IF Caption <> '' THEN
+          ERROR(Text001,GLEntry.FIELDCAPTION("Posting Date"),Caption,EntryNo)
+        ELSE
+          ERROR(Text002,GLEntry.FIELDCAPTION("Posting Date"));
+      END;
+      IF PostingDate > MaxPostingDate THEN
+        MaxPostingDate := PostingDate;
+    END;
+
+    LOCAL PROCEDURE ApplyGLEntryByReversal@75(GLEntry@1000 : Record 17;GLEntry2@1001 : Record 17;DtldGLEntry2@1002 : Record 5157852;AppliedEntryNo@1005 : Integer;VAR NextDtldGLEntryNo@1004 : Integer;NextTransactionNo@5157802 : Integer);
+    VAR
+      NewDtldGLEntry@1003 : Record 5157852;
+      PIPEntry@5157803 : Record 5157914;
+    BEGIN
+      GLEntry2.CALCFIELDS("Remaining Amount");
+      GLEntry."Closed by Entry No." := GLEntry2."Entry No.";
+      GLEntry."Closed at Date" := GLEntry2."Posting Date";
+      GLEntry."Closed by Amount" := -GLEntry2."Remaining Amount";
+      GLEntry.Open := FALSE;
+      IF OPplusLicenseInfo.IsPmt THEN
+        IF PIPEntry.GET(GLEntry."Entry No.") THEN BEGIN
+          PIPEntry.Open := FALSE;
+          PIPEntry.MODIFY;
+        END;
+      GLEntry.MODIFY;
+
+      NewDtldGLEntry := DtldGLEntry2;
+      NewDtldGLEntry."Entry No." := GLEntry."Entry No.";
+      NewDtldGLEntry."Entry Type" := NewDtldGLEntry."Entry Type"::Application;
+      NewDtldGLEntry."User ID" := USERID;
+      NewDtldGLEntry."Transaction No." := NextTransactionNo;
+      NewDtldGLEntry."Entry No." := NextDtldGLEntryNo;
+      NextDtldGLEntryNo := NextDtldGLEntryNo + 1;
+      NewDtldGLEntry.INSERT;
+    END;
+
+    PROCEDURE BuildOpenEntries@1000000010(GLAcc@1000000000 : Record 15);
+    VAR
+      GLE@1000000001 : Record 17;
+      DGLE@1000000002 : Record 5157852;
+      Lfd@1000000003 : Integer;
+    BEGIN
+      // Diese Funktion nutzen, um manuell auf <Offen> gesetzte Sachposten einzurichten
+      IF NOT GLAcc."Build Open Entries" THEN
+        EXIT;
+      DGLE.LOCKTABLE;
+      DGLE.RESET;
+      IF DGLE.FINDLAST THEN
+        Lfd := DGLE."Entry No.";
+
+      DGLE.SETCURRENTKEY("Gen. Ledger Entry No.","Posting Date");
+
+      IF GLAcc.FINDSET(FALSE,FALSE) THEN
+        REPEAT
+          GLE.SETCURRENTKEY("G/L Account No.","Posting Date");
+          GLE.SETRANGE("G/L Account No.",GLAcc."No.");
+          GLE.SETRANGE(Open,TRUE);
+          IF GLE.FINDSET(TRUE,FALSE) THEN
+            REPEAT
+              DGLE.SETRANGE("Gen. Ledger Entry No.",GLE."Entry No.");
+              IF NOT DGLE.FINDFIRST THEN BEGIN
+                Lfd := Lfd + 1;
+                DGLE.INIT;
+                DGLE."Entry No." := Lfd;
+                DGLE."Gen. Ledger Entry No."  := GLE."Entry No.";
+                DGLE."Entry Type" := DGLE."Entry Type"::"Initial Entry";
+                DGLE."Posting Date" := GLE."Posting Date";
+                DGLE."Document Type" := GLE."Document Type";
+                DGLE."Document No."  := GLE."Document No.";
+                DGLE.Amount := GLE.Amount;
+                DGLE."G/L Account No." := GLE."G/L Account No.";
+                DGLE."User ID":= GLE."User ID";
+                DGLE."Source Code"  := GLE."Source Code";
+                DGLE."Transaction No."  := GLE."Transaction No.";
+                DGLE."Journal Batch Name" := GLE."Journal Batch Name";
+                DGLE."Reason Code" := GLE."Reason Code";
+                DGLE."Debit Amount" := GLE."Debit Amount";
+                DGLE."Credit Amount" := GLE."Credit Amount";
+                DGLE."Initial Entry Global Dim. 1" := GLE."Global Dimension 1 Code";
+                DGLE."Initial Entry Global Dim. 2" := GLE."Global Dimension 2 Code";
+                DGLE."Initial Document Type" := GLE."Document Type";
+                DGLE.INSERT;
+              END;
+              IF GLE.Amount > 0 THEN BEGIN
+                GLE.Positive := TRUE;
+                GLE.MODIFY;
+              END;
+            UNTIL GLE.NEXT = 0;
+        UNTIL GLAcc.NEXT = 0;
+    END;
+
+    PROCEDURE PostDtldGLEntries@70010(GenJnlLine2@1000 : Record 81;VAR DtldCVLedgEntryBuf@1001 : Record 383;NextTransactionNo@1004 : Integer);
+    VAR
+      DtldGLEntry@1005 : Record 5157852;
+      GLOpenEntryTools@1000000000 : Codeunit 5157852;
+      DtldGLEntryNoOffset@1006 : Integer;
+    BEGIN
+      IF DtldGLEntry.FINDLAST THEN
+        DtldGLEntryNoOffset := DtldGLEntry."Entry No."
+      ELSE
+        DtldGLEntryNoOffset := 0;
+
+      DtldCVLedgEntryBuf.RESET;
+      IF DtldCVLedgEntryBuf.FINDSET THEN BEGIN
+        REPEAT
+          CLEAR(DtldGLEntry);
+          DtldGLEntry.TRANSFERFIELDS(DtldCVLedgEntryBuf);
+          DtldGLEntry."Entry No." :=
+            DtldGLEntryNoOffset + DtldCVLedgEntryBuf."Entry No.";
+          DtldGLEntry."Journal Batch Name" := GenJnlLine2."Journal Batch Name";
+          DtldGLEntry."Reason Code" := GenJnlLine2."Reason Code";
+          DtldGLEntry."Source Code" := GenJnlLine2."Source Code";
+          DtldGLEntry."Transaction No." := NextTransactionNo;
+          GLOpenEntryTools.GLUpdateDebitCredit(GenJnlLine2.Correction,DtldGLEntry);
+          DtldGLEntry.INSERT;
+        UNTIL DtldCVLedgEntryBuf.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE OpenEntry@1000000012(GLEntry@5157802 : Record 17);
+    VAR
+      GLAcc@1000000005 : Record 15;
+      GLE@1000000004 : Record 17;
+      DGLE@1000000003 : Record 5157852;
+      Lfd@1000000002 : Integer;
+      Text001@5157803 : TextConst 'DEU=Noch zu prÅfen: Konto #1###### #2############;ENU=Entries to check: Account #1###### #2############';
+    BEGIN
+      // Diese Funktion nutzen, um einen einzelnen Sachposten <Offen> zu setzen
+      GLAcc.GET(GLEntry."G/L Account No.");
+      IF NOT GLAcc."Build Open Entries" THEN
+        EXIT;
+      DGLE.LOCKTABLE;
+
+      DGLE.RESET;
+      IF DGLE.FINDLAST THEN
+        Lfd := DGLE."Entry No.";
+
+      DGLE.SETCURRENTKEY("Gen. Ledger Entry No.","Posting Date");
+
+      GLE.GET(GLEntry."Entry No.");
+
+      DGLE.SETRANGE("Gen. Ledger Entry No.",GLE."Entry No.");
+      DGLE.SETRANGE("Entry Type");
+      IF DGLE.ISEMPTY THEN BEGIN
+        Lfd := Lfd + 1;
+        DGLE.INIT;
+        DGLE."Entry No." := Lfd;
+        DGLE."Gen. Ledger Entry No."  := GLE."Entry No.";
+        DGLE."Entry Type" := DGLE."Entry Type"::"Initial Entry";
+        DGLE."Posting Date" := GLE."Posting Date";
+        DGLE."Document Type" := GLE."Document Type";
+        DGLE."Document No."  := GLE."Document No.";
+        DGLE.Amount := GLE.Amount;
+        DGLE."G/L Account No." := GLE."G/L Account No.";
+        DGLE."User ID":= GLE."User ID";
+        DGLE."Source Code"  := GLE."Source Code";
+        DGLE."Transaction No."  := GLE."Transaction No.";
+        DGLE."Journal Batch Name" := GLE."Journal Batch Name";
+        DGLE."Reason Code" := GLE."Reason Code";
+        DGLE."Debit Amount" := GLE."Debit Amount";
+        DGLE."Credit Amount" := GLE."Credit Amount";
+        DGLE."Initial Entry Global Dim. 1" := GLE."Global Dimension 1 Code";
+        DGLE."Initial Entry Global Dim. 2" := GLE."Global Dimension 2 Code";
+        DGLE."Initial Document Type" := GLE."Document Type";
+        DGLE.INSERT;
+        GLE.Positive := (GLE.Amount > 0);
+        GLE.Open := TRUE;
+        GLE.MODIFY;
+      END;
+    END;
+
+    PROCEDURE OpenAllEntries@1000000011(GLAcc@5157802 : Record 15);
+    VAR
+      GLE@1000000004 : Record 17;
+      DGLE@1000000003 : Record 5157852;
+      Lfd@1000000002 : Integer;
+      Dlg@1000000001 : Dialog;
+      Total@1000000000 : Integer;
+      Text001@5157803 : TextConst 'DEU=Noch zu prÅfen: Konto #1###### #2############;ENU=Entries to check: Account #1###### #2############';
+    BEGIN
+      // Diese Funktion nutzen, um alle Sachposten eines Kontos als offen einzurichten
+      IF NOT GLAcc."Build Open Entries" THEN
+        EXIT;
+      DGLE.LOCKTABLE;
+
+      DGLE.RESET;
+      IF DGLE.FINDLAST THEN
+        Lfd := DGLE."Entry No.";
+
+      DGLE.SETCURRENTKEY("Gen. Ledger Entry No.","Posting Date");
+
+      Dlg.OPEN(Text001,GLAcc."No.",Total);
+
+      GLE.SETCURRENTKEY("G/L Account No.","Posting Date");
+      GLE.SETRANGE("G/L Account No.",GLAcc."No.");
+      GLAcc.COPYFILTER("Date Filter",GLE."Posting Date");
+      Total := GLE.COUNT;
+      Dlg.UPDATE(1,GLAcc."No.");
+      Dlg.UPDATE(2,Total);
+      IF GLE.FIND('-') THEN
+        REPEAT
+          Total := Total -1 ;
+          IF Total MOD 1000 = 0 THEN
+            Dlg.UPDATE(2,Total);
+          DGLE.SETRANGE("Gen. Ledger Entry No.",GLE."Entry No.");
+          DGLE.SETRANGE("Entry Type");
+          IF DGLE.ISEMPTY THEN BEGIN
+            Lfd := Lfd + 1;
+            DGLE.INIT;
+            DGLE."Entry No." := Lfd;
+            DGLE."Gen. Ledger Entry No."  := GLE."Entry No.";
+            DGLE."Entry Type" := DGLE."Entry Type"::"Initial Entry";
+            DGLE."Posting Date" := GLE."Posting Date";
+            DGLE."Document Type" := GLE."Document Type";
+            DGLE."Document No."  := GLE."Document No.";
+            DGLE.Amount := GLE.Amount;
+            DGLE."G/L Account No." := GLE."G/L Account No.";
+            DGLE."User ID":= GLE."User ID";
+            DGLE."Source Code"  := GLE."Source Code";
+            DGLE."Transaction No."  := GLE."Transaction No.";
+            DGLE."Journal Batch Name" := GLE."Journal Batch Name";
+            DGLE."Reason Code" := GLE."Reason Code";
+            DGLE."Debit Amount" := GLE."Debit Amount";
+            DGLE."Credit Amount" := GLE."Credit Amount";
+            DGLE."Initial Entry Global Dim. 1" := GLE."Global Dimension 1 Code";
+            DGLE."Initial Entry Global Dim. 2" := GLE."Global Dimension 2 Code";
+            DGLE."Initial Document Type" := GLE."Document Type";
+            DGLE.INSERT;
+            GLE.Positive := (GLE.Amount > 0);
+            GLE.Open := TRUE;
+            GLE.MODIFY;
+          END;
+
+        UNTIL GLE.NEXT = 0;
+
+      Dlg.CLOSE;
+    END;
+
+    PROCEDURE ValidateAccount@5157802(VAR REC@5157802 : Record 15;VAR xRec@5157803 : Record 15);
+    VAR
+      Text001@5157804 : TextConst 'DEU=Soll die Bildung offener Posten fÅr %1 %2 %3 aktiviert werden?;ENU=Do you want to enable the creation of open entries for %1 %2 %3?';
+      Text002@5157805 : TextConst 'DEU=Soll die Bildung offener Posten fÅr %1 %2 %3 deaktiviert werden?;ENU=Do you want to disable the creation of open entries for %1 %2 %3?';
+      GLOpenEntriesSetup@5157806 : Record 5157853;
+      Text004@5157808 : TextConst 'DEU=Sie mÅssen den Saldo ausbuchen, oder in der %1 die Option %2 auf Alle Posten setzen.;ENU=You have either to adjust the balance or set option %2 in %1 to All Entries.';
+      Text005@5157809 : TextConst 'DEU=Sollen fÅr alle Posten von %1 %2 %3 offene Posten errichtet werden?;ENU=Create open entries for all entries of %1 %2 %3?';
+      GLEntries@5157810 : Record 17;
+      Text006@5157811 : TextConst 'DEU=FÅr %1 %2 %3 gibt es offene Posten. Bitte gleichen Sie diese zunÑchst aus.;ENU=There are open entries for %1 %2 %3. You have to apply these entries first.';
+    BEGIN
+      IF REC."Build Open Entries" THEN
+        REC.TESTFIELD("Account Type",REC."Account Type"::Posting);
+      IF NOT REC."Build Open Entries" AND xRec."Build Open Entries" THEN BEGIN
+        IF CONFIRM(Text002,TRUE,REC.TABLECAPTION,REC."No.",REC.Name) THEN BEGIN
+          REC.CALCFIELDS(Balance);
+          REC.TESTFIELD(Balance,0);
+          GLEntries.SETCURRENTKEY("G/L Account No.",Open);
+          GLEntries.SETRANGE("G/L Account No.",REC."No.");
+          GLEntries.SETRANGE(Open,TRUE);
+          IF NOT GLEntries.ISEMPTY THEN
+            ERROR(STRSUBSTNO(Text006,REC.TABLECAPTION,REC."No.",REC.Name));
+        END ELSE
+          REC := xRec;
+      END;
+      IF REC."Build Open Entries" AND NOT xRec."Build Open Entries" THEN BEGIN
+        IF CONFIRM(Text001,TRUE,REC.TABLECAPTION,REC."No.",REC.Name) THEN BEGIN
+          REC.SETRANGE("Date Filter");
+          REC.CALCFIELDS(Balance);
+          IF REC.Balance <> 0 THEN BEGIN
+            GLOpenEntriesSetup.GET;
+            IF GLOpenEntriesSetup."Create Open Entries" = GLOpenEntriesSetup."Create Open Entries"::"All Entries" THEN BEGIN
+              IF CONFIRM(Text005,FALSE,REC.TABLECAPTION,REC."No.",REC.Name) THEN
+                OpenAllEntries(REC)
+              ELSE
+                REC := xRec;
+            END ELSE
+              ERROR(Text004,
+                GLOpenEntriesSetup.TABLECAPTION,
+                GLOpenEntriesSetup.FIELDCAPTION("Create Open Entries"));
+          END;
+        END ELSE
+          REC := xRec;
+      END;
+    END;
+
+    PROCEDURE ApplyGLEntryformEntry@10(VAR ApplyingGLEntry@1000 : Record 17);
+    VAR
+      ApplyGLEntries@1001 : Form 5157856;
+      GLEntry@1002 : Record 17;
+      GLEntryApplID@1004 : Code[20];
+      OK@1003 : Boolean;
+      Text001@5157802 : TextConst 'DEU=Mindestens einer der ausgewÑhlten Posten ist geschlossen. Geschlossene Posten kînnen nicht angewendet werden.;ENU=One or more of the entries that you selected is closed. You cannot apply closed entries.';
+    BEGIN
+      IF NOT ApplyingGLEntry.Open THEN
+        ERROR(Text001)
+      ELSE BEGIN
+        GLEntryApplID := USERID;
+        IF GLEntryApplID = '' THEN
+          GLEntryApplID := '***';
+
+        ApplyingGLEntry."Applying Entry" := TRUE;
+        ApplyingGLEntry."Applies-to ID" := GLEntryApplID;
+        ApplyingGLEntry."Amount to Apply" := ApplyingGLEntry."Remaining Amount";
+        GLEntryEdit(ApplyingGLEntry);
+        COMMIT;
+
+        GLEntry.SETCURRENTKEY("G/L Account No.",Open,"Posting Date");
+        GLEntry.SETRANGE("G/L Account No.",ApplyingGLEntry."G/L Account No.");
+        GLEntry.SETRANGE(Open,TRUE);
+        IF GLEntry.FINDSET THEN BEGIN
+          ApplyGLEntries.SetGLEntry(ApplyingGLEntry);
+          ApplyGLEntries.SETRECORD(GLEntry);
+          ApplyGLEntries.SETTABLEVIEW(GLEntry);
+          OK := ApplyGLEntries.RUNMODAL = ACTION::LookupOK;
+          CLEAR(ApplyGLEntries);
+          IF NOT OK THEN
+            EXIT;
+        END;
+      END;
+    END;
+
+    BEGIN
+    {
+      -----------------------------------------------------
+      (c) gbedv, OPplus, All rights reserved
+
+      No.  Date       changed
+      -----------------------------------------------------
+      GLOE 26.11.04   Gen. Ledger Open Entries
+                      - Object created
+      -----------------------------------------------------
+
+      +----------------------------------------------+
+      | Copyright GOB Software & Systeme             |
+      +----------------------------------------------+
+      | FP Commerce                                  |
+      |                                              |
+      +----------------------------------------------+
+
+      Version    Datum       Berater    PSP-Code   Bemerkung
+      ---------------------------------------------------------------------------
+      GOB1.00    12.11.12    gob-czi    P0517      Apply open G/L Entries
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,1323 @@
+OBJECT Codeunit 50222 Service Item
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02.09.13;
+    Time=14:59:54;
+    Version List=HME0513;
+  }
+  PROPERTIES
+  {
+    Subtype=Test;
+    OnRun=BEGIN
+            isInitialized := FALSE;
+            RANDOMIZE(1);  // Seed RANDOM function.
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      LibraryService@1006 : Codeunit 50209;
+      isInitialized@1102601000 : Boolean;
+      ServiceItemCreationError@1000 : TextConst 'ENU=The number of %1 created must match the Quantity of Item in Sales Line.';
+      ServiceItemReplacedError@1002 : TextConst 'ENU=The number of %1 replaced must be equal to %2 for %3 %4 and %5 %6.';
+      RecordExistsError@1008 : TextConst 'ENU=%1 %2 must not exist after deletion.';
+
+    LOCAL PROCEDURE Initialize@1102601000();
+    BEGIN
+      // Lazy Setup.
+      IF isInitialized THEN
+        EXIT;
+
+      LibraryService.Initialize;
+      LibraryService.SetupServiceMgtNoSeries;
+
+      isInitialized := TRUE;
+      COMMIT;
+    END;
+
+    [Test]
+    PROCEDURE TestServiceItemValues@1102601011();
+    VAR
+      ServiceLine@1102601000 : Record 5902;
+      ServiceItem@1102601001 : Record 5940;
+      Item@1102601002 : Record 27;
+      ServiceHeader@1000 : Record 5900;
+      ServiceItemLine@1001 : Record 5901;
+    BEGIN
+      // 1. Create a new Service Item with a random Customer and random Sales Unit Cost, Sales Unit Price, Default Contract Cost and
+      //    Default Contract Value.
+      // 2. Create a Service Order for the Service Item - Create Service Header, Service Item Line and Service Line with random Item and
+      //    random Quantity. Post the Service Order as Ship and Invoice.
+      // 3. Check that the values in the Service Item table are the same as Service Item Line table.
+      // 4. Verify that the value of the Parts Used field in the Service Item is the product of the Unit Cost applicable and the
+      //    Quantity in the Service Line.
+
+      // Setup: Setup demonstration data.
+      Initialize;
+
+      // Exercise: Create and Post Service Order as Ship and Invoice.
+      CreateServiceItemWithAmounts(ServiceItem);
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::Order,ServiceItem."Customer No.");
+      LibraryService.CreateServiceItemLine(ServiceItemLine,ServiceHeader,ServiceItem."No.");
+      CreateServiceLineWithRandmItem(ServiceLine,Item,ServiceHeader,ServiceItem."No.");
+      LibraryService.PostServiceOrder(ServiceHeader,TRUE,FALSE,TRUE);
+
+      // Verify: Match values in Service Item table and the Service Item Line table. Match values in Service Item table and the
+      // Service Item Line table.
+      VerifyServiceItemStatistics(ServiceLine,ServiceItem);
+      VerifyServiceItemTrendscape(Item,ServiceLine,ServiceItem);
+    END;
+
+    [Test]
+    [HandlerFunctions(ConfirmHandler,MessageHandler)]
+    PROCEDURE TestServItemCreationFrmServOrd@13();
+    VAR
+      ServiceItem@1000 : Record 5940;
+      ServiceItemLine@1002 : Record 5901;
+      ServItemManagement@1004 : Codeunit 5920;
+      Type@1003 : 'Item,Service Item Group';
+    BEGIN
+      // 1. Create a new Service Order with a random Customer - Create a Service Item Line with no Service Item and random Item.
+      // 2. Create a new Service Item from Service Order.
+      // 3. Check that the Service Item has the same Item No. as the Service Item Line.
+      // 4. Check that once Service Item has been created from the Service Item Line it cannot be created again.
+
+      // Setup: Setup demonstration data. Create Service Header and Service Item Line.
+      Initialize;
+      CreateServOrderForServItemCrea(ServiceItemLine,Type::Item);
+
+      // Exercise: Create Service Item from Service Order.
+      ServItemManagement.CreateServItemOnServItemLine(ServiceItemLine);
+
+      // Verify: Check that the Service Item has the same Item No. as the Service Item Line.
+      ServiceItem.GET(ServiceItemLine."Service Item No.");
+      ServiceItem.TESTFIELD("Item No.",ServiceItemLine."Item No.");
+
+      // Verify: Verify that Service Item cannot be created from the Service Item Line again.
+      ASSERTERROR ServItemManagement.CreateServItemOnServItemLine(ServiceItemLine);
+    END;
+
+    [Test]
+    [HandlerFunctions(ConfirmHandler,MessageHandler)]
+    PROCEDURE TestServItemCreationWithServGr@15();
+    VAR
+      ServiceItemLine@1002 : Record 5901;
+      ServiceItem@1005 : Record 5940;
+      ServItemManagement@1004 : Codeunit 5920;
+      Type@1003 : 'Item,Service Item Group';
+    BEGIN
+      // 1. Create a new Service Order with a random Customer - Create a Service Item Line with no Service Item.
+      // 2. Create a new Service Item from Service Order.
+      // 3. Check that the Service Item has the same Service Item Group Code as the Service Item Line.
+      // 4. Check that once Service Item has been created from the Service Item Line it cannot be created again.
+
+      // Setup: Setup demonstration data.
+      Initialize;
+
+      // Setup: Create Service Header, Service Line and Service Item Group. Assign Service Item Group to the Service Line.
+      CreateServOrderForServItemCrea(ServiceItemLine,Type::"Service Item Group");
+
+      // Exercise: Create Service Item from Service Order.
+      ServItemManagement.CreateServItemOnServItemLine(ServiceItemLine);
+
+      // Verify: Check that the Service Item has the same Service Item Group Code as the Service Item Line.
+      ServiceItem.GET(ServiceItemLine."Service Item No.");
+      ServiceItem.TESTFIELD("Service Item Group Code",ServiceItemLine."Service Item Group Code");
+
+      // Verify: Verify that Service Item cannot be created from the Service Item Line again.
+      ASSERTERROR ServItemManagement.CreateServItemOnServItemLine(ServiceItemLine);
+    END;
+
+    [Test]
+    PROCEDURE TestServItemCreatnfromSalesOrd@21();
+    VAR
+      SalesHeader@1000 : Record 36;
+      ServiceItem@1005 : Record 5940;
+      Item@1002 : Record 27;
+      ServiceItemGroup@1007 : Record 5904;
+      Assert@1006 : Codeunit 50200;
+      LibrarySCM@1001 : Codeunit 50210;
+      Quantity@1004 : Decimal;
+    BEGIN
+      // 1. Create a new Service Item Group with the field Create Service Item as TRUE.
+      // 2. Create a new Item with the Service Item Group created earlier.
+      // 3. Create a new Sales Header with a random Customer and a new Sales Line with random Quantity. Post it as Ship and Invoice.
+      // 4. Verify that the number of the Service Items created match the value of the Quantity of Item in Sales Line.
+      // 5. Verify the Service Item.
+
+      // Setup: Setup demonstration data.
+      Initialize;
+
+      // Setup: Create Service Item Group and create a new Item with it.
+      LibrarySCM.CreateItem(Item);
+      Item.VALIDATE("Service Item Group",CreateServiceGroupForAutoCreat);
+      Item.MODIFY(TRUE);
+
+      // Exercise: Create and Post Sales Order.
+      CreateSalesHeader(SalesHeader);
+      CreateSalesLine(Quantity,SalesHeader,Item."No.");
+      LibrarySCM.PostSalesHeader(SalesHeader,TRUE,TRUE);
+
+      // Verify: Verify that the number of Service Items created matches the Quantity on the Sales Line.
+      ServiceItem.SETRANGE("Item No.",Item."No.");
+      Assert.AreEqual(Quantity,ServiceItem.COUNT,STRSUBSTNO(ServiceItemCreationError,ServiceItem.TABLECAPTION));
+      ServiceItem.FINDFIRST;
+      ServiceItem.TESTFIELD("Service Item Group Code",Item."Service Item Group");
+      ServiceItemGroup.GET(ServiceItem."Service Item Group Code");
+      ServiceItem.TESTFIELD("Response Time (Hours)",ServiceItemGroup."Default Response Time (Hours)");
+    END;
+
+    [Test]
+    [HandlerFunctions(ConfirmHandler,StrMenuHandler)]
+    PROCEDURE TestServiceItemModification@2();
+    VAR
+      ServiceItem@1000 : Record 5940;
+      ResourceSkill@1001 : Record 5956;
+      ServiceItem2@1003 : Record 5940;
+      ResourceSkill2@1004 : Record 5956;
+      ServiceItemGroupCode@1002 : Code[10];
+    BEGIN
+      // 1. Create a new Service Item Group.
+      // 2. Create a new Service Item with a random Customer and Service Item Group created earlier in Step 1.
+      // 3. Modify the Service Item Group Code on the Service Item.
+      // 4. Verify that the Resource Skill attached to the Service Item has been updated according to the Service Item Group changed.
+
+      // Setup: Setup demonstration data. Create Service Item Group with Skill and a new Service Item. Attach Service Item Group to
+      // Service Item.
+      Initialize;
+      CreateServiceItemGrpWithSkill(ServiceItemGroupCode,ResourceSkill);
+      CreateServiceItem(ServiceItem);
+      ServiceItem.VALIDATE("Service Item Group Code",ServiceItemGroupCode);
+      ServiceItem.MODIFY(TRUE);
+
+      // Setup: Create Service Item Group with Skill.
+      CreateServiceItemGrpWithSkill(ServiceItemGroupCode,ResourceSkill2);
+
+      // Second variable is needed to get refreshed instance of the Service Item.
+      ServiceItem2.GET(ServiceItem."No.");
+
+      // Exercise: Modify the Service Item to attach Service Item Group to it.
+      ServiceItem2.VALIDATE("Service Item Group Code",ServiceItemGroupCode);
+      ServiceItem2.MODIFY(TRUE);
+
+      // Verify: Check that the Resource Skill attached to the Service Item earlier has been deleted.
+      VerifySkillCodeDeletion(ResourceSkill);
+    END;
+
+    [Test]
+    PROCEDURE TestServiceItemDeletion@11();
+    VAR
+      ServiceItem@1000 : Record 5940;
+      Assert@1001 : Codeunit 50200;
+    BEGIN
+      // 1. Create a new Service Item with a random Customer.
+      // 2. Delete the Service Item.
+      // 3. Verify that the Service Item does not exist in the Service Item table after deletion.
+
+      // Setup: Setup demonstration data and create a new Service Item.
+      Initialize;
+      CreateServiceItem(ServiceItem);
+
+      // Exercise: Delete the Service Item.
+      ServiceItem.DELETE(TRUE);
+
+      // Verify: Check that the Service Item does not exist in the Service Item table after deletion.
+      Assert.IsFalse(ServiceItem.GET(ServiceItem."No."),STRSUBSTNO(RecordExistsError,ServiceItem.TABLECAPTION,ServiceItem."No."));
+    END;
+
+    [Test]
+    PROCEDURE TestContractValueCalcMthdNone@36();
+    VAR
+      ServiceItem@1001 : Record 5940;
+      Currency@1003 : Record 4;
+      ContractValueCalcMethod@1000 : 'None,Based on Unit Price,Based on Unit Cost';
+      ContractValuePercentage@1002 : Decimal;
+    BEGIN
+      // 1. Setup Service Management with - Contract Value Calc. Method as None and Contract Value % as any random value.
+      // 2. Create a new Service Item with random Sales Unit Cost and random Sales Unit Price.
+      // 3. Verify that the value of the Default Contract Value is 0.
+      // 4. Verify that the value of the Default Contract Cost is the product of the Sales Unit Cost field of the Service Item and the
+      //    Contract Value % field of the Service Management Setup divided by 100.
+
+      // Setup: Setup demonstration data and Service Management Setup.
+      Initialize;
+      ContractValuePercentage := RANDOM(100);
+      ServMgtSetupForContractValCalc(ContractValueCalcMethod::None,ContractValuePercentage);
+
+      // Exercise: Create a Service Item with random Sales Unit Cost and Sales Unit Price.
+      CreateServItemWithSalesUnitAmt(ServiceItem);
+
+      // Verify: Verify that the value of the Default Contract Value is 0.
+      ServiceItem.TESTFIELD("Default Contract Value",0);
+
+      // Verify: Verify that the value of the Default Contract Cost is the product of the Sales Unit Cost field of the Service Item and
+      // the Contract Value % field of the Service Management Setup divided by 100.
+      Currency.InitRoundingPrecision;
+      ServiceItem.TESTFIELD("Default Contract Cost",
+        ROUND(ServiceItem."Sales Unit Cost" * ContractValuePercentage / 100,Currency."Unit-Amount Rounding Precision"));
+    END;
+
+    [Test]
+    PROCEDURE TestContrctValCalcMthdNoneZero@41();
+    VAR
+      ServiceItem@1003 : Record 5940;
+      ContractValueCalcMethod@1001 : 'None,Based on Unit Price,Based on Unit Cost';
+    BEGIN
+      // 1. Setup Service Management with - Contract Value Calc. Method as None and Contract Value % as 0 for boundary value testing.
+      // 2. Create a new Service Item with random Sales Unit Cost and random Sales Unit Price.
+      // 3. Verify that the values of the Default Contract Value and Default Contract Cost are equal to 0.
+
+      // Setup: Setup demonstration data and Service Management Setup.
+      Initialize;
+      ServMgtSetupForContractValCalc(ContractValueCalcMethod::None,0);
+
+      // Exercise: Create a Service Item with random Sales Unit Cost and Sales Unit Price.
+      CreateServItemWithSalesUnitAmt(ServiceItem);
+
+      // Verify: Verify that the values of the Default Contract Value and Default Contract Cost are 0.
+      ServiceItem.TESTFIELD("Default Contract Value",0);
+      ServiceItem.TESTFIELD("Default Contract Cost",0);
+    END;
+
+    [Test]
+    PROCEDURE TestContrctValCalcMthdNoneHund@43();
+    VAR
+      ServiceItem@1003 : Record 5940;
+      ContractValueCalcMethod@1001 : 'None,Based on Unit Price,Based on Unit Cost';
+    BEGIN
+      // 1. Setup Service Management with - Contract Value Calc. Method as None and Contract Value % as 100 for boundary value testing.
+      // 2. Create a new Service Item with random Sales Unit Cost and random Sales Unit Price.
+      // 3. Verify that the value of the Default Contract Value is 0.
+      // 4. Verify that the value of the Default Contract Cost is equal to the field Sales Unit Cost of the Service Item.
+
+      // Setup: Setup demonstration data and Service Management Setup.
+      Initialize;
+      ServMgtSetupForContractValCalc(ContractValueCalcMethod::None,100);
+
+      // Exercise: Create a Service Item with random Sales Unit Cost and Sales Unit Price.
+      CreateServItemWithSalesUnitAmt(ServiceItem);
+
+      // Verify: Verify that the value of the Default Contract Value is 0 and the value of the Default Contract Cost is equal to the field
+      // Sales Unit Cost of the Service Item.
+      ServiceItem.TESTFIELD("Default Contract Value",0);
+      ServiceItem.TESTFIELD("Default Contract Cost",ServiceItem."Sales Unit Cost");
+    END;
+
+    [Test]
+    PROCEDURE TestCntrctValueCalcMthdUnitPri@38();
+    VAR
+      ServiceItem@1001 : Record 5940;
+      Currency@1003 : Record 4;
+      ContractValueCalcMethod@1000 : 'None,Based on Unit Price,Based on Unit Cost';
+      ContractValuePercentage@1002 : Decimal;
+    BEGIN
+      // 1. Setup Service Management with - Contract Value Calc. Method as Based on Unit Price and Contract Value % as any random value.
+      // 2. Create a Service Item with random Sales Unit Cost and random Sales Unit Price.
+      // 3. Verify that the value of the Default Contract Value is the product of the Sales Unit Price field of the Service Item and the
+      //    Contract Value % field of the Service Management Setup divided by 100.
+      // 4. Verify that the value of the Default Contract Cost is the product of the Sales Unit Cost field of the Service Item and the
+      //    Contract Value % field of the Service Management Setup divided by 100.
+
+      // Setup: Setup demonstration data and Service Management Setup.
+      Initialize;
+      ContractValuePercentage := RANDOM(100);
+      ServMgtSetupForContractValCalc(ContractValueCalcMethod::"Based on Unit Price",ContractValuePercentage);
+
+      // Exercise: Create a Service Item with random Sales Unit Cost and Sales Unit Price.
+      CreateServItemWithSalesUnitAmt(ServiceItem);
+
+      // Verify: Verify that the value of the Default Contract Value is the product of the Sales Unit Price field of the Service Item and
+      // the Contract Value % field of the Service Management Setup divided by 100.
+      Currency.InitRoundingPrecision;
+      ServiceItem.TESTFIELD(
+        "Default Contract Value",ROUND(ServiceItem."Sales Unit Price" * ContractValuePercentage / 100,
+        Currency."Unit-Amount Rounding Precision"));
+
+      // Verify: Verify that the value of the Default Contract Cost is the product of the Sales Unit Cost field of the Service Item and
+      // the Contract Value % field of the Service Management Setup divided by 100.
+      ServiceItem.TESTFIELD("Default Contract Cost",
+        ROUND(ServiceItem."Sales Unit Cost" * ContractValuePercentage / 100,Currency."Unit-Amount Rounding Precision"));
+    END;
+
+    [Test]
+    PROCEDURE TestCntrctValCalcMthdUnitPZero@44();
+    VAR
+      ServiceItem@1003 : Record 5940;
+      ContractValueCalcMethod@1001 : 'None,Based on Unit Price,Based on Unit Cost';
+    BEGIN
+      // 1. Setup Service Management with - Contract Value Calc. Method as Based on Unit Price and Contract Value % as 0 for boundary
+      //    value testing.
+      // 2. Create a Service Item with random Sales Unit Cost and random Sales Unit Price.
+      // 3. Verify that the values of the Default Contract Value and Default Contract Cost are equal to 0.
+
+      // Setup: Setup demonstration data and Service Management Setup.
+      Initialize;
+      ServMgtSetupForContractValCalc(ContractValueCalcMethod::"Based on Unit Price",0);
+
+      // Exercise: Create a Service Item with random Sales Unit Cost and Sales Unit Price.
+      CreateServItemWithSalesUnitAmt(ServiceItem);
+
+      // Verify: Verify that the values of the Default Contract Value and Default Contract Cost are 0.
+      ServiceItem.TESTFIELD("Default Contract Value",0);
+      ServiceItem.TESTFIELD("Default Contract Cost",0);
+    END;
+
+    [Test]
+    PROCEDURE TestCntrctValCalcMthdUPHundred@45();
+    VAR
+      ServiceItem@1001 : Record 5940;
+      ContractValueCalcMethod@1000 : 'None,Based on Unit Price,Based on Unit Cost';
+    BEGIN
+      // 1. Setup Service Management with - Contract Value Calc. Method as Based on Unit Price and Contract Value % as 100 for boundary
+      //    value testing.
+      // 2. Create a Service Item with random Sales Unit Cost and random Sales Unit Price.
+      // 3. Verify that the value of the Default Contract Value is equal to the value of the field Sales Unit Price of the Service Item.
+      // 4. Verify that the value of the Default Contract Cost is equal to the value of the field Sales Unit Cost of the Service Item.
+
+      // Setup: Setup demonstration data and Service Management Setup.
+      Initialize;
+      ServMgtSetupForContractValCalc(ContractValueCalcMethod::"Based on Unit Price",100);
+
+      // Exercise: Create a Service Item with random Sales Unit Cost and Sales Unit Price.
+      CreateServItemWithSalesUnitAmt(ServiceItem);
+
+      // Verify: Verify that the value of the Default Contract Value is equal to the value of the field Sales Unit Price of the Service
+      // Item and the value of the Default Contract Cost is equal to the value of the field Sales Unit Cost of the Service Item.
+      ServiceItem.TESTFIELD("Default Contract Value",ServiceItem."Sales Unit Price");
+      ServiceItem.TESTFIELD("Default Contract Cost",ServiceItem."Sales Unit Cost");
+    END;
+
+    [Test]
+    PROCEDURE TestCntrctValueCalcMthdUnitCos@40();
+    VAR
+      Currency@1002 : Record 4;
+      ServiceItem@1001 : Record 5940;
+      ContractValueCalcMethod@1000 : 'None,Based on Unit Price,Based on Unit Cost';
+      ContractValuePercentage@1003 : Decimal;
+    BEGIN
+      // 1. Setup Service Management with - Contract Value Calc. Method as Based on Unit Cost and Contract Value % as any random value.
+      // 2. Create a Service Item with random Sales Unit Cost and random Sales Unit Price.
+      // 3. Verify that the value of the Default Contract Value is equal to the value of the field Default Contract Cost of the Service
+      //    Item.
+      // 4. Verify that the value of the Default Contract Cost is the product of the Sales Unit Cost field of the Service Item and the
+      //    Contract Value % field of the Service Management Setup divided by 100.
+
+      // Setup: Setup demonstration data and Service Management Setup.
+      Initialize;
+      ContractValuePercentage := RANDOM(100);
+      ServMgtSetupForContractValCalc(ContractValueCalcMethod::"Based on Unit Cost",ContractValuePercentage);
+
+      // Exercise: Create a Service Item with random Sales Unit Cost and Sales Unit Price.
+      CreateServItemWithSalesUnitAmt(ServiceItem);
+
+      // Verify: Verify that the value of the Default Contract Value is 0.
+      ServiceItem.TESTFIELD("Default Contract Value",ServiceItem."Default Contract Cost");
+
+      // Verify: Verify that the value of the Default Contract Cost is the product of the Sales Unit Cost field of the Service Item and
+      // the Contract Value % field of the Service Management Setup divided by 100.
+      Currency.InitRoundingPrecision;
+      ServiceItem.TESTFIELD("Default Contract Cost",
+        ROUND(ServiceItem."Sales Unit Cost" * ContractValuePercentage / 100,Currency."Unit-Amount Rounding Precision"));
+    END;
+
+    [Test]
+    PROCEDURE TestCntrctValCalcMthdUntCosZer@46();
+    VAR
+      ServiceItem@1002 : Record 5940;
+      ContractValueCalcMethod@1001 : 'None,Based on Unit Price,Based on Unit Cost';
+    BEGIN
+      // 1. Setup Service Management with - Contract Value Calc. Method as Based on Unit Cost and Contract Value % as 0 for boundary
+      //    value testing.
+      // 2. Create a Service Item with random Sales Unit Cost and random Sales Unit Price.
+      // 3. Verify that the values of the Default Contract Value and Default Contract Cost are equal to 0.
+
+      // Setup: Setup demonstration data and Service Management Setup.
+      Initialize;
+      ServMgtSetupForContractValCalc(ContractValueCalcMethod::"Based on Unit Cost",0);
+
+      // Exercise: Create a Service Item with random Sales Unit Cost and Sales Unit Price.
+      CreateServItemWithSalesUnitAmt(ServiceItem);
+
+      // Verify: Verify that the values of the Default Contract Value and Default Contract Cost are 0.
+      ServiceItem.TESTFIELD("Default Contract Value",0);
+      ServiceItem.TESTFIELD("Default Contract Cost",0);
+    END;
+
+    [Test]
+    PROCEDURE TestCntrctValCalcMthdUntCosHun@47();
+    VAR
+      ServiceItem@1001 : Record 5940;
+      ContractValueCalcMethod@1000 : 'None,Based on Unit Price,Based on Unit Cost';
+    BEGIN
+      // 1. Setup Service Management with - Contract Value Calc. Method as Based on Unit Cost and Contract Value % as 100 for boundary
+      //    value testing.
+      // 2. Create a Service Item with random Sales Unit Cost and random Sales Unit Price.
+      // 3. Verify that the value of the Default Contract Value is equal to the value of the field Sales Unit Cost of the Service Item.
+      // 4. Verify that the value of the Default Contract Cost is equal to the value of the field Sales Unit Cost of the Service Item.
+
+      // Setup: Setup demonstration data and Service Management Setup.
+      Initialize;
+      ServMgtSetupForContractValCalc(ContractValueCalcMethod::"Based on Unit Cost",100);
+
+      // Exercise: Create a Service Item with random Sales Unit Cost and Sales Unit Price.
+      CreateServItemWithSalesUnitAmt(ServiceItem);
+
+      // Verify: Verify that the value of the Default Contract Value is equal to the value of the field Sales Unit Cost of the Service
+      // Item and the value of the Default Contract Cost is equal to the value of the field Sales Unit Cost of the Service Item.
+      ServiceItem.TESTFIELD("Default Contract Value",ServiceItem."Sales Unit Cost");
+      ServiceItem.TESTFIELD("Default Contract Cost",ServiceItem."Sales Unit Cost");
+    END;
+
+    [Test]
+    [HandlerFunctions(ConfirmHandlerFalse)]
+    PROCEDURE TestServItemUpdtnOnCrtnServCon@48();
+    VAR
+      ServiceItem@1000 : Record 5940;
+      ServiceContractHeader@1001 : Record 5965;
+      ServiceContractLine@1003 : Record 5964;
+      ServiceContractAccountGroup@1002 : Record 5973;
+    BEGIN
+      // 1. Create a Service Item with random Sales Unit Cost and random Sales Unit Price.
+      // 2. Create a Service Contract.
+      // 3. Verify that the field Service Contract on the Service Item has been updated as TRUE after creation of the Service Contract.
+
+      // Setup: Setup demonstration data and Service Management Setup. Create a Service Item with random Sales Unit Cost and
+      // Sales Unit Price.
+      Initialize;
+      CreateServItemWithSalesUnitAmt(ServiceItem);
+
+      // Exercise: Create Service Contract with the Service Item created.
+      LibraryService.CreateServiceContractAcctGrp(ServiceContractAccountGroup);
+      CreateServiceContractHeader(ServiceContractHeader,ServiceItem."Customer No.");
+      LibraryService.CreateServiceContractLine(ServiceContractLine,ServiceContractHeader,ServiceItem."No.");
+
+      // Verify: Verify that the field Service Contract on the Service Item has been updated as TRUE after creation of the
+      // Service Contract.
+      ServiceItem.CALCFIELDS("Service Contracts");
+      ServiceItem.TESTFIELD("Service Contracts",TRUE);
+    END;
+
+    [Test]
+    [HandlerFunctions(ConfirmHandlerFalse)]
+    PROCEDURE TestServItemUpdtnOnDltnServCon@49();
+    VAR
+      ServiceItem@1000 : Record 5940;
+      ServiceContractHeader@1001 : Record 5965;
+      ServiceContractAccountGroup@1002 : Record 5973;
+      ServiceContractLine@1003 : Record 5964;
+    BEGIN
+      // 1. Create a Service Item with random Sales Unit Cost and random Sales Unit Price.
+      // 2. Create a Service Contract.
+      // 3. Delete the Service Contract.
+      // 4. Verify that the field Service Contract on the Service Item has been updated as FALSE after deletion of the Service Contract.
+
+      // Setup: Setup demonstration data and Service Management Setup. Create a Service Item with random Sales Unit Cost and
+      // Sales Unit Price and a new Service Contract with the Service Item created.
+      Initialize;
+      CreateServItemWithSalesUnitAmt(ServiceItem);
+      LibraryService.CreateServiceContractAcctGrp(ServiceContractAccountGroup);
+      CreateServiceContractHeader(ServiceContractHeader,ServiceItem."Customer No.");
+      LibraryService.CreateServiceContractLine(ServiceContractLine,ServiceContractHeader,ServiceItem."No.");
+
+      // Exercise: Delete the Service Contract.
+      ServiceContractHeader.DELETE(TRUE);
+
+      // Verify: Verify that the field Service Contract on the Service Item has been updated as FALSE after deletion of the
+      // Service Contract.
+      ServiceItem.CALCFIELDS("Service Contracts");
+      ServiceItem.TESTFIELD("Service Contracts",FALSE);
+    END;
+
+    [Test]
+    PROCEDURE TestServShpmntCreatedFrmSerOrd@53();
+    VAR
+      Item@1002 : Record 27;
+      ServiceLine@1000 : Record 5902;
+      ServiceItem@1001 : Record 5940;
+      ServiceHeader@1003 : Record 5900;
+      ServiceItemLine@1004 : Record 5901;
+    BEGIN
+      // 1. Create a new Service Item with random Customer and random Sales Unit Cost, Sales Unit Price, Default Contract Cost and
+      //    Default Contract Value.
+      // 2. Create a Service Order for the Service Item - Create Service Header, Service Item Line and Service Line with random Item
+      //    and random Quantity. Post the Service Order as Ship.
+      // 3. Check that the values in the Service Line table are the same as Service Shipment Line table.
+
+      // Setup: Setup demonstration data and Service Management.
+      Initialize;
+
+      // Exercise: Create and Post Service Order as Ship.
+      CreateServiceItemWithAmounts(ServiceItem);
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::Order,ServiceItem."Customer No.");
+      LibraryService.CreateServiceItemLine(ServiceItemLine,ServiceHeader,ServiceItem."No.");
+      CreateServiceLineWithRandmItem(ServiceLine,Item,ServiceHeader,ServiceItem."No.");
+      LibraryService.PostServiceOrder(ServiceHeader,TRUE,FALSE,FALSE);
+
+      // Verify: Match values in the Service Line table and the Service Shipment Line table.
+      VerifyServLineWithServShptLine(ServiceLine);
+    END;
+
+    [Test]
+    PROCEDURE TestServItemLogOnServItemCrtn@54();
+    VAR
+      ServiceItem@1000 : Record 5940;
+    BEGIN
+      // 1. Create a Service Item with random Sales Unit Cost and random Sales Unit Price.
+      // 2. Check Service Item Log entry after the creation of Service Item.
+
+      // Setup: Setup demonstration data.
+      Initialize;
+
+      // Exercise: Create a Service Item with random Sales Unit Cost and Sales Unit Price.
+      LibraryService.CreateServiceItem(ServiceItem,'');
+
+      // Verify: Check the Service Item Log entry after creation of the Service Item.
+      VerifyServiceItemLogEntry(ServiceItem."No.",1);  // The value 1 is the event number for creation of Service Item.
+    END;
+
+    [Test]
+    PROCEDURE TestServItemLogOnChangeCustom@56();
+    VAR
+      ServiceItem@1000 : Record 5940;
+    BEGIN
+      // 1. Create a Service Item with random Sales Unit Cost and random Sales Unit Price.
+      // 2. Check Service Item Log entry after the Ship-to Code has been updated as a result of validating Customer.
+
+      // Setup: Setup demonstration data.
+      Initialize;
+
+      // Exercise: Create a Service Item with random Sales Unit Cost and Sales Unit Price.
+      CreateServItemWithSalesUnitAmt(ServiceItem);
+
+      // Verify: Check the Service Item Log entry after creation of the Service Item.
+      VerifyServiceItemLogEntry(ServiceItem."No.",12);  // The value 12 is the event number for Ship-to Code update.
+    END;
+
+    [Test]
+    [HandlerFunctions(ConfirmHandlerFalse)]
+    PROCEDURE TestServItemLogOnCrtnServContr@59();
+    VAR
+      ServiceItem@1000 : Record 5940;
+      ServiceContractHeader@1001 : Record 5965;
+      ServiceContractLine@1003 : Record 5964;
+      ServiceContractAccountGroup@1002 : Record 5973;
+    BEGIN
+      // 1. Create a Service Item with random Sales Unit Cost and random Sales Unit Price.
+      // 2. Create a Service Contract.
+      // 3. Check Service Item Log entry after the creation of the Service Contract.
+
+      // Setup: Setup demonstration data. Create a Service Item with random Sales Unit Cost and Sales Unit Price
+      Initialize;
+      CreateServItemWithSalesUnitAmt(ServiceItem);
+
+      // Exercise: Create Service Contract for the Service Item created above.
+      LibraryService.CreateServiceContractAcctGrp(ServiceContractAccountGroup);
+      CreateServiceContractHeader(ServiceContractHeader,ServiceItem."Customer No.");
+      LibraryService.CreateServiceContractLine(ServiceContractLine,ServiceContractHeader,ServiceItem."No.");
+
+      // Verify: Check the Service Item Log entry after creation of the Service Order.
+      VerifyServiceItemLogEntry(ServiceItem."No.",3);  // The value 3 is the event number for creation of the Service Contract.
+    END;
+
+    [Test]
+    PROCEDURE TestServItemLogOnCrtnServOrder@60();
+    VAR
+      ServiceItem@1000 : Record 5940;
+      ServiceHeader@1001 : Record 5900;
+      ServiceItemLine@1002 : Record 5901;
+    BEGIN
+      // 1. Create a Service Item with random Sales Unit Cost and random Sales Unit Price.
+      // 2. Create a Service Order.
+      // 3. Check Service Item Log entry after the creation of the Service Order.
+
+      // Setup: Setup demonstration data. Create a Service Item with random Sales Unit Cost and Sales Unit Price
+      Initialize;
+      CreateServItemWithSalesUnitAmt(ServiceItem);
+
+      // Exercise: Create Service Order for the Service Item created above.
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::Order,ServiceItem."Customer No.");
+      LibraryService.CreateServiceItemLine(ServiceItemLine,ServiceHeader,ServiceItem."No.");
+
+      // Verify: Check the Service Item Log entry after creation of the Service Order.
+      VerifyServiceItemLogEntry(ServiceItem."No.",5);  // The value 5 is the event number for creation of the Service Order.
+    END;
+
+    [Test]
+    PROCEDURE TestServItemLogOnCrtnServQuote@57();
+    VAR
+      ServiceItem@1000 : Record 5940;
+      ServiceHeader@1003 : Record 5900;
+      ServiceItemLine@1002 : Record 5901;
+      ServiceContractAccountGroup@1001 : Record 5973;
+    BEGIN
+      // 1. Create a Service Item with random Sales Unit Cost and random Sales Unit Price.
+      // 2. Create a Service Quote.
+      // 3. Check Service Item Log entry after the creation of the Service Quote.
+
+      // Setup: Setup demonstration data. Create a Service Item with random Sales Unit Cost and Sales Unit Price
+      Initialize;
+      CreateServItemWithSalesUnitAmt(ServiceItem);
+
+      // Exercise: Create Service Quote for the Service Item created above.
+      LibraryService.CreateServiceContractAcctGrp(ServiceContractAccountGroup);
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::Quote,ServiceItem."Customer No.");
+      LibraryService.CreateServiceItemLine(ServiceItemLine,ServiceHeader,ServiceItem."No.");
+
+      // Verify: Check the Service Item Log entry after creation of the Service Quote.
+      VerifyServiceItemLogEntry(ServiceItem."No.",15);
+      // The value 15 is the event number for addition of Service Item to Service Quote.
+    END;
+
+    [Test]
+    PROCEDURE DocumentLogOnQuoteCreation@32();
+    VAR
+      Customer@1005 : Record 18;
+      ServiceHeader@1003 : Record 5900;
+      ServiceDocumentLog@1000 : Record 5912;
+    BEGIN
+      // Test Service Document Log created on creation of Service Quote.
+
+      // 1. Setup:
+      Initialize;
+
+      // 2. Exercise: Create Service Quote.
+      LibraryService.FindCustomer(Customer);
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::Quote,Customer."No.");
+
+      // 3. Verify: Verify Service document Log for Service Quote creation.
+      // The value 13 is the event number for Service Quote creation.
+      VerifyServiceDocumentLogEntry(ServiceHeader."No.",ServiceDocumentLog."Document Type"::Quote,13);
+    END;
+
+    [Test]
+    PROCEDURE DocumentLogOnInvoiceCreation@30();
+    VAR
+      Customer@1006 : Record 18;
+      ServiceHeader@1003 : Record 5900;
+      ServiceDocumentLog@1000 : Record 5912;
+    BEGIN
+      // Test Service Document Log created on creation of Service Invoice.
+
+      // 1. Setup:
+      Initialize;
+
+      // 2. Exercise: Create Service Header of Document Type Invoice.
+      LibraryService.FindCustomer(Customer);
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::Invoice,Customer."No.");
+
+      // 3. Verify: Verify Service document Log for Service Invoice creation.
+      // The value 20 is the event number for Service Invoice Creation.
+      VerifyServiceDocumentLogEntry(ServiceHeader."No.",ServiceDocumentLog."Document Type"::Invoice,20);
+    END;
+
+    [Test]
+    PROCEDURE DocumentLogOnInvoicePosting@76();
+    VAR
+      Customer@1006 : Record 18;
+      Item@1005 : Record 27;
+      ServiceHeader@1003 : Record 5900;
+      ServiceLine@1002 : Record 5902;
+      ServiceInvoiceHeader@1007 : Record 5992;
+      ServiceDocumentLog@1008 : Record 5912;
+    BEGIN
+      // Test Service Document Log created after Posting Service Invoice.
+
+      // 1. Setup: Create Service Header with Document Type Invoice and Service Line of Type Item.
+      Initialize;
+      LibraryService.FindCustomer(Customer);
+      LibraryService.FindItem(Item);
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::Invoice,Customer."No.");
+      LibraryService.CreateServiceLine(ServiceLine,ServiceHeader,ServiceLine.Type::Item,Item."No.");
+      ServiceLine.VALIDATE(Quantity,RANDOM(10));  // Use Randon because value is not important.
+      ServiceLine.MODIFY(TRUE);
+
+      // 2. Exercise: Post Service Invoice.
+      LibraryService.PostServiceOrder(ServiceHeader,FALSE,FALSE,FALSE);
+
+      // 3. Verify: Verify Service document Log for Posted Service Invoice.
+      // The value 22, 20 is the event number for Service Invoice and Posted Invoice Creation.
+      ServiceInvoiceHeader.SETRANGE("Pre-Assigned No.",ServiceHeader."No.");
+      ServiceInvoiceHeader.FINDFIRST;
+      VerifyServiceDocumentLogEntry(ServiceInvoiceHeader."No.",ServiceDocumentLog."Document Type"::"Posted Invoice",22);
+      VerifyServiceDocumentLogEntry(ServiceHeader."No.",ServiceDocumentLog."Document Type"::Invoice,20);
+    END;
+
+    [Test]
+    PROCEDURE DocumentLogCreditMemoCreation@94();
+    VAR
+      Customer@1006 : Record 18;
+      ServiceHeader@1003 : Record 5900;
+      ServiceDocumentLog@1000 : Record 5912;
+    BEGIN
+      // Test Service Document Log created on creation of Service Credit Memo.
+
+      // 1. Setup:
+      Initialize;
+
+      // 2. Exercise: Create Service Header of Document Type Credit Memo.
+      LibraryService.FindCustomer(Customer);
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::"Credit Memo",Customer."No.");
+
+      // 3. Verify: Verify Service document Log for Service Credit Memo creation.
+      // The value 21 is the event number for Service Credit Memo Creation.
+      VerifyServiceDocumentLogEntry(ServiceHeader."No.",ServiceDocumentLog."Document Type"::"Credit Memo",21);
+    END;
+
+    [Test]
+    PROCEDURE DocumentLogOnCreditMemoPosting@93();
+    VAR
+      Customer@1006 : Record 18;
+      Item@1005 : Record 27;
+      ServiceHeader@1003 : Record 5900;
+      ServiceLine@1002 : Record 5902;
+      ServiceCrMemoHeader@1007 : Record 5994;
+      ServiceDocumentLog@1008 : Record 5912;
+    BEGIN
+      // Test Service Document Log created after Posting Service Credit Memo.
+
+      // 1. Setup: Create Service Header with Document Type Credit Memo and Service Line of Type Item.
+      Initialize;
+      LibraryService.FindCustomer(Customer);
+      LibraryService.FindItem(Item);
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::"Credit Memo",Customer."No.");
+      LibraryService.CreateServiceLine(ServiceLine,ServiceHeader,ServiceLine.Type::Item,Item."No.");
+      ServiceLine.VALIDATE(Quantity,RANDOM(10));  // Use Randon because value is not important.
+      ServiceLine.MODIFY(TRUE);
+
+      // 2. Exercise: Post Service Credit Memo.
+      LibraryService.PostServiceOrder(ServiceHeader,FALSE,FALSE,FALSE);
+
+      // 3. Verify: Verify Service document Log for Posted Service Credit Memo.
+      // The value 16, 21 is the event number for Service Credit Memo and Posted Credit Memo Creation.
+      ServiceCrMemoHeader.SETRANGE("Pre-Assigned No.",ServiceHeader."No.");
+      ServiceCrMemoHeader.FINDFIRST;
+      VerifyServiceDocumentLogEntry(ServiceCrMemoHeader."No.",ServiceDocumentLog."Document Type"::"Posted Credit Memo",16);
+      VerifyServiceDocumentLogEntry(ServiceHeader."No.",ServiceDocumentLog."Document Type"::"Credit Memo",21);
+    END;
+
+    [Test]
+    PROCEDURE ServiceItemLogChangeItemNo@5();
+    VAR
+      ServiceItem@1000 : Record 5940;
+      Item@1001 : Record 27;
+    BEGIN
+      // Test Service Item Log created after Item No. changed on Service Item.
+
+      // 1. Setup: Create Service Item.
+      Initialize;
+      LibraryService.CreateServiceItem(ServiceItem,'');
+
+      // 2. Exercise: Change Item No. on Service Item.
+      LibraryService.FindItem(Item);
+      ServiceItem.VALIDATE("Item No.",Item."No.");
+      ServiceItem.MODIFY(TRUE);
+
+      // 3. Verify: Verify Service Item Log for Item No. changed.
+      VerifyServiceItemLogEntry(ServiceItem."No.",13);  // The value 13 is the event number for Item No. changed.
+    END;
+
+    [Test]
+    PROCEDURE ServiceItemLogChangeSerialNo@6();
+    VAR
+      ServiceItem@1000 : Record 5940;
+      LibraryUtility@1001 : Codeunit 50206;
+    BEGIN
+      // Test Service Item Log created after Serial No. changed on Service Item.
+
+      // 1. Setup: Create Service Item.
+      Initialize;
+      LibraryService.CreateServiceItem(ServiceItem,'');
+
+      // 2. Exercise: Change Serial No. on Service Item.
+      ServiceItem.VALIDATE("Serial No.",LibraryUtility.GenerateRandomCode(ServiceItem.FIELDNO("Serial No."),DATABASE::"Service Item"));
+      ServiceItem.MODIFY(TRUE);
+
+      // 3. Verify: Verify Service Item Log for Serial No. changed.
+      VerifyServiceItemLogEntry(ServiceItem."No.",14);  // The value 14 is the event number for Serial No. changed.
+    END;
+
+    [Test]
+    PROCEDURE ServiceItemLogRenameServItem@7();
+    VAR
+      ServiceItem@1000 : Record 5940;
+      LibraryUtility@1001 : Codeunit 50206;
+    BEGIN
+      // Test Service Item Log created after Renamed Service Item.
+
+      // 1. Setup: Create Service Item.
+      Initialize;
+      LibraryService.CreateServiceItem(ServiceItem,'');
+
+      // 2. Exercise: Rename Service Item.
+      ServiceItem.RENAME(LibraryUtility.GenerateRandomCode(ServiceItem.FIELDNO("No."),DATABASE::"Service Item"));
+
+      // 3. Verify: Verify Service Item Log for Rename Service Item.
+      VerifyServiceItemLogEntry(ServiceItem."No.",18);  // The value 18 is the event number for Rename Service Item.
+    END;
+
+    [Test]
+    PROCEDURE ServiceItemLogChangeStatus@50();
+    VAR
+      ServiceItem@1000 : Record 5940;
+    BEGIN
+      // Test Service Item Log created after Renamed Service Item.
+
+      // 1. Setup: Create Service Item.
+      Initialize;
+      LibraryService.CreateServiceItem(ServiceItem,'');
+
+      // 2. Exercise: Change Status on Service Item.
+      ServiceItem.VALIDATE(Status,ServiceItem.Status::Installed);
+      ServiceItem.MODIFY(TRUE);
+
+      // 3. Verify: Verify Service Item Log for Status Change of Service Item.
+      VerifyServiceItemLogEntry(ServiceItem."No.",8);  // The value 8 is the event number for Status Changed.
+    END;
+
+    [Test]
+    [HandlerFunctions(ConfirmHandler)]
+    PROCEDURE ItemWithSkillCode@99();
+    VAR
+      ResourceSkill@1001 : Record 5956;
+      Item@1006 : Record 27;
+      Customer@1003 : Record 18;
+      SalesHeader@1004 : Record 36;
+      Currency@1008 : Record 4;
+      SalesInvoiceHeader@1012 : Record 112;
+      ValueEntry@1011 : Record 5802;
+      LibrarySCM@1009 : Codeunit 50210;
+      Quantity@1010 : Decimal;
+      ServiceItemGroupCode@1002 : Code[10];
+    BEGIN
+      // Test Value Entry after Posting Sales Invoice.
+
+      // 1. Setup: Create Service Item Group with Skill and a new Item. Attach Service Item Group to  Item, Create Sales Header with
+      // Currency Code and Sales Line.
+      Initialize;
+      CreateServiceItemGrpWithSkill(ServiceItemGroupCode,ResourceSkill);
+      LibrarySCM.CreateItem(Item);
+      Item.VALIDATE("Service Item Group",ServiceItemGroupCode);
+      Item.MODIFY(TRUE);
+
+      LibraryService.FindCustomer(Customer);
+      Currency.NEXT(RANDOM(Currency.COUNT));
+      LibrarySCM.CreateSalesHeader(SalesHeader,SalesHeader."Document Type"::Invoice,Customer."No.");
+      SalesHeader.VALIDATE("Currency Code",Currency.Code);
+      SalesHeader.MODIFY(TRUE);
+      CreateSalesLine(Quantity,SalesHeader,Item."No.");
+
+      // 2. Exercise: Post Sales Invoice.
+      LibrarySCM.PostSalesHeader(SalesHeader,FALSE,FALSE);
+
+      // 3. Verify: Verify Value Entry after Posting Sales Invoice.
+      SalesInvoiceHeader.SETRANGE("Pre-Assigned No.",SalesHeader."No.");
+      SalesInvoiceHeader.FINDFIRST;
+      VerifyValueEntry(ValueEntry."Document Type"::"Sales Invoice",SalesInvoiceHeader."No.",Item."No.",Quantity);
+    END;
+
+    [Test]
+    PROCEDURE ServiceOrderNoSeries@37();
+    VAR
+      ServiceMgtSetup@1000 : Record 5911;
+      ServiceHeader@1002 : Record 5900;
+      Customer@1003 : Record 18;
+      LibraryUtility@1004 : Codeunit 50206;
+      NoSeriesManagement@1005 : Codeunit 396;
+      NextServiceOrderNo@1001 : Code[20];
+    BEGIN
+      // Test Service Order No is incremented automatically as per the setup.
+
+      // 1. Setup: Get next Service Order No from No Series.
+      ServiceMgtSetup.GET;
+      IF ServiceMgtSetup."Service Order Nos." = '' THEN
+        ServiceMgtSetup."Service Order Nos." := LibraryUtility.GetNoSeriesCode;
+      NextServiceOrderNo := NoSeriesManagement.GetNextNo(ServiceMgtSetup."Service Order Nos.",WORKDATE,FALSE);
+
+      // 2. Exercise: Find Customer and Create new Service Order.
+      LibraryService.FindCustomer(Customer);
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::Order,Customer."No.");
+
+      // 3. Verify: Check that the Service Order No is not incremented automatically as per the setup.
+      ServiceHeader.TESTFIELD("No.",NextServiceOrderNo);
+    END;
+
+    [Test]
+    PROCEDURE CustomerInformationOnHeader@23();
+    VAR
+      ServiceHeader@1000 : Record 5900;
+      Customer@1001 : Record 18;
+    BEGIN
+      // Test the Customer information on Service Order.
+
+      // Setup:
+      Initialize;
+
+      // Exercise: Find Customer and Create Service Header.
+      LibraryService.FindCustomer(Customer);
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::Order,Customer."No.");
+
+      // Verify: Verifying the Customer.
+      VerifyCustomer(ServiceHeader);
+    END;
+
+    [Test]
+    PROCEDURE ServiceItemInformationOnLine@19();
+    VAR
+      Customer@1003 : Record 18;
+      ServiceHeader@1002 : Record 5900;
+      ServiceItem@1000 : Record 5940;
+      ServiceItemLine@1001 : Record 5901;
+    BEGIN
+      // Test the Service Item details on Service Item Line.
+
+      // Setup:
+      Initialize;
+
+      // Exercise: Find Customer, create Service Header, create Service Item, create Service Item Line.
+      LibraryService.FindCustomer(Customer);
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::Order,Customer."No.");
+      LibraryService.CreateServiceItem(ServiceItem,Customer."No.");
+      LibraryService.CreateServiceItemLine(ServiceItemLine,ServiceHeader,ServiceItem."No.");
+
+      // Verify: Verify the Service Item Details.
+      VerifyServiceItemLine(ServiceItemLine);
+    END;
+
+    LOCAL PROCEDURE ServMgtSetupForContractValCalc@64(ContractValueCalcMethod@1000 : 'None,Based on Unit Price,Based on Unit Cost';ContractValuePercentage@1001 : Decimal);
+    VAR
+      ServiceMgtSetup@1102601000 : Record 5911;
+    BEGIN
+      // Setup the fields Contract Value Calc. Method and Contract Value % of the Service Management Setup.
+      ServiceMgtSetup.GET;
+      ServiceMgtSetup.VALIDATE("Contract Value Calc. Method",ContractValueCalcMethod);
+      ServiceMgtSetup.VALIDATE("Contract Value %",ContractValuePercentage);
+      ServiceMgtSetup.MODIFY(TRUE);
+    END;
+
+    LOCAL PROCEDURE CreateSalesHeader@22(VAR SalesHeader@1000 : Record 36);
+    VAR
+      Customer@1002 : Record 18;
+      LibrarySCM@1001 : Codeunit 50210;
+    BEGIN
+      // Create Sales Header with any Customer.
+      Customer.FINDFIRST;
+      Customer.VALIDATE("Location Code",'');
+      Customer.MODIFY(TRUE);
+      LibrarySCM.CreateSalesHeader(SalesHeader,SalesHeader."Document Type"::Order,Customer."No.");
+    END;
+
+    LOCAL PROCEDURE CreateSalesLine@25(VAR Quantity@1004 : Decimal;SalesHeader@1000 : Record 36;ItemNo@1001 : Code[20]);
+    VAR
+      SalesLine@1003 : Record 37;
+      LibrarySCM@1002 : Codeunit 50210;
+    BEGIN
+      // Create Sales Line with any random Quantity.
+      Quantity := RANDOM(10);
+      LibrarySCM.CreateSalesLine(SalesHeader,SalesLine,SalesLine.Type::Item,ItemNo,Quantity);
+    END;
+
+    LOCAL PROCEDURE CreateServiceItem@1102601003(VAR ServiceItem@1102601000 : Record 5940);
+    VAR
+      Customer@1102601001 : Record 18;
+    BEGIN
+      // Create new Service Item with random Customer.
+      Customer.FINDFIRST;
+      LibraryService.CreateServiceItem(ServiceItem,Customer."No.");
+    END;
+
+    LOCAL PROCEDURE CreateServiceItemGroup@61() : Code[10];
+    VAR
+      ServiceItemGroup@1001 : Record 5904;
+    BEGIN
+      LibraryService.CreateServiceItemGroup(ServiceItemGroup);
+      EXIT(ServiceItemGroup.Code);
+    END;
+
+    LOCAL PROCEDURE CreateServiceGroupForAutoCreat@65() : Code[10];
+    VAR
+      ServiceItemGroup@1001 : Record 5904;
+    BEGIN
+      // Create Service Item Group with the field Create Service Item as TRUE, to automatically register Items as Service Items on
+      // Shipping through Sales Orders or Sales Invoices.
+      LibraryService.CreateServiceItemGroup(ServiceItemGroup);
+      ServiceItemGroup.VALIDATE("Create Service Item",TRUE);
+      ServiceItemGroup.MODIFY(TRUE);
+      EXIT(ServiceItemGroup.Code);
+    END;
+
+    LOCAL PROCEDURE CreateServiceItemGrpWithSkill@14(VAR ServiceItemGroupCode@1001 : Code[10];VAR ResourceSkill@1003 : Record 5956);
+    VAR
+      ServiceItemGroup@1004 : Record 5904;
+      LibraryResource@1000 : Codeunit 50205;
+    BEGIN
+      LibraryService.CreateServiceItemGroup(ServiceItemGroup);
+      ServiceItemGroupCode := ServiceItemGroup.Code;
+
+      // Create Skill Code and validate in the Skill Code field of the Resource Skill.
+      LibraryResource.CreateResourceSkill(ResourceSkill,ResourceSkill.Type::"Service Item Group",ServiceItemGroupCode,CreateSkillCode);
+    END;
+
+    LOCAL PROCEDURE CreateServiceItemWithAmounts@20(VAR ServiceItem@1000 : Record 5940);
+    BEGIN
+      // Create new Service Item and validate random values for Sales Unit Price, Sales Unit Cost, Default Contract Cost and Default
+      // Contract Value in the Service Item.
+      CreateServItemWithSalesUnitAmt(ServiceItem);
+      ServiceItem.VALIDATE("Default Contract Cost",RANDOM(100));
+      ServiceItem.VALIDATE("Default Contract Value",RANDOM(100));
+      ServiceItem.MODIFY(TRUE);
+    END;
+
+    LOCAL PROCEDURE CreateServItemWithSalesUnitAmt@58(VAR ServiceItem@1000 : Record 5940);
+    BEGIN
+      // Create new Service Item and validate random values for Sales Unit Price and Sales Unit Cost in the Service Item.
+      CreateServiceItem(ServiceItem);
+      ServiceItem.VALIDATE("Sales Unit Price",RANDOM(100));
+      ServiceItem.VALIDATE("Sales Unit Cost",RANDOM(100));
+      ServiceItem.MODIFY(TRUE);
+    END;
+
+    LOCAL PROCEDURE CreateServiceContractHeader@67(VAR ServiceContractHeader@1001 : Record 5965;CustomerNo@1000 : Code[20]);
+    BEGIN
+      // Create a new Prepaid Service Header.
+      LibraryService.CreateServiceContractHeader(ServiceContractHeader,ServiceContractHeader."Contract Type"::Contract,CustomerNo);
+      ServiceContractHeader.VALIDATE(Prepaid,TRUE);
+      ServiceContractHeader.MODIFY(TRUE);
+    END;
+
+    LOCAL PROCEDURE CreateServiceLineWithRandmItem@1102601005(VAR ServiceLine@1102601000 : Record 5902;VAR Item@1102601004 : Record 27;ServiceHeader@1102601001 : Record 5900;ServiceItemNo@1102601003 : Code[20]);
+    BEGIN
+      // Create Service Line with any Item and random value for Quantity.
+      Item.FINDFIRST;
+      CreateServiceLine(ServiceLine,Item."No.",ServiceHeader,ServiceItemNo);
+    END;
+
+    LOCAL PROCEDURE CreateServiceLine@33(VAR ServiceLine@1003 : Record 5902;ItemNo@1002 : Code[20];ServiceHeader@1001 : Record 5900;ServiceItemNo@1000 : Code[20]);
+    BEGIN
+      // Create Service Line with random value for Quantity.
+      LibraryService.CreateServiceLine(ServiceLine,ServiceHeader,ServiceLine.Type::Item,ItemNo);
+      ServiceLine.VALIDATE("Service Item No.",ServiceItemNo);
+      ServiceLine.VALIDATE(Quantity,RANDOM(100));
+      ServiceLine.MODIFY(TRUE);
+    END;
+
+    LOCAL PROCEDURE CreateServOrderForServItemCrea@80(VAR ServiceItemLine@1002 : Record 5901;Type@1003 : 'Item,Service Item Group');
+    VAR
+      Item@1004 : Record 27;
+      Customer@1000 : Record 18;
+      ServiceHeader@1001 : Record 5900;
+    BEGIN
+      Customer.FINDFIRST;
+
+      LibraryService.CreateServiceHeader(ServiceHeader,ServiceHeader."Document Type"::Order,Customer."No.");
+      LibraryService.CreateServiceItemLine(ServiceItemLine,ServiceHeader,'');
+
+      IF Type = Type::Item THEN BEGIN
+        Item.FINDFIRST;
+        ServiceItemLine.VALIDATE("Item No.",Item."No.")
+      END ELSE
+        ServiceItemLine.VALIDATE("Service Item Group Code",CreateServiceItemGroup);
+
+      // Validate Description as Primary Key since the value is not important.
+      IF ServiceItemLine.Description = '' THEN
+        ServiceItemLine.VALIDATE(
+          Description,FORMAT(ServiceItemLine."Document Type") + ServiceItemLine."Document No." + FORMAT(ServiceItemLine."Line No."));
+      ServiceItemLine.MODIFY(TRUE);
+    END;
+
+    LOCAL PROCEDURE CreateSkillCode@24() : Code[10];
+    VAR
+      SkillCode@1000 : Record 5955;
+      LibraryResource@1001 : Codeunit 50205;
+    BEGIN
+      LibraryResource.CreateSkillCode(SkillCode);
+      EXIT(SkillCode.Code);
+    END;
+
+    LOCAL PROCEDURE GetRefinedUnitCost@1102601008(Item@1102601002 : Record 27;ServiceLineUnitCostLCY@1000 : Decimal) : Decimal;
+    BEGIN
+      // Find Unit Cost applicable for Service Line.
+      IF Item."Costing Method" = Item."Costing Method"::Standard THEN
+        EXIT(Item."Unit Cost");
+      EXIT(ServiceLineUnitCostLCY);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE VerifyCustomer@39(ServiceHeader@1000 : Record 5900);
+    VAR
+      Customer@1001 : Record 18;
+    BEGIN
+      Customer.GET(ServiceHeader."Customer No.");
+      ServiceHeader.TESTFIELD(Name,Customer.Name);
+      ServiceHeader.TESTFIELD(Address,Customer.Address);
+      ServiceHeader.TESTFIELD(City,Customer.City);
+      ServiceHeader.TESTFIELD("Post Code",Customer."Post Code");
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE VerifyServiceItemLine@51(ServiceItemLine@1000 : Record 5901);
+    VAR
+      ServiceItem@1002 : Record 5940;
+    BEGIN
+      ServiceItem.GET(ServiceItemLine."Service Item No.");
+      ServiceItemLine.TESTFIELD(Priority,ServiceItem.Priority);
+      ServiceItemLine.TESTFIELD("Response Time (Hours)",ServiceItem."Response Time (Hours)");
+      ServiceItemLine.TESTFIELD("Service Item Group Code",ServiceItem."Service Item Group Code");
+    END;
+
+    LOCAL PROCEDURE VerifyServiceItemStatistics@1102601016(ServiceLine@1102601001 : Record 5902;ServiceItem@1102601000 : Record 5940);
+    BEGIN
+      // Verify and match the values in Service Item with the values in the Service Line.
+      ServiceItem.SETRANGE("Type Filter",ServiceItem."Type Filter"::Item);
+      ServiceItem.CALCFIELDS("Total Quantity","Total Qty. Invoiced","Total Qty. Consumed");
+      ServiceItem.TESTFIELD("Total Quantity",ServiceLine.Quantity);
+      ServiceItem.TESTFIELD("Total Qty. Invoiced",ServiceLine."Qty. to Invoice");
+      ServiceItem.TESTFIELD("Total Qty. Consumed",0);
+    END;
+
+    LOCAL PROCEDURE VerifyServiceItemTrendscape@1102601020(Item@1102601003 : Record 27;ServiceLine@1102601001 : Record 5902;ServiceItem@1102601000 : Record 5940);
+    VAR
+      Currency@1102601002 : Record 4;
+    BEGIN
+      // Verify that the value of the Parts Used field in the Service item is the product of the Unit Cost applicable and the Quantity in
+      // the Service Line.
+      IF ServiceLine."Currency Code" = '' THEN
+        Currency.InitRoundingPrecision
+      ELSE
+        Currency.GET(ServiceLine."Currency Code");
+
+      ServiceItem.SETRANGE("Type Filter",ServiceItem."Type Filter"::Item);
+      ServiceItem.CALCFIELDS("Parts Used");
+      // Use GetRefinedCost to find the correct Unit Cost applicable.
+      ServiceItem.TESTFIELD("Parts Used",
+        ROUND(GetRefinedUnitCost(Item,ServiceLine."Unit Cost (LCY)") * ServiceLine.Quantity,Currency."Amount Rounding Precision"));
+    END;
+
+    LOCAL PROCEDURE VerifySkillCodeDeletion@12(ResourceSkill@1000 : Record 5956);
+    VAR
+      Assert@1001 : Codeunit 50200;
+    BEGIN
+      // Check that the Resource Skill attached to the Service Item earlier has been deleted.
+      Assert.IsFalse(
+        ResourceSkill.GET(ResourceSkill.Type::Item,ResourceSkill."No.",ResourceSkill."Skill Code"),
+        STRSUBSTNO(RecordExistsError,ResourceSkill.TABLECAPTION,FORMAT(ResourceSkill)));
+    END;
+
+    LOCAL PROCEDURE VerifyNoOfReplacedComponents@35(ServiceItemComponent@1000 : Record 5941;NumberofLinesReplaced@1001 : Integer);
+    VAR
+      ServiceItemComponent2@1002 : Record 5941;
+      Assert@1003 : Codeunit 50200;
+    BEGIN
+      // Verify number of replaced Service Item Components.
+      ServiceItemComponent2.SETRANGE(Active,FALSE);
+      ServiceItemComponent2.SETRANGE("Parent Service Item No.",ServiceItemComponent."Parent Service Item No.");
+      ServiceItemComponent2.SETRANGE("From Line No.",ServiceItemComponent."Line No.");
+      Assert.AreEqual(NumberofLinesReplaced,ServiceItemComponent2.COUNT,
+        STRSUBSTNO(ServiceItemReplacedError,ServiceItemComponent.TABLECAPTION,
+          NumberofLinesReplaced,ServiceItemComponent.FIELDCAPTION("Parent Service Item No."),
+          ServiceItemComponent."Parent Service Item No.",ServiceItemComponent.FIELDCAPTION("Line No."),ServiceItemComponent."Line No."))
+      ;
+    END;
+
+    LOCAL PROCEDURE VerifyServLineWithServShptLine@52(ServiceLine@1000 : Record 5902);
+    VAR
+      ServiceShipmentLine@1001 : Record 5991;
+    BEGIN
+      // Verify that the values in the Service Line flow correctly as the values in the Service Shipment Line after Posting.
+      ServiceShipmentLine.SETRANGE("Order No.",ServiceLine."Document No.");
+      ServiceShipmentLine.SETRANGE("Order Line No.",ServiceLine."Line No.");
+      ServiceShipmentLine.FINDFIRST;
+      ServiceShipmentLine.TESTFIELD(Type,ServiceLine.Type);
+      ServiceShipmentLine.TESTFIELD("No.",ServiceLine."No.");
+      ServiceShipmentLine.TESTFIELD(Quantity,ServiceLine.Quantity);
+    END;
+
+    LOCAL PROCEDURE VerifyServiceDocumentLogEntry@4(OrderNo@1000 : Code[20];DocumentType@1003 : Option;EventNo@1002 : Integer);
+    VAR
+      ServiceDocumentLog@1001 : Record 5912;
+    BEGIN
+      // Verify Service Document Log entry contains the Event No. that corresponds to the event that occured due to a certain action.
+      ServiceDocumentLog.SETRANGE("Document Type",DocumentType);
+      ServiceDocumentLog.SETRANGE("Document No.",OrderNo);
+      ServiceDocumentLog.FINDFIRST;
+      ServiceDocumentLog.TESTFIELD("Event No.",EventNo);
+    END;
+
+    LOCAL PROCEDURE VerifyServiceItemLogEntry@63(ServiceItemNo@1000 : Code[20];EventNo@1002 : Integer);
+    VAR
+      ServiceItemLog@1001 : Record 5942;
+    BEGIN
+      // Verify Service Item Log entry contains the Event No. that corresponds to the event that occured due to a certain action.
+      ServiceItemLog.SETRANGE("Service Item No.",ServiceItemNo);
+      ServiceItemLog.FINDLAST;
+      ServiceItemLog.TESTFIELD("Event No.",EventNo);
+    END;
+
+    LOCAL PROCEDURE VerifyValueEntry@141(DocumentType@1000 : Option;DocumentNo@1001 : Code[20];ItemNo@1002 : Code[20];Quantity@1003 : Decimal);
+    VAR
+      ValueEntry@1004 : Record 5802;
+    BEGIN
+      ValueEntry.SETRANGE("Item Ledger Entry Type",ValueEntry."Item Ledger Entry Type"::Sale);
+      ValueEntry.SETRANGE("Document Type",DocumentType);
+      ValueEntry.SETRANGE("Document No.",DocumentNo);
+      ValueEntry.FINDFIRST;
+      ValueEntry.TESTFIELD("Item No.",ItemNo);
+      ValueEntry.TESTFIELD("Valued Quantity",-Quantity);
+      ValueEntry.TESTFIELD("Invoiced Quantity",-Quantity);
+    END;
+
+    [ConfirmHandler]
+    PROCEDURE ConfirmHandler@3(Question@1000 : Text[1024];VAR Reply@1001 : Boolean);
+    BEGIN
+      // Confirm as TRUE.
+      Reply := TRUE;
+    END;
+
+    [ConfirmHandler]
+    PROCEDURE ConfirmHandlerFalse@27(Question@1001 : Text[1024];VAR Reply@1000 : Boolean);
+    BEGIN
+      // Confirm as FALSE.
+      Reply := FALSE;
+    END;
+
+    [StrMenuHandler]
+    PROCEDURE StrMenuHandler@8(Options@1000 : Text[1024];VAR Choice@1001 : Integer;Instruction@1002 : Text[1024]);
+    BEGIN
+      // Choose the first option of the string menu.
+      Choice := 1;
+    END;
+
+    [MessageHandler]
+    PROCEDURE MessageHandler@9(Msg@1000 : Text[1024]);
+    BEGIN
+      // Handle message that are generated.
+    END;
+
+    BEGIN
+    {
+      Test for CRM Service Items:
+        1. Test handling of Service Items created - manually, from the service order or automatically when shipping sold items.
+        2. Test assignment of Troubleshooting directly to a Service Item, to an Item linked to a Service Item and to a Service Item Group.
+        3. Test the creation of the Service Item Component List for Service Items.
+        4. Test Service Item Statistics for Service Items.
+        5. Test the detailed account of Service Item Transactions by Time Intervals in the Service Item Trendscape window.
+        6. Test that the events that happened to Service Items are logged in the Service Item Log.
+        7. Test the list of Contracts which include selected Service Item using the corresponding function in the Related
+           Information menu.
+        8. Test the list of service orders and shipments which include selected service item using the corresponding functions in the
+           Related Information menu.
+        9. Test calculation of Default Contract Value of service items in the Contract Value Calc. Method field in Service Setup.
+       10. Test Service Item Log on create and Rename of Service Item.
+       11. Test Service Document Log after Creation and Posting of Service Invoice.
+       12. Test Service Document Log after Creation and Posting of Service Credit Memo.
+       13. Test Service Document Log after Creation of Service Quote.
+       14. Test Item Ledger Entry and Value Entry after Posting Service Order with Replace Component and New Component.
+       15. Test Value Entry after Posting Sales Invoice with Item having assigned Skill Code.
+       16. Test the creation of Service Order.
+       17. Test The Service Item Creation by Sales Order.
+    }
+    END.
+  }
+}
+

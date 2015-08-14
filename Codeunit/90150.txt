@@ -1,0 +1,205 @@
+OBJECT Codeunit 90150 Query Hinting
+{
+  OBJECT-PROPERTIES
+  {
+    Date=13.01.12;
+    Time=12:00:00;
+    Version List=SSI/PTB#QH1.04;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      ExecSQLCMD@1000000005 : Codeunit 90101;
+      QueryHint@1000000002 : Record 90151;
+      QueryHintIdx@1000000001 : Record 90152;
+      Company@1000000004 : Record 2000000006;
+      OutputFile@1000000003 : File;
+      Window@1000000000 : Dialog;
+
+    PROCEDURE SyncObjects@1000000000();
+    VAR
+      Object@1000000000 : Record 2000000001;
+      Key@1000000002 : Record 2000000063;
+    BEGIN
+      Window.OPEN('Synchronizing Objects ...');
+
+      IF QueryHint.FINDSET THEN BEGIN
+        REPEAT
+          IF NOT Object.GET(Object.Type::Table, '', QueryHint."Table ID") THEN
+            QueryHint.DELETE;
+        UNTIL QueryHint.NEXT = 0;
+        COMMIT;
+      END;
+
+      Object.SETRANGE(Type, Object.Type::Table);
+      Object.SETRANGE("Company Name", '');
+      IF Object.FINDSET THEN BEGIN
+        REPEAT
+          IF NOT QueryHint.GET(Object.ID) THEN BEGIN
+            QueryHint.INIT;
+            QueryHint."Table ID" := Object.ID;
+            QueryHint.INSERT;
+          END;
+        UNTIL Object.NEXT = 0;
+        COMMIT;
+      END;
+
+      IF QueryHintIdx.FINDSET THEN BEGIN
+        REPEAT
+          IF NOT Key.GET(QueryHintIdx."Table ID", QueryHintIdx."Key ID") THEN
+            QueryHintIdx.DELETE;
+        UNTIL QueryHintIdx.NEXT = 0;
+        COMMIT;
+      END;
+
+      IF Key.FINDSET THEN BEGIN
+        REPEAT
+          IF NOT QueryHintIdx.GET(Key.TableNo, Key."No.") THEN BEGIN
+            QueryHintIdx.INIT;
+            QueryHintIdx."Table ID" := Key.TableNo;
+            QueryHintIdx."Key ID" := Key."No.";
+            QueryHintIdx.INSERT;
+          END;
+          COMMIT;
+        UNTIL Key.NEXT = 0;
+      END;
+
+      Window.CLOSE;
+    END;
+
+    PROCEDURE GenTSQLHintRECOMPILE@1000000001(OutputFileName@1000000000 : Text[1024]);
+    BEGIN
+      IF OutputFileName = '' THEN
+        ERROR('TSQL Output-File must be specified.');
+
+      QueryHint.RESET;
+      QueryHint.SETRANGE(Recompile, TRUE);
+      IF QueryHint.FINDSET THEN BEGIN
+        OutputFile.WRITEMODE(TRUE);
+        OutputFile.TEXTMODE(TRUE);
+        OutputFile.QUERYREPLACE(TRUE);
+        OutputFile.CREATE(OutputFileName);
+
+        OutputFile.WRITE('/*********************************************************/');
+        OutputFile.WRITE('/***              STRYK System Improvement             ***/');
+        OutputFile.WRITE('/***    Performance Optimization & Troubleshooting     ***/');
+        OutputFile.WRITE('/***  (c) 2008, STRYK System Improvement, J”rg Stryk   ***/');
+        OutputFile.WRITE('/***                   www.stryk.info                  ***/');
+        OutputFile.WRITE('/*********************************************************/');
+        OutputFile.WRITE('');
+        OutputFile.WRITE('USE [' + ExecSQLCMD.GetCurrentDatabase() + ']');
+        OutputFile.WRITE('GO');
+        OutputFile.WRITE('');
+        OutputFile.WRITE('/* RECOMPILE HINTS */');
+        OutputFile.WRITE('');
+
+        REPEAT
+          QueryHint.CALCFIELDS("Table Name");
+          OutputFile.WRITE('-- Table ' + FORMAT(QueryHint."Table ID") + '"' + QueryHint."Table Name" + '"');
+          IF Company.FINDSET THEN
+            REPEAT
+              OutputFile.WRITE(
+                'INSERT INTO [$ndo$dbconfig] ' +
+                'VALUES(''UseRecompileForTable="' + QueryHint."Table Name" + '"; Company="' + Company.Name + '"; ' +
+                'RecompileMode=' + FORMAT(QueryHint."Recompile Mode", 0, '<Number>') + ';'')');
+            UNTIL Company.NEXT = 0;
+          OutputFile.WRITE('');
+        UNTIL QueryHint.NEXT = 0;
+
+        OutputFile.WRITE('/* Finished. */');
+      END;
+      OutputFile.CLOSE;
+
+      IF GUIALLOWED AND (OutputFileName <> '') AND EXISTS(OutputFileName) THEN
+        ExecSQLCMD.RunCommand(STRSUBSTNO('notepad.exe %1', OutputFileName), 1, FALSE);
+    END;
+
+    PROCEDURE GenTSQLHintINDEX@1000000002(OutputFileName@1000000000 : Text[1024]);
+    BEGIN
+      IF OutputFileName = '' THEN
+        ERROR('TSQL Output-File must be specified.');
+
+      QueryHintIdx.RESET;
+      QueryHintIdx.SETRANGE("Index Hint", TRUE);
+      IF QueryHintIdx.FINDSET THEN BEGIN
+        OutputFile.WRITEMODE(TRUE);
+        OutputFile.TEXTMODE(TRUE);
+        OutputFile.QUERYREPLACE(TRUE);
+        OutputFile.CREATE(OutputFileName);
+
+        OutputFile.WRITE('/*********************************************************/');
+        OutputFile.WRITE('/***              STRYK System Improvement             ***/');
+        OutputFile.WRITE('/***    Performance Optimization & Troubleshooting     ***/');
+        OutputFile.WRITE('/***  (c) 2008, STRYK System Improvement, J”rg Stryk   ***/');
+        OutputFile.WRITE('/***                   www.stryk.info                  ***/');
+        OutputFile.WRITE('/*********************************************************/');
+        OutputFile.WRITE('');
+        OutputFile.WRITE('USE [' + ExecSQLCMD.GetCurrentDatabase() + ']');
+        OutputFile.WRITE('GO');
+        OutputFile.WRITE('');
+        OutputFile.WRITE('/* INDEX HINTS */');
+        OutputFile.WRITE('');
+
+        REPEAT
+          QueryHint.GET(QueryHintIdx."Table ID");
+          QueryHint.CALCFIELDS("Table Name");
+          QueryHintIdx.CALCFIELDS("Key Fields");
+          OutputFile.WRITE('-- Table ' + FORMAT(QueryHint."Table ID") + '"' + QueryHint."Table Name" + '"');
+          IF Company.FINDSET THEN
+            REPEAT
+              IF QueryHintIdx."Search Method" <> '' THEN
+                QueryHintIdx."Search Method" := '"' + QueryHintIdx."Search Method" + '"';
+              OutputFile.WRITE(
+                'INSERT INTO [$ndo$dbconfig] ' +
+                'VALUES(''IndexHint=Yes; Company="' + Company.Name + '"; Table="' + QueryHint."Table Name" + '"; ' +
+                'Key=' + CreateKeyString(QueryHintIdx."Key Fields") + '; ' +
+                'Search Method=' + QueryHintIdx."Search Method" + '; ' +
+                'Index='')');
+            UNTIL Company.NEXT = 0;
+          OutputFile.WRITE('');
+        UNTIL QueryHintIdx.NEXT = 0;
+
+        OutputFile.WRITE('/* Finished. */');
+      END;
+      OutputFile.CLOSE;
+
+      IF GUIALLOWED AND (OutputFileName <> '') AND EXISTS(OutputFileName) THEN
+        ExecSQLCMD.RunCommand(STRSUBSTNO('notepad.exe %1', OutputFileName), 1, FALSE);
+    END;
+
+    LOCAL PROCEDURE CreateKeyString@1000000003(KeyFields@1000000000 : Text[250]) KeyString : Text[1024];
+    BEGIN
+      IF KeyFields = '' THEN
+        EXIT('');
+
+      KeyFields := KeyFields + ',';
+      KeyString := '';
+
+      WHILE STRLEN(KeyFields) > 0 DO BEGIN
+        KeyString := KeyString + '"' + COPYSTR(KeyFields, 1, STRPOS(KeyFields, ',') - 1) + '",';
+        KeyFields := DELSTR(KeyFields, 1, STRPOS(KeyFields, ','));
+      END;
+
+      KeyString := COPYSTR(KeyString, 1, STRLEN(KeyString) - 1);
+      EXIT(KeyString);
+    END;
+
+    BEGIN
+    {
+      *********************************************************
+      ***              STRYK System Improvement             ***
+      ***    Performance Optimization & Troubleshooting     ***
+      ***  (c) 2008, STRYK System Improvement, J”rg Stryk   ***
+      ***               Contact: www.stryk.info             ***
+      *********************************************************
+    }
+    END.
+  }
+}
+

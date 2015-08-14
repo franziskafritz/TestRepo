@@ -1,0 +1,1606 @@
+OBJECT Codeunit 50306 Whse. LF Purch. Interface Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=17.04.15;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=HME2158;
+  }
+  PROPERTIES
+  {
+    TableNo=50303;
+    OnRun=BEGIN
+            CASE "Record Type" OF
+              'WEM':
+                BEGIN
+                  ProcessWEMLine(Rec);
+                END;
+              'PSE':
+                BEGIN
+                  ProcessPSELine(Rec);
+                END;
+              'WMP':
+                BEGIN
+                  ProcessWMPLine(Rec);
+                END;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      HMETxt001@1000000008 : TextConst 'ENU=No sellable Location could be found for Branch Code %1';
+      HMETxt002@1000000007 : TextConst 'ENU=No unsellable Location could be found for Branch Code %1';
+      HMETxt003@1000000012 : TextConst 'DEU=WEA Cancel successfully created.;ENU=WEA Cancel successfully created.';
+      HMETxt004@1000000011 : TextConst 'DEU=WEA Update successfully created.;ENU=WEA Update successfully created.';
+      HMETxt005@1000000010 : TextConst 'DEU=WEA successfully created.;ENU=WEA successfully created.';
+      HMETxt006@1000000009 : TextConst 'DEU=No WEA needed.;ENU=No WEA needed.';
+      HMETxt007@1000000000 : TextConst 'DEU=Unterlieferung in %1 vorhanden: %2, %3 (offene Menge: %4, gelieferte Menge: %5)!;ENU=Underdelivery exists for %1: %2, %3 (Outstanding Qty.: %4, Qty. received: %5)!';
+      HMETxt008@1000000001 : TextConst 'DEU=öberlieferung in %1 vorhanden: %2, %3 (offene Menge: %4, gelieferte Menge: %5)!;ENU=Overdelivery exists for %1: %2, %3 (Outstanding Qty.: %4, Qty. received: %5)!';
+      HMETxt009@1000000002 : TextConst 'DEU=Es wurde keine %1 zu %2, %3 gefunden!;ENU=No %1 for %2, %3 found!';
+      HMETxt010@1000000003 : TextConst 'DEU=Eintrag %1: Teilabschluss vorhanden (%2, %3)!;ENU=Entry No. %1: Partially Completed (%2, %3)!';
+      HMETxt011@1000000004 : TextConst 'DEU=%1 %2 konnte nicht gefunden werden!;ENU=%1 %2 not found!';
+      HMETxt012@1000000005 : TextConst 'DEU=Eintrag %1: BeschÑdigte Menge (%2 StÅck) vorhanden (%3, %4)!;ENU=Entry No. %1: Damaged items (%2 pieces) exist (%3, %4)!';
+
+    PROCEDURE TriggerWhseLFInterface@1000000000(PurchaseLineV@1000000000 : Record 39;EntryTypeV@1000000003 : 'New,Cancel,Update') : Text[100];
+    VAR
+      IsWhseLFPositionL@1000000001 : Boolean;
+      WasAlreadyInInterfaceL@1000000002 : Boolean;
+    BEGIN
+      // Check if Purchase Lines have WH24 Positions
+      IsWhseLFPositionL := CheckForWhseLFPosition(PurchaseLineV);
+      // Check if Line was alredy in Interface
+      WasAlreadyInInterfaceL := CheckIfAlreadyInInterface(PurchaseLineV);
+
+      IF IsWhseLFPositionL THEN BEGIN
+        IF WasAlreadyInInterfaceL THEN BEGIN
+          IF EntryTypeV = EntryTypeV::Cancel THEN BEGIN
+            FillNewOrderForPOLine(PurchaseLineV,EntryTypeV::Cancel);
+            EXIT(HMETxt003);
+          END ELSE BEGIN
+            IF FillNewOrderForPOLine(PurchaseLineV,EntryTypeV::Update) THEN
+              EXIT(HMETxt004)
+            ELSE
+              EXIT(HMETxt006);
+          END;
+        END ELSE BEGIN
+          IF EntryTypeV = EntryTypeV::New THEN BEGIN
+            //H2146 07.04.15 EHN +++++++++++++++++++++++++++
+            IF FillNewOrderForPOLine(PurchaseLineV,EntryTypeV) THEN BEGIN
+              CancelOldOrderForPOLine(PurchaseLineV);
+              EXIT(HMETxt005);
+            END;
+            //H2146 07.04.15 EHN ---------------------------
+          END;
+        END;
+      END;
+
+      // If no more WH24 Positions and Order was in Interface Cancel Transmission oder Insert Cancel Records
+      IF NOT IsWhseLFPositionL AND WasAlreadyInInterfaceL THEN BEGIN
+        FillNewOrderForPOLine(PurchaseLineV,EntryTypeV::Cancel);
+        EXIT(HMETxt003);
+      END;
+
+      EXIT(HMETxt006);
+    END;
+
+    PROCEDURE FillNewOrderForPOLine@1000000015(PurchaseLineV@1000000002 : Record 39;EntryTypeV@1000000003 : 'New,Cancel,Update') : Boolean;
+    VAR
+      WhseLFPurchExportHeaderL@1000000000 : Record 50301;
+      WhseLFPurchExportHeader2L@1000000006 : Record 50301;
+      WhseLFPurchExportLineL@1000000008 : Record 50302;
+      PurchaseHeaderL@1000000001 : Record 38;
+      WhseLFSetupL@1000000004 : Record 50300;
+      ItemL@1000000005 : Record 27;
+      WhseLFSalesExportHeaderL@1000000010 : Record 50304;
+      WhseLFSalesExportLineL@1000000009 : Record 50305;
+      WhseLFSalesExportLine2L@1000000011 : Record 50305;
+      IsUpdateNeccessaryL@1000000007 : Boolean;
+      WhseH24IDL@1000000012 : Code[10];
+      WhseH24BranchL@1000000013 : Code[10];
+    BEGIN
+      PurchaseHeaderL.GET(PurchaseLineV."Document Type",PurchaseLineV."Document No.");
+      WhseLFSetupL.GET;
+      WhseLFSetupL.TESTFIELD("Record Type WEA");
+
+      //H2146 17.02.15 EHN ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      GetBrachCodeFromPurchasingCode(PurchaseLineV."Purchasing Code",WhseH24IDL,WhseH24BranchL);
+      IF (WhseH24IDL = '') OR (WhseH24BranchL = '') THEN
+        GetBranchCodeFromLocationCode(PurchaseLineV."Location Code",WhseH24IDL,WhseH24BranchL);
+
+      IsUpdateNeccessaryL := IsUpdateEntry(PurchaseLineV,WhseH24IDL,WhseH24BranchL);
+      //H2146 17.02.15 EHN --------------------------------------------------------------
+
+      IF (EntryTypeV = EntryTypeV::Update) AND (NOT IsUpdateNeccessaryL) THEN
+        EXIT(FALSE);
+
+      IF (EntryTypeV = EntryTypeV::Cancel) AND (PurchaseLineV."Outstanding Quantity" = 0) THEN
+        EXIT(FALSE);
+
+      //H2146 17.02.15 EHN +++++++++++++++++++++++++++++++++++++
+      WhseLFPurchExportHeaderL.RESET;
+      WhseLFPurchExportHeaderL."Entry No." := WhseLFPurchExportHeaderL.GetNextEntryNo;
+      WhseLFPurchExportHeaderL.INSERT(TRUE);
+
+      WhseLFPurchExportHeaderL."Document Type" := PurchaseHeaderL."Document Type";
+      WhseLFPurchExportHeaderL."Document No." := PurchaseHeaderL."No.";
+      WhseLFPurchExportHeaderL."Sequence No." := GetSequenceNo(PurchaseLineV,WhseH24IDL,WhseH24BranchL);
+      WhseLFPurchExportHeaderL."LF Order No." := WhseLFPurchExportHeaderL."Document No." + WhseLFPurchExportHeaderL."Sequence No.";
+      WhseLFPurchExportHeaderL."Transmission Mode" := EntryTypeV;
+      WhseLFPurchExportHeaderL."Whse. H24 Identifier Code" := WhseH24IDL;
+      WhseLFPurchExportHeaderL."Branch Code" := WhseH24BranchL;
+      WhseLFPurchExportHeaderL."Record Type" := WhseLFSetupL."Record Type WEA";
+      WhseLFPurchExportHeaderL."Insert Timestamp" := CURRENTDATETIME;
+      WhseLFPurchExportHeaderL."Process Timestamp" := 0DT;
+      WhseLFPurchExportHeaderL.Filename := '';
+      WhseLFPurchExportHeaderL.Status := WhseLFPurchExportHeaderL.Status::Unprocessed;
+      WhseLFPurchExportHeaderL.MODIFY(TRUE);
+      //H2146 17.02.15 EHN -------------------------------------
+
+      WhseLFPurchExportLineL.RESET;
+      WhseLFPurchExportLineL."Entry No." := WhseLFPurchExportHeaderL."Entry No.";
+      WhseLFPurchExportLineL."Entry Line No." := 10000;
+      //H2146 17.02.15 EHN +++++++++++++++++++++++++++++++++++++
+      WhseLFPurchExportLineL.INSERT(TRUE);
+      //H2146 17.02.15 EHN -------------------------------------
+      WhseLFPurchExportLineL."Attached to Document Type" := PurchaseLineV."Document Type";
+      WhseLFPurchExportLineL."Attached to Document No." := PurchaseLineV."Document No.";
+      WhseLFPurchExportLineL."Attached to Document Line No." := PurchaseLineV."Line No.";
+      WhseLFPurchExportLineL."Sequence No." := WhseLFPurchExportHeaderL."Sequence No.";
+      WhseLFPurchExportLineL."Record Type" := WhseLFSetupL."Record Type WEA";
+      WhseLFPurchExportLineL.Type := WhseLFPurchExportLineL.Type::Item;
+      WhseLFPurchExportLineL."Pos. No." := 1;
+      WhseLFPurchExportLineL."No." := PurchaseLineV."No.";
+      WhseLFPurchExportLineL.Description := PurchaseLineV.Description;
+      WhseLFPurchExportLineL."Attached to Pos. No." := 0;
+      WhseLFPurchExportLineL.Quantity := PurchaseLineV."Outstanding Quantity";
+      WhseLFPurchExportLineL."Location Code" := PurchaseLineV."Location Code";
+      WhseLFPurchExportLineL.Crossdock := PurchaseLineV."Special Order";
+      WhseLFPurchExportLineL."Sales Order No." := PurchaseLineV."Special Order Sales No.";
+      WhseLFPurchExportLineL."Sales Order Line No." := PurchaseLineV."Special Order Sales Line No.";
+      WhseLFPurchExportLineL."Partial Delivery" := FALSE;
+      ItemL.GET(PurchaseLineV."No.");
+      WhseLFPurchExportLineL."Unit Volume" := ItemL."Unit Volume";
+      WhseLFPurchExportLineL."Unit Weight" := ItemL."Net Weight";
+
+      WhseLFSalesExportLineL.RESET;
+      WhseLFSalesExportLineL.SETRANGE("Purchase Order No.",PurchaseLineV."Document No.");
+      WhseLFSalesExportLineL.SETRANGE(Type,WhseLFSalesExportLineL.Type::Item);
+      WhseLFSalesExportLineL.SETRANGE(Crossdock,TRUE);
+      IF WhseLFSalesExportLineL.FINDLAST THEN BEGIN
+        WhseLFSalesExportLine2L.RESET;
+        WhseLFSalesExportLine2L.SETRANGE("Entry No.",WhseLFSalesExportLineL."Entry No.");
+        WhseLFSalesExportLine2L.SETRANGE("Attached to Pos. No.",WhseLFSalesExportLineL."Pos. No.");
+        IF WhseLFSalesExportLine2L.FINDFIRST THEN
+          WhseLFPurchExportLineL.Barcode := WhseLFSalesExportLine2L.Barcode;
+        IF WhseLFSalesExportHeaderL.GET(WhseLFSalesExportLineL."Entry No.") THEN BEGIN
+          IF STRPOS(WhseLFSalesExportHeaderL."LF Order No.",WhseLFPurchExportLineL."Sales Order No.") > 0 THEN
+            WhseLFPurchExportLineL."LF Sales Order No." := WhseLFSalesExportHeaderL."LF Order No.";
+        END;
+      END ELSE BEGIN
+        WhseLFPurchExportLineL.Barcode := '';
+      END;
+
+      WhseLFPurchExportLineL."Purchasing Code" := PurchaseLineV."Purchasing Code";
+      WhseLFPurchExportLineL.Amount := PurchaseLineV."Line Amount";
+      ItemL.CALCFIELDS("Parcels Number");
+      WhseLFPurchExportLineL."No. of Packages" := ItemL."Parcels Number";
+      WhseLFPurchExportLineL."Promised Receipt Date" := PurchaseLineV."Expected Receipt Date";
+      //H2146 17.02.15 EHN +++++++++++++++++++++++++++++++++++++
+      WhseLFPurchExportLineL.MODIFY(TRUE);
+      //H2146 17.02.15 EHN -------------------------------------
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE CancelOldOrderForPOLine@1000000013(PurchaseLineV@1000000002 : Record 39);
+    VAR
+      WhseLFPurchExportHeaderL@1000000000 : Record 50301;
+      WhseLFPurchExportLineL@1000000008 : Record 50302;
+      OriginalPurchExportHeaderL@1000000006 : Record 50301;
+      OriginalPurchExportLineL@1000000003 : Record 50302;
+    BEGIN
+      //H2146 07.04.15 EHN +++++++++++++++++++++++++++++++++++++++++++++
+      OriginalPurchExportLineL.RESET;
+      OriginalPurchExportLineL.SETCURRENTKEY("Attached to Document Type","Attached to Document No.","Attached to Document Line No.");
+      OriginalPurchExportLineL.SETRANGE("Attached to Document Type",PurchaseLineV."Document Type");
+      OriginalPurchExportLineL.SETRANGE("Attached to Document No.",PurchaseLineV."Document No.");
+      OriginalPurchExportLineL.SETRANGE("Attached to Document Line No.",PurchaseLineV."Line No.");
+      OriginalPurchExportLineL.SETFILTER("Location Code",'<>%1',PurchaseLineV."Location Code");
+      IF NOT OriginalPurchExportLineL.FINDLAST THEN
+        EXIT;
+      OriginalPurchExportHeaderL.GET(OriginalPurchExportLineL."Entry No.");
+
+      WhseLFPurchExportHeaderL.RESET;
+      WhseLFPurchExportHeaderL."Entry No." := WhseLFPurchExportHeaderL.GetNextEntryNo;
+      WhseLFPurchExportHeaderL.INSERT(TRUE);
+      WhseLFPurchExportHeaderL."Document Type" := OriginalPurchExportHeaderL."Document Type";
+      WhseLFPurchExportHeaderL."Document No." := OriginalPurchExportHeaderL."Document No.";
+      WhseLFPurchExportHeaderL."Sequence No." := OriginalPurchExportHeaderL."Sequence No.";
+      WhseLFPurchExportHeaderL."LF Order No." := OriginalPurchExportHeaderL."LF Order No.";
+      WhseLFPurchExportHeaderL."Transmission Mode" := WhseLFPurchExportHeaderL."Transmission Mode"::Cancel;
+      WhseLFPurchExportHeaderL."Whse. H24 Identifier Code" := OriginalPurchExportHeaderL."Whse. H24 Identifier Code";
+      WhseLFPurchExportHeaderL."Branch Code" := OriginalPurchExportHeaderL."Branch Code";
+      WhseLFPurchExportHeaderL."Record Type" := OriginalPurchExportHeaderL."Record Type";
+      WhseLFPurchExportHeaderL."Insert Timestamp" := CURRENTDATETIME;
+      WhseLFPurchExportHeaderL."Process Timestamp" := 0DT;
+      WhseLFPurchExportHeaderL.Filename := '';
+      WhseLFPurchExportHeaderL.Status := WhseLFPurchExportHeaderL.Status::Unprocessed;
+      WhseLFPurchExportHeaderL.MODIFY(TRUE);
+
+      WhseLFPurchExportLineL.RESET;
+      WhseLFPurchExportLineL."Entry No." := WhseLFPurchExportHeaderL."Entry No.";
+      WhseLFPurchExportLineL."Entry Line No." := 10000;
+      WhseLFPurchExportLineL.INSERT(TRUE);
+      WhseLFPurchExportLineL."Attached to Document Type" := OriginalPurchExportLineL."Attached to Document Type";
+      WhseLFPurchExportLineL."Attached to Document No." := OriginalPurchExportLineL."Attached to Document No.";
+      WhseLFPurchExportLineL."Attached to Document Line No." := OriginalPurchExportLineL."Attached to Document Line No.";
+      WhseLFPurchExportLineL."Sequence No." := WhseLFPurchExportHeaderL."Sequence No.";
+      WhseLFPurchExportLineL."Record Type" := OriginalPurchExportLineL."Record Type";
+      WhseLFPurchExportLineL.Type := OriginalPurchExportLineL.Type;
+      WhseLFPurchExportLineL."Pos. No." := OriginalPurchExportLineL."Pos. No.";
+      WhseLFPurchExportLineL."No." := OriginalPurchExportLineL."No.";
+      WhseLFPurchExportLineL.Description := OriginalPurchExportLineL.Description;
+      WhseLFPurchExportLineL."Attached to Pos. No." := OriginalPurchExportLineL."Attached to Pos. No.";
+      WhseLFPurchExportLineL.Quantity := OriginalPurchExportLineL.Quantity;
+      WhseLFPurchExportLineL."Location Code" := OriginalPurchExportLineL."Location Code";
+      WhseLFPurchExportLineL.Crossdock := OriginalPurchExportLineL.Crossdock;
+      WhseLFPurchExportLineL."Sales Order No." := OriginalPurchExportLineL."Sales Order No.";
+      WhseLFPurchExportLineL."Sales Order Line No." := OriginalPurchExportLineL."Sales Order Line No.";
+      WhseLFPurchExportLineL."Partial Delivery" := OriginalPurchExportLineL."Partial Delivery";
+      WhseLFPurchExportLineL."Unit Volume" := OriginalPurchExportLineL."Unit Volume";
+      WhseLFPurchExportLineL."Unit Weight" := OriginalPurchExportLineL."Unit Weight";
+      WhseLFPurchExportLineL.Barcode := OriginalPurchExportLineL.Barcode;
+      WhseLFPurchExportLineL."LF Sales Order No." := OriginalPurchExportLineL."LF Sales Order No.";
+      WhseLFPurchExportLineL."Purchasing Code" := OriginalPurchExportLineL."Purchasing Code";
+      WhseLFPurchExportLineL.Amount := OriginalPurchExportLineL.Amount;
+      WhseLFPurchExportLineL."No. of Packages" := OriginalPurchExportLineL."No. of Packages";
+      WhseLFPurchExportLineL."Promised Receipt Date" := OriginalPurchExportLineL."Promised Receipt Date";
+      WhseLFPurchExportLineL.MODIFY(TRUE);
+      //H2146 07.04.15 EHN ---------------------------------------------
+    END;
+
+    PROCEDURE CheckForWhseLFPosition@1000000006(PurchaseLineV@1000000000 : Record 39) : Boolean;
+    VAR
+      PurchasingL@1000000001 : Record 5721;
+      LocationL@1000000002 : Record 14;
+      WhseH24BranchL@1000000003 : Record 50507;
+    BEGIN
+      //H2146 16.02.15 EHN ++++++++++++++++++++++++++++++++++++++++++
+      IF (PurchaseLineV."Purchasing Code" <> '') AND PurchasingL.GET(PurchaseLineV."Purchasing Code") THEN BEGIN
+        WhseH24BranchL.RESET;
+        WhseH24BranchL.SETRANGE("Trigger Kommission", TRUE);
+        WhseH24BranchL.SETRANGE(WhseH24BranchL."Location Code", PurchasingL."Location Code");
+        IF NOT WhseH24BranchL.ISEMPTY THEN
+          EXIT(TRUE);
+      END ELSE
+        IF (PurchaseLineV."Location Code" <> '') AND LocationL.GET(PurchaseLineV."Location Code") THEN BEGIN
+          WhseH24BranchL.RESET;
+          WhseH24BranchL.SETRANGE("Trigger Kommission", TRUE);
+          WhseH24BranchL.SETRANGE(WhseH24BranchL."Location Code", LocationL.Code);
+          IF NOT WhseH24BranchL.ISEMPTY THEN
+            EXIT(TRUE);
+        END;
+
+      EXIT(FALSE);
+      //H2146 16.02.15 EHN ------------------------------------------
+    END;
+
+    PROCEDURE CheckIfAlreadyInInterface@1000000004(PurchaseLineV@1000000000 : Record 39) : Boolean;
+    VAR
+      WhseLFPurchExportLineL@1000000001 : Record 50302;
+    BEGIN
+      WhseLFPurchExportLineL.RESET;
+      WhseLFPurchExportLineL.SETCURRENTKEY("Attached to Document Type","Attached to Document No.","Attached to Document Line No.");
+      WhseLFPurchExportLineL.SETRANGE("Attached to Document Type",PurchaseLineV."Document Type");
+      WhseLFPurchExportLineL.SETRANGE("Attached to Document No.",PurchaseLineV."Document No.");
+      WhseLFPurchExportLineL.SETRANGE("Attached to Document Line No.",PurchaseLineV."Line No.");
+      //H2146 07.04.15 EHN +++++++++++++++++++++++++++++++++++++++++++++
+      WhseLFPurchExportLineL.SETRANGE("Location Code",PurchaseLineV."Location Code");
+      //H2146 07.04.15 EHN ---------------------------------------------
+      EXIT(NOT WhseLFPurchExportLineL.ISEMPTY);
+    END;
+
+    PROCEDURE IsUpdateEntry@1000000005(PurchaseLineV@1000000000 : Record 39;WhseH24IDV@1000000005 : Code[10];WhseH24BranchV@1000000006 : Code[10]) : Boolean;
+    VAR
+      PurchaseHeaderL@1000000001 : Record 38;
+      WhseLFPurchExportLineL@1000000002 : Record 50302;
+      WhseLFPurchExportHeaderL@1000000003 : Record 50301;
+      ItemL@1000000004 : Record 27;
+    BEGIN
+      PurchaseHeaderL.GET(PurchaseLineV."Document Type",PurchaseLineV."Document No.");
+
+      WhseLFPurchExportLineL.RESET;
+      WhseLFPurchExportLineL.SETRANGE("Attached to Document Type",PurchaseLineV."Document Type");
+      WhseLFPurchExportLineL.SETRANGE("Attached to Document No.",PurchaseLineV."Document No.");
+      WhseLFPurchExportLineL.SETRANGE("Attached to Document Line No.",PurchaseLineV."Line No.");
+      //H2146 07.04.15 EHN +++++++++++++++++++++++++++++++++++++++++++++
+      WhseLFPurchExportLineL.SETRANGE("Location Code",PurchaseLineV."Location Code");
+      //H2146 07.04.15 EHN ---------------------------------------------
+      IF WhseLFPurchExportLineL.ISEMPTY THEN
+        EXIT(FALSE)
+      ELSE BEGIN
+        WhseLFPurchExportLineL.FINDLAST;
+        ItemL.GET(PurchaseLineV."No.");
+        ItemL.CALCFIELDS("Parcels Number");
+        //H2146 07.04.15 EHN +++++++++++++++++++++++++++++++++++++++++++++
+        IF ((WhseLFPurchExportLineL."No." <> PurchaseLineV."No.") OR
+          (WhseLFPurchExportLineL.Description <> PurchaseLineV.Description) OR
+          (WhseLFPurchExportLineL.Quantity <> PurchaseLineV.Quantity) OR
+          (WhseLFPurchExportLineL.Crossdock <> PurchaseLineV."Special Order") OR
+          (WhseLFPurchExportLineL."Sales Order No." <> PurchaseLineV."Special Order Sales No.") OR
+          (WhseLFPurchExportLineL."Sales Order Line No." <> PurchaseLineV."Special Order Sales Line No.") OR
+          (WhseLFPurchExportLineL."Unit Volume" <> ItemL."Unit Volume") OR
+          (WhseLFPurchExportLineL."Unit Weight" <> ItemL."Net Weight") OR
+          (WhseLFPurchExportLineL."Purchasing Code" <> PurchaseLineV."Purchasing Code") OR
+          (WhseLFPurchExportLineL.Amount <> PurchaseLineV."Line Amount") OR
+          (WhseLFPurchExportLineL."No. of Packages" <> ItemL."Parcels Number") OR
+          (WhseLFPurchExportLineL."Promised Receipt Date" <> PurchaseLineV."Expected Receipt Date")) AND
+          (PurchaseLineV."Outstanding Quantity" <> 0) THEN
+          EXIT(TRUE);
+        WhseLFPurchExportHeaderL.GET(WhseLFPurchExportLineL."Entry No.");
+        IF (WhseLFPurchExportHeaderL."Whse. H24 Identifier Code" <> WhseH24IDV) OR
+           (WhseLFPurchExportHeaderL."Branch Code" <> WhseH24BranchV)
+        THEN
+          EXIT(TRUE);
+        //H2146 16.02.15 EHN ---------------------------------------------------------------------
+
+      END;
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE GetSequenceNo@1000000008(PurchLineV@1000000000 : Record 39;WhseH24IDV@1000000009 : Code[10];WhseH24BranchV@1000000008 : Code[10]) : Code[10];
+    VAR
+      WhseLFPurchExportLineL@1000000001 : Record 50302;
+      WhseLFPurchExportHdrL@1000000005 : Record 50301;
+      HighestSequenceL@1000000002 : Integer;
+      CurrentSequenceL@1000000003 : Integer;
+      HighestSequence2L@1000000004 : Code[10];
+    BEGIN
+      //H2146 17.02.15 EHN +++++++++++++++++++++++++++++++++++
+      WhseLFPurchExportLineL.RESET;
+      WhseLFPurchExportLineL.SETRANGE("Attached to Document Type",PurchLineV."Document Type");
+      WhseLFPurchExportLineL.SETRANGE("Attached to Document No.",PurchLineV."Document No.");
+      WhseLFPurchExportLineL.SETRANGE("Attached to Document Line No.",PurchLineV."Line No.");
+      WhseLFPurchExportLineL.SETRANGE("Location Code",PurchLineV."Location Code");
+      IF WhseLFPurchExportLineL.FINDLAST THEN
+        EXIT(WhseLFPurchExportLineL."Sequence No.");
+
+      WhseLFPurchExportHdrL.RESET;
+      WhseLFPurchExportHdrL.SETRANGE("Document Type",PurchLineV."Document Type");
+      WhseLFPurchExportHdrL.SETRANGE("Document No.",PurchLineV."Document No.");
+      WhseLFPurchExportHdrL.SETRANGE("Whse. H24 Identifier Code",WhseH24IDV);
+      WhseLFPurchExportHdrL.SETRANGE("Branch Code",WhseH24BranchV);
+      IF WhseLFPurchExportHdrL.FIND('-') THEN BEGIN
+        HighestSequenceL := 0;
+        CurrentSequenceL := 0;
+        HighestSequence2L := '';
+        REPEAT
+          IF WhseLFPurchExportHdrL."Sequence No." <> '' THEN
+            EVALUATE(CurrentSequenceL,WhseLFPurchExportHdrL."Sequence No.")
+          ELSE
+            CurrentSequenceL := 0;
+
+          IF HighestSequenceL < CurrentSequenceL THEN BEGIN
+            HighestSequenceL := CurrentSequenceL;
+            HighestSequence2L := WhseLFPurchExportHdrL."Sequence No.";
+          END;
+        UNTIL WhseLFPurchExportHdrL.NEXT = 0;
+        EXIT(INCSTR(HighestSequence2L));
+      END;
+
+      EXIT('001');
+      //H2146 17.02.15 EHN ----------------------
+    END;
+
+    PROCEDURE TriggerWhseLFInterfaceTransfer@1000000009(TransferLineV@1000000000 : Record 5741;EntryTypeV@1000000003 : 'New,Cancel,Update') : Text[100];
+    VAR
+      IsLFPositionL@1000000001 : Boolean;
+      WasAlreadyInInterfaceL@1000000002 : Boolean;
+      Text0001@1000000004 : TextConst 'DEU=WEA Cancel successfully created.;ENU=WEA Cancel successfully created.';
+      Text0002@1000000005 : TextConst 'DEU=WEA Update successfully created.;ENU=WEA Update successfully created.';
+      Text0003@1000000006 : TextConst 'DEU=WEA successfully created.;ENU=WEA successfully created.';
+      Text0004@1000000007 : TextConst 'DEU=No WEA needed.;ENU=No WEA needed.';
+    BEGIN
+      // Check if Purchase Lines have WH24 Positions
+      IsLFPositionL := CheckForWhseLFPositionTransfer(TransferLineV);
+      //H2146 17.02.15 EHN +++++++++++++++++++++++++++++++++++++
+      // Check if Line was alredy in Interface
+      WasAlreadyInInterfaceL := CheckIfAlreadyInInterfaceTrans(TransferLineV);
+
+      IF IsLFPositionL THEN BEGIN
+        IF WasAlreadyInInterfaceL THEN BEGIN
+          IF EntryTypeV = EntryTypeV::Cancel THEN BEGIN
+            FillNewOrderForTransferLine(TransferLineV,EntryTypeV::Cancel);
+            EXIT(HMETxt003);
+          END ELSE BEGIN
+            IF FillNewOrderForTransferLine(TransferLineV,EntryTypeV::Update) THEN
+              EXIT(HMETxt004)
+            ELSE
+              EXIT(HMETxt006);
+          END;
+        END ELSE BEGIN
+          FillNewOrderForTransferLine(TransferLineV,EntryTypeV);
+          EXIT(HMETxt005);
+        END;
+      END;
+
+      // If no more WH24 Positions and Order was in Interface Cancel Transmission oder Insert Cancel Records
+      IF NOT IsLFPositionL AND WasAlreadyInInterfaceL THEN BEGIN
+        FillNewOrderForTransferLine(TransferLineV,EntryTypeV::Cancel);
+        EXIT(HMETxt003);
+      END;
+
+      EXIT(HMETxt006);
+      //H2146 17.02.15 EHN -------------------------------------
+    END;
+
+    PROCEDURE FillNewOrderForTransferLine@1000000014(TransferLineV@1000000002 : Record 5741;EntryTypeV@1000000003 : 'New,Cancel,Update') : Boolean;
+    VAR
+      TransferHeaderL@1000000014 : Record 5740;
+      WhseLFPurchExportHeaderL@1000000000 : Record 50301;
+      WhseLFPurchExportHeader2L@1000000006 : Record 50301;
+      WhseLFPurchExportLineL@1000000008 : Record 50302;
+      PurchaseHeaderL@1000000001 : Record 38;
+      PurchaseHeaderArchiveL@1000000012 : Record 5109;
+      PurchaseLineL@1000000010 : Record 39;
+      PurchaseLineArchiveL@1000000009 : Record 5110;
+      WhseLFSetupL@1000000004 : Record 50300;
+      ItemL@1000000005 : Record 27;
+      IsUpdateNeccessaryL@1000000007 : Boolean;
+      UseArchiveL@1000000013 : Boolean;
+      WarehouseSetupL@1000000017 : Record 5769;
+      ItemLedgerEntryL@1000000016 : Record 32;
+      IsWithoutPurchaseOrderL@1000000015 : Boolean;
+      WhseH24IDL@1000000018 : Code[10];
+      WhseH24BranchL@1000000011 : Code[10];
+    BEGIN
+      IF NOT PurchaseHeaderL.GET(PurchaseHeaderL."Document Type"::Order,TransferLineV."Purchase Order No.") THEN BEGIN
+        PurchaseHeaderArchiveL.SETRANGE("Document Type",PurchaseHeaderArchiveL."Document Type"::Order);
+        PurchaseHeaderArchiveL.SETRANGE("No.",TransferLineV."Purchase Order No.");
+        IF NOT PurchaseHeaderArchiveL.FINDLAST THEN BEGIN
+          IsWithoutPurchaseOrderL := TRUE;
+          UseArchiveL := FALSE;
+        END ELSE
+          UseArchiveL := TRUE;
+      END;
+
+      TransferHeaderL.GET(TransferLineV."Document No.");
+
+      //H2146 17.02.15 EHN +++++++++++++++++++++++++++++++++++++
+      IF NOT IsWithoutPurchaseOrderL THEN BEGIN
+        IF UseArchiveL THEN BEGIN
+          PurchaseLineArchiveL.SETRANGE("Document Type",PurchaseLineArchiveL."Document Type"::Order);
+          PurchaseLineArchiveL.SETRANGE("Document No.",TransferLineV."Purchase Order No.");
+          PurchaseLineArchiveL.SETRANGE("Line No.",TransferLineV."Purchase Order Line No.");
+          PurchaseLineArchiveL.SETRANGE("Version No.",PurchaseHeaderArchiveL."Version No.");
+          PurchaseLineArchiveL.FINDLAST;
+        END ELSE
+          PurchaseLineL.GET(
+            PurchaseLineL."Document Type"::Order,TransferLineV."Purchase Order No.",TransferLineV."Purchase Order Line No.");
+      END;
+
+      WhseLFSetupL.GET;
+      WhseLFSetupL.TESTFIELD("Record Type WEA");
+
+      GetBranchCodeFromLocationCode(TransferHeaderL."Transfer-to Code",WhseH24IDL,WhseH24BranchL);
+      IsUpdateNeccessaryL := IsUpdateEntryTransfer(TransferLineV,WhseH24IDL,WhseH24BranchL);
+      //H2146 17.02.15 EHN -------------------------------------
+
+      IF (EntryTypeV = EntryTypeV::Update) AND (NOT IsUpdateNeccessaryL) THEN
+        EXIT(FALSE);
+
+      IF IsWithoutPurchaseOrderL THEN BEGIN
+        //H2146 17.02.15 EHN +++++++++++++++++++++++++++++++++++++++++++++++++++
+        WhseLFPurchExportHeaderL.RESET;
+        WhseLFPurchExportHeaderL."Entry No." := WhseLFPurchExportHeaderL.GetNextEntryNo;
+        WhseLFPurchExportHeaderL.INSERT(TRUE);
+
+        WhseLFPurchExportHeaderL."Document Type" := WhseLFPurchExportHeaderL."Document Type"::"Transfer Order";
+        WhseLFPurchExportHeaderL."Document No." := TransferHeaderL."No.";
+        WhseLFPurchExportHeaderL."Sequence No." := GetSequenceNoTransfer(TransferLineV,WhseH24IDL,WhseH24BranchL);
+        WhseLFPurchExportHeaderL."LF Order No." := WhseLFPurchExportHeaderL."Document No." + WhseLFPurchExportHeaderL."Sequence No.";
+        WhseLFPurchExportHeaderL."Transmission Mode" := EntryTypeV;
+        WhseLFPurchExportHeaderL."Transfer No." := TransferLineV."Document No.";
+        WhseLFPurchExportHeaderL."Whse. H24 Identifier Code" := WhseH24IDL;
+        WhseLFPurchExportHeaderL."Branch Code" := WhseH24BranchL;
+        WhseLFPurchExportHeaderL."Record Type" := WhseLFSetupL."Record Type WEA";
+        WhseLFPurchExportHeaderL."Insert Timestamp" := CURRENTDATETIME;
+        WhseLFPurchExportHeaderL."Process Timestamp" := 0DT;
+        WhseLFPurchExportHeaderL.Filename := '';
+        WhseLFPurchExportHeaderL.Status := WhseLFPurchExportHeaderL.Status::Unprocessed;
+        WhseLFPurchExportHeaderL.MODIFY(TRUE);
+
+        WhseLFPurchExportLineL.RESET;
+        WhseLFPurchExportLineL."Entry No." := WhseLFPurchExportHeaderL."Entry No.";
+        WhseLFPurchExportLineL."Entry Line No." := 10000;
+        WhseLFPurchExportLineL."Attached to Document Type" := WhseLFPurchExportLineL."Attached to Document Type"::"Transfer Order";
+        WhseLFPurchExportLineL."Attached to Document No." := TransferLineV."Document No.";
+        WhseLFPurchExportLineL."Attached to Document Line No." := TransferLineV."Line No.";
+        WhseLFPurchExportLineL."Sequence No." := WhseLFPurchExportHeaderL."Sequence No.";
+        WhseLFPurchExportLineL."Record Type" := WhseLFSetupL."Record Type WEA";
+        WhseLFPurchExportLineL.Type := WhseLFPurchExportLineL.Type::Item;
+        WhseLFPurchExportLineL."Pos. No." := 1;
+        WhseLFPurchExportLineL."No." := TransferLineV."Item No.";
+        WhseLFPurchExportLineL.Description := TransferLineV.Description;
+        WhseLFPurchExportLineL."Attached to Pos. No." := 0;
+        WhseLFPurchExportLineL.Quantity := TransferLineV.Quantity;
+        WhseLFPurchExportLineL."Location Code" := TransferLineV."Transfer-to Code";
+        WhseLFPurchExportLineL."Partial Delivery" := FALSE;
+        ItemL.GET(TransferLineV."Item No.");
+        WhseLFPurchExportLineL."Unit Volume" := ItemL."Unit Volume";
+        WhseLFPurchExportLineL."Unit Weight" := ItemL."Net Weight";
+        WhseLFPurchExportLineL."Transfer No." := TransferLineV."Document No.";
+        WhseLFPurchExportLineL."Purchasing Code" := '';
+        WhseLFPurchExportLineL.Amount := 0;
+        ItemL.CALCFIELDS("Parcels Number");
+        WhseLFPurchExportLineL."No. of Packages" := ItemL."Parcels Number";
+        WhseLFPurchExportLineL."Promised Receipt Date" := TransferHeaderL."Receipt Date";
+        WhseLFPurchExportLineL.INSERT(TRUE);
+        //H2146 17.02.15 EHN ---------------------------------------------------
+      END ELSE IF UseArchiveL THEN BEGIN
+        //H2146 17.02.15 EHN +++++++++++++++++++++++++++++++++++++++++++++++++++
+        WhseLFPurchExportHeaderL.RESET;
+        WhseLFPurchExportHeaderL."Entry No." := WhseLFPurchExportHeaderL.GetNextEntryNo;
+        WhseLFPurchExportHeaderL.INSERT(TRUE);
+
+        WhseLFPurchExportHeaderL."Document Type" := WhseLFPurchExportHeaderL."Document Type"::Order;
+        WhseLFPurchExportHeaderL."Document No." := TransferHeaderL."Purchase Order No.";
+        WhseLFPurchExportHeaderL."Sequence No." := GetSequenceNoTransfer(TransferLineV,WhseH24IDL,WhseH24BranchL);
+        WhseLFPurchExportHeaderL."LF Order No." := WhseLFPurchExportHeaderL."Document No." + WhseLFPurchExportHeaderL."Sequence No.";
+        WhseLFPurchExportHeaderL."Transmission Mode" := EntryTypeV;
+        WhseLFPurchExportHeaderL."Transfer No." := TransferLineV."Document No.";
+        WhseLFPurchExportHeaderL."Whse. H24 Identifier Code" := WhseH24IDL;
+        WhseLFPurchExportHeaderL."Branch Code" := WhseH24BranchL;
+        WhseLFPurchExportHeaderL."Record Type" := WhseLFSetupL."Record Type WEA";
+        WhseLFPurchExportHeaderL."Insert Timestamp" := CURRENTDATETIME;
+        WhseLFPurchExportHeaderL."Process Timestamp" := 0DT;
+        WhseLFPurchExportHeaderL.Filename := '';
+        WhseLFPurchExportHeaderL.Status := WhseLFPurchExportHeaderL.Status::Unprocessed;
+        WhseLFPurchExportHeaderL.MODIFY(TRUE);
+
+        WhseLFPurchExportLineL.RESET;
+        WhseLFPurchExportLineL."Entry No." := WhseLFPurchExportHeaderL."Entry No.";
+        WhseLFPurchExportLineL."Entry Line No." := 10000;
+        WhseLFPurchExportLineL."Attached to Document Type" := PurchaseLineArchiveL."Document Type";
+        WhseLFPurchExportLineL."Attached to Document No." := PurchaseLineArchiveL."Document No.";
+        WhseLFPurchExportLineL."Attached to Document Line No." := PurchaseLineArchiveL."Line No.";
+        WhseLFPurchExportLineL."Sequence No." := WhseLFPurchExportHeaderL."Sequence No.";
+        WhseLFPurchExportLineL."Record Type" := WhseLFSetupL."Record Type WEA";
+        WhseLFPurchExportLineL.Type := WhseLFPurchExportLineL.Type::Item;
+        WhseLFPurchExportLineL."Pos. No." := 1;
+        WhseLFPurchExportLineL."No." := TransferLineV."Item No.";
+        WhseLFPurchExportLineL.Description := TransferLineV.Description;
+        WhseLFPurchExportLineL."Attached to Pos. No." := 0;
+        WhseLFPurchExportLineL.Quantity := TransferLineV.Quantity;
+        WhseLFPurchExportLineL."Location Code" := PurchaseLineArchiveL."Location Code";
+        WhseLFPurchExportLineL."Partial Delivery" := FALSE;
+        ItemL.GET(PurchaseLineArchiveL."No.");
+        WhseLFPurchExportLineL."Unit Volume" := ItemL."Unit Volume";
+        WhseLFPurchExportLineL."Unit Weight" := ItemL."Net Weight";
+        WhseLFPurchExportLineL."Transfer No." := TransferLineV."Document No.";
+        WhseLFPurchExportLineL."Purchasing Code" := PurchaseLineArchiveL."Purchasing Code";
+        WhseLFPurchExportLineL.Amount := PurchaseLineArchiveL."Line Amount";
+        ItemL.CALCFIELDS("Parcels Number");
+        WhseLFPurchExportLineL."No. of Packages" := ItemL."Parcels Number";
+        WhseLFPurchExportLineL."Promised Receipt Date" := TransferHeaderL."Receipt Date";
+        WhseLFPurchExportLineL.INSERT(TRUE);
+        //H2146 17.02.15 EHN ---------------------------------------------------
+      END ELSE BEGIN
+        //H2146 17.02.15 EHN +++++++++++++++++++++++++++++++++++++++++++++++++++
+        WhseLFPurchExportHeaderL.RESET;
+        WhseLFPurchExportHeaderL."Entry No." := WhseLFPurchExportHeaderL.GetNextEntryNo;
+        WhseLFPurchExportHeaderL.INSERT(TRUE);
+
+        WhseLFPurchExportHeaderL."Document Type" := PurchaseHeaderL."Document Type";
+        WhseLFPurchExportHeaderL."Document No." := PurchaseHeaderL."No.";
+        WhseLFPurchExportHeaderL."Sequence No." := GetSequenceNoTransfer(TransferLineV,WhseH24IDL,WhseH24BranchL);
+        WhseLFPurchExportHeaderL."LF Order No." := WhseLFPurchExportHeaderL."Document No." + WhseLFPurchExportHeaderL."Sequence No.";
+        WhseLFPurchExportHeaderL."Transmission Mode" := EntryTypeV;
+        WhseLFPurchExportHeaderL."Transfer No." := TransferLineV."Document No.";
+        WhseLFPurchExportHeaderL."Whse. H24 Identifier Code" := WhseH24IDL;
+        WhseLFPurchExportHeaderL."Branch Code" := WhseH24BranchL;
+        WhseLFPurchExportHeaderL."Record Type" := WhseLFSetupL."Record Type WEA";
+        WhseLFPurchExportHeaderL."Insert Timestamp" := CURRENTDATETIME;
+        WhseLFPurchExportHeaderL."Process Timestamp" := 0DT;
+        WhseLFPurchExportHeaderL.Filename := '';
+        WhseLFPurchExportHeaderL.Status := WhseLFPurchExportHeaderL.Status::Unprocessed;
+        WhseLFPurchExportHeaderL.MODIFY(TRUE);
+
+        WhseLFPurchExportLineL.RESET;
+        WhseLFPurchExportLineL."Entry No." := WhseLFPurchExportHeaderL."Entry No.";
+        WhseLFPurchExportLineL."Entry Line No." := 10000;
+        WhseLFPurchExportLineL."Attached to Document Type" := PurchaseLineL."Document Type";
+        WhseLFPurchExportLineL."Attached to Document No." := PurchaseLineL."Document No.";
+        WhseLFPurchExportLineL."Attached to Document Line No." := PurchaseLineL."Line No.";
+        WhseLFPurchExportLineL."Sequence No." := WhseLFPurchExportHeaderL."Sequence No.";
+        WhseLFPurchExportLineL."Record Type" := WhseLFSetupL."Record Type WEA";
+        WhseLFPurchExportLineL.Type := WhseLFPurchExportLineL.Type::Item;
+        WhseLFPurchExportLineL."Pos. No." := 1;
+        WhseLFPurchExportLineL."No." := TransferLineV."Item No.";
+        WhseLFPurchExportLineL.Description := TransferLineV.Description;
+        WhseLFPurchExportLineL."Attached to Pos. No." := 0;
+        WhseLFPurchExportLineL.Quantity := TransferLineV.Quantity;
+        WhseLFPurchExportLineL."Location Code" := PurchaseLineL."Location Code";
+        WhseLFPurchExportLineL."Partial Delivery" := FALSE;
+        ItemL.GET(PurchaseLineL."No.");
+        WhseLFPurchExportLineL."Unit Volume" := ItemL."Unit Volume";
+        WhseLFPurchExportLineL."Unit Weight" := ItemL."Net Weight";
+        WhseLFPurchExportLineL."Transfer No." := TransferLineV."Document No.";
+        WhseLFPurchExportLineL."Purchasing Code" := PurchaseLineL."Purchasing Code";
+        WhseLFPurchExportLineL.Amount := PurchaseLineL."Line Amount";
+        ItemL.CALCFIELDS("Parcels Number");
+        WhseLFPurchExportLineL."No. of Packages" := ItemL."Parcels Number";
+        WhseLFPurchExportLineL."Promised Receipt Date" := TransferHeaderL."Receipt Date";
+        WhseLFPurchExportLineL.INSERT(TRUE);
+        //H2146 17.02.15 EHN ---------------------------------------------------
+      END;
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE CheckForWhseLFPositionTransfer@1000000016(TransferLineV@1000000000 : Record 5741) : Boolean;
+    VAR
+      LocationL@1000000003 : Record 14;
+      WhseH24BranchL@1000000002 : Record 50507;
+    BEGIN
+      //H2146 16.02.15 EHN ++++++++++++++++++++++++++++++++++++++++++
+      IF (TransferLineV."Transfer-to Code" <> '') AND LocationL.GET(TransferLineV."Transfer-to Code") THEN BEGIN
+        WhseH24BranchL.RESET;
+        WhseH24BranchL.SETRANGE("Trigger Kommission", TRUE);
+        WhseH24BranchL.SETRANGE(WhseH24BranchL."Location Code", LocationL.Code);
+        IF NOT WhseH24BranchL.ISEMPTY THEN
+          EXIT(TRUE);
+      END;
+
+      EXIT(FALSE);
+      //H2146 16.02.15 EHN ------------------------------------------
+    END;
+
+    PROCEDURE CheckIfAlreadyInInterfaceTrans@1000000017(TransferLineV@1000000000 : Record 5741) : Boolean;
+    VAR
+      WhseLFPurchExportLineL@1000000001 : Record 50302;
+    BEGIN
+      WhseLFPurchExportLineL.RESET;
+      WhseLFPurchExportLineL.SETCURRENTKEY("Attached to Document Type","Attached to Document No.","Attached to Document Line No.");
+
+      IF TransferLineV."Purchase Order No." <> '' THEN BEGIN
+        WhseLFPurchExportLineL.SETRANGE("Attached to Document Type",WhseLFPurchExportLineL."Attached to Document Type"::Order);
+        WhseLFPurchExportLineL.SETRANGE("Attached to Document No.",TransferLineV."Purchase Order No.");
+        WhseLFPurchExportLineL.SETRANGE("Attached to Document Line No.",TransferLineV."Purchase Order Line No.");
+      END ELSE BEGIN
+        WhseLFPurchExportLineL.SETRANGE(
+          "Attached to Document Type",WhseLFPurchExportLineL."Attached to Document Type"::"Transfer Order");
+        WhseLFPurchExportLineL.SETRANGE("Attached to Document No.",TransferLineV."Document No.");
+        WhseLFPurchExportLineL.SETRANGE("Attached to Document Line No.",TransferLineV."Line No.");
+      END;
+
+      WhseLFPurchExportLineL.SETRANGE("Transfer No.",TransferLineV."Document No.");
+      EXIT(NOT WhseLFPurchExportLineL.ISEMPTY);
+    END;
+
+    PROCEDURE IsUpdateEntryTransfer@1000000018(TransferLineV@1000000000 : Record 5741;WhseH24IDV@1000000011 : Code[10];WhseH24BranchV@1000000012 : Code[10]) : Boolean;
+    VAR
+      TransferHeaderL@1000000007 : Record 5740;
+      PurchaseHeaderL@1000000001 : Record 38;
+      PurchaseHeaderArchiveL@1000000005 : Record 5109;
+      WhseLFPurchExportLineL@1000000002 : Record 50302;
+      WhseLFPurchExportHeaderL@1000000003 : Record 50301;
+      ItemL@1000000004 : Record 27;
+      UseArchiveL@1000000006 : Boolean;
+      IsWithoutPurchaseOrderL@1000000008 : Boolean;
+    BEGIN
+      IF NOT PurchaseHeaderL.GET(PurchaseHeaderL."Document Type"::Order,TransferLineV."Purchase Order No.") THEN BEGIN
+        PurchaseHeaderArchiveL.SETRANGE("Document Type",PurchaseHeaderArchiveL."Document Type"::Order);
+        PurchaseHeaderArchiveL.SETRANGE("No.",TransferLineV."Purchase Order No.");
+        IF PurchaseHeaderArchiveL.FINDLAST() THEN BEGIN
+          UseArchiveL := TRUE;
+        END ELSE BEGIN
+          UseArchiveL := FALSE;
+          IsWithoutPurchaseOrderL := TRUE;
+        END;
+      END;
+
+      TransferHeaderL.GET(TransferLineV."Document No.");
+
+      WhseLFPurchExportLineL.RESET;
+
+      IF IsWithoutPurchaseOrderL THEN BEGIN
+        WhseLFPurchExportLineL.SETRANGE("Attached to Document Type",WhseLFPurchExportLineL."Attached to Document Type"::"Transfer Order"
+      );
+        WhseLFPurchExportLineL.SETRANGE("Attached to Document No.",TransferLineV."Document No.");
+        WhseLFPurchExportLineL.SETRANGE("Attached to Document Line No.",TransferLineV."Line No.");
+      END ELSE BEGIN
+        WhseLFPurchExportLineL.SETRANGE("Attached to Document Type",WhseLFPurchExportLineL."Attached to Document Type"::Order);
+        WhseLFPurchExportLineL.SETRANGE("Attached to Document No.",TransferLineV."Purchase Order No.");
+        WhseLFPurchExportLineL.SETRANGE("Attached to Document Line No.",TransferLineV."Purchase Order Line No.");
+      END;
+
+      WhseLFPurchExportLineL.SETRANGE("Transfer No.",TransferLineV."Document No.");
+      IF WhseLFPurchExportLineL.ISEMPTY THEN
+        EXIT(FALSE)
+      ELSE BEGIN
+        WhseLFPurchExportLineL.FINDLAST;
+        ItemL.GET(TransferLineV."Item No.");
+        ItemL.CALCFIELDS("Parcels Number");
+
+        IF (WhseLFPurchExportLineL."No." <> TransferLineV."Item No.") OR
+          (WhseLFPurchExportLineL.Description <> TransferLineV.Description) OR
+          (WhseLFPurchExportLineL.Quantity <> TransferLineV.Quantity) OR
+          (WhseLFPurchExportLineL."Location Code" <> TransferHeaderL."Transfer-to Code") OR
+          (WhseLFPurchExportLineL."Unit Volume" <> ItemL."Unit Volume") OR
+          (WhseLFPurchExportLineL."Unit Weight" <> ItemL."Net Weight") OR
+          (WhseLFPurchExportLineL."No. of Packages" <> ItemL."Parcels Number") OR
+          (WhseLFPurchExportLineL."Promised Receipt Date" <> TransferLineV."Receipt Date") THEN
+          EXIT(TRUE);
+
+        WhseLFPurchExportHeaderL.GET(WhseLFPurchExportLineL."Entry No.");
+        //H2146 17.02.15 EHN ++++++++++++++++++++++++++++++++++++++++++++++
+        IF (WhseLFPurchExportHeaderL."Whse. H24 Identifier Code" <> WhseH24IDV) OR
+           (WhseLFPurchExportHeaderL."Branch Code" <> WhseH24BranchV)
+        THEN
+          EXIT(TRUE);
+        //H2146 17.02.15 EHN ----------------------------------------------
+      END;
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE GetSequenceNoTransfer@1000000019(TransferLineV@1000000000 : Record 5741;WhseH24IDV@1000000007 : Code[10];WhseH24BranchV@1000000006 : Code[10]) : Code[10];
+    VAR
+      WhseLFPurchExportLineL@1000000001 : Record 50302;
+      WhseLFPurchExportHdrL@1000000005 : Record 50301;
+      HighestSequenceL@1000000002 : Integer;
+      CurrentSequenceL@1000000003 : Integer;
+      HighestSequence2L@1000000004 : Code[10];
+    BEGIN
+      WhseLFPurchExportLineL.RESET;
+
+      IF (TransferLineV."Purchase Order No." = '') AND (TransferLineV."Purchase Order Line No." = 0 ) THEN BEGIN
+        WhseLFPurchExportLineL.SETRANGE("Attached to Document Type",WhseLFPurchExportLineL."Attached to Document Type"::"Transfer Order"
+      );
+        WhseLFPurchExportLineL.SETRANGE("Attached to Document No.",TransferLineV."Document No.");
+        WhseLFPurchExportLineL.SETRANGE("Attached to Document Line No.",TransferLineV."Line No.");
+      END ELSE BEGIN
+        WhseLFPurchExportLineL.SETRANGE("Attached to Document Type",WhseLFPurchExportLineL."Attached to Document Type"::Order);
+        WhseLFPurchExportLineL.SETRANGE("Attached to Document No.",TransferLineV."Purchase Order No.");
+        WhseLFPurchExportLineL.SETRANGE("Attached to Document Line No.",TransferLineV."Purchase Order Line No.");
+      END;
+
+      IF WhseLFPurchExportLineL.FINDLAST THEN
+        EXIT(WhseLFPurchExportLineL."Sequence No.")
+      ELSE BEGIN
+      //H2146 17.02.15 EHN +++++++++++++++++++++++++++++++++++
+        WhseLFPurchExportHdrL.RESET;
+        IF (TransferLineV."Purchase Order No." = '') AND (TransferLineV."Purchase Order Line No." = 0 ) THEN BEGIN
+          WhseLFPurchExportHdrL.SETRANGE("Document Type",WhseLFPurchExportHdrL."Document Type"::"Transfer Order");
+          WhseLFPurchExportHdrL.SETRANGE("Document No.",TransferLineV."Document No.");
+        END ELSE BEGIN
+          WhseLFPurchExportHdrL.SETRANGE("Document Type",WhseLFPurchExportHdrL."Document Type"::Order);
+          WhseLFPurchExportHdrL.SETRANGE("Document No.",TransferLineV."Purchase Order No.");
+        END;
+        WhseLFPurchExportHdrL.SETRANGE("Whse. H24 Identifier Code",WhseH24IDV);
+        WhseLFPurchExportHdrL.SETRANGE("Branch Code",WhseH24BranchV);
+        IF WhseLFPurchExportHdrL.FIND('-') THEN BEGIN
+          HighestSequenceL := 0;
+          CurrentSequenceL := 0;
+          HighestSequence2L := '';
+          REPEAT
+            IF WhseLFPurchExportHdrL."Sequence No." <> '' THEN
+              EVALUATE(CurrentSequenceL,WhseLFPurchExportHdrL."Sequence No.")
+            ELSE
+              CurrentSequenceL := 0;
+
+            IF HighestSequenceL < CurrentSequenceL THEN BEGIN
+              HighestSequenceL := CurrentSequenceL;
+              HighestSequence2L := WhseLFPurchExportHdrL."Sequence No.";
+            END;
+          UNTIL WhseLFPurchExportHdrL.NEXT = 0;
+          EXIT(INCSTR(HighestSequence2L));
+        END;
+      END;
+
+      EXIT('001');
+      //H2146 17.02.15 EHN -----------------------------------
+    END;
+
+    PROCEDURE GetBrachCodeFromPurchasingCode@1000000001(PurchasingCodeV@1000000000 : Code[10];VAR WhseH24IDR@1000000003 : Code[10];VAR WhseH24BranchR@1000000002 : Code[10]) : Code[10];
+    VAR
+      PurchasingL@1000000001 : Record 5721;
+      WhseH24BranchL@1000000004 : Record 50507;
+    BEGIN
+      //H2146 16.02.15 EHN ++++++++++++++++++++++++++++++++++++++++++
+      WhseH24IDR := '';
+      WhseH24BranchR := '';
+      IF (PurchasingCodeV <> '') AND PurchasingL.GET(PurchasingCodeV) THEN BEGIN
+        WhseH24BranchL.RESET;
+        WhseH24BranchL.SETRANGE(WhseH24BranchL."Location Code", PurchasingL."Location Code");
+        IF WhseH24BranchL.FINDFIRST THEN BEGIN
+          WhseH24IDR := WhseH24BranchL."Whse. H24 Identifier Code";
+          WhseH24BranchR := WhseH24BranchL."Branch Code";
+        END;
+      END;
+      //H2146 16.02.15 EHN ------------------------------------------
+    END;
+
+    PROCEDURE GetBranchCodeFromLocationCode@1000000007(LocationCodeV@1000000000 : Code[10];VAR WhseH24IDR@1000000003 : Code[10];VAR WhseH24BranchR@1000000002 : Code[10]);
+    VAR
+      LocationL@1000000001 : Record 14;
+      WhseH24BranchL@1000000004 : Record 50507;
+    BEGIN
+      //H2146, H1796 16.02.15 EHN ++++++++++++++++++++++++++++++++++++++++++
+      WhseH24IDR := '';
+      WhseH24BranchR := '';
+      IF (LocationCodeV <> '') AND LocationL.GET(LocationCodeV) THEN BEGIN
+        WhseH24BranchL.RESET;
+        WhseH24BranchL.SETRANGE(WhseH24BranchL."Location Code", LocationL.Code);
+        IF WhseH24BranchL.FINDFIRST THEN BEGIN
+          WhseH24IDR := WhseH24BranchL."Whse. H24 Identifier Code";
+          WhseH24BranchR := WhseH24BranchL."Branch Code";
+        END;
+      END;
+      //H2146, H1796 16.02.15 EHN ------------------------------------------
+    END;
+
+    PROCEDURE UpdateStatusUploaded@1000000003(FilenameV@1000000000 : Text[30]);
+    VAR
+      WhseLFPurchExportHeaderL@1000000001 : Record 50301;
+    BEGIN
+      WhseLFPurchExportHeaderL.RESET;
+      WhseLFPurchExportHeaderL.SETFILTER(Filename,'%1','*' + FilenameV);
+      IF WhseLFPurchExportHeaderL.FINDSET THEN BEGIN
+        WhseLFPurchExportHeaderL.Status := WhseLFPurchExportHeaderL.Status::Uploaded;
+        WhseLFPurchExportHeaderL.MODIFY;
+      END;
+    END;
+
+    PROCEDURE ProcessWEMLine@1000000002(WhseLFPurchImportV@1000000000 : Record 50303) : Boolean;
+    VAR
+      WhseLFPurchJobQueueMgtL@1000000003 : Codeunit 50304;
+      PurchPostL@1000000004 : Codeunit 90;
+      TransferOrderPostReceiptL@1000000005 : Codeunit 5705;
+      SalesLineL@1000000008 : Record 37;
+      PurchaseHeaderL@1000000006 : Record 38;
+      PurchaseLineL@1000000001 : Record 39;
+      TransferHeaderL@1000000007 : Record 5740;
+      TransferLineL@1000000002 : Record 5741;
+      WhseLFPurchExportHeaderL@1000000010 : Record 50301;
+      WhseLFPurchExportLineL@1000000009 : Record 50302;
+    BEGIN
+      PurchaseLineL.SETRANGE("Document Type",PurchaseLineL."Document Type"::Order);
+      PurchaseLineL.SETRANGE("Document No.",WhseLFPurchImportV."Receipt No.");
+      IF PurchaseLineL.ISEMPTY THEN
+        PurchaseLineL.SETRANGE("Document No.",COPYSTR(WhseLFPurchImportV."Receipt No.",1,
+                              STRLEN(WhseLFPurchImportV."Receipt No.") - 3));
+      PurchaseLineL.SETRANGE("No.",WhseLFPurchImportV."Item No.");
+
+      WhseLFPurchExportHeaderL.SETRANGE("LF Order No.",WhseLFPurchImportV."Receipt No.");
+      //H2158 25.02.15 DMO ++++++++++++++++++++++++++
+      WhseLFPurchExportHeaderL.SETRANGE("Whse. H24 Identifier Code",WhseLFPurchImportV."Client Identifier");
+      //H2158 25.02.15 DMO --------------------------
+
+      WhseLFPurchExportHeaderL.FINDLAST;
+      WhseLFPurchExportLineL.SETRANGE("Entry No.",WhseLFPurchExportHeaderL."Entry No.");
+      WhseLFPurchExportLineL.FINDLAST();
+      PurchaseLineL.SETRANGE("Line No.",WhseLFPurchExportLineL."Attached to Document Line No.");
+
+      //H1423 21.10.14 EHN +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF WhseLFPurchExportHeaderL."Document Type" = WhseLFPurchExportHeaderL."Document Type"::"Transfer Order" THEN BEGIN
+        TransferHeaderL.RESET;
+        TransferHeaderL.SETRANGE("No.",WhseLFPurchExportHeaderL."Document No.");
+        IF TransferHeaderL.FINDFIRST THEN BEGIN
+          TransferLineL.RESET;
+          TransferLineL.SETRANGE("Document No.",TransferHeaderL."No.");
+          TransferLineL.SETRANGE("Line No.",WhseLFPurchExportLineL."Attached to Document Line No.");
+          TransferLineL.SETRANGE("Item No.",WhseLFPurchImportV."Item No.");
+          TransferLineL.SETRANGE("Derived From Line No.",0);
+          IF TransferLineL.FINDFIRST THEN BEGIN
+            REPEAT
+              IF TransferLineL."Line No." = WhseLFPurchExportLineL."Attached to Document Line No." THEN BEGIN
+                IF WhseLFPurchImportV."Partially Completed" THEN
+                  WhseLFPurchJobQueueMgtL.CreateLogProcessWMP(TRUE,STRSUBSTNO(HMETxt010,WhseLFPurchImportV."Entry No.",
+                    TransferLineL."Document No.",TransferLineL."Line No."),WhseLFPurchImportV.Filename,'');
+                IF WhseLFPurchImportV."Qty. Damaged" <> 0 THEN
+                  WhseLFPurchJobQueueMgtL.CreateLogProcessWMP(TRUE,
+                    STRSUBSTNO(HMETxt012,WhseLFPurchImportV."Entry No.",
+                    WhseLFPurchImportV."Qty. Damaged",TransferLineL."Document No.",TransferLineL."Line No."),
+                    WhseLFPurchImportV.Filename,'');
+                IF WhseLFPurchImportV.Quantity < TransferLineL."Qty. in Transit" THEN
+                  WhseLFPurchJobQueueMgtL.CreateLogProcessWMP(FALSE,
+                    STRSUBSTNO(HMETxt007,PurchaseHeaderL.TABLECAPTION,PurchaseLineL."Document No.",
+                    TransferLineL."Line No.",TransferLineL."Qty. in Transit",WhseLFPurchImportV.Quantity),
+                    WhseLFPurchImportV.Filename,'');
+                IF (WhseLFPurchImportV.Quantity > TransferLineL."Qty. in Transit") THEN
+                  WhseLFPurchJobQueueMgtL.CreateLogProcessWMP(FALSE,
+                    STRSUBSTNO(HMETxt008,PurchaseHeaderL.TABLECAPTION,PurchaseLineL."Document No.",
+                    TransferLineL."Line No.",TransferLineL."Qty. in Transit",WhseLFPurchImportV.Quantity),
+                    WhseLFPurchImportV.Filename,'');
+                TransferLineL.VALIDATE("Qty. to Receive",WhseLFPurchImportV.Quantity);
+              END ELSE BEGIN
+                TransferLineL.VALIDATE("Qty. to Receive",0);
+              END;
+              TransferLineL."Record Entry No." := WhseLFPurchImportV."Entry No.";
+              TransferLineL."Record Table Id" := DATABASE::"Whse. LF Purchase Import";
+              TransferLineL.MODIFY;
+            UNTIL TransferLineL.NEXT = 0;
+
+            TransferHeaderL.GET(TransferLineL."Document No.");
+            TransferHeaderL.VALIDATE("Posting Date",WhseLFPurchImportV."Receipt Date");
+            TransferOrderPostReceiptL.SetHideValidationDialog(TRUE);
+            TransferOrderPostReceiptL.RUN(TransferHeaderL);
+
+          END;
+        END ELSE BEGIN
+          TransferHeaderL.FINDFIRST;
+        END;
+      END ELSE
+      //H1423 21.10.14 EHN -----------------------------------------------------------------
+      //H1628 10.10.14 EHN ++++++++++++++++++++++
+      IF PurchaseLineL.FINDFIRST THEN BEGIN
+      //H1628 10.10.14 EHN ----------------------
+        IF PurchaseLineL."Transfer Order No." = '' THEN BEGIN
+          PurchaseLineL.SETRANGE("No.");
+          PurchaseLineL.SETRANGE("Line No.");
+          PurchaseLineL.FIND('-');
+          REPEAT
+            PurchaseLineL.VALIDATE("Qty. to Receive",0);
+            PurchaseLineL.VALIDATE("Qty. to Invoice",0);
+            PurchaseLineL.MODIFY;
+          UNTIL PurchaseLineL.NEXT = 0;
+
+          PurchaseLineL.SETRANGE("Line No.",WhseLFPurchExportLineL."Attached to Document Line No.");
+          PurchaseLineL.SETRANGE("No.",WhseLFPurchImportV."Item No.");
+          PurchaseLineL.FINDFIRST;
+
+          IF WhseLFPurchImportV."Partially Completed" THEN
+            WhseLFPurchJobQueueMgtL.CreateLogProcessWEM(TRUE,STRSUBSTNO(HMETxt010,WhseLFPurchImportV."Entry No.",
+                                   PurchaseLineL."Document No.",PurchaseLineL."Line No."),WhseLFPurchImportV.Filename,'');
+          IF WhseLFPurchImportV."Qty. Damaged" <> 0 THEN
+            WhseLFPurchJobQueueMgtL.CreateLogProcessWEM(TRUE,
+                                   STRSUBSTNO(HMETxt012,WhseLFPurchImportV."Entry No.",
+                                   WhseLFPurchImportV."Qty. Damaged",PurchaseLineL."Document No.",PurchaseLineL."Line No."),
+                                   WhseLFPurchImportV.Filename,'');
+
+          IF WhseLFPurchImportV.Quantity < PurchaseLineL."Outstanding Quantity" THEN
+            WhseLFPurchJobQueueMgtL.CreateLogProcessWEM(FALSE,
+                                   STRSUBSTNO(HMETxt007,PurchaseHeaderL.TABLECAPTION,PurchaseLineL."Document No.",
+                                   PurchaseLineL."Line No.",PurchaseLineL."Outstanding Quantity",WhseLFPurchImportV.Quantity),
+                                   WhseLFPurchImportV.Filename,'');
+          IF (WhseLFPurchImportV.Quantity > PurchaseLineL."Outstanding Quantity") THEN BEGIN
+            WhseLFPurchJobQueueMgtL.CreateLogProcessWEM(FALSE,
+                                   STRSUBSTNO(HMETxt008,PurchaseHeaderL.TABLECAPTION,PurchaseLineL."Document No.",
+                                   PurchaseLineL."Line No.",PurchaseLineL."Outstanding Quantity",WhseLFPurchImportV.Quantity),
+                                   WhseLFPurchImportV.Filename,'');
+            IF PurchaseLineL."Outstanding Quantity" <= 0 THEN
+              WhseLFPurchImportV.Quantity := 0
+            ELSE
+              WhseLFPurchImportV.Quantity := PurchaseLineL."Outstanding Quantity";
+          END;
+
+          PurchaseLineL."Record Entry No." := WhseLFPurchImportV."Entry No.";
+          PurchaseLineL."Record Table Id" := DATABASE::"Whse. LF Purchase Import";
+          PurchaseLineL.VALIDATE("Qty. to Receive",WhseLFPurchImportV.Quantity);
+          PurchaseLineL.MODIFY;
+
+          COMMIT;
+          PurchaseHeaderL.GET(PurchaseLineL."Document Type",PurchaseLineL."Document No.");
+          PurchaseHeaderL.VALIDATE("Posting Date",WhseLFPurchImportV."Receipt Date");
+          PurchaseHeaderL.Receive := TRUE;
+          PurchaseHeaderL.Invoice := FALSE;
+          PurchPostL.RUN(PurchaseHeaderL);
+        END ELSE BEGIN
+
+          // Transfer Order
+          TransferLineL.SETRANGE("Document No.",PurchaseLineL."Transfer Order No.");
+          TransferLineL.SETRANGE("Line No.",PurchaseLineL."Transfer Order Line No.");
+          TransferLineL.SETRANGE("Item No.",WhseLFPurchImportV."Item No.");
+          //H1628 10.10.14 EHN +++++++++++++++++++++++
+          TransferLineL.SETRANGE("Derived From Line No.",0);
+          //H1628 10.10.14 EHN -----------------------
+          IF NOT TransferLineL.ISEMPTY THEN BEGIN
+
+            TransferLineL.SETRANGE("Line No.");
+            TransferLineL.SETRANGE("Item No.");
+            TransferLineL.FIND('-');
+            REPEAT
+              TransferLineL.VALIDATE("Qty. to Receive",0);
+              TransferLineL.MODIFY;
+            UNTIL TransferLineL.NEXT = 0;
+
+            TransferLineL.SETRANGE("Line No.",PurchaseLineL."Transfer Order Line No.");
+            TransferLineL.SETRANGE("Item No.",WhseLFPurchImportV."Item No.");
+            TransferLineL.FINDFIRST;
+
+            // wenn Teilabschluss oder Damaged, dann Log erzeugen
+            IF WhseLFPurchImportV."Partially Completed" THEN
+              WhseLFPurchJobQueueMgtL.CreateLogProcessWEM(
+                TRUE,
+                STRSUBSTNO(HMETxt010,WhseLFPurchImportV."Entry No.",TransferLineL."Document No.",TransferLineL."Line No."),
+                WhseLFPurchImportV.Filename,'');
+            IF WhseLFPurchImportV."Qty. Damaged" <> 0 THEN
+              WhseLFPurchJobQueueMgtL.CreateLogProcessWEM(
+                TRUE,
+                STRSUBSTNO(HMETxt012,WhseLFPurchImportV."Entry No.",
+                  WhseLFPurchImportV."Qty. Damaged",TransferLineL."Document No.",TransferLineL."Line No."),
+                WhseLFPurchImportV.Filename,'');
+            //H1628 17.10.14 EHN +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            IF WhseLFPurchImportV.Quantity < TransferLineL."Qty. in Transit" THEN
+              WhseLFPurchJobQueueMgtL.CreateLogProcessWEM(
+                FALSE,
+                STRSUBSTNO(HMETxt007,TransferHeaderL.TABLECAPTION,TransferLineL."Document No.",
+                           TransferLineL."Line No.",TransferLineL."Qty. in Transit",WhseLFPurchImportV.Quantity),
+                WhseLFPurchImportV.Filename,'');
+            IF WhseLFPurchImportV.Quantity > TransferLineL."Qty. in Transit" THEN BEGIN
+              WhseLFPurchJobQueueMgtL.CreateLogProcessWEM(
+                FALSE,
+                STRSUBSTNO(HMETxt008,TransferHeaderL.TABLECAPTION,TransferLineL."Document No.",
+                           TransferLineL."Line No.",TransferLineL."Qty. in Transit",WhseLFPurchImportV.Quantity),
+                WhseLFPurchImportV.Filename,'');
+
+              IF TransferLineL."Qty. in Transit" <= 0 THEN
+                WhseLFPurchImportV.Quantity := 0
+              ELSE
+                WhseLFPurchImportV.Quantity := TransferLineL."Qty. in Transit";
+            END;
+            //H1628 17.10.14 EHN -------------------------------------------------------
+            TransferLineL."Record Entry No." := WhseLFPurchImportV."Entry No.";
+            TransferLineL."Record Table Id" := DATABASE::"Whse. LF Purchase Import";
+            TransferLineL.VALIDATE("Qty. to Receive",WhseLFPurchImportV.Quantity);
+            TransferLineL.MODIFY;
+            COMMIT;
+
+            TransferHeaderL.GET(TransferLineL."Document No.");
+            TransferHeaderL.VALIDATE("Posting Date",WhseLFPurchImportV."Receipt Date");
+            TransferOrderPostReceiptL.SetHideValidationDialog(TRUE);
+            TransferOrderPostReceiptL.RUN(TransferHeaderL);
+          END ELSE
+            TransferLineL.FINDFIRST;
+        END;
+      END ELSE
+        PurchaseLineL.FINDFIRST;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE ProcessPSELine@1000000023(RecV@1000000000 : Record 50303) : Boolean;
+    VAR
+      WhseLFPurchImportL@1000000001 : Record 50303;
+      WhseLFSetupL@1000000002 : Record 50300;
+      WhseLFItemLedgerEntryL@1000000005 : Record 50311;
+      ItemJournalLineL@1000000003 : Record 83;
+      RecRefL@1000000009 : RecordRef;
+      LibraryUtilityL@1000000010 : Codeunit 50206;
+      WhseLFGenMgtL@1000000006 : Codeunit 50307;
+      ItemJournalLineNoL@1000000004 : Integer;
+      ItemJournalDocumentNoL@1000000007 : Code[20];
+      NoSeriesManagementL@1000000008 : Codeunit 396;
+      SellableLocationCodeL@1000000011 : Code[10];
+      UnsellableLocationCodeL@1000000012 : Code[10];
+      WhseLFPurchJobQueueMgtL@1000000013 : Codeunit 50304;
+    BEGIN
+      WhseLFPurchImportL.RESET;
+      IF WhseLFPurchImportL.GET(RecV."Parent Entry No.") THEN
+      BEGIN
+        SellableLocationCodeL := GetSellableLocation(WhseLFPurchImportL."Branch Code");
+        IF SellableLocationCodeL = '' THEN BEGIN
+          WhseLFPurchJobQueueMgtL.CreateLogProcessWMP(FALSE,STRSUBSTNO(HMETxt001,WhseLFPurchImportL."Branch Code"),
+                                                      WhseLFPurchImportL.Filename,'');
+          WhseLFPurchImportL."Error Description 1" := STRSUBSTNO(HMETxt001,WhseLFPurchImportL."Branch Code");
+          WhseLFPurchImportL.MODIFY;
+          EXIT(FALSE);
+        END;
+        UnsellableLocationCodeL := GetUnsellableLocation(WhseLFPurchImportL."Branch Code");
+        IF UnsellableLocationCodeL = '' THEN BEGIN
+          WhseLFPurchJobQueueMgtL.CreateLogProcessWMP(FALSE,STRSUBSTNO(HMETxt002,WhseLFPurchImportL."Branch Code"),
+                                                      WhseLFPurchImportL.Filename,'');
+          WhseLFPurchImportL."Error Description 1" := STRSUBSTNO(HMETxt002,WhseLFPurchImportL."Branch Code");
+          WhseLFPurchImportL.MODIFY;
+          EXIT(FALSE);
+        END;
+        IF WhseLFPurchImportL."Qty. Damaged" <> 0 THEN
+        BEGIN
+          WhseLFSetupL.GET;
+          ItemJournalLineL.RESET;
+          ItemJournalLineL.SETRANGE("Journal Template Name",'ARTIKEL');
+          ItemJournalLineL.SETRANGE("Journal Batch Name",'WHSE_LF');
+          ItemJournalLineL.SETRANGE("Entry Type",ItemJournalLineL."Entry Type"::Transfer);
+          ItemJournalLineL.SETRANGE("Location Code",SellableLocationCodeL);
+          ItemJournalLineL.SETRANGE("New Location Code",UnsellableLocationCodeL);
+          ItemJournalLineL.SETRANGE("Item No.",WhseLFPurchImportL."Item No.");
+          ItemJournalLineL.SETRANGE(Quantity,WhseLFPurchImportL."Qty. Damaged");
+          IF NOT ItemJournalLineL.FINDFIRST THEN BEGIN
+            ItemJournalDocumentNoL := NoSeriesManagementL.GetNextNo(WhseLFSetupL."Transfer Item Journal Nos.",WORKDATE,FALSE);
+
+            ItemJournalLineL.RESET;
+            ItemJournalLineL.INIT;
+            ItemJournalLineL.VALIDATE("Journal Template Name",'ARTIKEL');
+            ItemJournalLineL.VALIDATE("Journal Batch Name",'WHSE_LF');
+            RecRefL.GETTABLE(ItemJournalLineL);
+            ItemJournalLineL.VALIDATE("Line No.",LibraryUtilityL.GetNewLineNo(RecRefL,ItemJournalLineL.FIELDNO("Line No.")));
+            ItemJournalLineL.INSERT(TRUE);
+            ItemJournalLineL.VALIDATE("Document No.",ItemJournalDocumentNoL);
+            ItemJournalLineL.VALIDATE("Posting Date",WhseLFPurchImportL."Receipt Date");
+            ItemJournalLineL.VALIDATE("Entry Type",ItemJournalLineL."Entry Type"::Transfer);
+            ItemJournalLineL.VALIDATE("Item No.",WhseLFPurchImportL."Item No.");
+            ItemJournalLineL.VALIDATE("Location Code",SellableLocationCodeL);
+            ItemJournalLineL.VALIDATE("New Location Code",UnsellableLocationCodeL);
+            ItemJournalLineL.VALIDATE(Quantity,WhseLFPurchImportL."Qty. Damaged");
+            ItemJournalLineL."Record Entry No." := WhseLFPurchImportL."Entry No.";
+            ItemJournalLineL."Record Table Id" := DATABASE::"Whse. LF Purchase Import";
+            ItemJournalLineL.MODIFY(TRUE);
+
+            RecV."Import Status" := RecV."Import Status"::Processed;
+            RecV."Process Timestamp" := CURRENTDATETIME;
+            RecV.MODIFY;
+            EXIT(TRUE);
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE ProcessWMPLine@1000000026(WhseLFPurchImportV@1000000000 : Record 50303) : Boolean;
+    VAR
+      PurchaseHeaderL@1000000010 : Record 38;
+      PurchaseLineL@1000000009 : Record 39;
+      WhseLFPurchExportHeaderL@1000000006 : Record 50301;
+      WhseLFPurchExportLineL@1000000002 : Record 50302;
+      WhseLFSetupL@1000000001 : Record 50300;
+      ItemJournalL@1000000018 : Record 83;
+      WhseLFPurchJobQueueMgtL@1000000003 : Codeunit 50304;
+      PurchPostL@1000000004 : Codeunit 90;
+      NoSeriesManagementL@1000000017 : Codeunit 396;
+      ItemJnlPostBatch@1000000019 : Codeunit 23;
+      ItemJournalDocumentNoL@1000000016 : Code[10];
+      ItemJournalLineNoL@1000000015 : Integer;
+      TransferHeaderL@1000000012 : Record 5740;
+      TransferLineL@1000000013 : Record 5741;
+      TransferOrderPostReceiptL@1000000014 : Codeunit 5705;
+    BEGIN
+      PurchaseLineL.SETRANGE("Document Type",PurchaseLineL."Document Type"::Order);
+      PurchaseLineL.SETRANGE("Document No.",WhseLFPurchImportV."Receipt No.");
+      IF PurchaseLineL.ISEMPTY THEN
+        PurchaseLineL.SETRANGE("Document No.",COPYSTR(WhseLFPurchImportV."Receipt No.",1,
+                              STRLEN(WhseLFPurchImportV."Receipt No.") - 3));
+
+      PurchaseLineL.SETRANGE("No.",WhseLFPurchImportV."Item No.");
+
+      WhseLFPurchExportHeaderL.SETRANGE("LF Order No.",WhseLFPurchImportV."Receipt No.");
+      WhseLFPurchExportHeaderL.FINDLAST;
+      WhseLFPurchExportLineL.SETRANGE("Entry No.",WhseLFPurchExportHeaderL."Entry No.");
+      WhseLFPurchExportLineL.FINDLAST;
+      PurchaseLineL.SETRANGE("Line No.",WhseLFPurchExportLineL."Attached to Document Line No.");
+
+      IF WhseLFPurchExportHeaderL."Document Type" = WhseLFPurchExportHeaderL."Document Type"::"Transfer Order" THEN BEGIN
+        TransferHeaderL.RESET;
+        TransferHeaderL.SETRANGE("No.",WhseLFPurchExportHeaderL."Document No.");
+        IF TransferHeaderL.FINDFIRST THEN BEGIN
+          TransferLineL.RESET;
+          TransferLineL.SETRANGE("Document No.",TransferHeaderL."No.");
+          //H1423 21.10.14 EHN +++++++++++++++++++++++
+          TransferLineL.SETRANGE("Line No.",WhseLFPurchExportLineL."Attached to Document Line No.");
+          TransferLineL.SETRANGE("Item No.",WhseLFPurchImportV."Item No.");
+          TransferLineL.SETRANGE("Derived From Line No.",0);
+          //H1423 21.10.14 EHN -----------------------
+          IF TransferLineL.FINDFIRST THEN BEGIN
+            REPEAT
+              IF TransferLineL."Line No." = WhseLFPurchExportLineL."Attached to Document Line No." THEN BEGIN
+                IF WhseLFPurchImportV."Partially Completed" THEN
+                  WhseLFPurchJobQueueMgtL.CreateLogProcessWMP(TRUE,STRSUBSTNO(HMETxt010,WhseLFPurchImportV."Entry No.",
+                    TransferLineL."Document No.",TransferLineL."Line No."),WhseLFPurchImportV.Filename,'');
+                IF WhseLFPurchImportV."Qty. Damaged" <> 0 THEN
+                  WhseLFPurchJobQueueMgtL.CreateLogProcessWMP(TRUE,
+                    STRSUBSTNO(HMETxt012,WhseLFPurchImportV."Entry No.",
+                    WhseLFPurchImportV."Qty. Damaged",TransferLineL."Document No.",TransferLineL."Line No."),
+                    WhseLFPurchImportV.Filename,'');
+                //H1628 10.10.14 EHN ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+                IF WhseLFPurchImportV.Quantity < TransferLineL."Qty. in Transit" THEN
+                  WhseLFPurchJobQueueMgtL.CreateLogProcessWMP(FALSE,
+                    STRSUBSTNO(HMETxt007,PurchaseHeaderL.TABLECAPTION,PurchaseLineL."Document No.",
+                    TransferLineL."Line No.",TransferLineL."Qty. in Transit",WhseLFPurchImportV.Quantity),
+                    WhseLFPurchImportV.Filename,'');
+                IF (WhseLFPurchImportV.Quantity > TransferLineL."Qty. in Transit") THEN
+                  WhseLFPurchJobQueueMgtL.CreateLogProcessWMP(FALSE,
+                    STRSUBSTNO(HMETxt008,PurchaseHeaderL.TABLECAPTION,PurchaseLineL."Document No.",
+                    TransferLineL."Line No.",TransferLineL."Qty. in Transit",WhseLFPurchImportV.Quantity),
+                    WhseLFPurchImportV.Filename,'');
+                //H1628 10.10.14 EHN --------------------------------------------------------
+                TransferLineL.VALIDATE("Qty. to Receive",WhseLFPurchImportV.Quantity);
+              END ELSE BEGIN
+                TransferLineL.VALIDATE("Qty. to Receive",0);
+              END;
+              TransferLineL."Record Entry No." := WhseLFPurchImportV."Entry No.";
+              TransferLineL."Record Table Id" := DATABASE::"Whse. LF Purchase Import";
+              TransferLineL.MODIFY;
+            UNTIL TransferLineL.NEXT = 0;
+
+            TransferHeaderL.GET(TransferLineL."Document No.");
+            TransferHeaderL.VALIDATE("Posting Date",WhseLFPurchImportV."Receipt Date");
+            TransferOrderPostReceiptL.SetHideValidationDialog(TRUE);
+            TransferOrderPostReceiptL.RUN(TransferHeaderL);
+
+          END;
+        END ELSE BEGIN
+          TransferHeaderL.FINDFIRST;
+        END;
+      END ELSE
+      //H1628 10.10.14 EHN ++++++++++++++++++++++
+      IF PurchaseLineL.FINDFIRST THEN BEGIN
+      //H1628 10.10.14 EHN ----------------------
+        IF PurchaseLineL."Transfer Order No." = '' THEN BEGIN
+          // kein Transfer Order vorhanden
+          // Qty. to Receive fÅr alle Zeilen auf 0 setzen
+          PurchaseLineL.SETRANGE("No.");
+          PurchaseLineL.SETRANGE("Line No.");
+          PurchaseLineL.FINDFIRST;
+          REPEAT
+            PurchaseLineL.VALIDATE("Qty. to Receive",0);
+            PurchaseLineL.VALIDATE("Qty. to Invoice",0);
+            PurchaseLineL.MODIFY;
+          UNTIL PurchaseLineL.NEXT = 0;
+
+          PurchaseLineL.SETRANGE("Line No.",WhseLFPurchExportLineL."Attached to Document Line No.");
+          PurchaseLineL.SETRANGE("No.",WhseLFPurchImportV."Item No.");
+          PurchaseLineL.FINDFIRST;
+
+          // wenn Teilabschluss oder Damaged, dann Log erzeugen
+          IF WhseLFPurchImportV."Partially Completed" THEN
+            WhseLFPurchJobQueueMgtL.CreateLogProcessWMP(TRUE,STRSUBSTNO(HMETxt010,WhseLFPurchImportV."Entry No.",
+                                   PurchaseLineL."Document No.",PurchaseLineL."Line No."),WhseLFPurchImportV.Filename,'');
+          IF WhseLFPurchImportV."Qty. Damaged" <> 0 THEN
+            WhseLFPurchJobQueueMgtL.CreateLogProcessWMP(TRUE,
+                                   STRSUBSTNO(HMETxt012,WhseLFPurchImportV."Entry No.",
+                                   WhseLFPurchImportV."Qty. Damaged",PurchaseLineL."Document No.",PurchaseLineL."Line No."),
+                                   WhseLFPurchImportV.Filename,'');
+          IF WhseLFPurchImportV.Quantity < PurchaseLineL."Outstanding Quantity" THEN // Unterlieferung
+            WhseLFPurchJobQueueMgtL.CreateLogProcessWMP(FALSE,
+                                   STRSUBSTNO(HMETxt007,PurchaseHeaderL.TABLECAPTION,PurchaseLineL."Document No.",
+                                   PurchaseLineL."Line No.",PurchaseLineL."Outstanding Quantity",WhseLFPurchImportV.Quantity),
+                                   WhseLFPurchImportV.Filename,'');
+          IF (WhseLFPurchImportV.Quantity > PurchaseLineL."Outstanding Quantity") THEN BEGIN // öberlieferung
+            WhseLFPurchJobQueueMgtL.CreateLogProcessWMP(FALSE,
+                                   STRSUBSTNO(HMETxt008,PurchaseHeaderL.TABLECAPTION,PurchaseLineL."Document No.",
+                                   PurchaseLineL."Line No.",PurchaseLineL."Outstanding Quantity",WhseLFPurchImportV.Quantity),
+                                   WhseLFPurchImportV.Filename,'');
+            IF PurchaseLineL."Outstanding Quantity" <= 0 THEN
+              WhseLFPurchImportV.Quantity := 0
+            ELSE
+              WhseLFPurchImportV.Quantity := PurchaseLineL."Outstanding Quantity";
+          END;
+          PurchaseLineL."Record Entry No." := WhseLFPurchImportV."Entry No.";
+          PurchaseLineL."Record Table Id" := DATABASE::"Whse. LF Purchase Import";
+          //H1423 29.10.14 EHN ++++++++++++++++++++++++++++++++++++++++++++++++++
+          WhseLFSetupL.GET;
+          IF WhseLFPurchImportV."Stock Type" = WhseLFSetupL."Unsellable Stock Type" THEN BEGIN
+            IF PurchaseLineL."Unsellable Quantity" = 0 THEN
+              PurchaseLineL."Unsellable Quantity" := WhseLFPurchImportV.Quantity
+            ELSE
+              PurchaseLineL."Unsellable Quantity" := PurchaseLineL."Unsellable Quantity" + WhseLFPurchImportV.Quantity;
+          END;
+          //H1423 29.10.14 EHN --------------------------------------------------
+
+          PurchaseLineL.VALIDATE("Qty. to Receive",WhseLFPurchImportV.Quantity);
+          PurchaseLineL.MODIFY;
+          //H1423 29.10.14 EHN ++++++++++++++++++++++++++++++++++++++++++++++++++
+          //COMMIT;
+          //H1423 29.10.14 EHN --------------------------------------------------
+
+          PurchaseHeaderL.GET(PurchaseLineL."Document Type",PurchaseLineL."Document No.");
+          PurchaseHeaderL.VALIDATE("Posting Date",WhseLFPurchImportV."Receipt Date");
+          PurchaseHeaderL.Receive := TRUE;
+          PurchaseHeaderL.Invoice := FALSE;
+          PurchPostL.RUN(PurchaseHeaderL);
+          //H1423 29.10.14 EHN ++++++++++++++++++++++++++++++++++++++++++++++++++
+
+          IF WhseLFPurchImportV."Stock Type" = WhseLFSetupL."Unsellable Stock Type" THEN BEGIN
+             ItemJournalDocumentNoL := NoSeriesManagementL.GetNextNo(WhseLFSetupL."Transfer Item Journal Nos.",WORKDATE,TRUE);
+
+            ItemJournalL.RESET;
+            ItemJournalL.SETRANGE("Journal Template Name",'UMLAGERUNG');
+            ItemJournalL.SETRANGE("Journal Batch Name",'WHSELF');
+            IF ItemJournalL.FINDLAST THEN
+              ItemJournalLineNoL := ItemJournalL."Line No." + 10000
+            ELSE
+              ItemJournalLineNoL := 10000;
+
+            ItemJournalL.RESET;
+            ItemJournalL.LOCKTABLE;
+
+            ItemJournalL.INIT;
+            ItemJournalL.VALIDATE("Journal Template Name",'UMLAGERUNG');
+            ItemJournalL.VALIDATE("Journal Batch Name",'WHSELF');
+            ItemJournalL.VALIDATE("Line No.",ItemJournalLineNoL);
+            ItemJournalL.INSERT(TRUE);
+            ItemJournalL.VALIDATE("Entry Type",ItemJournalL."Entry Type"::Transfer);
+            ItemJournalL.VALIDATE("Document No.",ItemJournalDocumentNoL);
+            ItemJournalL.VALIDATE("Posting Date", WhseLFPurchImportV."Receipt Date");
+            ItemJournalL.VALIDATE("Item No.",WhseLFPurchImportV."Item No.");
+            ItemJournalL."Shortcut Dimension 2 Code" := WhseLFPurchImportV."Item No.";
+            ItemJournalL.VALIDATE("Location Code",GetSellableLocation(WhseLFPurchImportV."Branch Code"));
+            ItemJournalL.VALIDATE("New Location Code",GetUnsellableLocation(WhseLFPurchImportV."Branch Code"));
+            ItemJournalL.VALIDATE(Quantity,ABS(WhseLFPurchImportV.Quantity));
+            ItemJournalL."Record Entry No." := WhseLFPurchImportV."Entry No.";
+            ItemJournalL."Record Table Id" := DATABASE::"RHD Purchase Import";
+            ItemJournalL.MODIFY(TRUE);
+            ItemJnlPostBatch.RUN(ItemJournalL);
+
+          END;
+          //H1423 29.10.14 EHN --------------------------------------------------
+
+
+        END ELSE BEGIN
+
+          // Transfer Order
+          TransferLineL.SETRANGE("Document No.",PurchaseLineL."Transfer Order No.");
+          TransferLineL.SETRANGE("Line No.",PurchaseLineL."Transfer Order Line No.");
+          TransferLineL.SETRANGE("Item No.",WhseLFPurchImportV."Item No.");
+          //H1628 10.10.14 EHN +++++++++++++++++++++++
+          TransferLineL.SETRANGE("Derived From Line No.",0);
+          //H1628 10.10.14 EHN -----------------------
+          IF NOT TransferLineL.ISEMPTY THEN BEGIN
+
+            TransferLineL.SETRANGE("Line No.");
+            TransferLineL.SETRANGE("Item No.");
+            TransferLineL.FIND('-');
+            REPEAT
+              TransferLineL.VALIDATE("Qty. to Receive",0);
+              TransferLineL.MODIFY;
+            UNTIL TransferLineL.NEXT = 0;
+
+            TransferLineL.SETRANGE("Line No.",PurchaseLineL."Transfer Order Line No.");
+            TransferLineL.SETRANGE("Item No.",WhseLFPurchImportV."Item No.");
+            TransferLineL.FINDFIRST;
+
+            // wenn Teilabschluss oder Damaged, dann Log erzeugen
+            IF WhseLFPurchImportV."Partially Completed" THEN
+              WhseLFPurchJobQueueMgtL.CreateLogProcessWMP(
+                TRUE,
+                STRSUBSTNO(HMETxt010,WhseLFPurchImportV."Entry No.",TransferLineL."Document No.",TransferLineL."Line No."),
+                WhseLFPurchImportV.Filename,'');
+            IF WhseLFPurchImportV."Qty. Damaged" <> 0 THEN
+              WhseLFPurchJobQueueMgtL.CreateLogProcessWMP(
+                TRUE,
+                STRSUBSTNO(HMETxt012,WhseLFPurchImportV."Entry No.",
+                  WhseLFPurchImportV."Qty. Damaged",TransferLineL."Document No.",TransferLineL."Line No."),
+                WhseLFPurchImportV.Filename,'');
+            //H1628 10.10.14 EHN ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            IF WhseLFPurchImportV.Quantity < TransferLineL."Qty. in Transit" THEN
+              WhseLFPurchJobQueueMgtL.CreateLogProcessWMP(
+                FALSE,
+                STRSUBSTNO(HMETxt007,TransferHeaderL.TABLECAPTION,TransferLineL."Document No.",
+                           TransferLineL."Line No.",TransferLineL."Qty. in Transit",WhseLFPurchImportV.Quantity),
+                WhseLFPurchImportV.Filename,'');
+            IF WhseLFPurchImportV.Quantity > TransferLineL."Qty. in Transit" THEN BEGIN
+              WhseLFPurchJobQueueMgtL.CreateLogProcessWMP(
+                FALSE,
+                STRSUBSTNO(HMETxt008,TransferHeaderL.TABLECAPTION,TransferLineL."Document No.",
+                           TransferLineL."Line No.",TransferLineL."Qty. in Transit",WhseLFPurchImportV.Quantity),
+                WhseLFPurchImportV.Filename,'');
+
+              IF TransferLineL."Qty. in Transit" <= 0 THEN
+                WhseLFPurchImportV.Quantity := 0
+              ELSE
+                WhseLFPurchImportV.Quantity := TransferLineL."Qty. in Transit";
+            END;
+            //H1628 10.10.14 EHN --------------------------------------------------------
+            TransferLineL."Record Entry No." := WhseLFPurchImportV."Entry No.";
+            TransferLineL."Record Table Id" := DATABASE::"Whse. LF Purchase Import";
+
+            TransferLineL.VALIDATE("Qty. to Receive",WhseLFPurchImportV.Quantity);
+            TransferLineL.MODIFY;
+            COMMIT;
+
+            TransferHeaderL.GET(TransferLineL."Document No.");
+            TransferHeaderL.VALIDATE("Posting Date",WhseLFPurchImportV."Receipt Date");
+            TransferOrderPostReceiptL.SetHideValidationDialog(TRUE);
+            TransferOrderPostReceiptL.RUN(TransferHeaderL);
+          END ELSE
+            TransferLineL.FINDFIRST;
+        END;
+      END ELSE
+        PurchaseLineL.FINDFIRST;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE ProcessUMPLine@1000000022(VAR RecR@1000000000 : Record 50309) : Boolean;
+    VAR
+      WhseLFSetupL@1000000003 : Record 50300;
+      TransferHeaderL@1000000002 : Record 5740;
+      TransferLineL@1000000001 : Record 5741;
+      ItemJournalL@1000000006 : Record 83;
+      WhseLFItemLedgerEntryL@1000000004 : Record 50311;
+      RecRefL@1000000016 : RecordRef;
+      LibraryUtilityL@1000000015 : Codeunit 50206;
+      NoSeriesManagementL@1000000008 : Codeunit 396;
+      WhseLFGenMgtL@1000000009 : Codeunit 50307;
+      ERR_NOTHING_TO_DO@1000000010 : TextConst 'ENU=There is nothing to post. Entry %1 has %2 %3.';
+      WhseLFPurchJobQueueMgtL@1000000011 : Codeunit 50304;
+      ItemJournalDocumentNo@1000000012 : Code[20];
+      ResultL@1000000005 : Boolean;
+      SellableLocationCodeL@1000000013 : Code[10];
+      UnsellableLocationCodeL@1000000007 : Code[10];
+    BEGIN
+      //DO NOTHING FOR NOW
+      WhseLFSetupL.GET;
+      IF RecR."Record Type" = 'UMP' THEN BEGIN
+        IF RecR.Quantity <> 0 THEN BEGIN
+          IF (RecR."Relocation Reason" = RecR."Relocation Reason"::Disposal)
+            AND (RecR."Inventory Type" = '') THEN BEGIN
+
+            ItemJournalDocumentNo := NoSeriesManagementL.GetNextNo(WhseLFSetupL."Transfer Item Journal Nos.",WORKDATE,FALSE);
+
+            ItemJournalL.RESET;
+            ItemJournalL.INIT;
+            ItemJournalL.VALIDATE("Journal Template Name",'ARTIKEL');
+            ItemJournalL.VALIDATE("Journal Batch Name",'WHSE_LF');
+            RecRefL.GETTABLE(ItemJournalL);
+            ItemJournalL.VALIDATE("Line No.",LibraryUtilityL.GetNewLineNo(RecRefL,ItemJournalL.FIELDNO("Line No.")));
+            ResultL := ItemJournalL.INSERT(TRUE);
+            ItemJournalL.VALIDATE("Document No.",ItemJournalDocumentNo);
+            ItemJournalL.VALIDATE("Entry Type",ItemJournalL."Entry Type"::"Negative Adjmt.");
+            ItemJournalL.VALIDATE("Posting Date",VARIANT2DATE(RecR."Entry Timestamp"));
+            ItemJournalL.VALIDATE("Item No.",RecR."Item No.");
+            ItemJournalL.VALIDATE(Quantity,ABS(RecR.Quantity));
+            ItemJournalL."Record Entry No." := RecR."Entry No.";
+            ItemJournalL."Record Table Id" := DATABASE::"Whse. LF UMP Import Line";
+            ResultL := ResultL AND ItemJournalL.MODIFY(TRUE);
+
+          END ELSE BEGIN
+            SellableLocationCodeL := GetSellableLocation(RecR."Branch Code");
+            IF SellableLocationCodeL = '' THEN BEGIN
+              WhseLFPurchJobQueueMgtL.CreateLogProcessUMP(FALSE,STRSUBSTNO(HMETxt001,RecR."Branch Code"),RecR."File Name",'');
+              RecR."Error Description 1" := STRSUBSTNO(HMETxt001,RecR."Branch Code");
+              RecR.MODIFY;
+              EXIT(FALSE);
+            END;
+            UnsellableLocationCodeL := GetUnsellableLocation(RecR."Branch Code");
+            IF UnsellableLocationCodeL = '' THEN BEGIN
+              WhseLFPurchJobQueueMgtL.CreateLogProcessUMP(FALSE,STRSUBSTNO(HMETxt002,RecR."Branch Code"),RecR."File Name",'');
+              RecR."Error Description 1" := STRSUBSTNO(HMETxt002,RecR."Branch Code");
+              RecR.MODIFY;
+              EXIT(FALSE);
+            END;
+            IF RecR."Item Type" = RecR."Item Type"::Unsellable THEN BEGIN
+
+              ItemJournalDocumentNo := NoSeriesManagementL.GetNextNo(WhseLFSetupL."Transfer Item Journal Nos.",WORKDATE,FALSE);
+
+              ItemJournalL.RESET;
+              ItemJournalL.INIT;
+              ItemJournalL.VALIDATE("Journal Template Name",'ARTIKEL');
+              ItemJournalL.VALIDATE("Journal Batch Name",'WHSE_LF');
+              RecRefL.GETTABLE(ItemJournalL);
+              ItemJournalL.VALIDATE("Line No.",LibraryUtilityL.GetNewLineNo(RecRefL,ItemJournalL.FIELDNO("Line No.")));
+              ResultL := ItemJournalL.INSERT(TRUE);
+              ItemJournalL.VALIDATE("Entry Type",ItemJournalL."Entry Type"::Transfer);
+              ItemJournalL.VALIDATE("Document No.",ItemJournalDocumentNo);
+              ItemJournalL.VALIDATE("Posting Date",VARIANT2DATE(RecR."Entry Timestamp"));
+              ItemJournalL.VALIDATE("Item No.",RecR."Item No.");
+              ItemJournalL.VALIDATE(Quantity,ABS(RecR.Quantity));
+              ItemJournalL.VALIDATE("Location Code",SellableLocationCodeL);
+              ItemJournalL.VALIDATE("New Location Code",UnsellableLocationCodeL);
+              ItemJournalL."Record Entry No." := RecR."Entry No.";
+              ItemJournalL."Record Table Id" := DATABASE::"Whse. LF UMP Import Line";
+              ResultL := ResultL AND ItemJournalL.MODIFY(TRUE);
+
+            END ELSE BEGIN
+
+              ItemJournalDocumentNo := NoSeriesManagementL.GetNextNo(WhseLFSetupL."Transfer Item Journal Nos.",WORKDATE,FALSE);
+
+              ItemJournalL.RESET;
+              ItemJournalL.INIT;
+              ItemJournalL.VALIDATE("Journal Template Name",'ARTIKEL');
+              ItemJournalL.VALIDATE("Journal Batch Name",'WHSE_LF');
+              RecRefL.GETTABLE(ItemJournalL);
+              ItemJournalL.VALIDATE("Line No.",LibraryUtilityL.GetNewLineNo(RecRefL,ItemJournalL.FIELDNO("Line No.")));
+              ResultL := ItemJournalL.INSERT(TRUE);
+              ItemJournalL.VALIDATE("Entry Type",ItemJournalL."Entry Type"::Transfer);
+              ItemJournalL.VALIDATE("Document No.",ItemJournalDocumentNo);
+              ItemJournalL.VALIDATE("Posting Date",VARIANT2DATE(RecR."Entry Timestamp"));
+              ItemJournalL.VALIDATE("Item No.",RecR."Item No.");
+              ItemJournalL.VALIDATE(Quantity,ABS(RecR.Quantity));
+              ItemJournalL.VALIDATE("Location Code",UnsellableLocationCodeL);
+              ItemJournalL.VALIDATE("New Location Code",SellableLocationCodeL);
+              ItemJournalL."Record Entry No." := RecR."Entry No.";
+              ItemJournalL."Record Table Id" := DATABASE::"Whse. LF UMP Import Line";
+              ResultL := ResultL AND ItemJournalL.MODIFY(TRUE);
+
+            END;
+          END;
+        END ELSE BEGIN
+          RecR."Error Description 1" := STRSUBSTNO(ERR_NOTHING_TO_DO,RecR."Entry No.",RecR.FIELDCAPTION(Quantity),RecR.Quantity);
+          RecR.MODIFY;
+        END;
+      END;
+
+      EXIT (ResultL);
+    END;
+
+    PROCEDURE ProcessBMPLine@1000000021(RecV@1000000000 : Record 50310) : Boolean;
+    VAR
+      WebShopStockL@1000000002 : Record 50132;
+      WhseLFSetupL@1000000005 : Record 50300;
+      LocationL@1000000004 : Record 14;
+      WhseLFPurchJobQueueMgtL@1000000003 : Codeunit 50304;
+      SellableLocationCodeL@1000000001 : Code[10];
+    BEGIN
+      WhseLFSetupL.GET;
+      SellableLocationCodeL := GetSellableLocation(RecV."Branch Code");
+      IF SellableLocationCodeL = '' THEN BEGIN
+        //H2158 25.02.15 DMO ++++++++++++++++++++++++++
+        WhseLFPurchJobQueueMgtL.CreateLogProcessBMP(FALSE,STRSUBSTNO(HMETxt001,RecV."Branch Code"),RecV."Client Identifier");
+        //H2158 25.02.15 DMO --------------------------
+        RecV."Error Description 1" := STRSUBSTNO(HMETxt001,RecV."Branch Code");
+        RecV.MODIFY;
+        EXIT(FALSE);
+      END;
+      LocationL.RESET;
+      LocationL.SETRANGE(Code,SellableLocationCodeL);
+      IF LocationL.FINDFIRST THEN;
+
+      WebShopStockL.RESET;
+      WebShopStockL.SETRANGE("Item No.",RecV."Item No.");
+      WebShopStockL.SETRANGE("Stock Location",LocationL."WebShop Location Code");
+      IF WebShopStockL.FINDFIRST THEN BEGIN
+        REPEAT
+          WebShopStockL.Inventory := RecV.Quantity;
+          IF NOT RecV.MODIFY THEN BEGIN
+            //H2158 25.02.15 DMO ++++++++++++++++++++++++++
+            WhseLFPurchJobQueueMgtL.CreateLogProcessBMP(FALSE,COPYSTR(GETLASTERRORTEXT,1,1000),RecV."Client Identifier");
+            //H2158 25.02.15 DMO --------------------------
+            EXIT(FALSE);
+          END;
+        UNTIL WebShopStockL.NEXT = 0;
+      END;
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE GetSellableLocation@1000000024(BranchCodeV@1000000000 : Code[10]) : Code[10];
+    VAR
+      LocationL@1000000001 : Record 14;
+    BEGIN
+      LocationL.RESET;
+      LocationL.SETRANGE("Branch Code",BranchCodeV);
+      LocationL.SETRANGE("Is Sellable Location",TRUE);
+      IF LocationL.FINDFIRST THEN
+        EXIT(LocationL.Code)
+      ELSE
+        EXIT('');
+    END;
+
+    PROCEDURE GetUnsellableLocation@1000000027(BranchCodeV@1000000000 : Code[10]) : Code[10];
+    VAR
+      LocationL@1000000001 : Record 14;
+    BEGIN
+      LocationL.RESET;
+      LocationL.SETRANGE("Branch Code",BranchCodeV);
+      LocationL.SETRANGE("Is Unsellable Location",TRUE);
+      IF LocationL.FINDFIRST THEN
+        EXIT(LocationL.Code)
+      ELSE
+        EXIT('');
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+      H1408     05.08.14   DMA       Copy RHD Interface, rename and implement as Whs LF Interface
+      H1628     10.10.14   EHN       WHSLF: Extend for Containter PO process
+      H1423     22.10.14   EHN       Fix WMP process for posting receipt of transfer order
+      H1796     24.11.14   DMA       BUG: Prevent WEA Creation for Lines where Branch Code is not equal to the used function,CODECHANGE
+      H2146     18.02.15   EHN       Dynamic location for all home24 operated warehouses in WEA
+      H2158     25.02.15   DMO       CODECHANGE: ProcessBMPLine is modified;ProcessWEMLine is corrected
+    }
+    END.
+  }
+}
+

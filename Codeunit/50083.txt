@@ -1,0 +1,726 @@
+OBJECT Codeunit 50083 Cancel Orders not paid
+{
+  OBJECT-PROPERTIES
+  {
+    Date=20.05.14;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=HME0694,GOB;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=BEGIN
+            // Automatic Run (only from Job Queue)
+            CLEARLASTERROR;
+            CancelOrderNotPaid;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      FPCGeneralSetup@1000000000 : Record 50055;
+      eBayNavCXMLLog@1000000003 : Record 5096060;
+      NewSalesHeader@1000000009 : Record 36;
+      NewSalesLine@1000000031 : Record 37;
+      SalesSetup@1000000008 : Record 311;
+      CommentLine@1000000001 : Record 97;
+      AutomatedProcessLog@1000000002 : Record 50110;
+      SalesHeader@1000000004 : Record 36;
+      ReturnReason@1000000035 : Record 6635;
+      PaymentMethod@1000000028 : Record 289;
+      gUndoCancel@1000000010 : Report 50178;
+      Text001@1000000011 : TextConst 'ENU=Order %1 not canceled  - Quantity Shipped or Invoiced is not 0';
+      Text002@1000000012 : TextConst 'ENU=Order %1 has been successfully canceled';
+      Text003@1000000013 : TextConst 'ENU=Order %1 not canceled  - Status code is 50|11|10|1';
+      Text004@1000000014 : TextConst 'ENU=Order %1 canceled automatically after %2 unpaid';
+      Text005@1000000015 : TextConst 'ENU=Order %1 automatically archived';
+      Text006@1000000016 : TextConst 'ENU=Order %1 automatically deleted';
+      Text007@1000000017 : TextConst 'ENU=Order %1 not canceled  - transferred to DocData';
+      Text008@1000000018 : TextConst 'ENU=Please check Payment No. %1 received on %2';
+      Text009@1000000019 : TextConst 'ENU=This Sales Order has no lines!';
+      Text010@1000000020 : TextConst 'ENU=You cannot delete a %1 Order. Please cancel it first.';
+      Text011@1000000021 : TextConst 'ENU=Sales Order %1 is still not %2 old';
+      Text012@1000000022 : TextConst 'ENU=Archived and Deleted';
+      Text013@1000000023 : TextConst 'ENU=System Error: Sales Header %1 does not exist';
+      Text014@1000000024 : TextConst 'ENU=Order %1 has been successfully canceled, archived and deleted';
+      Text015@1000000025 : TextConst 'ENU=This order is already canceled.';
+      Text016@1000000026 : TextConst 'ENU=Shipped Quantity or DHL Status of the Lines failed.';
+      Text017@1000000027 : TextConst 'ENU=Canceled, Archived and Deleted.';
+      Text018@1000000029 : TextConst 'ENU=Payment Method %1 cannot be canceled.';
+      Text019@1000000030 : TextConst 'ENU=Option Archive and Delete is not checked in FPC Gen. Setup';
+      ArchiveManagement@1000000007 : Codeunit 5063;
+      CancelArchDelete@1000000006 : Integer;
+      ToDelete@1000000005 : Boolean;
+      Text020@1000000032 : TextConst 'ENU=Line %1 in Order %2 must be zero.';
+      Text021@1000000033 : TextConst 'ENU=This order is already paid.';
+      Text022@1000000034 : TextConst 'ENU=MagentoCancel function failed. Order %1 couldn''t be cancelled!';
+
+    PROCEDURE CancelArchiveDelete@1000000013(SalesHeader@1000000000 : Record 36;Selection@1000000001 : 'Cancel,Archive-Delete,Cancel-Archive-Delete';ModeTest@1000000002 : Boolean) : Text[250];
+    VAR
+      CodeunitOnRunMgt@1000000008 : Codeunit 50100;
+      AutomatedProcessLog@1000000007 : Record 50110;
+      CommentLine@1000000006 : Record 97;
+      SalesLine@1000000005 : Record 37;
+      FPCManagement@1000000004 : Codeunit 50003;
+      SalesHeaderLoc@1000000003 : Record 36;
+    BEGIN
+      FPCGeneralSetup.GET;
+      NewSalesHeader.GET(SalesHeader."Document Type", SalesHeader."No.");
+      IF NOT PaymentMethod.GET(NewSalesHeader."Payment Method Code") THEN
+        EXIT;
+
+      IF ModeTest = FALSE THEN BEGIN
+        // Test Mode: checks if it is possible to Cancel, Archive, Delete
+        // Cancel Test...
+        IF Selection = Selection::Cancel THEN BEGIN
+
+          // Checks in the NAVConnectWebShopXML table
+          CheckNAVConnectPayment(SalesHeader);
+
+          // Checks Status in DHL History and Quantity Shipped
+          IF SalesLineCheckStatusCode(NewSalesHeader."No.", FORMAT(NewSalesHeader.Status), NewSalesHeader."Order Date",
+            NewSalesHeader) AND SalesLineCheckQuantityShipped(NewSalesHeader."No.", FORMAT(NewSalesHeader.Status),
+            NewSalesHeader."Order Date", NewSalesHeader) THEN BEGIN
+
+            // Conditions from the report
+            IF NOT SalesHeader."Payment received" THEN
+              EXIT(Text021);
+            IF NOT SalesHeader."XML Kommissionierung" THEN
+              EXIT(Text018);
+            IF SalesHeader.Status = SalesHeader.Status::Canceled THEN
+              EXIT(Text015);
+
+            IF CALCDATE('-' + FORMAT(FPCGeneralSetup."Days Cancel Orders not paid"), WORKDATE) < SalesHeader."Order Date" THEN
+              EXIT(STRSUBSTNO(Text011, SalesHeader."No.", FORMAT(FPCGeneralSetup."Days Cancel Orders not paid")));
+
+            SalesLine.SETRANGE("Document Type", SalesHeader."Document Type");
+            SalesLine.SETRANGE("Document No.", SalesHeader."No.");
+            SalesLine.SETFILTER(Type, '<>%1', SalesLine.Type::"Charge (Item)");
+            IF SalesLine.ISEMPTY THEN
+              EXIT(Text009);
+            EXIT(STRSUBSTNO(Text002, SalesHeader."No."));
+
+          END ELSE
+            EXIT(Text016);
+
+        END;
+
+        // Delete+Archive Test...
+        IF Selection = Selection::"Archive-Delete" THEN BEGIN
+          IF NewSalesHeader.Status <> NewSalesHeader.Status::Canceled THEN
+            EXIT(STRSUBSTNO(Text010, NewSalesHeader.Status));
+
+          IF CALCDATE('-' + FORMAT(FPCGeneralSetup."Days Archive Autom. Canceled"), WORKDATE) < NewSalesHeader."Order Date" THEN
+            EXIT(STRSUBSTNO(Text011, NewSalesHeader."No.", FORMAT(FPCGeneralSetup."Days Archive Autom. Canceled")));
+
+          // H0687 11.11.13  FX ++++++++++++++++++++++++++
+          NewSalesLine.SETRANGE("Document Type", NewSalesHeader."Document Type");
+          NewSalesLine.SETRANGE("Document No.", NewSalesHeader."No.");
+          IF NewSalesLine.FIND('-') THEN
+            REPEAT
+              IF NewSalesLine.Quantity <> 0 THEN
+                EXIT(STRSUBSTNO(Text020, NewSalesLine."Line No.", NewSalesLine."Document No."));
+            UNTIL NewSalesLine.NEXT = 0;
+          // H0687 11.11.13  FX ---------------------------------
+
+          EXIT(Text012);
+        END;
+
+        // Cancel+Archive+Delete Test...
+        IF Selection = Selection::"Cancel-Archive-Delete" THEN BEGIN
+
+          // Checks in the NAVConnectWebShopXML table
+          CheckNAVConnectPayment(SalesHeader);
+
+          // Checks Status in DHL History and Quantity Shipped
+          IF SalesLineCheckStatusCode(NewSalesHeader."No.", FORMAT(NewSalesHeader.Status), NewSalesHeader."Order Date",
+            NewSalesHeader) AND SalesLineCheckQuantityShipped(NewSalesHeader."No.", FORMAT(NewSalesHeader.Status),
+            NewSalesHeader."Order Date", NewSalesHeader) THEN BEGIN
+
+            // Conditions from the report
+            IF NOT SalesHeader."Payment received" THEN
+              EXIT(Text021);
+            IF NOT SalesHeader."XML Kommissionierung" THEN
+              EXIT(Text018);
+
+            SalesLine.SETRANGE("Document Type", SalesHeader."Document Type");
+            SalesLine.SETRANGE("Document No.", SalesHeader."No.");
+            SalesLine.SETFILTER(Type, '<>%1', SalesLine.Type::"Charge (Item)");
+            IF SalesLine.ISEMPTY THEN
+              EXIT(Text009);
+
+            IF CALCDATE('-' + FORMAT(FPCGeneralSetup."Days Cancel Orders not paid"), WORKDATE) < SalesHeader."Order Date" THEN
+              EXIT(STRSUBSTNO(Text011, SalesHeader."No.", FORMAT(FPCGeneralSetup."Days Cancel Orders not paid")));
+
+            // H0687 12.11.13  FX ++++++++++++++++++++++++++
+            NewSalesLine.SETRANGE("Document Type", NewSalesHeader."Document Type");
+            NewSalesLine.SETRANGE("Document No.", NewSalesHeader."No.");
+            IF NewSalesLine.FIND('-') THEN
+              REPEAT
+                IF NewSalesLine.Quantity <> 0 THEN
+                  EXIT(STRSUBSTNO(Text020, NewSalesLine."Line No.", NewSalesLine."Document No."));
+              UNTIL NewSalesLine.NEXT = 0;
+            // H0687 12.11.13  FX ---------------------------------
+
+            IF SalesHeader.Status <> SalesHeader.Status::Canceled THEN
+              EXIT(Text017)
+            ELSE
+              EXIT(Text012);
+
+          END ELSE
+            EXIT(Text016);
+        END;
+
+      END ELSE BEGIN
+
+        // The real thing: it receives the Sales Header data from the Report
+        // Cancel
+        IF Selection = Selection::Cancel THEN BEGIN
+
+          // Checks in the NAVConnectWebShopXML table
+          CheckNAVConnectPayment(SalesHeader);
+
+          // Checks Status in DHL History and Quantity Shipped
+          IF SalesLineCheckStatusCode(NewSalesHeader."No.", FORMAT(NewSalesHeader.Status), NewSalesHeader."Order Date",
+            NewSalesHeader) AND SalesLineCheckQuantityShipped(NewSalesHeader."No.", FORMAT(NewSalesHeader.Status),
+            NewSalesHeader."Order Date", NewSalesHeader) THEN BEGIN
+
+            // Conditions from the report
+            IF NOT SalesHeader."Payment received" THEN
+              EXIT(Text021);
+            IF NOT SalesHeader."XML Kommissionierung" THEN
+              EXIT(Text018);
+            IF SalesHeader.Status = SalesHeader.Status::Canceled THEN
+              EXIT(Text015);
+
+            IF CALCDATE('-' + FORMAT(FPCGeneralSetup."Days Cancel Orders not paid"), WORKDATE) < SalesHeader."Order Date" THEN
+              EXIT(STRSUBSTNO(Text011, SalesHeader."No.", FORMAT(FPCGeneralSetup."Days Cancel Orders not paid")));
+
+            CLEARLASTERROR;
+            SalesLine.SETRANGE("Document Type", SalesHeader."Document Type");
+            SalesLine.SETRANGE("Document No.", SalesHeader."No.");
+            SalesLine.SETFILTER(Type, '<>%1', SalesLine.Type::"Charge (Item)");
+            IF SalesLine.FIND('-') THEN
+              SalesLine.MODIFYALL(SalesLine."Return Reason Code", FPCGeneralSetup."Cancel Reason not paid",TRUE)
+            ELSE
+              EXIT(Text009);
+
+            COMMIT;
+            CLEAR(FPCManagement);
+            FPCManagement.InitCancelWithoutInterfaces(SalesHeader."No.", 0);
+            IF FPCManagement.RUN THEN BEGIN
+              SalesHeaderLoc.RESET;
+              SalesHeaderLoc.GET(SalesHeader."Document Type", SalesHeader."No.");
+              SalesHeaderLoc."Cancel Without Interfaces" := FALSE;
+              SalesHeaderLoc.VALIDATE("Return Reason Code", FPCGeneralSetup."Cancel Reason not paid");
+
+              //H0584 10.03.14 HCN +++++++++++++++++++++++++++++
+              SalesHeaderLoc.VALIDATE("Status Return Order", SalesHeaderLoc."Status Return Order"::aborted);
+              {
+              SalesHeaderLoc.VALIDATE("Status Return Order", SalesHeaderLoc."Status Return Order"::"8");  // 8 = Geschlossen
+              }
+              //H0584 10.03.14 HCN -----------------------------
+
+              SalesHeaderLoc.MODIFY;
+              CommentLine.InsertOrderHistory(SalesHeader."No.",'AUTOCANCEL',
+                STRSUBSTNO(Text004, SalesHeader."No.", FPCGeneralSetup."Days Cancel Orders not paid"));
+              SaveAutomatedProcessLog(SalesHeader."No.", FORMAT(SalesHeader.Status), SalesHeader."Order Date", 1, SalesHeader,
+                CancelArchDelete);
+            END ELSE BEGIN
+              SalesHeaderLoc.RESET;
+              SalesHeaderLoc.GET(SalesHeader."Document Type", SalesHeader."No.");
+              SalesHeaderLoc."Cancel Without Interfaces" := FALSE;
+              SalesHeaderLoc.MODIFY;
+              SaveAutomatedProcessLog(SalesHeader."No.", FORMAT(SalesHeader.Status), SalesHeader."Order Date", 0, SalesHeader,
+                CancelArchDelete);
+            END;
+          END ELSE
+            EXIT(Text016);
+        END;
+
+        // Archive, Delete
+        IF Selection = Selection::"Archive-Delete" THEN BEGIN
+          IF SalesHeader.Status <> SalesHeader.Status::Canceled THEN
+            EXIT(Text010);
+
+          IF CALCDATE('-' + FORMAT(FPCGeneralSetup."Days Archive Autom. Canceled"), WORKDATE) < NewSalesHeader."Order Date" THEN
+            EXIT(STRSUBSTNO(Text011, NewSalesHeader."No.", FORMAT(FPCGeneralSetup."Days Archive Autom. Canceled")));
+
+          EXIT(DeleteAndArchive(SalesHeader));
+        END;
+
+        // Cancel, Archive and Delete
+        IF Selection = Selection::"Cancel-Archive-Delete" THEN BEGIN
+
+          // Checks in the NAVConnectWebShopXML table
+          CheckNAVConnectPayment(SalesHeader);
+
+          // Checks Status in DHL History and Quantity Shipped
+          IF SalesLineCheckStatusCode(NewSalesHeader."No.", FORMAT(NewSalesHeader.Status), NewSalesHeader."Order Date",
+            NewSalesHeader) AND SalesLineCheckQuantityShipped(NewSalesHeader."No.", FORMAT(NewSalesHeader.Status),
+            NewSalesHeader."Order Date", NewSalesHeader) THEN BEGIN
+
+            // Conditions from the report
+            IF NOT NewSalesHeader."Payment received" THEN
+              EXIT(Text021);
+            IF NewSalesHeader."Payment Method Code" = '' THEN
+              EXIT(STRSUBSTNO(Text018, SalesHeader."Payment Method Code"));
+            IF NOT NewSalesHeader."XML Kommissionierung" THEN
+              EXIT(Text018);
+            IF NewSalesHeader.Status = NewSalesHeader.Status::Canceled THEN
+              EXIT(Text015);
+
+            IF CALCDATE('-' + FORMAT(FPCGeneralSetup."Days Archive Autom. Canceled"), WORKDATE) < NewSalesHeader."Order Date" THEN
+              EXIT(STRSUBSTNO(Text011, NewSalesHeader."No.", FORMAT(FPCGeneralSetup."Days Archive Autom. Canceled")));
+
+            CLEARLASTERROR;
+
+            SalesLine.SETRANGE("Document Type", SalesHeader."Document Type");
+            SalesLine.SETRANGE("Document No.", SalesHeader."No.");
+            SalesLine.SETFILTER(Type, '<>%1', SalesLine.Type::"Charge (Item)");
+            IF SalesLine.FIND('-') THEN
+              SalesLine.MODIFYALL(SalesLine."Return Reason Code", FPCGeneralSetup."Cancel Reason not paid",TRUE)
+            ELSE
+              EXIT(Text009);
+            COMMIT;
+            CLEAR(FPCManagement);
+            FPCManagement.InitCancelWithoutInterfaces(SalesHeader."No.", 0);
+            IF FPCManagement.RUN THEN BEGIN
+              SalesHeaderLoc.RESET;
+              SalesHeaderLoc.GET(SalesHeader."Document Type", SalesHeader."No.");
+              SalesHeaderLoc."Cancel Without Interfaces" := FALSE;
+              SalesHeaderLoc.VALIDATE("Return Reason Code", FPCGeneralSetup."Cancel Reason not paid");
+              //H0584 10.03.14 HCN +++++++++++++++++++++++++++++
+              SalesHeaderLoc.VALIDATE("Status Return Order", SalesHeaderLoc."Status Return Order"::aborted);
+              {
+              SalesHeaderLoc.VALIDATE("Status Return Order", SalesHeaderLoc."Status Return Order"::"8");  // 8 = Geschlossen
+              }
+              //H0584 10.03.14 HCN -----------------------------
+              SalesHeaderLoc.MODIFY;
+              CommentLine.InsertOrderHistory(SalesHeader."No.",'AUTOCANCEL',
+                STRSUBSTNO(Text004, SalesHeader."No.", FPCGeneralSetup."Days Cancel Orders not paid"));
+              SaveAutomatedProcessLog(SalesHeader."No.", FORMAT(SalesHeader.Status), SalesHeader."Order Date", 1, SalesHeader,
+                CancelArchDelete);
+            END ELSE BEGIN
+              SalesHeaderLoc.RESET;
+              SalesHeaderLoc.GET(SalesHeader."Document Type", SalesHeader."No.");
+              SalesHeaderLoc."Cancel Without Interfaces" := FALSE;
+              SalesHeaderLoc.MODIFY;
+              SaveAutomatedProcessLog(SalesHeader."No.", FORMAT(SalesHeader.Status), SalesHeader."Order Date", 0, SalesHeader,
+                CancelArchDelete);
+            END;
+
+            IF NewSalesHeader.GET(SalesHeader."Document Type", SalesHeader."No.") THEN BEGIN
+              IF CALCDATE('-' + FORMAT(FPCGeneralSetup."Days Archive Autom. Canceled"), WORKDATE) < SalesHeader."Order Date" THEN
+                EXIT(STRSUBSTNO(Text011, SalesHeader."No.", FORMAT(FPCGeneralSetup."Days Archive Autom. Canceled")))
+              ELSE
+                DeleteAndArchive(NewSalesHeader);
+            END;
+
+          END ELSE
+            EXIT(Text016);
+
+        END;
+
+        COMMIT;
+
+      END;
+    END;
+
+    PROCEDURE CancelOrderNotPaid@1000000003();
+    VAR
+      SalesHeaderL@1000000000 : Record 36;
+      SalesHeader2L@1000000002 : Record 36;
+      CommentLineL@1000000004 : Record 97;
+      SalesLineL@1000000005 : Record 37;
+      FPCManagement@1000000007 : Codeunit 50003;
+      LocText001@1000000008 : TextConst 'ENU=Cancel Without Interface %1';
+      CodeunitOnRunMgt@1000000001 : Codeunit 50100;
+      ReturnReasonCodeL@1000000003 : Code[10];
+      PreviousPMCodeL@1000000006 : Code[10];
+    BEGIN
+      // H0648 24.01.14 FX +++++++++++++++++++++
+      // Function called from Job Queue
+      FPCGeneralSetup.GET;
+
+      IF FPCGeneralSetup."Archive and delete" THEN
+        CancelArchDelete := 2
+      ELSE
+        CancelArchDelete := 0;
+
+      SalesHeaderL.RESET;
+      SalesHeaderL.SETRANGE("Document Type", SalesHeaderL."Document Type"::Order);
+      SalesHeaderL.SETRANGE("XML Kommissionierung", TRUE);
+      SalesHeaderL.SETRANGE("Payment received", FALSE);
+      SalesHeaderL.SETRANGE("Payment received from", SalesHeaderL."Payment received from"::" ");
+      SalesHeaderL.SETRANGE("Payment received at", 0D);
+      SalesHeaderL.SETRANGE(Status, SalesHeaderL.Status::"Pending Prepayment");
+      IF SalesHeaderL.FIND('-') THEN
+
+        // Cancellation will fail without a Return Reason!
+        ReturnReason.SETRANGE("Applies-to Payment Method Code", SalesHeaderL."Payment Method Code");
+        IF ReturnReason.FINDFIRST THEN BEGIN
+          PreviousPMCodeL := SalesHeaderL."Payment Method Code";
+          ReturnReasonCodeL := ReturnReason.Code;
+        END;
+
+        REPEAT
+
+        IF (PaymentMethod.GET(SalesHeaderL."Payment Method Code")) AND
+          (FORMAT(PaymentMethod."Automatic Cancellation") <> '') THEN
+
+          IF SalesHeaderL."Order Date" < (CALCDATE('-' + FORMAT(PaymentMethod."Automatic Cancellation"), WORKDATE)) THEN BEGIN
+            CLEARLASTERROR;
+            eBayNavCXMLLog.SETRANGE("Source Type", eBayNavCXMLLog."Source Type"::Payment);
+            eBayNavCXMLLog.SETRANGE("Source No.", SalesHeaderL."No.");
+            IF NOT eBayNavCXMLLog.FINDFIRST THEN BEGIN
+              IF SalesLineCheckStatusCode(SalesHeaderL."No.", FORMAT(SalesHeaderL.Status),
+                SalesHeaderL."Order Date", SalesHeaderL) AND
+                SalesLineCheckQuantityShipped(SalesHeaderL."No.", FORMAT(SalesHeaderL.Status),
+                SalesHeaderL."Order Date", SalesHeaderL) THEN BEGIN
+
+                  SalesHeaderL."Return Reason Code" := FPCGeneralSetup."Cancel Reason not paid";
+                  SalesHeaderL."Cancel Without Interfaces" := TRUE;
+                  //H0584 11.03.14 HCN +++++++++++++++++++++++++++++
+                  SalesHeaderL.VALIDATE("Status Return Order", SalesHeaderL."Status Return Order"::aborted);
+                  {
+                  SalesHeaderL.VALIDATE("Status Return Order", SalesHeaderL."Status Return Order"::"8");  // Geschlossen
+                  }
+                  //H0584 11.03.14 HCN -----------------------------
+
+                  SalesHeaderL.MODIFY;
+                  SalesLineL.SETRANGE("Document Type", SalesHeaderL."Document Type");
+                  SalesLineL.SETRANGE("Document No.", SalesHeaderL."No.");
+                  IF SalesLineL.FIND('-') THEN BEGIN
+                    SalesLineL.MODIFYALL(SalesLineL."Return Reason Code", FPCGeneralSetup."Cancel Reason not paid", TRUE);
+                    SalesLineL.MODIFYALL(SalesLineL."Return Reason Code", ReturnReasonCodeL, TRUE);
+                  END;
+
+                  CLEAR(FPCManagement);
+                  FPCManagement.InitCancelWithoutInterfaces(SalesHeaderL."No.", 0);
+                  CLEARLASTERROR;
+                  COMMIT;
+
+                  IF FPCManagement.RUN THEN BEGIN
+                    CommentLineL.InsertOrderHistory(SalesHeaderL."No.",
+                                                    'AUTOCANCEL',
+                                                    STRSUBSTNO(Text004, SalesHeaderL."No.", PaymentMethod."Automatic Cancellation"));
+                    SaveAutomatedProcessLog(SalesHeaderL."No.",
+                                            FORMAT(SalesHeaderL.Status),
+                                            SalesHeaderL."Order Date",
+                                            1,
+                                            SalesHeaderL,
+                                            CancelArchDelete);
+                  END ELSE BEGIN // returns to the previous status
+                    SalesHeader2L.RESET;
+                    SalesHeader2L.GET(SalesHeaderL."Document Type", SalesHeaderL."No.");
+                    SalesHeader2L.VALIDATE("Status Return Order", SalesHeaderL."Status Return Order"::" ");
+                    SalesHeaderL."Return Reason Code" := '';
+                    SalesHeader2L."Cancel Without Interfaces" := FALSE;
+                    SalesHeader2L."Payment Method Code" := PreviousPMCodeL;
+
+                    SalesLineL.SETRANGE("Document Type", SalesHeaderL."Document Type");
+                    SalesLineL.SETRANGE("Document No.", SalesHeaderL."No.");
+                    IF SalesLineL.FIND('-') THEN
+                      SalesLineL.MODIFYALL(SalesLineL."Return Reason Code", '', TRUE);
+
+                    CommentLineL.InsertOrderHistory(SalesHeaderL."No.", 'AUTOCANCEL',
+                      STRSUBSTNO(Text022, SalesHeaderL."No.", PaymentMethod."Automatic Cancellation"));
+                    SaveAutomatedProcessLog(SalesHeaderL."No.", FORMAT(SalesHeaderL.Status), SalesHeaderL."Order Date",
+                      0, SalesHeaderL, CancelArchDelete);
+
+                    SalesHeader2L.MODIFY;
+                  END;
+                END;
+              END ELSE
+                CommentLineL.InsertOrderHistory(SalesHeaderL."No.", 'AUTOCANCEL',
+                  STRSUBSTNO(Text008, eBayNavCXMLLog."Line No.", eBayNavCXMLLog."Conducted at"));
+          END;
+
+        UNTIL SalesHeaderL.NEXT = 0;
+
+      // H0648 24.01.14 FX -------------------------------------------------
+    END;
+
+    PROCEDURE SalesLineCheckStatusCode@1000000000(DocumentNo@1000000001 : Code[20];IncomingStatus@1000000003 : Text[30];OrderDate@1000000004 : Date;SalesHeaderRec@1000000005 : Record 36) OutputChecked : Boolean;
+    VAR
+      lDHLStatusHistory@1000000000 : Record 50021;
+      AutomatedProcessLog@1000000002 : Record 50110;
+      lOrderStatusLog@1000000006 : Record 50069;
+      GoOn@1000000008 : Boolean;
+      ParcelStatusHistory@1000000007 : Record 80013;
+      SalesHeaderV@1000000009 : Record 36;
+    BEGIN
+      // Checks wrong status in the DHL Status History
+      SalesHeaderV.GET(SalesHeaderV."Document Type"::Order, DocumentNo);
+      IF SalesHeaderV.Status = SalesHeaderV.Status::Canceled THEN
+        EXIT(TRUE);
+
+      FPCGeneralSetup.GET;
+      CLEAR(GoOn);
+
+      CASE FPCGeneralSetup."Active Parcel Status History" OF
+        FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old":
+          BEGIN
+            lDHLStatusHistory.SETRANGE("Document No.",DocumentNo);
+            lDHLStatusHistory.SETRANGE("Shipment through",lDHLStatusHistory."Shipment through"::Rhenus);
+            lDHLStatusHistory.SETFILTER("Status Code",'50|11|10|1');
+            IF NOT lDHLStatusHistory.ISEMPTY THEN
+              GoOn := TRUE;
+          END;
+        FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+        FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History":
+          BEGIN
+            ParcelStatusHistory.SETCURRENTKEY("Document No.","Document Line No.","Document Type");
+            ParcelStatusHistory.SETRANGE("Document No.",DocumentNo);
+            ParcelStatusHistory.SETRANGE("Used Interface",ParcelStatusHistory."Used Interface"::Rhenus);
+            ParcelStatusHistory.SETFILTER("Status Sub Code",'50|11|10|1');
+            IF NOT ParcelStatusHistory.ISEMPTY THEN
+              GoOn := TRUE;
+          END;
+      END;
+
+      IF GoOn THEN BEGIN
+        SaveAutomatedProcessLog(DocumentNo, IncomingStatus, OrderDate, 2, SalesHeaderRec, CancelArchDelete);
+        CommentLine.InsertOrderHistory(DocumentNo, 'AUTOCANCEL', STRSUBSTNO(Text003, DocumentNo));
+        EXIT(FALSE);
+      END ELSE BEGIN
+        lOrderStatusLog.SETRANGE("Document Type", lOrderStatusLog."Document Type"::"Sales Order");
+        lOrderStatusLog.SETRANGE("Document No.", DocumentNo);
+        lOrderStatusLog.SETRANGE(Code, '17');
+        lOrderStatusLog.SETFILTER(Description, STRSUBSTNO('%1', 'Picklist*'));
+        IF NOT lOrderStatusLog.ISEMPTY THEN BEGIN
+          SaveAutomatedProcessLog(DocumentNo, IncomingStatus, OrderDate, 2, SalesHeaderRec, CancelArchDelete);
+          CommentLine.InsertOrderHistory(DocumentNo, 'AUTOCANCEL', STRSUBSTNO(Text007, DocumentNo));
+          EXIT(FALSE);
+        END ELSE
+          EXIT(TRUE);
+      END;
+    END;
+
+    PROCEDURE SalesLineCheckQuantityShipped@1000000001(DocumentNo@1000000001 : Code[20];IncomingStatus@1000000003 : Text[30];OrderDate@1000000004 : Date;SalesHeaderRec@1000000002 : Record 36) OutputChecked : Boolean;
+    VAR
+      MyCheckedSalesLine@1000000000 : Record 37;
+      SalesHeaderV@1000000005 : Record 36;
+    BEGIN
+      SalesHeaderV.GET(SalesHeaderV."Document Type"::Order, DocumentNo);
+      IF SalesHeaderV.Status = SalesHeaderV.Status::Canceled THEN
+        EXIT(TRUE);
+
+      // Checks if any of the lines has been already shipped or invoiced
+      MyCheckedSalesLine.RESET;
+      MyCheckedSalesLine.SETRANGE("Document Type",MyCheckedSalesLine."Document Type"::Order);
+      MyCheckedSalesLine.SETRANGE("Document No.",DocumentNo);
+      MyCheckedSalesLine.SETFILTER("Quantity Shipped",'<>%1',0);
+      IF MyCheckedSalesLine.FINDFIRST THEN BEGIN
+        SaveAutomatedProcessLog(DocumentNo,IncomingStatus,OrderDate,3,SalesHeaderRec,CancelArchDelete);
+        CommentLine.InsertOrderHistory(DocumentNo,'AUTOCANCEL', STRSUBSTNO(Text001, DocumentNo));
+        EXIT(FALSE);
+      END ELSE
+        EXIT(TRUE);
+    END;
+
+    PROCEDURE CheckNAVConnectPayment@1000000006(SalesHeaderV@1000000000 : Record 36) : Text[250];
+    BEGIN
+      // Checks in the NAVConnectWebShopXML table
+      eBayNavCXMLLog.SETRANGE("Source Type", eBayNavCXMLLog."Source Type"::Payment);
+      eBayNavCXMLLog.SETRANGE("Source No.", SalesHeaderV."No.");
+      IF NOT eBayNavCXMLLog.FINDFIRST THEN
+        EXIT('')
+      ELSE
+        EXIT(STRSUBSTNO(Text008, eBayNavCXMLLog."Line No.", eBayNavCXMLLog."Conducted at"));
+    END;
+
+    PROCEDURE SaveAutomatedProcessLog@1000000005(DocumentNo@1000000002 : Code[20];IncomingStatus@1000000001 : Text[30];OrderDate@1000000000 : Date;StartOption@1000000003 : Integer;SalesHeaderV@1000000004 : Record 36;Selection@1000000005 : 'Cancel,Archive-Delete,Cancel-Archive-Delete');
+    BEGIN
+      // Selection:
+      // 0 = Cancel,
+      // 1 = Archive + Delete
+      // 2 = Cancel + Archive + Delete
+
+      // Saves the result of the process in the log table 50110
+      AutomatedProcessLog.INIT;
+      AutomatedProcessLog."Entry No." := AutomatedProcessLog.GetNextEntryNo;
+      AutomatedProcessLog."Log Type" := 'AUTOCANCEL';
+      AutomatedProcessLog."Document Type" := AutomatedProcessLog."Document Type"::Order;
+      AutomatedProcessLog."Document No." := DocumentNo;
+      AutomatedProcessLog.Date := TODAY;
+      AutomatedProcessLog.Time := TIME;
+      AutomatedProcessLog."Order status" := IncomingStatus;
+      AutomatedProcessLog."Order date" := OrderDate;
+      AutomatedProcessLog.Elapsed := WORKDATE - OrderDate;
+      AutomatedProcessLog."Days Cancel Orders Not Paid" := CALCDATE(FPCGeneralSetup."Days Cancel Orders not paid", TODAY) - TODAY;
+      CASE StartOption OF
+        0:
+          BEGIN
+            AutomatedProcessLog.Status := AutomatedProcessLog.Status::Error;
+            AutomatedProcessLog."Error Text 1" := COPYSTR(GETLASTERRORTEXT, 1, 250);
+            AutomatedProcessLog."Error Text 2" := COPYSTR(GETLASTERRORTEXT, 251, 500);
+            AutomatedProcessLog."Error Text 3" := COPYSTR(GETLASTERRORTEXT, 501, 750);
+            AutomatedProcessLog."Error Text 4" := COPYSTR(GETLASTERRORTEXT, 751, 1000);
+          END;
+        1:
+          BEGIN
+            AutomatedProcessLog.Status := AutomatedProcessLog.Status::Success;
+            AutomatedProcessLog."Error Text 1" := STRSUBSTNO(Text002, DocumentNo);
+            IF Selection = Selection::"Cancel-Archive-Delete" THEN BEGIN
+              DeleteAndArchive(SalesHeaderV);     // ##########################
+              AutomatedProcessLog."Error Text 1" := STRSUBSTNO(Text014, DocumentNo);
+            END;
+            AutomatedProcessLog."Error Text 2" := '';
+            AutomatedProcessLog."Error Text 3" := '';
+            AutomatedProcessLog."Error Text 4" := '';
+          END;
+        2:
+          BEGIN
+            AutomatedProcessLog.Status := AutomatedProcessLog.Status::Error;
+            AutomatedProcessLog."Error Text 1" := STRSUBSTNO(Text003, DocumentNo);
+            AutomatedProcessLog."Error Text 2" := '';
+            AutomatedProcessLog."Error Text 3" := '';
+            AutomatedProcessLog."Error Text 4" := COPYSTR(GETLASTERRORTEXT, 1, 250);
+          END;
+        3:
+          BEGIN
+            AutomatedProcessLog.Status := AutomatedProcessLog.Status::Error;
+            AutomatedProcessLog."Error Text 1" := STRSUBSTNO(Text001, DocumentNo);
+            AutomatedProcessLog."Error Text 2" := '';
+            AutomatedProcessLog."Error Text 3" := '';
+            AutomatedProcessLog."Error Text 4" := COPYSTR(GETLASTERRORTEXT, 1, 250);
+          END;
+      END;
+
+      IF (AutomatedProcessLog."Error Text 1" <> '') OR
+        (AutomatedProcessLog."Error Text 2" <> '') OR
+        (AutomatedProcessLog."Error Text 3" <> '') OR
+        (AutomatedProcessLog."Error Text 4" <> '') THEN BEGIN
+        IF AutomatedProcessLog.INSERT THEN
+          ;
+      END ELSE
+        AutomatedProcessLog.RESET;
+    END;
+
+    PROCEDURE DeleteAndArchive@1000000004(SalesHeaderRec@1000000000 : Record 36) : Text[250];
+    BEGIN
+      SalesSetup.GET;
+      FPCGeneralSetup.GET;
+      IF NOT FPCGeneralSetup."Archive and delete" THEN
+        EXIT(Text019);
+
+      IF NewSalesHeader.GET(SalesHeaderRec."Document Type", SalesHeaderRec."No.") THEN BEGIN
+        IF NewSalesHeader.Status <> NewSalesHeader.Status::Canceled THEN
+          EXIT(STRSUBSTNO(Text010, NewSalesHeader.Status));
+
+        // H0687 11.11.13  FX ++++++++++++++++++++++++++
+        NewSalesLine.SETRANGE("Document Type", NewSalesHeader."Document Type");
+        NewSalesLine.SETRANGE("Document No.", NewSalesHeader."No.");
+        IF NewSalesLine.FIND('-') THEN
+          REPEAT
+            IF NewSalesLine.Quantity <> 0 THEN
+              EXIT(STRSUBSTNO(Text020, NewSalesLine."Line No.", NewSalesLine."Document No."));
+          UNTIL NewSalesLine.NEXT = 0;
+        // H0687 12.11.13  FX ---------------------------
+
+        IF CALCDATE('-' + FORMAT(FPCGeneralSetup."Days Archive Autom. Canceled"), WORKDATE) < NewSalesHeader."Order Date" THEN
+          EXIT(STRSUBSTNO(Text011, NewSalesHeader."No.", FORMAT(FPCGeneralSetup."Days Archive Autom. Canceled")));
+
+        ArchiveManagement.StoreSalesDocument(NewSalesHeader, FALSE);
+
+        //H0694  13.11.13  ABR  ++++++++++++++++++++++++++++++++
+        {
+        //H0694  13.11.13  ABR  --------------------------------
+        NewSalesHeader.DELETE;
+        //H0694  13.11.13  ABR  ++++++++++++++++++++++++++++++++
+        }
+        DeleteSalesOrder(NewSalesHeader);
+        //H0694  13.11.13  ABR  --------------------------------
+
+        CommentLine.InsertOrderHistory(NewSalesHeader."No.", 'AUTODELETE', STRSUBSTNO(Text006, NewSalesHeader."No."));
+        SaveAutomatedProcessLog(NewSalesHeader."No.", FORMAT(NewSalesHeader.Status), NewSalesHeader."Order Date", 1, NewSalesHeader,1);
+        EXIT(''); // No exit text means it was archived + deleted successfully.
+
+      END ELSE
+        EXIT(STRSUBSTNO(Text013, SalesHeaderRec."No."));
+    END;
+
+    PROCEDURE DeleteSalesOrder@1000000002(SalesHeaderV@1000000000 : Record 36);
+    VAR
+      SalesLineL@1000000001 : Record 37;
+    BEGIN
+      //H0694  13.11.13  ABR  ++++++++++++++++++++++++++++++++
+      SalesLineL.SETRANGE("Document Type",SalesHeaderV."Document Type");
+      SalesLineL.SETRANGE("Document No.",SalesHeaderV."No.");
+      IF SalesLineL.FIND('-') THEN
+        REPEAT
+          IF SalesLineL."Attached to Line No." <> 0 THEN BEGIN
+            SalesLineL."Attached to Line No." := 0;
+            SalesLineL.MODIFY;
+          END;
+
+          IF SalesLineL."DD Entry No." <> 0 THEN BEGIN
+            SalesLineL."DD Entry No." := 0;
+            SalesLineL.MODIFY;
+          END;
+
+          IF SalesLineL."Purch. Order Line No." <> 0 THEN BEGIN
+            SalesLineL."Purchase Order No." := '';
+            SalesLineL."Purch. Order Line No." := 0;
+            SalesLineL.MODIFY;
+          END;
+
+          IF SalesLineL."Special Order Purch. Line No." <> 0 THEN BEGIN
+            SalesLineL."Special Order Purchase No." := '';
+            SalesLineL."Special Order Purch. Line No." := 0;
+            SalesLineL.MODIFY;
+          END;
+
+          IF (SalesLineL.Type = SalesLineL.Type::"Charge (Item)") AND (SalesLineL."Payment Sheet Entry No." <> 0) THEN BEGIN
+            SalesLineL."Payment Sheet Entry No." := 0;
+            SalesLineL.MODIFY;
+          END;
+
+        UNTIL SalesLineL.NEXT = 0;
+      SalesHeaderV.DELETE(TRUE);
+      COMMIT;
+      //H0694  13.11.13  ABR  --------------------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation GOB & Home24 NAV Team      |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+
+      P1133       06.11.13  gob-mlan  - Redesign of "DHL Parcel Status History"
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      *** Module: Misc. ***
+      H0584       10.03.14  HCN       Various field changes incorporated
+      H0621       21.10.13  FX        Cancel + Archive + Delete Unpaid Orders
+      H0644       25.10.13  FX        Update for Cancel + Archive + Delete Unpaid Orders
+      H0687       11.11.13  FX        Add check: lines must have Quantity = 0 before archiving/deleting
+      H0694       13.11.13  ABR       Delete Header correctly
+
+      *** Module: FTTC ***
+      H0648       04.11.13  FX        Cancel orders with CC prepayment pending after 2 days (FTTC Intl)
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,294 @@
+OBJECT Codeunit 50121 SII Outgoing WS Connection
+{
+  OBJECT-PROPERTIES
+  {
+    Date=24.09.13;
+    Time=16:38:31;
+    Modified=Yes;
+    Version List=SII;
+  }
+  PROPERTIES
+  {
+    TableNo=50146;
+    OnRun=BEGIN
+            SendXMLFile(Rec);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      ErrorSource@1000000008 : Code[30];
+      Text001@1000000000 : TextConst 'ENU=Authorization User can''t be blank.';
+      Text002@1000000001 : TextConst 'ENU=Authorization User Password can''t be blank.';
+
+    PROCEDURE SendXMLFile@1000000003(VAR p_SIILog_Var@1000000006 : Record 50146) : Boolean;
+    VAR
+      SoapWinHttpConnector@1000000005 : Automation "{46BF17C2-9257-11D5-87EA-00B0D0BE6479} 3.0:{0AF40C55-9257-11D5-87EA-00B0D0BE6479}:'Microsoft Soap WinHttp Connector Type Library (v3.0)'.WinHttpConnector30";
+      SoapSerializer@1000000002 : Automation "{91147A58-DFE4-47C0-8E76-987FC1A6001B} 3.0:{B76585B0-9257-11D5-87EA-00B0D0BE6479}:'Microsoft Soap Type Library v3.0'.SoapSerializer30";
+      DOMDocument@1000000004 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v3.0'.DOMDocument";
+      DOMNodeRoot@1000000015 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMNode";
+      DOMNode@1000000001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMNode";
+      XMLResponseDoc@1000000020 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v3.0'.DOMDocument";
+      TempInstream@1000000003 : InStream;
+      TempOutStream@1000000021 : OutStream;
+      ResponseBigText@1000000007 : BigText;
+      TempText@1000000008 : Text[1000];
+      Position@1000000010 : Integer;
+      ActLen@1000000009 : Integer;
+      XMLValueStartPos@1000000016 : Integer;
+      XMLValueEndPos@1000000017 : Integer;
+      XMLValueLength@1000000018 : Integer;
+      SIIMessage@1000000011 : Record 50141;
+      SIIXMLLog@1000000012 : Record 50145;
+      SIISetup@1000000013 : Record 50140;
+      Filename@1000000014 : Text[1024];
+      LocText001@1000000022 : TextConst 'ENU=Log Entry No. %1 is not active.';
+      XMLDOMManagement@1000000023 : Codeunit 6224;
+      ErrorText@1000000024 : Text[1024];
+      QueueId@1000000025 : Integer;
+      LocText002@1000000000 : TextConst 'ENU=No Request Document.';
+      UseWebServiceAddress@1000000019 : Text[250];
+      UseWebServiceAction@1000000026 : Text[30];
+      UseUserAuthorizationActive@1000000027 : Boolean;
+      UseAuthorizationUser@1000000028 : Text[30];
+      UseAuthorizationPassword@1000000029 : Text[30];
+      UseTimeoutSec@1000000030 : Integer;
+    BEGIN
+      // Clear Automations
+      ErrorSource := 'Automations';
+      IF NOT ISCLEAR(SoapWinHttpConnector) THEN
+        CLEAR(SoapWinHttpConnector);
+      IF NOT ISCLEAR(SoapSerializer) THEN
+        CLEAR(SoapSerializer);
+      IF NOT ISCLEAR(XMLResponseDoc) THEN
+        CLEAR(XMLResponseDoc);
+      IF NOT ISCLEAR(DOMNode) THEN
+        CLEAR(DOMNode);
+      IF NOT ISCLEAR(DOMDocument) THEN
+        CLEAR(DOMDocument);
+
+      // Clear Vars
+      ErrorText := '';
+      Filename := '';
+      SIIMessage.RESET;
+
+      // Create Automations
+      CREATE(DOMDocument);
+      CREATE(SoapWinHttpConnector);
+      CREATE(SoapSerializer);
+      CREATE(XMLResponseDoc);
+
+      ErrorSource := '';
+
+      SIISetup.GET;
+      //S/P0948
+      //IF (SIISetup.Mode <> SIISetup.Mode::Active) OR
+      IF (SIISetup.Mode IN [SIISetup.Mode::Inactive,SIISetup.Mode::"Test Offline"]) OR
+      //E/P0948
+        (p_SIILog_Var.MessageMode IN[p_SIILog_Var.MessageMode::Inactive,p_SIILog_Var.MessageMode::"Test Offline"])
+      THEN BEGIN
+        ErrorSource := 'NAV';
+        ERROR(LocText001,p_SIILog_Var."Entry No.");
+      END;
+      // Temp Blob to Get XML File
+
+      ErrorSource := 'XML';
+      SIIXMLLog.RESET;
+      SIIXMLLog.SETRANGE("Attached to Entry No.",p_SIILog_Var."Entry No.");
+      SIIXMLLog.FIND('+');
+      SIIXMLLog.CALCFIELDS("Request Document");
+      IF NOT SIIXMLLog."Request Document".HASVALUE THEN
+        ERROR(LocText002);
+      SIIXMLLog."Request Document".CREATEINSTREAM(TempInstream);
+
+      ErrorSource := '';
+
+      DOMDocument.async := FALSE;
+      DOMDocument.load(TempInstream);
+
+      //Save XML as Text
+      SIIXMLLog."Request Document".CREATEINSTREAM(TempInstream);
+      ResponseBigText.READ(TempInstream);
+
+      SIIMessage.GET(p_SIILog_Var.AppDomain,p_SIILog_Var."Message Code NAV",p_SIILog_Var."Message Code Shop");
+      //S/P1111
+      IF SIIMessage.Mode = SIIMessage.Mode::Active THEN BEGIN
+        UseWebServiceAddress := SIIMessage."Web Service Address";
+        UseWebServiceAction := SIIMessage."Web Service Action";
+        UseUserAuthorizationActive := SIIMessage."User Authorization Active";
+        UseAuthorizationUser := SIIMessage."Authorization User";
+        UseAuthorizationPassword := SIIMessage."Authorization Password";
+        UseTimeoutSec := SIIMessage."Timeout (Sec.)";
+      END ELSE BEGIN
+        UseWebServiceAddress := SIIMessage."Web Service Address Test";
+        UseWebServiceAction := SIIMessage."Web Service Action Test";
+        UseUserAuthorizationActive := SIIMessage."User Authorization Active Test";
+        UseAuthorizationUser := SIIMessage."Authorization User Test";
+        UseAuthorizationPassword := SIIMessage."Authorization Password Test";
+        UseTimeoutSec := SIIMessage."Timeout (Sec.) Test";
+      END;
+      //E/P1111
+
+      //Initialize Connector
+      ErrorSource := 'Connection';
+      //S/P1111
+      //SoapWinHttpConnector.Property('EndPointURL',SIIMessage."Web Service Address");
+      SoapWinHttpConnector.Property('EndPointURL',UseWebServiceAddress);
+      //E/P1111
+      SoapWinHttpConnector.Connect;
+      ErrorSource := '';
+
+      //S/P1111
+      //IF SIIMessage."User Authorization Active" THEN BEGIN
+      IF UseUserAuthorizationActive THEN BEGIN
+      //E/P1111
+        ErrorSource := '';
+        //S/P1111
+        //SIIMessage.TESTFIELD("Authorization User");
+        //SIIMessage.TESTFIELD("Authorization Password");
+        //SoapWinHttpConnector.Property('AuthUser',SIIMessage."Authorization User");
+        //SoapWinHttpConnector.Property('AuthPassword',SIIMessage."Authorization Password");
+        IF UseAuthorizationUser = '' THEN
+          ERROR(Text001);
+        IF UseAuthorizationPassword = '' THEN
+          ERROR(Text002);
+        SoapWinHttpConnector.Property('AuthUser',UseAuthorizationUser);
+        SoapWinHttpConnector.Property('AuthPassword',UseAuthorizationPassword);
+        //E/P1111
+        ErrorSource := '';
+      END;
+
+      ErrorSource := 'Connection';
+      //S/P1111
+      //SoapWinHttpConnector.Property('Timeout',SIIMessage."Timeout (Sec.)" * 1000);
+      //SoapWinHttpConnector.Property('SoapAction',SIIMessage."Web Service Action");
+      SoapWinHttpConnector.Property('Timeout',UseTimeoutSec * 1000);
+      SoapWinHttpConnector.Property('SoapAction',UseWebServiceAction);
+      //E/P1111
+      SoapWinHttpConnector.BeginMessage;
+
+      //Initialize Serializer
+      SoapSerializer.Init(SoapWinHttpConnector.InputStream);
+      SoapSerializer.StartEnvelope('SOAP','STANDARD');
+      //S/P1111
+      //SoapSerializer.SoapAttribute(STRSUBSTNO('xmlns="%1" >',SIIMessage."Web Service Address"));
+      SoapSerializer.SoapAttribute(STRSUBSTNO('xmlns="%1" >',UseWebServiceAddress));
+      //E/P1111
+      SoapSerializer.StartBody;
+      //S/P1111
+      //SoapSerializer.StartElement(SIIMessage."Web Service Action");
+      SoapSerializer.StartElement(UseWebServiceAction);
+      //E/P1111
+      SoapSerializer.StartElement('request');
+      Position := 1;
+      ActLen := 1;
+      WHILE ActLen <> 0 DO BEGIN
+        ActLen := ResponseBigText.GETSUBTEXT(TempText,Position, 1000);
+        SoapSerializer.WriteString(TempText);
+        Position += 1000;
+        TempText := '';
+      END;
+      SoapSerializer.EndElement;
+      SoapSerializer.EndElement;
+      SoapSerializer.EndBody;
+      SoapSerializer.EndEnvelope;
+      SoapWinHttpConnector.EndMessage;
+
+      XMLResponseDoc.load(SoapWinHttpConnector.OutputStream);
+      ErrorSource := '';
+
+      p_SIILog_Var."Processed At" := CURRENTDATETIME;
+      p_SIILog_Var."Last Successful Step" := p_SIILog_Var."Last Successful Step"::SendWS;
+      p_SIILog_Var.MODIFY;
+      COMMIT;
+
+      // Save Response
+      SIIXMLLog."Response Document".CREATEOUTSTREAM(TempOutStream);
+      XMLResponseDoc.save(TempOutStream);
+      SIIXMLLog.MODIFY;
+
+      IF SIISetup."Archive Files on Harddisk" THEN BEGIN
+        SIISetup.TESTFIELD("Archive Path on Harddisk");
+        IF COPYSTR(SIISetup."Archive Path on Harddisk",STRLEN(SIISetup."Archive Path on Harddisk")-1,1) <> '\' THEN
+          Filename := SIISetup."Archive Path on Harddisk" + '\'
+        ELSE
+          Filename := SIISetup."Archive Path on Harddisk";
+        Filename := FORMAT(p_SIILog_Var."Message Code NAV") +
+                    '\' +
+                    'Response_' +
+                    FORMAT(p_SIILog_Var."Entry No.") +
+                    '.xml';
+        XMLResponseDoc.save(Filename);
+        p_SIILog_Var.ADDLINK(Filename,'Response');
+      END;
+
+      // Queue ID zurÅck ans Log schreiben
+      ErrorSource := 'Response';
+      DOMNode := XMLResponseDoc.selectSingleNode('SOAP-ENV:Envelope/SOAP-ENV:Body/ns1:triggerOrderUpdateResult/response');
+      IF NOT ISCLEAR(DOMNode) THEN BEGIN
+        // Save Shop Queue Id
+        XMLValueStartPos := STRPOS(DOMNode.text,'<queueId>')+9;
+        XMLValueEndPos := STRPOS(DOMNode.text,'</queueId>');
+        XMLValueLength := XMLValueEndPos - XMLValueStartPos;
+        IF XMLValueLength > 0 THEN
+          EVALUATE(QueueId,COPYSTR(DOMNode.text,XMLValueStartPos,XMLValueLength));
+        p_SIILog_Var."Shop Queue ID" := QueueId;
+        p_SIILog_Var.MODIFY;
+
+        //Check Error Text
+        XMLValueStartPos := STRPOS(DOMNode.text,'<error>')+7;
+        XMLValueEndPos := STRPOS(DOMNode.text,'</error>');
+        XMLValueLength := XMLValueEndPos - XMLValueStartPos;
+
+        IF XMLValueLength > 0 THEN BEGIN
+          IF XMLValueLength > 1024 THEN
+            XMLValueLength := 1024;
+          ErrorText := COPYSTR(DOMNode.text,XMLValueStartPos,XMLValueLength);
+          ERROR(ErrorText);
+        END;
+      END ELSE BEGIN
+        //Check if error
+        DOMNode := XMLResponseDoc.selectSingleNode('SOAP-ENV:Envelope/SOAP-ENV:Body/SOAP-ENV:Fault/faultcode');
+        IF NOT ISCLEAR(DOMNode) THEN
+          ErrorText := DOMNode.text;
+        DOMNode := XMLResponseDoc.selectSingleNode('SOAP-ENV:Envelope/SOAP-ENV:Body/SOAP-ENV:Fault/faultstring');
+        IF NOT ISCLEAR(DOMNode) THEN
+          ErrorText := ErrorText + ': ' + COPYSTR(DOMNode.text,1,MAXSTRLEN(ErrorText) - STRLEN(ErrorText) + 2);
+        ERROR(ErrorText);
+      END;
+
+      p_SIILog_Var."Last Successful Step" := p_SIILog_Var."Last Successful Step"::ResponseWS;
+      p_SIILog_Var.MODIFY;
+      COMMIT;
+      ErrorSource := '';
+    END;
+
+    PROCEDURE GetErrorSource@1000000002() : Code[30];
+    BEGIN
+      EXIT(ErrorSource);
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation GOB & Home24 NAV Team      |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+
+      *** Module: SII Shop Interaction Interface ***
+      P0879       26.03.13  gob-rste  Object Created
+      P1111       24.09.13  gob-mlan  Web Service Test Connection
+
+      *** Module: FTTC Face to the Customer ***
+      P0948       06.06.13  gob-rste  Allow WS Connection for Test Offline
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,197 @@
+OBJECT Codeunit 50032 Batch Autom. Inv. Process
+{
+  OBJECT-PROPERTIES
+  {
+    Date=12.03.14;
+    Time=17:25:59;
+    Modified=Yes;
+    Version List=DN(1),GOB1.00,HME0920;
+  }
+  PROPERTIES
+  {
+    TableNo=36;
+    OnRun=VAR
+            LC_SalesPostPrepayments@1000000003 : Codeunit 442;
+            L_AmtPos@1000000000 : Decimal;
+            "**Cosmo**"@1100409000 : Integer;
+            ClearPrePaymentFields@1100409001 : Boolean;
+            LocSalesShipHeader@1000000001 : Record 110;
+            LastDeliveryDateL@1000000002 : Date;
+          BEGIN
+            SalesHeader := Rec;
+            SalesSetup.GET;
+            IF SalesSetup."Calc. Inv. Discount" THEN
+              CalculateInvoiceDiscount;
+
+            SalesHeader.Ship := FALSE;
+            SalesHeader.Invoice := TRUE;
+            //H0920  12.03.14  MBY  +++++++++++++++++++++++++
+            {
+            //H0920  12.03.14  MBY  -------------------------
+            //A/p0173
+            LocSalesShipHeader.RESET;
+            LocSalesShipHeader.SETCURRENTKEY("Order No.","Posting Date");
+            LocSalesShipHeader.SETRANGE("Order No.",SalesHeader."No.");
+            IF LocSalesShipHeader.FINDLAST THEN BEGIN
+              SalesHeader.VALIDATE("Posting Date",LocSalesShipHeader."Posting Date");
+              SalesHeader.VALIDATE("Document Date",LocSalesShipHeader."Posting Date");
+            END;
+            //E/p0173
+            //H0920  12.03.14  MBY  +++++++++++++++++++++++++
+            }
+            LastDeliveryDateL := 0D;
+            //H0920  12.03.14  MBY  -------------------------
+
+            SalesHeader."Last Marketplace" := "Last Marketplace";
+
+            CASE "Document Type" OF
+              "Document Type"::Order:
+                // Post Invoice
+                BEGIN
+
+                  // credit memo if prepayment open
+                  L_AmtPos := 0;
+                  CustLedgEntry.SETCURRENTKEY("Customer No.","Document No.");
+                  CustLedgEntry.SETRANGE("Customer No.",SalesHeader."Sell-to Customer No.");
+                  CustLedgEntry.SETRANGE("External Document No.",SalesHeader."No.");
+                  CustLedgEntry.SETRANGE(Prepayment,TRUE);
+                  CustLedgEntry.SETRANGE(Open,TRUE);
+                  IF CustLedgEntry.FINDSET THEN REPEAT
+                    CustLedgEntry.CALCFIELDS("Remaining Amt. (LCY)");
+                    L_AmtPos := L_AmtPos + CustLedgEntry."Remaining Amt. (LCY)";
+                  UNTIL CustLedgEntry.NEXT = 0;
+                  //A/gob-ko/GOB1.02/18.07.2012
+                  IF (L_AmtPos > 0) AND LC_SalesPostPrepayments.CheckOpenPrepaymentLines(SalesHeader,1) THEN BEGIN
+                  //IF (L_AmtPos > 0) AND NOT LC_SalesPostPrepayments.CheckOpenPrepaymentLines(SalesHeader,1) THEN BEGIN
+                  //E/gob-ko/GOB1.02/18.07.2012
+                    LC_SalesPostPrepayments.CreditMemo(SalesHeader);
+                    // >> CC01
+                    ClearPrePaymentFields := TRUE;
+                    // << CC01
+                    COMMIT;
+                  END;
+
+                  // change sales line
+                  SalesLine.RESET;
+                  SalesLine.SETRANGE("Document Type",SalesHeader."Document Type");
+                  SalesLine.SETRANGE("Document No.",SalesHeader."No.");
+                  SalesLine.SETFILTER(Quantity,'<>0');
+                  IF SalesLine.FINDSET THEN REPEAT
+                    // >> CC01
+                    IF ClearPrePaymentFields THEN BEGIN
+                      SalesLine."Prepayment %" := 0;
+                      SalesLine."Prepmt. Line Amount" := 0;
+                      SalesLine."Prepmt. Amt. Incl. VAT" := 0;
+                      SalesLine."Prepayment Amount" := 0;
+                      SalesLine.MODIFY;
+                    END;
+                    // << CC01
+
+                    IF SalesLine.Type = SalesLine.Type::Item THEN BEGIN
+                      IF SalesLine."Qty. Shipped Not Invoiced" <> 0 THEN BEGIN
+                        SalesLine.VALIDATE("Qty. to Ship",0);
+                        SalesLine.VALIDATE("Qty. to Invoice",SalesLine."Qty. Shipped Not Invoiced");
+                        SalesLine.MODIFY;
+                        //H0920  12.03.14  MBY  +++++++++++++++++++++++++
+                        IF SalesLine."Actual Delivery Date" <> 0DT THEN BEGIN
+                          IF LastDeliveryDateL < DT2DATE(SalesLine."Actual Delivery Date") THEN
+                            LastDeliveryDateL := DT2DATE(SalesLine."Actual Delivery Date");
+                        END ELSE BEGIN
+                          IF LastDeliveryDateL < SalesLine."Expected Delivery Date" THEN
+                            LastDeliveryDateL := SalesLine."Expected Delivery Date";
+                        END;
+                        //H0920  12.03.14  MBY  -------------------------
+                      END ELSE BEGIN
+                        IF (SalesLine."Qty. to Ship" <> 0) OR (SalesLine."Qty. to Invoice" <> 0) THEN BEGIN
+                          SalesLine.VALIDATE("Qty. to Ship",0);
+                          SalesLine.VALIDATE("Qty. to Invoice",0);
+                          SalesLine.MODIFY;
+                        END;
+                      END;
+                    END ELSE
+                      IF (SalesLine."Outstanding Quantity" <> 0) OR (SalesLine."Qty. Shipped Not Invoiced" <> 0) THEN BEGIN
+                        SalesHeader.Ship := TRUE;
+                        SalesLine.VALIDATE("Qty. to Ship",SalesLine."Outstanding Quantity");
+                        SalesLine.VALIDATE("Qty. to Invoice",SalesLine."Outstanding Quantity" + SalesLine."Qty. Shipped Not Invoiced");
+                        SalesLine.MODIFY;
+                      END;
+                  UNTIL SalesLine.NEXT = 0;
+                  //H0920  12.03.14  MBY  +++++++++++++++++++++++++
+                  IF LastDeliveryDateL <> 0D THEN BEGIN
+                    IF SalesHeader."Currency Code" <> '' THEN BEGIN
+                      SalesHeader.SuspendStatusCheck(TRUE);
+                      SalesHeader.SetHideValidationDialog(TRUE);
+                    END;
+                    SalesHeader.VALIDATE("Posting Date",LastDeliveryDateL);
+                    SalesHeader.VALIDATE("Document Date",LastDeliveryDateL);
+                  END;
+                  //H0920  12.03.14  MBY  -------------------------
+
+                  SalesPost.RUN(SalesHeader);
+                END;
+            END;
+
+            Rec := SalesHeader;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      SalesSetup@1000000018 : Record 311;
+      SalesHeader@1000000011 : Record 36;
+      SalesLine@1000000031 : Record 37;
+      CustLedgEntry@1000000006 : Record 21;
+      SalesCalcDisc@1000000028 : Codeunit 60;
+      SalesPost@1000000026 : Codeunit 80;
+      CalcSalesInvDisc@1000000021 : Boolean;
+      Text000@1000000038 : TextConst 'DEU=Bitte das Buchungsdatum eingeben.;ENU=Please enter the posting date.;HUN=KÇrem adja meg a kînyvelÇsi d†tumot.';
+      Text001@1000000037 : TextConst 'DEU=Rechnungen buchen  #1########## @2@@@@@@@@@@@@@;ENU=Posting invoices   #1########## @2@@@@@@@@@@@@@;HUN=Sz†ml†k kînyvelÇse   #1########## @2@@@@@@@@@@@@@';
+      Text002@1000000036 : TextConst 'DEU=%1 Rechnungen von insgesamt %2 wurden gebucht.;ENU=%1 invoices out of a total of %2 have now been posted.;HUN=%2 sz†ml†b¢l %1 sz†mla lett lekînyvelve.';
+      Text003@1000000035 : TextConst 'DEU=Der zu dem neuen Buchungsdatum gehîrige Wechselkurs auf dem Verkaufskopf wird nicht auf die Verkaufszeilen angewendet.;ENU=The exchange rate associated with the new posting date on the sales header will not apply to the sales lines.;HUN=Az £j kînyvelÇsi d†tumhoz kîtãdã †rfolyam nem ÇrvÇnyesÅl majd az elad†s sorokban.';
+      Text004@1000000034 : TextConst 'DEU=Beleg gebucht.;ENU=Document Posted.';
+      Text005@1000000033 : TextConst 'DEU=Verschieben eines erledigten Auftrags.;ENU=Move completed Job.';
+      ErrText001@1000000032 : TextConst 'DEU=Beleg nicht gefunden.;ENU=Document not found.';
+      ErrText002@1000000004 : TextConst 'DEU=Vor Buchungsfunktion;ENU=Before Document-Post';
+      ErrText003@1000000003 : TextConst 'DEU=Drucker nicht gefunden.;ENU=Printer not found.';
+      ErrText004@1000000002 : TextConst 'DEU=Beleg bereits verarbeitet.;ENU=Already processed.';
+      ErrText005@1000000001 : TextConst 'DEU=Wiederholter Buchungsfehler.;ENU=Reoccurring Posting Error.';
+      ErrText006@1000000000 : TextConst 'DEU=Fehler beim Einstellen in Druckwarteschlange.;ENU=Error creating Print-Queue Entry.';
+
+    PROCEDURE CalculateInvoiceDiscount@1();
+    BEGIN
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type",SalesHeader."Document Type");
+      SalesLine.SETRANGE("Document No.",SalesHeader."No.");
+      IF SalesLine.FINDFIRST THEN
+        IF SalesCalcDisc.RUN(SalesLine) THEN BEGIN
+          SalesHeader.GET(SalesHeader."Document Type",SalesHeader."No.");
+          COMMIT;
+        END;
+    END;
+
+    BEGIN
+    {
+      1.00  10.10.11  eich  -object created
+      gob1.00 10.07.12 Korrektur: Posting Date und Document Date wird nicht auf Arbeitsdatum gesetzt,
+      da mit letztem Lieferdatum fakturiert werden soll, dies wird bei den Lieferungsverbuchungen gesetzt
+      gob1.01 17.07.12
+      GOB1.02 18.07.12 énderung Abfrage fÅr Gutschrift Vorauskassen
+      p0173  14.08.12  Buchungsdatum setzen (Dt. letzte Lieferung)
+
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      H0920       12.03.14  MBY       Setting correct posting and document dates + CLEANUP
+    }
+    END.
+  }
+}
+

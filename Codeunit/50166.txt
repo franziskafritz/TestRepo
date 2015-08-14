@@ -1,0 +1,923 @@
+OBJECT Codeunit 50166 EDI ORDERS Export Service
+{
+  OBJECT-PROPERTIES
+  {
+    Date=11.02.15;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=GOB1.00,HME1698;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+            COMMIT;
+
+            CASE sParameter OF
+              //H1473 12.01.15 EHN ++++++++++++++++++++++++++
+              '1': CreateDNandLabel_PDF(rPurchaseHeader,rVendor,TRUE);
+              //H1473 12.01.15 EHN --------------------------
+              '2': CreateDeliveryNoteLabel_PDF(rPurchaseHeader,rVendor,'');
+              '3': cCreateEDISingleOrder.CreateSingleOrder(rPurchaseHeader,FALSE,'','');
+              //H1473, P1106 12.01.15 EHN ++++++++++++++++++++++++++
+              '4': CreateCDLabel_PDF(rPurchaseHeader,rVendor,TRUE);
+              //H1473, P1106 12.01.15 EHN --------------------------
+              //H1698 19.12.14 tec-ar +++++++++++++++
+              '5': CreateHermesDNandLabel_PDF(rPurchaseHeader,rVendor);
+              //H1698 19.12.14 tec-ar ---------------
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      cCreateEDISingleOrder@1000000000 : Codeunit 82857;
+      rPurchaseHeader@1000000003 : Record 38;
+      rVendor@1000000002 : Record 23;
+      sParameter@1000000004 : Code[1];
+      sLabelPath@1000000001 : Text[250];
+      gVend@1000000005 : Record 23;
+      gRHDSetup@1000000006 : Record 50177;
+      "* HME ************************"@1000000007 : Integer;
+      "** HME ***********************"@1000000008 : TextConst;
+      HMEText001@1000000009 : TextConst 'ENU=Could not create runonce.ini setup file for PDF printer.';
+      HMEText002@1000000010 : TextConst 'ENU=Save as pdf';
+      HMEText003@1100409000 : TextConst 'ENU=No PDF Hermes Label for %1 generated.';
+
+    PROCEDURE SetVariables@1000000003(pParameter@1000000003 : Code[1];PurchaseHeader_r@1000000001 : Record 38;Vendor_r@1000000000 : Record 23;LabelPath_r@1000000002 : Text[250]);
+    BEGIN
+      sParameter := pParameter;
+      rPurchaseHeader := PurchaseHeader_r;
+      rVendor := Vendor_r;
+      sLabelPath := LabelPath_r;
+    END;
+
+    PROCEDURE CreateDNandLabel_PDF@1000000000(PurchaseHeaderR@1000000018 : Record 38;VendorR@1000000017 : Record 23;CreateEDIMessageV@1000000029 : Boolean);
+    VAR
+      DHLPaketLabel_l@1000000001 : Report 50009;
+      DHLHDLabel_l@1000000016 : Report 50008;
+      SalesPackingList_l@1000000006 : Report 50020;
+      PurchaseLine_l@1000000002 : Record 39;
+      SalesHeader_l@1000000008 : Record 36;
+      SalesLine_l@1000000007 : Record 37;
+      EDIPartnerDocumentType_l@1000000005 : Record 82852;
+      MailITSetup_l@1000000003 : Record 75402;
+      filename@1000000004 : Text[250];
+      ClientFso@1000000010 : Automation "{420B2830-E718-11CF-893D-00A0C9054228} 1.0:{0D43FE01-F093-11CF-8940-00A0C9054228}:'Microsoft Scripting Runtime'.FileSystemObject";
+      MailIT@1000000011 : OCX "{C8C4804C-89BA-4291-AB58-4C6050B65175}:'ExpandIT.MailIT2'";
+      DefaultPrinterChanged@1000000012 : Boolean;
+      OldDefaultPrinter@1000000013 : Text[250];
+      UserSetup@1000000014 : Record 91;
+      Error001@1000000015 : TextConst 'ENU=No PDF DHL Label for %1 generated.';
+      LabelPath@1000000000 : Text[250];
+      EDIPartner@1000000009 : Record 82851;
+      DHLPaketLabelInt_l@1000000019 : Report 50156;
+      cDPDGeneralMgt@1000000024 : Codeunit 50112;
+      rFPCGeneralSetup@1000000026 : Record 50055;
+      rDPDSetup@1000000027 : Record 50221;
+      "**** HME *********************"@1000000020 : Integer;
+      PreviousPrinterL@1000000021 : Text[250];
+      BullZipPropertiesL@1000000023 : ARRAY [20] OF Text[250];
+      BullZipValuesL@1000000022 : ARRAY [20] OF Text[250];
+      Error002@1000000025 : TextConst 'ENU=No PDF DPD Label for %1 generated.';
+      DPDLabelManagementL@1000000028 : Codeunit 50269;
+      PurchasesSetupL@1000000030 : Record 312;
+      DialogMgmtL@1000000032 : Codeunit 412;
+      SavedFileNameL@1000000033 : Text[250];
+      HermesSetup_l@1000000034 : Record 50319;
+      HesChannel_l@1000000035 : Text[10];
+    BEGIN
+      MailITSetup_l.GET();
+      CREATE(ClientFso,TRUE,TRUE);
+      CLEAR(DHLPaketLabel_l);
+      CLEAR(DHLHDLabel_l);
+
+      //H1473 13.01.15 EHN +++++++++++++++++++++++++++++++++++++++++++
+      IF CreateEDIMessageV THEN
+      //H1473 13.01.15 EHN -------------------------------------------
+        EDIPartnerDocumentType_l.GET(VendorR."EDI ORDERS Partner",1,'ORDERS');
+
+      PurchaseLine_l.SETRANGE("Document Type",PurchaseHeaderR."Document Type");
+      PurchaseLine_l.SETRANGE("Document No.",PurchaseHeaderR."No.");
+      PurchaseLine_l.SETRANGE(Type,PurchaseLine_l.Type::Item);
+      //H1698 19.12.14 tec-ar +++++++++++++++
+      //PurchaseLine_l.SETFILTER("Purchasing Code",'%1|%2|%3','*-4','*-7','*-12');
+      HermesSetup_l.GET;
+      HesChannel_l := '*-' + FORMAT(HermesSetup_l."Channel HES CD-DI");
+      PurchaseLine_l.SETFILTER("Purchasing Code",'%1|%2|%3|%4','*-4','*-7','*-12', HesChannel_l);
+      //H1698 19.12.14 tec-ar ---------------
+
+      //H1473 13.01.15 EHN +++++++++++++++++++++++++++++++++++++++++++
+      IF CreateEDIMessageV THEN
+      //H1473 13.01.15 EHN -------------------------------------------
+        filename := EDIPartnerDocumentType_l."Im-/Export Path" + '\LABEL_' + PurchaseHeaderR."No." + '.pdf';
+
+      IF ClientFso.FileExists(filename) THEN
+        ClientFso.DeleteFile(filename);
+
+      //H1261 18.06.14 DMA +++++++++++++++++++++++++++++++
+      IF MailITSetup_l."Not Used For EDI PDFs" THEN BEGIN
+        UserSetup.GET(USERID);
+        PreviousPrinterL := ChangeDefaultPrinter(UserSetup."PDF Creator");
+        BullZipPropertiesL[1] := 'Output';
+        BullZipPropertiesL[2] := 'ShowPDF';
+        BullZipPropertiesL[3] := 'Author';
+        BullZipPropertiesL[4] := 'ConfirmOverwrite';
+        BullZipPropertiesL[5] := 'showsettings';
+        BullZipPropertiesL[6] := 'ShowProgressFinished';
+
+        BullZipValuesL[1] := filename;
+        BullZipValuesL[2] := 'no';
+        BullZipValuesL[3] := USERID;
+        BullZipValuesL[4] := 'no';
+        BullZipValuesL[5] := 'never';
+        BullZipValuesL[6] := 'no';
+
+        IF NOT CreateRunonceFile(BullZipPropertiesL, BullZipValuesL, UserSetup."PDF Creator") THEN BEGIN
+          ChangeDefaultPrinter(PreviousPrinterL);
+          ERROR(HMEText001);
+        END;
+      END ELSE BEGIN
+      //H1261 18.06.14 DMA -------------------------------
+        MailIT.PDFParameter('Output',filename);
+        MailIT.PDFParameter('ShowPDF','no');
+        MailIT.PDFParameter('Author',USERID);
+        MailIT.PDFPreparePrinter();
+        IF NOT DefaultPrinterChanged THEN BEGIN
+          IF OldDefaultPrinter = '' THEN
+            OldDefaultPrinter := MailIT.GetDefaultPrinter();
+          IF OldDefaultPrinter <> UserSetup."PDF Creator" THEN BEGIN
+            MailIT.SetDefaultPrinter(UserSetup."PDF Creator");
+            DefaultPrinterChanged := TRUE;
+          END;
+        END;
+      //H1261 18.06.14 DMA +++++++++++++++++++++++++++++++
+      END;
+      //H1261 18.06.14 DMA -------------------------------
+
+      PurchaseLine_l.SETFILTER("Purchasing Code",'%1|%2','*-7','*-12');
+      IF PurchaseLine_l.FINDFIRST THEN BEGIN
+        //S/P1272
+        rFPCGeneralSetup.GET;
+        rFPCGeneralSetup.TESTFIELD("Ship. Agent Code DHL");
+        rDPDSetup.GET;
+        rDPDSetup.TESTFIELD("Shipping Agent DPD");
+
+        //S,gob-Fuchs,17.09.14,P1277
+        IF PurchaseLine_l."Sales Order No." <> '' THEN
+          SalesHeader_l.SETRANGE("No.",PurchaseLine_l."Sales Order No.")
+        ELSE
+          IF PurchaseLine_l."Special Order Sales No." <> '' THEN
+            SalesHeader_l.SETRANGE("No.",PurchaseLine_l."Special Order Sales No.");
+        IF SalesHeader_l.FINDFIRST THEN;
+        //E,gob-Fuchs,17.09.14,P1277
+        //S,gob-Fuchs,08.09.2014,P1279
+        //CASE DPDLabelManagement.GetCarrierForDropshipOrder(PurchaseHeader_r,SalesHeader_l) OF
+        SalesLine_l.GET(SalesHeader_l."Document Type"::Order,PurchaseLine_l."Sales Order No.",PurchaseLine_l."Sales Order Line No.");
+        CASE SalesLine_l."Shipping Agent Code" OF
+        //E,gob-Fuchs,08.09.2014,P1279
+          //H1536 11.09.14 EHN +++++++++++++++++++++++++++++
+          //rFPCGeneralSetup."Ship. Agent Code DHL" :
+          rFPCGeneralSetup."Ship. Agent Code DHL",'' :
+          //H1536 11.09.14 EHN -----------------------------
+            BEGIN
+        //E/P1272
+              IF NOT (PurchaseHeaderR."Ship-to Country/Region Code" IN ['DE','']) THEN BEGIN
+                CLEAR(DHLPaketLabelInt_l);
+                IF (VendorR."EDI ORDERS Partner" <> '')
+                AND (EDIPartner.GET(VendorR."EDI ORDERS Partner"))
+                AND NOT (EDIPartner."Surpress Purch. Mail")
+                THEN
+                  DHLPaketLabelInt_l.SetUseExistingDHLLabels(TRUE)
+                ELSE
+                  DHLPaketLabelInt_l.SetUseExistingDHLLabels(FALSE);
+                DHLPaketLabelInt_l.SETTABLEVIEW(PurchaseLine_l);
+                DHLPaketLabelInt_l.USEREQUESTFORM(FALSE);
+                DHLPaketLabelInt_l.RUNMODAL;
+              END ELSE BEGIN
+                CLEAR(DHLPaketLabel_l);
+                IF (VendorR."EDI ORDERS Partner" <> '')
+                AND (EDIPartner.GET(VendorR."EDI ORDERS Partner"))
+                AND NOT (EDIPartner."Surpress Purch. Mail")
+                THEN
+                  DHLPaketLabel_l.SetUseExistingDHLLabels(TRUE)
+                ELSE
+                  DHLPaketLabel_l.SetUseExistingDHLLabels(FALSE);
+                DHLPaketLabel_l.SETTABLEVIEW(PurchaseLine_l);
+                DHLPaketLabel_l.USEREQUESTFORM(FALSE);
+                DHLPaketLabel_l.RUNMODAL;
+              END;
+              //H1473 13.01.15 EHN +++++++++++++++++++++++++++++++++++++++++++
+              IF CreateEDIMessageV THEN
+              //H1473 13.01.15 EHN -------------------------------------------
+                IF (MailIT.WaitForFile(filename,20000) = 0) THEN
+                  ERROR(Error001,PurchaseLine_l."Document No.");
+              LabelPath := filename;
+          //DPD Label Druck
+          //H1473, P1272  13.01.15 EHN +++++++++++++++++++++++++++++++++++++++++++
+            END;
+          rDPDSetup."Shipping Agent DPD" :
+            BEGIN
+              cDPDGeneralMgt.SetEDIPath(filename);
+              filename := cDPDGeneralMgt.FillDPDLabelWithData(PurchaseHeaderR);
+              IF CreateEDIMessageV THEN BEGIN
+                IF (MailIT.WaitForFile(filename,20000) = 0) THEN
+                  ERROR(Error002,filename);
+              END ELSE BEGIN
+                SavedFileNameL := DialogMgmtL.OpenFile(HMEText002,'\LABEL_' + PurchaseHeaderR."No." + '.pdf',0,'',1);
+                COPY(filename,SavedFileNameL);
+              END;
+              LabelPath := filename;
+            END;
+          END;
+          //H1473, P1272 13.01.15 EHN -------------------------------------------
+      END;
+
+      PurchaseLine_l.SETFILTER("Purchasing Code",'%1','*-4');
+      IF PurchaseLine_l.FINDFIRST THEN BEGIN
+        DHLHDLabel_l.SETTABLEVIEW(PurchaseLine_l);
+        DHLHDLabel_l.USEREQUESTFORM(FALSE);
+        DHLHDLabel_l.RUNMODAL;
+        //H1473 13.01.15 EHN +++++++++++++++++++++++++++++++++++++++++++
+        IF CreateEDIMessageV THEN
+        //H1473 13.01.15 EHN -------------------------------------------
+          IF (MailIT.WaitForFile(filename,20000) = 0) THEN
+            ERROR(Error001,PurchaseLine_l."Document No.");
+        LabelPath := filename;
+      END;
+
+      //COMMIT;
+
+      PurchaseLine_l.SETRANGE("Purchasing Code");
+      //H1473 13.01.15 EHN +++++++++++++++++++++++++++++++++++++++++++
+      IF CreateEDIMessageV THEN
+      //H1473 13.01.15 EHN -------------------------------------------
+        CreateDeliveryNoteLabel_PDF(PurchaseHeaderR,VendorR,LabelPath);
+
+      //H1261 18.06.14 DMA +++++++++++++++++++++++++++++
+      IF MailITSetup_l."Not Used For EDI PDFs" THEN BEGIN
+        ChangeDefaultPrinter(PreviousPrinterL);
+      END ELSE BEGIN
+      //H1261 18.06.14 DMA -----------------------------
+        IF DefaultPrinterChanged THEN
+          MailIT.SetDefaultPrinter(OldDefaultPrinter);
+      //H1261 18.06.14 DMA +++++++++++++++++++++++++++++
+      END;
+      //H1261 18.06.14 DMA -----------------------------
+    END;
+
+    PROCEDURE CreateDeliveryNoteLabel_PDF@1000000001(PurchaseHeader_r@1000000016 : Record 38;Vendor_r@1000000001 : Record 23;LabelPath_r@1000000002 : Text[250]);
+    VAR
+      SalesPackingList_l@1000000006 : Report 50020;
+      SalesHeader_l@1000000008 : Record 36;
+      PurchaseLine_l@1000000018 : Record 39;
+      PurchaseHeader_l@1000000019 : Record 38;
+      SalesLine_l@1000000007 : Record 37;
+      EDIPartnerDocumentType_l@1000000005 : Record 82852;
+      MailITSetup_l@1000000003 : Record 75402;
+      OutboundEDIDocumentList_l@1000000009 : Record 82864;
+      OutboundEDIMessage_l@1000000000 : Record 82859;
+      filename@1000000004 : Text[250];
+      ClientFso@1000000010 : Automation "{420B2830-E718-11CF-893D-00A0C9054228} 1.0:{0D43FE01-F093-11CF-8940-00A0C9054228}:'Microsoft Scripting Runtime'.FileSystemObject";
+      MailIT@1000000011 : OCX "{C8C4804C-89BA-4291-AB58-4C6050B65175}:'ExpandIT.MailIT2'";
+      DefaultPrinterChanged@1000000012 : Boolean;
+      OldDefaultPrinter@1000000013 : Text[250];
+      UserSetup@1000000014 : Record 91;
+      Error001@1000000015 : TextConst 'ENU=No PDF Delivery Note for %1 generated.';
+      DNPath@1000000017 : Text[250];
+      "**** HME *********************"@1000000020 : Integer;
+      PreviousPrinterL@1000000023 : Text[250];
+      BullZipPropertiesL@1000000022 : ARRAY [20] OF Text[250];
+      BullZipValuesL@1000000021 : ARRAY [20] OF Text[250];
+    BEGIN
+      MailITSetup_l.GET();
+      CREATE(ClientFso,TRUE,TRUE);
+      CLEAR(SalesPackingList_l);
+      SalesHeader_l.RESET;
+
+      PurchaseLine_l.SETRANGE("Document Type",PurchaseHeader_r."Document Type");
+      PurchaseLine_l.SETRANGE("Document No.",PurchaseHeader_r."No.");
+      PurchaseLine_l.SETRANGE(Type,PurchaseLine_l.Type::Item);
+      PurchaseLine_l.FINDFIRST;
+
+      IF PurchaseLine_l."Sales Order No." <> '' THEN
+        SalesHeader_l.SETRANGE("No.",PurchaseLine_l."Sales Order No.")
+      ELSE
+        IF PurchaseLine_l."Special Order Sales No." <> '' THEN
+          SalesHeader_l.SETRANGE("No.",PurchaseLine_l."Special Order Sales No.");
+      IF SalesHeader_l.FINDFIRST THEN BEGIN
+        EDIPartnerDocumentType_l.GET(Vendor_r."EDI ORDERS Partner",1,'ORDERS');
+
+        filename := EDIPartnerDocumentType_l."Im-/Export Path" + '\DN_' + PurchaseHeader_r."No." + '.pdf';
+
+        IF ClientFso.FileExists(filename) THEN
+          ClientFso.DeleteFile(filename);
+
+        //H1261 18.06.14 DMA +++++++++++++++++++++++++++++++
+        IF MailITSetup_l."Not Used For EDI PDFs" THEN BEGIN
+          UserSetup.GET(USERID);
+          PreviousPrinterL := ChangeDefaultPrinter(UserSetup."PDF Creator");
+          BullZipPropertiesL[1] := 'Output';
+          BullZipPropertiesL[2] := 'ShowPDF';
+          BullZipPropertiesL[3] := 'Author';
+          BullZipPropertiesL[4] := 'ConfirmOverwrite';
+          BullZipPropertiesL[5] := 'showsettings';
+          BullZipPropertiesL[6] := 'ShowProgressFinished';
+
+          BullZipValuesL[1] := filename;
+          BullZipValuesL[2] := 'no';
+          BullZipValuesL[3] := USERID;
+          BullZipValuesL[4] := 'no';
+          BullZipValuesL[5] := 'never';
+          BullZipValuesL[6] := 'no';
+
+          IF NOT CreateRunonceFile(BullZipPropertiesL, BullZipValuesL, UserSetup."PDF Creator") THEN BEGIN
+            ChangeDefaultPrinter(PreviousPrinterL);
+            ERROR(HMEText001);
+          END;
+
+        END ELSE BEGIN
+        //H1261 18.06.14 DMA -------------------------------
+
+          MailIT.PDFParameter('Output',filename);
+          MailIT.PDFParameter('ShowPDF','no');
+          MailIT.PDFParameter('Author',USERID);
+          MailIT.PDFPreparePrinter();
+          IF NOT DefaultPrinterChanged THEN BEGIN
+            IF OldDefaultPrinter = '' THEN
+              OldDefaultPrinter := MailIT.GetDefaultPrinter();
+            IF OldDefaultPrinter <> UserSetup."PDF Creator" THEN BEGIN
+              MailIT.SetDefaultPrinter(UserSetup."PDF Creator");
+              DefaultPrinterChanged := TRUE;
+            END;
+          END;
+
+        //H1261 18.06.14 DMA ++++++++++++++++++++++++++++++
+        END;
+        //H1261 18.06.14 DMA ------------------------------
+
+        SalesPackingList_l.SetParameters(PurchaseLine_l."Document No.");
+        SalesPackingList_l.SETTABLEVIEW(SalesHeader_l);
+        SalesPackingList_l.USEREQUESTFORM(FALSE);
+        SalesPackingList_l.RUNMODAL;
+
+        IF (MailIT.WaitForFile(filename,20000) = 0) THEN
+          ERROR(Error001,PurchaseLine_l."Document No.");
+
+        DNPath := filename;
+
+        cCreateEDISingleOrder.CreateSingleOrder(PurchaseHeader_r,FALSE,LabelPath_r,DNPath);
+      END;
+
+      //H1261 18.06.14 DMA +++++++++++++++++++++++++++++
+      IF MailITSetup_l."Not Used For EDI PDFs" THEN BEGIN
+
+        ChangeDefaultPrinter(PreviousPrinterL);
+
+      END ELSE BEGIN
+      //H1261 18.06.14 DMA -----------------------------
+
+        IF DefaultPrinterChanged THEN
+          MailIT.SetDefaultPrinter(OldDefaultPrinter);
+
+      //H1261 18.06.14 DMA +++++++++++++++++++++++++++++
+      END;
+      //H1261 18.06.14 DMA -----------------------------
+    END;
+
+    PROCEDURE CreateCDLabel_PDF@1000000005(PurchaseHeaderR@1000000016 : Record 38;VendorR@1000000001 : Record 23;CreateEDIMessageV@1000000024 : Boolean);
+    VAR
+      CrossDockLabel_l@1000000006 : Report 50182;
+      lCrossdockLabelFullsize@1000000008 : Report 50066;
+      PurchaseHeader_l@1000000019 : Record 38;
+      EDIPartnerDocumentType_l@1000000005 : Record 82852;
+      MailITSetup_l@1000000003 : Record 75402;
+      OutboundEDIDocumentList_l@1000000009 : Record 82864;
+      OutboundEDIMessage_l@1000000000 : Record 82859;
+      RHDSalesExportLine_l@1000000020 : Record 50182;
+      RHDSalesExportLine2_l@1000000002 : Record 50182;
+      filename@1000000004 : Text[250];
+      ClientFso@1000000010 : Automation "{420B2830-E718-11CF-893D-00A0C9054228} 1.0:{0D43FE01-F093-11CF-8940-00A0C9054228}:'Microsoft Scripting Runtime'.FileSystemObject";
+      MailIT@1000000011 : OCX "{C8C4804C-89BA-4291-AB58-4C6050B65175}:'ExpandIT.MailIT2'";
+      DefaultPrinterChanged@1000000012 : Boolean;
+      OldDefaultPrinter@1000000013 : Text[250];
+      UserSetup@1000000014 : Record 91;
+      Error001@1000000015 : TextConst 'ENU=No PDF Delivery Note for %1 generated.';
+      CDLabelPath@1000000017 : Text[250];
+      PosNoFilter@1000000007 : Text[1024];
+      "--- P1258 Locals ---"@1000000018 : Integer;
+      ClientTempFolder@1000000021 : Text[250];
+      ClientUtil@1000000022 : Automation "{1639594D-2135-4248-BE9B-FB55210F8AD8} 1.0:{D7CD856D-3889-4F19-BBBA-7608CF34EFB6}:'ExpandIT Dynamics Role Tailored Client Utility'.Utility";
+      JobID@1000000023 : Text[50];
+      "**** HME *********************"@1000000123 : Integer;
+      PreviousPrinterL@1000000122 : Text[250];
+      BullZipPropertiesL@1000000121 : ARRAY [20] OF Text[250];
+      BullZipValuesL@1000000118 : ARRAY [20] OF Text[250];
+      PurchasesSetupL@1000000025 : Record 312;
+    BEGIN
+      MailITSetup_l.GET();
+      CREATE(ClientFso,TRUE,TRUE);
+      //S/P1258
+      CREATE(ClientUtil,TRUE,TRUE);
+      JobID := MailIT.CreateGUID();
+
+      // Get folder for temporary files on the client
+      ClientTempFolder := ClientUtil.GetTempPath();
+      IF ClientTempFolder = '' THEN
+        ERROR('Unable to create the path of the temporary folder.');
+      ClientTempFolder := ClientTempFolder + 'ExpMail';
+      IF NOT ClientFso.FolderExists(ClientTempFolder) THEN
+        ClientFso.CreateFolder(ClientTempFolder);
+      ClientTempFolder := ClientTempFolder + '\' + JobID;
+      IF NOT ClientFso.FolderExists(ClientTempFolder) THEN
+        ClientFso.CreateFolder(ClientTempFolder);
+      //E/P1258
+
+      CLEAR(CrossDockLabel_l);
+
+      //H1473 13.01.15 EHN +++++++++++++++++++++++++++++++++++++++++++
+      IF CreateEDIMessageV THEN
+      //H1473 13.01.15 EHN -------------------------------------------
+        EDIPartnerDocumentType_l.GET(VendorR."EDI ORDERS Partner",1,'ORDERS');
+
+      //H1473 13.01.15 EHN +++++++++++++++++++++++++++++++++++++++++++
+      IF CreateEDIMessageV THEN
+      //H1473 13.01.15 EHN -------------------------------------------
+        filename := EDIPartnerDocumentType_l."Im-/Export Path" + '\CDLABEL_' + PurchaseHeaderR."No." + '.pdf';
+
+      //S/P1258
+      //IF ClientFso.FileExists(filename) THEN
+      //  ClientFso.DeleteFile(filename);
+      //MailIT.PDFParameter('Output',filename);
+      //MailIT.PDFParameter('ShowPDF','no');
+      //MailIT.PDFParameter('Author',USERID);
+      //MailIT.PDFPreparePrinter();
+      //E/P1258
+      //S/P1209
+      //S/P1258
+      //CASE gVend."RHD Crossdock Label Type" OF
+      //  gVend."RHD Crossdock Label Type"::A4 :
+      CASE VendorR."RHD Crossdock Label Type" OF
+        VendorR."RHD Crossdock Label Type"::A4 :
+      //E/P1258
+          BEGIN
+      //E/P1209
+            //S/P1258
+            IF ClientFso.FileExists(filename) THEN
+              ClientFso.DeleteFile(filename);
+
+            //H1261 18.06.14 DMA +++++++++++++++++++++++++++++++
+            IF MailITSetup_l."Not Used For EDI PDFs" THEN BEGIN
+              UserSetup.GET(USERID);
+              PreviousPrinterL := ChangeDefaultPrinter(UserSetup."PDF Creator");
+              BullZipPropertiesL[1] := 'Output';
+              BullZipPropertiesL[2] := 'ShowPDF';
+              BullZipPropertiesL[3] := 'Author';
+              BullZipPropertiesL[4] := 'ConfirmOverwrite';
+              BullZipPropertiesL[5] := 'showsettings';
+              BullZipPropertiesL[6] := 'ShowProgressFinished';
+              BullZipPropertiesL[7] := 'Title';
+
+              BullZipValuesL[1] := filename;
+              BullZipValuesL[2] := 'no';
+              BullZipValuesL[3] := USERID;
+              BullZipValuesL[4] := 'no';
+              BullZipValuesL[5] := 'never';
+              BullZipValuesL[6] := 'no';
+              BullZipValuesL[6] := 'CDLABEL_' + PurchaseHeaderR."No.";
+
+              IF NOT CreateRunonceFile(BullZipPropertiesL, BullZipValuesL, UserSetup."PDF Creator") THEN BEGIN
+                ChangeDefaultPrinter(PreviousPrinterL);
+                ERROR(HMEText001);
+              END;
+
+            END ELSE BEGIN
+            //H1261 18.06.14 DMA -------------------------------
+
+              MailIT.PDFParameter('Output',filename);
+              MailIT.PDFParameter('ShowPDF','no');
+              MailIT.PDFParameter('Title','CDLABEL_' + PurchaseHeaderR."No.");
+              MailIT.PDFParameter('Author',USERID);
+              MailIT.PDFPreparePrinter();
+            //E/P1258
+
+              IF NOT DefaultPrinterChanged THEN BEGIN
+                IF OldDefaultPrinter = '' THEN
+                  OldDefaultPrinter := MailIT.GetDefaultPrinter();
+                IF OldDefaultPrinter <> UserSetup."PDF Creator" THEN BEGIN
+                  MailIT.SetDefaultPrinter(UserSetup."PDF Creator");
+                  DefaultPrinterChanged := TRUE;
+                END;
+              END;
+            //H1261 18.06.14 DMA +++++++++++++++++++++++++++++++
+            END;
+            //H1261 18.06.14 DMA -------------------------------
+
+          //S/P1209
+          END;
+        //S/P1258
+        //gVend."RHD Crossdock Label Type"::Fullsize :
+        VendorR."RHD Crossdock Label Type"::Fullsize :
+        //E/P1258
+          BEGIN
+            //S/P1258
+            IF ClientFso.FileExists(filename) THEN
+              ClientFso.DeleteFile(filename);
+
+            //H1261 18.06.14 DMA +++++++++++++++++++++++++++++++
+            IF MailITSetup_l."Not Used For EDI PDFs" THEN BEGIN
+
+              gRHDSetup.GET;
+              gRHDSetup.TESTFIELD("Printer Fullsize Crossd. Label");
+
+              PreviousPrinterL := ChangeDefaultPrinter(gRHDSetup."Printer Fullsize Crossd. Label");
+              BullZipPropertiesL[1] := 'Output';
+              BullZipPropertiesL[2] := 'ShowPDF';
+              BullZipPropertiesL[3] := 'Author';
+              BullZipPropertiesL[4] := 'ConfirmOverwrite';
+              BullZipPropertiesL[5] := 'showsettings';
+              BullZipPropertiesL[6] := 'ShowProgressFinished';
+              BullZipPropertiesL[7] := 'Title';
+
+              BullZipValuesL[1] := filename;
+              BullZipValuesL[2] := 'no';
+              BullZipValuesL[3] := USERID;
+              BullZipValuesL[4] := 'no';
+              BullZipValuesL[5] := 'never';
+              BullZipValuesL[6] := 'no';
+              BullZipValuesL[7] := 'CDLABEL_' + PurchaseHeaderR."No.";
+
+              IF NOT CreateRunonceFile(BullZipPropertiesL, BullZipValuesL, gRHDSetup."Printer Fullsize Crossd. Label") THEN BEGIN
+                ChangeDefaultPrinter(PreviousPrinterL);
+                ERROR(HMEText001);
+              END;
+
+            END ELSE BEGIN
+            //H1261 18.06.14 DMA -------------------------------
+
+              MailIT.PDFParameter('Output',filename);
+              MailIT.PDFParameter('ShowPDF','no');
+              MailIT.PDFParameter('Title','CDLABEL_' + PurchaseHeaderR."No.");
+              MailIT.PDFParameter('Author',USERID);
+              MailIT.PDFPreparePrinter();
+
+              CopyRunOnce(ClientTempFolder);
+              //E/P1258
+
+              gRHDSetup.GET;
+              gRHDSetup.TESTFIELD("Printer Fullsize Crossd. Label");
+              IF OldDefaultPrinter = '' THEN
+                OldDefaultPrinter := MailIT.GetDefaultPrinter();
+              IF OldDefaultPrinter <> gRHDSetup."Printer Fullsize Crossd. Label" THEN BEGIN
+                MailIT.SetDefaultPrinter(gRHDSetup."Printer Fullsize Crossd. Label");
+                DefaultPrinterChanged := TRUE;
+              END;
+
+            //18.06.14 DMA +++++++++++++++++++++++++++++++++
+            END;
+            //18.06.14 DMA ---------------------------------
+          END;
+      END;
+        //E/P1209
+
+      //P1160
+      RHDSalesExportLine_l.RESET;
+      RHDSalesExportLine_l.SETRANGE("Purchase Order No.",PurchaseHeaderR."No.");
+      IF NOT RHDSalesExportLine_l.ISEMPTY THEN BEGIN
+        PosNoFilter := '';
+        RHDSalesExportLine_l.FINDLAST;  //Get Sequence!!! No FINDSET/FIRST/'-'
+        RHDSalesExportLine2_l.RESET;
+        RHDSalesExportLine2_l.SETRANGE("Entry No.",RHDSalesExportLine_l."Entry No.");
+        RHDSalesExportLine2_l.SETRANGE("Purchase Order No.",PurchaseHeaderR."No.");
+        IF RHDSalesExportLine2_l.FINDSET THEN BEGIN
+          REPEAT
+            IF PosNoFilter = '' THEN
+              PosNoFilter := FORMAT(RHDSalesExportLine2_l."Pos. No.")
+            ELSE
+              PosNoFilter := PosNoFilter + '|' + FORMAT(RHDSalesExportLine2_l."Pos. No.");
+          UNTIL RHDSalesExportLine2_l.NEXT = 0;
+        END;
+        RHDSalesExportLine2_l.RESET;
+        RHDSalesExportLine2_l.SETRANGE("Entry No.",RHDSalesExportLine_l."Entry No.");
+        RHDSalesExportLine2_l.SETRANGE(Type,RHDSalesExportLine2_l.Type::Barcode);
+        RHDSalesExportLine2_l.SETFILTER("Attached to Pos. No.",PosNoFilter);
+        IF RHDSalesExportLine2_l.FINDSET THEN BEGIN
+        //S/P1209
+          //S/P1258
+          //CASE gVend."RHD Crossdock Label Type" OF
+          //  gVend."RHD Crossdock Label Type"::A4 :
+          CASE VendorR."RHD Crossdock Label Type" OF
+            VendorR."RHD Crossdock Label Type"::A4 :
+          //E/P1258
+              BEGIN
+        //E/P1209
+                CrossDockLabel_l.SETTABLEVIEW(RHDSalesExportLine2_l);
+                CrossDockLabel_l.USEREQUESTFORM(FALSE);
+                CrossDockLabel_l.RUNMODAL;
+        //S/P1209
+              END;
+            //S/P1258
+            VendorR."RHD Crossdock Label Type"::Fullsize :
+            //E/P1258
+              BEGIN
+                lCrossdockLabelFullsize.SETTABLEVIEW(RHDSalesExportLine2_l);
+                lCrossdockLabelFullsize.USEREQUESTFORM(FALSE);
+                lCrossdockLabelFullsize.RUNMODAL;
+              END;
+          END;
+        //E/P1209
+        END;
+      END;
+      //
+      //RHDSalesExportLine_l.SETRANGE("Purchase Order No.",PurchaseHeader_r."No.");
+      //CrossDockLabel_l.SETTABLEVIEW(RHDSalesExportLine_l);
+      //CrossDockLabel_l.USEREQUESTFORM(FALSE);
+      //CrossDockLabel_l.RUNMODAL;
+      //E/P1160
+
+      //H1473 13.01.15 EHN +++++++++++++++++++++++++++++++++++++++++++
+      IF CreateEDIMessageV THEN
+      //H1473 13.01.15 EHN -------------------------------------------
+        IF (MailIT.WaitForFile(filename,20000) = 0) THEN
+          ERROR(Error001,PurchaseHeaderR."No.");
+
+      CDLabelPath := filename;
+
+      //H1473 13.01.15 EHN +++++++++++++++++++++++++++++++++++++++++++
+      IF CreateEDIMessageV THEN
+      //H1473 13.01.15 EHN -------------------------------------------
+        cCreateEDISingleOrder.CreateSingleOrder(PurchaseHeaderR,FALSE,CDLabelPath,'');
+
+      //H1261 18.06.14 DMA +++++++++++++++++++++++++++++
+      IF MailITSetup_l."Not Used For EDI PDFs" THEN BEGIN
+
+        ChangeDefaultPrinter(PreviousPrinterL);
+
+      END ELSE BEGIN
+      //H1261 18.06.14 DMA -----------------------------
+
+        IF DefaultPrinterChanged THEN
+          MailIT.SetDefaultPrinter(OldDefaultPrinter);
+
+      //H1261 18.06.14 DMA +++++++++++++++++++++++++++++
+      END;
+      //H1261 18.06.14 DMA -----------------------------
+    END;
+
+    PROCEDURE "--- P1258 Functions ---"@1000000021();
+    BEGIN
+    END;
+
+    PROCEDURE CopyRunOnce@1000000023(p_ClientPath@1000000000 : Text[1024]);
+    VAR
+      SourceFile@1000000001 : Text[1024];
+      DestinationFile@1000000002 : Text[1024];
+    BEGIN
+      IF p_ClientPath <> '' THEN BEGIN
+        IF STRPOS(p_ClientPath,'Temp') <> 0 THEN BEGIN
+          SourceFile := COPYSTR(p_ClientPath,1,STRPOS(p_ClientPath,'Temp')- 1);
+          DestinationFile := SourceFile;
+          SourceFile := SourceFile + 'PDF Writer\Bullzip PDF Printer\runonce.ini';
+          DestinationFile := DestinationFile + 'PDF Writer\Bullzip PDF Printer #2\runonce.ini';
+          IF EXISTS(DestinationFile) THEN
+            IF ERASE(DestinationFile) THEN;
+          COPY(SourceFile,DestinationFile);
+        END;
+      END;
+    END;
+
+    PROCEDURE "*** HME **********************"@1000000002();
+    BEGIN
+    END;
+
+    PROCEDURE GetSpecialFolder@1000000004(WhichV@1000000000 : Text[30]) : Text[250];
+    VAR
+      WSHShellL@1000000001 : Automation "{F935DC20-1CF0-11D0-ADB9-00C04FD58A0B} 1.0:{72C24DD5-D70A-438B-8A42-98424B88AFB8}:'Windows Script Host Object Model'.WshShell";
+    BEGIN
+      //H1261 18.06.14 DMA ++++++++++++++++++++++++++++++++++++++++
+      CREATE(WSHShellL);
+      //H1261,H1275 18.06.14 DMA ++++++++++++++++++++++++++++++++++++++++
+      //EXIT(FORMAT(WSHShellL.RegRead('HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders\'+WhichV)));
+      EXIT( WSHShellL.ExpandEnvironmentStrings('%' + 'LOCALAPPDATA' + '%') );
+      //H1261,H1275 18.06.14 DMA ----------------------------------------
+      CLEAR(WSHShellL)
+      //H1261 18.06.14 DMA ----------------------------------------
+    END;
+
+    PROCEDURE ChangeDefaultPrinter@1000000006(SetPrinterV@1000000000 : Text[250]) PreviousPrinterO : Text[250];
+    VAR
+      WshShellL@1000000001 : Automation "{F935DC20-1CF0-11D0-ADB9-00C04FD58A0B} 1.0:{72C24DD5-D70A-438B-8A42-98424B88AFB8}:'Windows Script Host Object Model'.WshShell";
+    BEGIN
+      //H1261 18.06.14 DMA ++++++++++++++++++++++++++++++++++++++++
+      IF ISCLEAR(WshShellL) THEN
+        CREATE(WshShellL);
+
+      PreviousPrinterO := WshShellL.RegRead('HKEY_CURRENT_USER\Software\Microsoft\Windows NT\CurrentVersion\Windows\Device');
+      PreviousPrinterO := COPYSTR(PreviousPrinterO, 1, STRPOS(PreviousPrinterO, ',winspool') -1 );
+
+      IF SetPrinterV <> PreviousPrinterO THEN
+        WshShellL.Exec('rundll32 printui.dll,PrintUIEntry /y /n "' + SetPrinterV + '"');
+
+      CLEAR(WshShellL);
+
+      EXIT(PreviousPrinterO);
+      //H1261 18.06.14 DMA ----------------------------------------
+    END;
+
+    PROCEDURE CreateRunonceFile@1000000010(PropertyNamesV@1000000000 : ARRAY [20] OF Text[250];PropertyValuesV@1000000001 : ARRAY [20] OF Text[250];PrinterNameV@1000000006 : Text[250]) Result : Boolean;
+    VAR
+      ClientFsoL@1000000003 : Automation "{420B2830-E718-11CF-893D-00A0C9054228} 1.0:{0D43FE01-F093-11CF-8940-00A0C9054228}:'Microsoft Scripting Runtime'.FileSystemObject";
+      UserSetupL@1000000008 : Record 91;
+      FileL@1000000002 : File;
+      LicenseL@1000000007 : BigText;
+      RunonceFileNameL@1000000004 : Text[512];
+      PropertyCounterL@1000000005 : Integer;
+    BEGIN
+      //H1261 18.06.14 DMA ++++++++++++++++++++++++++++++++++++++++
+      CREATE(ClientFsoL,TRUE,TRUE);
+
+      PropertyCounterL := 1;
+
+      RunonceFileNameL := GetSpecialFolder('Local AppData') + '\PDF Writer\' + PrinterNameV + '\runonce.ini';
+
+      IF ClientFsoL.FileExists(RunonceFileNameL) THEN
+        ClientFsoL.DeleteFile(RunonceFileNameL);
+
+
+      FileL.TEXTMODE := TRUE;
+      IF NOT FileL.CREATE(RunonceFileNameL) THEN
+        EXIT(FALSE);
+
+      FileL.WRITE('[PDF Printer]');
+
+      REPEAT
+        FileL.WRITE(PropertyNamesV[PropertyCounterL] + '=' + PropertyValuesV[PropertyCounterL]);
+        PropertyCounterL += 1;
+      UNTIL PropertyNamesV[PropertyCounterL] = '';
+
+      LicenseL.ADDTEXT('licensedata=PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPExpY2Vuc2U');
+      LicenseL.ADDTEXT(
+      '+Cgk8SW5mbz4KCQk8S2V5cz4KCQkJPEtleT40ZDUyOTlmZGEyYjFmOWM0ZDljNzdmNGEwOWYxZjNmOTwvS2V5PgoJCTwvS2V5cz4KCQk8T3duZXI');
+      LicenseL.ADDTEXT('+CgkJCTxDb21wYW55TmFtZT5FeHBhbmRJVCBEZXZlbG9wbWVudCBBcFM8L0NvbXBhbnlOYW1lPgoJCQk8QWRkcmVzczE');
+      LicenseL.ADDTEXT('+U2xvdHNtYXJrZW4gMTIsIDIuIHRoLjwvQWRkcmVzczE');
+      LicenseL.ADDTEXT('+CgkJCTxBZGRyZXNzMj48L0FkZHJlc3MyPgoJCQk8WmlwQ29kZT4yOTcwPC9aaXBDb2RlPgoJCQk8Q2l0eT5Iw7hyc2hvbG08L0NpdHk');
+      LicenseL.ADDTEXT('+CgkJCTxTdGF0ZT48L1N0YXRlPgoJCQk8Q291bnRyeSBjb2RlPSJkayI');
+      LicenseL.ADDTEXT('+RGVubWFyazwvQ291bnRyeT4KCQk8L093bmVyPgoJCTxMaWNlbnNlTm8');
+      LicenseL.ADDTEXT('+RTFDMUEtMTAyQkEtRjg2QUEtN0ZFNDI8L0xpY2Vuc2VObz4KCQk8Q3JlYXRlZERhdGU');
+      LicenseL.ADDTEXT('+PC9DcmVhdGVkRGF0ZT4KCQk8RXhwaXJlcz4zMDAwLTAxLTAxPC9FeHBpcmVzPgoJCTxQ');
+      LicenseL.ADDTEXT('cm9ncmFtPgoJCQk8TmFtZT5QREYgUHJpbnRlcjwvTmFtZT4KCQkJPFZlcnNpb24');
+      LicenseL.ADDTEXT('+MTA8L1ZlcnNpb24+CgkJPC9Qcm9ncmFtPgoJCTxMaWNlbnNlVHlwZSBjb2RlPSJQREYtUkVESVNULVBSTyI');
+      LicenseL.ADDTEXT('+UmVkaXN0cmlidXRpb24gTGljZW5zZSAodW5saW1pdGVkKSAtIFByb2Zlc3Npb25hbDwvTGljZW5zZVR5cGU');
+      LicenseL.ADDTEXT('+CgkJPElzc3Vlcj53d3cuYmlvcGRmLmNvbTwvSXNzdWVyPgoJPC9JbmZvPgoJPFNpZ25');
+      LicenseL.ADDTEXT('hdHVyZT41MzY4OGJkYWI4Y2IyYTlmYjZiYmIzOTcxMmVmYzc0NjFiOTMyZGUyYWQ');
+
+      FileL.WRITE(LicenseL);
+      FileL.CLOSE;
+
+      IF NOT ClientFsoL.FileExists(RunonceFileNameL) THEN
+        EXIT (FALSE);
+
+      EXIT (TRUE);
+      //H1261 18.06.14 DMA ----------------------------------------
+    END;
+
+    PROCEDURE CreateHermesDNandLabel_PDF@1000000007(PurchaseHeaderR@1000000018 : Record 38;VendorR@1000000017 : Record 23);
+    VAR
+      PurchaseLineL@1000000002 : Record 39;
+      EDIPartnerDocumentTypeL@1000000005 : Record 82852;
+      MailITSetupL@1000000003 : Record 75402;
+      HermesSetupL@1000000001 : Record 50319;
+      FilenameL@1000000004 : Text[250];
+      ClientFsoL@1000000010 : Automation "{420B2830-E718-11CF-893D-00A0C9054228} 1.0:{0D43FE01-F093-11CF-8940-00A0C9054228}:'Microsoft Scripting Runtime'.FileSystemObject";
+      MailITL@1000000011 : OCX "{C8C4804C-89BA-4291-AB58-4C6050B65175}:'ExpandIT.MailIT2'";
+      DefaultPrinterChangedL@1000000012 : Boolean;
+      OldDefaultPrinterL@1000000013 : Text[250];
+      UserSetupL@1000000014 : Record 91;
+      LabelPathL@1000000000 : Text[250];
+      PreviousPrinterL@1000000021 : Text[250];
+      BullZipPropertiesL@1000000023 : ARRAY [20] OF Text[250];
+      BullZipValuesL@1000000022 : ARRAY [20] OF Text[250];
+      HermesGeneralMgtL@1000000030 : Codeunit 50255;
+      HermesTrackingInfoMgtL@1000000006 : Codeunit 50254;
+    BEGIN
+      //H1698 19.12.14 tec-ar +++++++++++++++
+      HermesSetupL.GET;            // 19.01.15 MKR
+      MailITSetupL.GET;
+
+      HermesTrackingInfoMgtL.PrepCDLabelGeneration4Header(PurchaseHeaderR,'');
+
+      CREATE(ClientFsoL,TRUE,TRUE);
+
+      EDIPartnerDocumentTypeL.GET(VendorR."EDI ORDERS Partner",1,'ORDERS');
+
+      PurchaseLineL.SETRANGE("Document Type",PurchaseHeaderR."Document Type");
+      PurchaseLineL.SETRANGE("Document No.",PurchaseHeaderR."No.");
+      PurchaseLineL.SETRANGE(Type,PurchaseLineL.Type::Item);
+
+      FilenameL := EDIPartnerDocumentTypeL."Im-/Export Path" + '\LABEL_' + PurchaseHeaderR."No." + '.pdf';
+
+      IF ClientFsoL.FileExists(FilenameL) THEN
+        ClientFsoL.DeleteFile(FilenameL);
+
+      //H1261 18.06.14 DMA +++++++++++++++++++++++++++++++
+      IF MailITSetupL."Not Used For EDI PDFs" THEN BEGIN
+        UserSetupL.GET(USERID);
+        PreviousPrinterL := ChangeDefaultPrinter(UserSetupL."PDF Creator");
+        BullZipPropertiesL[1] := 'Output';
+        BullZipPropertiesL[2] := 'ShowPDF';
+        BullZipPropertiesL[3] := 'Author';
+        BullZipPropertiesL[4] := 'ConfirmOverwrite';
+        BullZipPropertiesL[5] := 'showsettings';
+        BullZipPropertiesL[6] := 'ShowProgressFinished';
+
+        BullZipValuesL[1] := FilenameL;
+        BullZipValuesL[2] := 'no';
+        BullZipValuesL[3] := USERID;
+        BullZipValuesL[4] := 'no';
+        BullZipValuesL[5] := 'never';
+        BullZipValuesL[6] := 'no';
+
+        IF NOT CreateRunonceFile(BullZipPropertiesL, BullZipValuesL, UserSetupL."PDF Creator") THEN BEGIN
+          ChangeDefaultPrinter(PreviousPrinterL);
+          ERROR(HMEText001);
+        END;
+      END ELSE BEGIN
+        MailITL.PDFParameter('Output',FilenameL);
+        MailITL.PDFParameter('ShowPDF','no');
+        MailITL.PDFParameter('Author',USERID);
+        MailITL.PDFPreparePrinter();
+        IF NOT DefaultPrinterChangedL THEN BEGIN
+          IF OldDefaultPrinterL = '' THEN
+            OldDefaultPrinterL := MailITL.GetDefaultPrinter();
+          IF OldDefaultPrinterL <> UserSetupL."PDF Creator" THEN BEGIN
+            MailITL.SetDefaultPrinter(UserSetupL."PDF Creator");
+            DefaultPrinterChangedL := TRUE;
+          END;
+        END;
+      END;
+
+      // MKR 19.01.15 discard hard coded part
+      //PurchaseLineL.SETFILTER("Purchasing Code",'%1','*-15');
+      // I know it's silly but elsewise it doesn't work due to SETFILTER bug (yeah, really)
+      PurchaseLineL.SETFILTER("Purchasing Code", '%1', STRSUBSTNO('*-%1', FORMAT(HermesSetupL."Channel HES CD-DI")));
+      IF NOT PurchaseLineL.ISEMPTY THEN BEGIN
+        HermesGeneralMgtL.SetEDIPath(FilenameL);
+        FilenameL := HermesGeneralMgtL.FillHermesCDLabelWithData(PurchaseHeaderR);
+        IF MailITL.WaitForFile(FilenameL,20000) = 0 THEN
+          ERROR(HMEText003,FilenameL);
+        LabelPathL := FilenameL;
+      END;
+
+      CreateDeliveryNoteLabel_PDF(PurchaseHeaderR,VendorR,LabelPathL);
+
+      IF MailITSetupL."Not Used For EDI PDFs" THEN BEGIN
+        ChangeDefaultPrinter(PreviousPrinterL);
+      END ELSE BEGIN
+        IF DefaultPrinterChangedL THEN
+          MailITL.SetDefaultPrinter(OldDefaultPrinterL);
+      END;
+      //H1698 19.12.14 tec-ar ---------------
+    END;
+
+    BEGIN
+    {
+      P1004   03.07.2013   gob-dst   Absicherung CU 50099 (Objekt erstellt)
+      P1106   25.09.2013   gob-lku   Cross-Dock Label Logik
+      P1160   07.01.2014   gob-rste  New Filter for Cross-Dock Label
+      P1209   25.02.2014   gob-kmi   Print Crossdock Label Fullsize
+      P1258   05.06.2014   gob-dst   Anpassung Fullsize-Druck
+      P1272   08.09.2014   gob-dst   ORDERS mit DPD Label
+      P1279   08.09.2014   gob-Fuchs Carrier via SMT: 4) Consolidation of Carriers
+      P1277   17.09.2014   gob-Fuchs Get Sales Header for GetShippingAgent
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation Tectura & Home24 NAV Team  |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+
+      H1698       19.01.15  tec-ar    Hermes 2MH Adjustments Cross-Dock LabelEDI ORDERSCSV
+
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date       Shortcut  Description
+      _____________________________________________
+      H1261       18.06.14   DMA       Hotfix: EDI Outbound PDF Creation Bug, CODECHANGE
+      H1275       18.06.14   DMA       HOTFIX: Registry key does not exist in EDI job
+      H1473       21.08.14   EHN       Add the DHL Label Creation Report to the PO Card
+      H1536       11.09.14   EHN       Bugfix for Label Creation DHL via EDI - handle cases in which Shipping Agent Code is empty
+    }
+    END.
+  }
+}
+

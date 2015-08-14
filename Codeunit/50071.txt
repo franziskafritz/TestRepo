@@ -1,0 +1,1081 @@
+OBJECT Codeunit 50071 Rhenus KAD Export
+{
+  OBJECT-PROPERTIES
+  {
+    Date=06.03.14;
+    Time=09:41:01;
+    Modified=Yes;
+    Version List=GOB1.01;
+  }
+  PROPERTIES
+  {
+    OnRun=VAR
+            RhenusChangeLog@1000000001 : Record 50070;
+            RhenusExportMgt@1000000000 : Codeunit 50066;
+            FPCGeneralSetup@1000000002 : Record 50055;
+            RhenusExtraCancel@1000000003 : Record 50076;
+            FPCInterfaceSetup@1000000004 : Record 50014;
+            LocText001@1000000005 : TextConst 'DEU=Order fr Extra Storno: %1. Weiter?;ENU=Folder for Extra Cancel: %1. Continue?';
+            RhenusExtraCancelError@1000000006 : Record 50076;
+          BEGIN
+            //A/gob-rste/20.09.12/P0358
+            {**************************
+            FPCGeneralSetup.GET;
+            IF FPCGeneralSetup."Use New KAD Mgt." THEN BEGIN
+              RhenusChangeLog.RESET;
+              RhenusChangeLog.SETRANGE("Source Type",RhenusChangeLog."Source Type"::Sales);
+              RhenusChangeLog.SETRANGE("Document Type",RhenusChangeLog."Document Type"::Order);
+              RhenusChangeLog.SETRANGE("Interface Code",'RHENUS');
+              RhenusChangeLog.SETRANGE(Processed,FALSE);
+              IF RhenusChangeLog.FIND('-') THEN BEGIN
+                REPEAT
+                  CLEAR(RhenusExportMgt);
+                  RhenusExportMgt.InitCodeunit(RhenusChangeLog);
+                  IF RhenusExportMgt.RUN THEN BEGIN
+                    // write log
+                  END ELSE BEGIN
+                    // write error log
+                  END;
+                  COMMIT;
+                UNTIL RhenusChangeLog.NEXT = 0;
+              END;
+            END;
+            **************************}
+            //E/gob-rste/20.09.12/P0358
+            //S/P1215
+            EXIT;
+            //E/P1215
+            RhenusExtraCancel.SETRANGE(Processed,FALSE);
+            RhenusExtraCancel.SETRANGE(Error,FALSE);
+            RhenusExtraCancel.SETRANGE("Ready to Process",TRUE);
+            //A/gob-rste/24.09.12/P0369
+            FPCInterfaceSetup.GET('EXTRCNCLRH');
+            FPCInterfaceSetup.TESTFIELD("Export Folder");
+            IF NOT CONFIRM(LocText001,FALSE,FPCInterfaceSetup."Export Folder") THEN
+              ERROR('');
+            //E/gob-rste/24.09.12/P0369
+            IF RhenusExtraCancel.FIND('-') THEN BEGIN
+              REPEAT
+                CLEARLASTERROR;
+                RhenusExportMgt.InitExtraCancel(RhenusExtraCancel);
+                IF RhenusExportMgt.RUN THEN BEGIN
+                  // nothing
+                END ELSE BEGIN
+                  //A/gob-rste/24.09.12/P0369
+                  RhenusExtraCancelError.GET(RhenusExtraCancel.OrderNo,RhenusExtraCancel."Seq. Code",RhenusExtraCancel."Branch Code");
+                  RhenusExtraCancelError.Error := TRUE;
+                  RhenusExtraCancelError."Error Text" := GETLASTERRORTEXT;
+                  RhenusExtraCancelError.MODIFY;
+                  //RhenusExtraCancel.Error := TRUE;
+                  //RhenusExtraCancel."Error Text" := GETLASTERRORTEXT;
+                  //RhenusExtraCancel.MODIFY;
+                  //E/gob-rste/24.09.12/P0369
+                END;
+                COMMIT;
+              UNTIL RhenusExtraCancel.NEXT = 0;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      InsertInfoPickIPLZL@1000000001 : Boolean;
+      InsertInfoPickIPL639@1000000000 : Boolean;
+      AvoidCrossdock@1000000002 : Boolean;
+
+    PROCEDURE FTPUpload@1000000014() : Boolean;
+    VAR
+      FTPClient@1000000000 : Automation "{42A8A505-1CD3-4CA4-A7EA-E6EBCC481DDC} 1.0:{B32A3669-654B-4CEF-980E-C7753F1FA524}:'FTPNav'.FTPNavClass";
+      Interface@1000000001 : Record 50014;
+    BEGIN
+      //A/gob-rste/20.09.12/P0358
+      {**************************
+      //IF ISCLEAR(FTPClient) THEN CREATE(FTPClient);
+      Interface.GET('RHENUS');
+      IF Interface."Use FTP" THEN BEGIN
+        CLEAR(FTPClient);
+        CREATE(FTPClient);
+        IF NOT FTPClient.UploadDirectory(
+                Interface."FTP Export Address",
+                Interface."FTP Export User",
+                Interface."FTP Export Password",
+                Interface."FTP Export Folder",
+                Interface."Export Folder",
+                TRUE,FALSE,FALSE)
+        THEN BEGIN
+          //InsertLogEntry('',Text010, TRUE, FALSE);
+          //InsertLogEntry('',FTPClient.GetLastErrorText, TRUE, FALSE);
+          EXIT(FALSE);
+        END;
+        EXIT(TRUE);
+      END;
+      **************************}
+      //E/gob-rste/20.09.12/P0358
+    END;
+
+    PROCEDURE CreateExtraStorno@1000000000();
+    BEGIN
+    END;
+
+    PROCEDURE SalesOrderChangeLogFiller@1000000001(p_SalesHeader@1000000001 : Record 36);
+    VAR
+      STIME@1000000000 : Time;
+      ETIME@1000000002 : Time;
+      cnt1@1000000003 : Integer;
+      cnt2@1000000004 : Integer;
+      log1@1000000005 : Record 50070;
+      log2@1000000006 : Record 50070;
+      FPCGeneralSetup@1000000007 : Record 50055;
+      InterfaceProcessMgt@1000000008 : Codeunit 50087;
+    BEGIN
+      //S/P1215
+      EXIT;
+      //E/P1215
+      FPCGeneralSetup.GET;
+      IF (FPCGeneralSetup."Key Order Date New Rhenus Log" = 0D) OR
+         (FPCGeneralSetup."Key Order Date New Rhenus Log" > p_SalesHeader."Order Date")
+      THEN
+        EXIT;
+      IF p_SalesHeader."Document Type" <> p_SalesHeader."Document Type"::Order THEN
+        EXIT;
+      //S/P0966
+      FPCGeneralSetup.TESTFIELD("Interface Code Rhenus");
+      FPCGeneralSetup.TESTFIELD("Interface Code Crossdock");
+      IF InterfaceProcessMgt.UseOldPicking(p_SalesHeader,FPCGeneralSetup."Interface Code Rhenus") AND
+        InterfaceProcessMgt.UseOldPicking(p_SalesHeader,FPCGeneralSetup."Interface Code Crossdock")
+      THEN
+      //E/P0966
+        IF NOT p_SalesHeader.Kommissionierung THEN
+          EXIT;
+      IF (p_SalesHeader.Status <> p_SalesHeader.Status::Released) AND
+         (p_SalesHeader.Status <> p_SalesHeader.Status::"Pending Prepayment")
+      THEN
+        EXIT;
+
+      CompareLogAndSalesOrder(p_SalesHeader."No.");
+    END;
+
+    PROCEDURE CompareLogAndSalesOrder@1000000026(p_OrderNo@1000000000 : Code[20]);
+    VAR
+      CheckZLExists@1000000001 : Record 50070;
+      Checl639Exists@1000000004 : Record 50070;
+      ZL_Clear@1000000002 : Boolean;
+      "639_Clear"@1000000003 : Boolean;
+      CheckLastLogZL@1000000005 : Record 50070;
+      LastSEQNoZL@1000000006 : Code[10];
+      LastSEQNo639@1000000007 : Code[10];
+      SalesLine@1000000008 : Record 37;
+      Item@1000000009 : Record 27;
+      CancelZL@1000000010 : Boolean;
+      NewZL@1000000011 : Boolean;
+      Cancel639@1000000012 : Boolean;
+      New639@1000000013 : Boolean;
+      IsPaymentUpdate@1000000014 : Boolean;
+      BranchChange@1000000015 : Boolean;
+      FPCGeneralSetup@1000000016 : Record 50055;
+    BEGIN
+      // Clear all Vars
+      ZL_Clear := FALSE;
+      "639_Clear" := FALSE;
+      LastSEQNoZL := '';
+      LastSEQNo639 := '';
+      CancelZL := FALSE;
+      NewZL := FALSE;
+      Cancel639 := FALSE;
+      New639 := FALSE;
+      BranchChange := FALSE;
+      //A/P0564
+      InsertInfoPickIPLZL := FALSE;
+      InsertInfoPickIPL639 := FALSE;
+      //E/P0564
+      //A/P0838
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Branch Rhenus Freienbrink");
+      FPCGeneralSetup.TESTFIELD("Branch Rhenus Grevenbroich");
+      //E/P0838
+
+      // Check for Existing ZL Logs
+      CheckZLExists.RESET;
+      CheckZLExists.SETRANGE("Source Type",CheckZLExists."Source Type"::Sales);
+      CheckZLExists.SETRANGE("Document Type",CheckZLExists."Document Type"::Order);
+      CheckZLExists.SETRANGE("Document No.",p_OrderNo);
+      //A/P0838
+      //CheckZLExists.SETRANGE("Branch Code",'ZL');
+      CheckZLExists.SETRANGE("Branch Code",FPCGeneralSetup."Branch Rhenus Freienbrink");
+      //E/P0838
+      IF CheckZLExists.ISEMPTY THEN
+        ZL_Clear := TRUE;
+
+      // Check for Existing 639 Logs
+      Checl639Exists.SETRANGE("Source Type",Checl639Exists."Source Type"::Sales);
+      Checl639Exists.SETRANGE("Document Type",Checl639Exists."Document Type"::Order);
+      Checl639Exists.SETRANGE("Document No.",p_OrderNo);
+      //A/P0838
+      //Checl639Exists.SETRANGE("Branch Code",'639');
+      Checl639Exists.SETRANGE("Branch Code",FPCGeneralSetup."Branch Rhenus Grevenbroich");
+      //E/P0838
+      IF Checl639Exists.ISEMPTY THEN
+        "639_Clear" := TRUE;
+
+      // If new Order then Add Logs for ZL and 639
+      IF ZL_Clear AND "639_Clear" THEN BEGIN
+        FillNewChangeLogAllBranch(p_OrderNo);
+        EXIT;
+      END;
+
+      // Cancel and renew all if header fields like shipment adress changed
+      // Var Parameter for Payment Update
+      IF CheckIfHeaderChanged(p_OrderNo,IsPaymentUpdate) THEN BEGIN
+        AddCancelAllBranch(p_OrderNo);
+        FillNewChangeLogAllBranch(p_OrderNo);
+        EXIT;
+      END;
+
+
+      // Check active Order <> Log, Log <> Activ Order for ZL
+      // Var Parameters for Cancel, New, LastSEQ, BranchChange
+      //A/P0838
+      //CheckCancelRenewForBranch(p_OrderNo,'ZL',CancelZL,NewZL,LastSEQNoZL,BranchChange);
+      CheckCancelRenewForBranch(p_OrderNo,FPCGeneralSetup."Branch Rhenus Freienbrink",CancelZL,NewZL,LastSEQNoZL,BranchChange);
+      //E/P0838
+      // Check active Order <> Log, Log <> Activ Order for 639
+      // Var Parameters for Cancel, New, LastSEQ
+      IF NOT BranchChange THEN
+        //A/P0838
+        //CheckCancelRenewForBranch(p_OrderNo,'639',Cancel639,New639,LastSEQNo639,BranchChange);
+        CheckCancelRenewForBranch(p_OrderNo,FPCGeneralSetup."Branch Rhenus Grevenbroich",Cancel639,New639,LastSEQNo639,BranchChange);
+        //E/P0838
+      // If only Payment Update and no other Changes Update Rec's
+      IF IsPaymentUpdate THEN BEGIN
+        // Insert Payment Update for ZL
+        IF (CancelZL = FALSE) AND (NewZL = FALSE) AND (BranchChange = FALSE) THEN BEGIN
+          InsertPaymentUpdateForSequence(p_OrderNo,LastSEQNoZL,CURRENTDATETIME);
+        END;
+
+        // Insert Payment Update for 639
+        IF (CancelZL = FALSE) AND (NewZL = FALSE) AND (BranchChange = FALSE) THEN BEGIN
+          InsertPaymentUpdateForSequence(p_OrderNo,LastSEQNo639,CURRENTDATETIME);
+        END;
+      END;
+
+      // BranchChange from Rhenus A to Rhenus B then cancel all, renew all
+      IF BranchChange THEN BEGIN
+        AddCancelAllBranch(p_OrderNo);
+        FillNewChangeLogAllBranch(p_OrderNo);
+      END ELSE BEGIN
+        // Cancel ZL
+        IF CancelZL THEN BEGIN
+          AddCancelForSequence(p_OrderNo,LastSEQNoZL);
+        END;
+
+        // New ZL
+        //A/P0886
+        //IF NewZL THEN BEGIN
+        IF NewZL OR ZL_Clear THEN BEGIN
+        //E/P0886
+          //A/P0838
+          //FillNewChangeLogForBranch(p_OrderNo,'ZL',CURRENTDATETIME);
+          FillNewChangeLogForBranch(p_OrderNo,FPCGeneralSetup."Branch Rhenus Freienbrink",CURRENTDATETIME);
+          //E/P0838
+        END;
+
+        // Cancel 639
+        IF Cancel639 THEN BEGIN
+          AddCancelForSequence(p_OrderNo,LastSEQNo639);
+        END;
+
+        // New 639
+        //A/P0886
+        //IF New639 THEN BEGIN
+        IF New639 OR "639_Clear" THEN BEGIN
+        //E/P0886
+          //A/P0838
+          //FillNewChangeLogForBranch(p_OrderNo,'639',CURRENTDATETIME);
+          FillNewChangeLogForBranch(p_OrderNo,FPCGeneralSetup."Branch Rhenus Grevenbroich",CURRENTDATETIME);
+          //E/P0838
+        END;
+      END;
+    END;
+
+    PROCEDURE CancelSalesLine@1000000002(p_SalesLine@1000000000 : Record 37);
+    VAR
+      LogToCancel@1000000001 : Record 50070;
+    BEGIN
+      IF (p_SalesLine."Document Type" = p_SalesLine."Document Type"::Order) AND (p_SalesLine.Type = p_SalesLine.Type::Item) THEN BEGIN
+        LogToCancel.RESET;
+        LogToCancel.SETRANGE("Source Type",LogToCancel."Source Type"::Sales);
+        LogToCancel.SETRANGE("Document Type",LogToCancel."Document Type"::Order);
+        LogToCancel.SETRANGE("Document No.",p_SalesLine."Document No.");
+        LogToCancel.SETRANGE("Line No.",p_SalesLine."Line No.");
+        LogToCancel.SETRANGE(Action,LogToCancel.Action::New,LogToCancel.Action::Change);
+        LogToCancel.SETRANGE("Branch Code",GetBranchFromPurchCode(p_SalesLine."Purchasing Code"));
+        IF LogToCancel.FINDLAST THEN BEGIN
+          AddCancelForSequence(LogToCancel."Document No.",LogToCancel."Seq. Code");
+          FillNewChangeLogForBranch(LogToCancel."Document No.",LogToCancel."Branch Code",CURRENTDATETIME);
+        END;
+      END;
+    END;
+
+    PROCEDURE FillNewChangeLogAllBranch@1000000032(p_OrderNo@1000000000 : Code[20]);
+    VAR
+      FPCGeneralSetup@1000000001 : Record 50055;
+    BEGIN
+      // New Change Log for all Branch
+      //A/P0838
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Branch Rhenus Freienbrink");
+      FPCGeneralSetup.TESTFIELD("Branch Rhenus Grevenbroich");
+      FillNewChangeLogForBranch(p_OrderNo,FPCGeneralSetup."Branch Rhenus Freienbrink",CURRENTDATETIME);
+      FillNewChangeLogForBranch(p_OrderNo,FPCGeneralSetup."Branch Rhenus Grevenbroich",CURRENTDATETIME);
+      //FillNewChangeLogForBranch(p_OrderNo,'ZL',CURRENTDATETIME);
+      //FillNewChangeLogForBranch(p_OrderNo,'639',CURRENTDATETIME);
+      //E/P0838
+    END;
+
+    PROCEDURE FillNewChangeLogForBranch@1000000018(p_OrderNo@1000000000 : Code[20];p_Branch@1000000001 : Code[10];p_InsertDateTime@1000000008 : DateTime);
+    VAR
+      SalesHeader@1000000005 : Record 36;
+      SalesLine@1000000002 : Record 37;
+      RhenusChangeLog@1000000003 : Record 50070;
+      SEQNo@1000000004 : Code[10];
+      PurchasesPayablesSetup@1000000006 : Record 312;
+      ShiptoAddress@1000000007 : Record 222;
+      InterfaceProcessMgt@1000000009 : Codeunit 50087;
+      FPCGeneralSetup@1000000010 : Record 50055;
+      InsertLine@1000000011 : Boolean;
+    BEGIN
+      // Fills Change Log for a Branch ZL/639
+      // Creates an new Sequence
+      //A/P0564
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Branch Rhenus Freienbrink");
+      FPCGeneralSetup.TESTFIELD("Branch Rhenus Grevenbroich");
+      //E/P0564
+      //S/P0966
+      FPCGeneralSetup.TESTFIELD("Interface Code Crossdock");
+      //E/P0966
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type",SalesLine."Document Type"::Order);
+      SalesLine.SETRANGE("Document No.",p_OrderNo);
+      SalesLine.SETRANGE(Type,SalesLine.Type::Item);
+      PurchasesPayablesSetup.GET;
+      SalesLine.SETFILTER("Line Status",'<>%1',PurchasesPayablesSetup."Magento Status for Correction");
+      IF SalesLine.FINDSET(FALSE,FALSE) THEN BEGIN
+        SalesHeader.GET(1,p_OrderNo);
+        SEQNo := GetNextSEQNoForSalesOrder(p_OrderNo);
+        REPEAT
+          IF GetBranchFromPurchCode(SalesLine."Purchasing Code") = p_Branch THEN BEGIN
+            //rste#1
+            //S/P0966
+            InsertLine := TRUE;
+            IF AvoidCrossdock THEN BEGIN
+              IF GetInterfaceFromPurchCode(SalesLine."Purchasing Code") = FPCGeneralSetup."Interface Code Crossdock" THEN
+                InsertLine := FALSE;
+            END;
+            IF InsertLine THEN BEGIN
+            //E/P0966
+              RhenusChangeLog.RESET;
+              RhenusChangeLog."Source Type" := RhenusChangeLog."Source Type"::Sales;
+              RhenusChangeLog."Document Type" := RhenusChangeLog."Document Type"::Order;
+              RhenusChangeLog."Document No." := p_OrderNo;
+              RhenusChangeLog."Line No." := SalesLine."Line No.";
+              RhenusChangeLog."Seq. Code" := SEQNo;
+              RhenusChangeLog.Action := RhenusChangeLog.Action::New;
+              RhenusChangeLog."Branch Code" := p_Branch;
+              RhenusChangeLog."Sell-to Customer No." := SalesHeader."Sell-to Customer No.";
+              RhenusChangeLog."Order Date" := SalesHeader."Order Date";
+              RhenusChangeLog."External Document No." := SalesHeader."External Document No.";
+              RhenusChangeLog."Website No." := SalesHeader."Website No.";
+              RhenusChangeLog."Ship-to Name" := SalesHeader."Ship-to Name";
+              RhenusChangeLog."Ship-to Name 2" := SalesHeader."Ship-to Name 2";
+              RhenusChangeLog."Ship-to Address" := SalesHeader."Ship-to Address";
+              RhenusChangeLog."Ship-to Address 2" := SalesHeader."Ship-to Address 2";
+              RhenusChangeLog."Ship-to City" := SalesHeader."Ship-to City";
+              RhenusChangeLog."Ship-to Contact" := SalesHeader."Ship-to Contact";
+              //A/First Name / Last Name
+              // Write actual Name to SO
+              //IF ShiptoAddress.GET(SalesHeader."Sell-to Customer No.",SalesHeader."Ship-to Code") THEN BEGIN
+                //IF (SalesHeader."First name" = '') AND (SalesHeader."Last name" = '') THEN BEGIN
+                  //IF (ShiptoAddress."First name" <> '') AND (ShiptoAddress."Last name" <> '') THEN BEGIN
+                    //SalesHeader."First name" := ShiptoAddress."First name";
+                    //SalesHeader."Last name" := ShiptoAddress."Last name";
+                    //SalesHeader.MODIFY;
+                  //END;
+                //END;
+              //END;
+              // Fill Log from SO
+              //RhenusChangeLog."First name" := SalesHeader."First name";
+              //RhenusChangeLog."Last name" := SalesHeader."Last name";
+              //IF (RhenusChangeLog."First name" <> '') AND (RhenusChangeLog."Last name" <> '') THEN BEGIN
+                //RhenusChangeLog."Ship-to Name" := RhenusChangeLog."Last name";
+                //RhenusChangeLog."Ship-to Name 2" := RhenusChangeLog."First name";
+              //END;
+              //E/First Name / Last Name
+              IF SalesHeader.Status = SalesHeader.Status::"Pending Prepayment" THEN
+                RhenusChangeLog."Shipment Date" := 11112911D
+              ELSE
+                RhenusChangeLog."Shipment Date" := 0D;
+              RhenusChangeLog."No." := SalesLine."No.";
+              RhenusChangeLog."Location Code" := SalesLine."Location Code";
+              RhenusChangeLog."Unit of Measure" := SalesLine."Unit of Measure";
+              RhenusChangeLog.Quantity := SalesLine.Quantity;
+              RhenusChangeLog."Gross Weight" := SalesLine."Gross Weight";
+              RhenusChangeLog."Unit Volume" := SalesLine."Unit Volume";
+              RhenusChangeLog."Creation Datetime" := p_InsertDateTime;
+              RhenusChangeLog."Interface Code" := 'RHENUS';
+              RhenusChangeLog."Ship-to Country/Region Code" := SalesHeader."Ship-to Country/Region Code";
+              RhenusChangeLog."Ship-to Post Code" := SalesHeader."Ship-to Post Code";
+              RhenusChangeLog."Ship-to Code" := SalesHeader."Ship-to Code";
+              RhenusChangeLog."Seq. No." := SalesLine."Seq. No.";
+              RhenusChangeLog.Type := SalesLine.Type;
+              RhenusChangeLog."Special Order" := SalesLine."Special Order";
+              RhenusChangeLog."Delivery Type" := SalesLine."Delivery Type";
+              RhenusChangeLog.Description := SalesLine.Description;
+              RhenusChangeLog."Cross-Reference No." := SalesLine."Cross-Reference No.";
+              RhenusChangeLog."Amount Including VAT" := SalesLine."Line Amount";
+              RhenusChangeLog."Purchasing Code" := SalesLine."Purchasing Code";
+              RhenusChangeLog."Expected Receipt Date" := 0D;
+              RhenusChangeLog."Special Order Sales No." := '';
+              RhenusChangeLog."Cancellation Qty." := 0;
+              RhenusChangeLog."Parcels Number" := GetItemParcels(SalesLine);
+              RhenusChangeLog."Assembly for Line No." := 0;
+              RhenusChangeLog."Parent Item No." := '';
+              IF NOT RhenusChangeLog.INSERT THEN
+                IF RhenusChangeLog.MODIFY THEN;
+              //Update Interface Process Log
+              //A/P0564
+              IF ((InsertInfoPickIPLZL) AND (RhenusChangeLog."Branch Code" = FPCGeneralSetup."Branch Rhenus Freienbrink")) OR
+                 ((InsertInfoPickIPL639) AND (RhenusChangeLog."Branch Code" = FPCGeneralSetup."Branch Rhenus Grevenbroich")) THEN
+                InsertInfoPickIPL(RhenusChangeLog);
+              //E/P0564
+              CheckAndInsertAttachedAssembly(SalesLine,p_Branch,SEQNo,p_InsertDateTime);
+            //S/P0966
+            END;
+            //E/P0966
+          END;
+        UNTIL SalesLine.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE CheckAndInsertAttachedAssembly@1000000038(p_SalesLine@1000000000 : Record 37;p_Branch@1000000001 : Code[10];p_SEQNo@1000000002 : Code[10];p_InsertDateTime@1000000008 : DateTime);
+    VAR
+      SalesHeader@1000000005 : Record 36;
+      SalesLine@1000000003 : Record 37;
+      RhenusChangeLog@1000000004 : Record 50070;
+      PurchasesPayablesSetup@1000000006 : Record 312;
+      ShiptoAddress@1000000007 : Record 222;
+    BEGIN
+      // Checks if Item has an attached Assembly and add's Resource Assembly Line to Rhenus Change Log
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type",p_SalesLine."Document Type");
+      SalesLine.SETRANGE("Document No.",p_SalesLine."Document No.");
+      SalesLine.SETRANGE(Type,SalesLine.Type::Resource);
+      SalesLine.SETRANGE("Parent ID",p_SalesLine.ID);
+      SalesLine.SETRANGE("Resource Type",SalesLine."Resource Type"::Assembly);
+      PurchasesPayablesSetup.GET;
+      SalesLine.SETFILTER("Line Status",'<>%1',PurchasesPayablesSetup."Magento Status for Correction");
+      IF SalesLine.FINDFIRST THEN BEGIN
+        SalesHeader.GET(p_SalesLine."Document Type",p_SalesLine."Document No.");
+        RhenusChangeLog.RESET;
+        RhenusChangeLog."Source Type" := RhenusChangeLog."Source Type"::Sales;
+        RhenusChangeLog."Document Type" := RhenusChangeLog."Document Type"::Order;
+        RhenusChangeLog."Document No." := SalesHeader."No.";
+        RhenusChangeLog."Line No." := SalesLine."Line No.";
+        RhenusChangeLog."Seq. Code" := p_SEQNo;
+        RhenusChangeLog.Action := RhenusChangeLog.Action::New;
+        RhenusChangeLog."Branch Code" := p_Branch;
+        RhenusChangeLog."Sell-to Customer No." := SalesHeader."Sell-to Customer No.";
+        RhenusChangeLog."Order Date" := SalesHeader."Order Date";
+        RhenusChangeLog."External Document No." := SalesHeader."External Document No.";
+        RhenusChangeLog."Website No." := SalesHeader."Website No.";
+        RhenusChangeLog."Ship-to Name" := SalesHeader."Ship-to Name";
+        RhenusChangeLog."Ship-to Name 2" := SalesHeader."Ship-to Name 2";
+        RhenusChangeLog."Ship-to Address" := SalesHeader."Ship-to Address";
+        RhenusChangeLog."Ship-to Address 2" := SalesHeader."Ship-to Address 2";
+        RhenusChangeLog."Ship-to City" := SalesHeader."Ship-to City";
+        RhenusChangeLog."Ship-to Contact" := SalesHeader."Ship-to Contact";
+        //A/First Name / Last Name
+        // Write actual Name to SO
+        //IF ShiptoAddress.GET(SalesHeader."Sell-to Customer No.",SalesHeader."Ship-to Code") THEN BEGIN
+          //IF (SalesHeader."First name" = '') AND (SalesHeader."Last name" = '') THEN BEGIN
+            //IF (ShiptoAddress."First name" <> '') AND (ShiptoAddress."Last name" <> '') THEN BEGIN
+              //SalesHeader."First name" := ShiptoAddress."First name";
+              //SalesHeader."Last name" := ShiptoAddress."Last name";
+              //SalesHeader.MODIFY;
+            //END;
+          //END;
+        //END;
+        // Fill Log from SO
+        //RhenusChangeLog."First name" := SalesHeader."First name";
+        //RhenusChangeLog."Last name" := SalesHeader."Last name";
+        //IF (RhenusChangeLog."First name" <> '') AND (RhenusChangeLog."Last name" <> '') THEN BEGIN
+          //RhenusChangeLog."Ship-to Name" := RhenusChangeLog."Last name";
+          //RhenusChangeLog."Ship-to Name 2" := RhenusChangeLog."First name";
+        //END;
+        //E/First Name / Last Name
+        IF SalesHeader.Status = SalesHeader.Status::"Pending Prepayment" THEN
+          RhenusChangeLog."Shipment Date" := 11112911D
+        ELSE
+          RhenusChangeLog."Shipment Date" := 0D;
+        RhenusChangeLog."No." := SalesLine."No.";
+        RhenusChangeLog."Location Code" := SalesLine."Location Code";
+        RhenusChangeLog."Unit of Measure" := SalesLine."Unit of Measure";
+        RhenusChangeLog.Quantity := SalesLine.Quantity;  //Calc Qty oder KAD erstellung?
+        RhenusChangeLog."Gross Weight" := SalesLine."Gross Weight";
+        RhenusChangeLog."Unit Volume" := SalesLine."Unit Volume";
+        RhenusChangeLog."Creation Datetime" := p_InsertDateTime;
+        RhenusChangeLog."Interface Code" := 'RHENUS';
+        RhenusChangeLog."Ship-to Country/Region Code" := SalesHeader."Ship-to Country/Region Code";
+        RhenusChangeLog."Ship-to Post Code" := SalesHeader."Ship-to Post Code";
+        RhenusChangeLog."Ship-to Code" := SalesHeader."Ship-to Code";
+        RhenusChangeLog."Seq. No." := SalesLine."Seq. No.";
+        RhenusChangeLog.Type := SalesLine.Type;
+        RhenusChangeLog."Special Order" := SalesLine."Special Order";
+        RhenusChangeLog."Delivery Type" := SalesLine."Delivery Type";
+        RhenusChangeLog.Description := SalesLine.Description;
+        RhenusChangeLog."Cross-Reference No." := SalesLine."Cross-Reference No.";
+        RhenusChangeLog."Amount Including VAT" := SalesLine."Line Amount";
+        RhenusChangeLog."Purchasing Code" := SalesLine."Purchasing Code";
+        RhenusChangeLog."Expected Receipt Date" := 0D;
+        RhenusChangeLog."Special Order Sales No." := '';
+        RhenusChangeLog."Cancellation Qty." := 0;
+        RhenusChangeLog."Parcels Number" := 0;
+        RhenusChangeLog."Assembly for Line No." := 0;
+        RhenusChangeLog."Parent Item No." := p_SalesLine."No.";
+        IF NOT RhenusChangeLog.INSERT THEN
+          IF RhenusChangeLog.MODIFY THEN;
+      END;
+    END;
+
+    PROCEDURE GetNextSEQNoForSalesOrder@1000000004(p_OrderNo@1000000000 : Code[20]) : Code[10];
+    VAR
+      NextSEQNo@1000000002 : Record 50070;
+      SEQNo@1000000003 : Code[10];
+    BEGIN
+      // Find Last Sequence no for Sales Order an EXIT INCSTR
+      NextSEQNo.RESET;
+      NextSEQNo.SETRANGE("Source Type",NextSEQNo."Source Type"::Sales);
+      NextSEQNo.SETRANGE("Document Type",NextSEQNo."Document Type"::Order);
+      NextSEQNo.SETRANGE("Document No.",p_OrderNo);
+      IF NextSEQNo.FINDLAST THEN
+        EXIT(INCSTR(NextSEQNo."Seq. Code"))
+      ELSE
+        EXIT('001');
+    END;
+
+    PROCEDURE GetBranchFromPurchCode@1000000025(p_PurchCode@1000000000 : Code[10]) r_Branch : Code[10];
+    VAR
+      Purchasing@1000000001 : Record 5721;
+    BEGIN
+      // Get Brach from Purchasing Code
+      Purchasing.RESET;
+      Purchasing.GET(p_PurchCode);
+      EXIT(Purchasing."RHE Branch Code");
+    END;
+
+    PROCEDURE CheckIfHeaderChanged@1000000047(p_OrderNo@1000000000 : Code[20];VAR p_IsPaymentUpdate_Var@1000000003 : Boolean) : Boolean;
+    VAR
+      LastLogHeader@1000000001 : Record 50070;
+      SalesHeader@1000000002 : Record 36;
+    BEGIN
+      // Check Sales Header if General Fields have changed
+      // Check If Payment Update
+      LastLogHeader.SETRANGE("Source Type",LastLogHeader."Source Type"::Sales);
+      LastLogHeader.SETRANGE("Document Type",LastLogHeader."Document Type"::Order);
+      LastLogHeader.SETRANGE("Document No.",p_OrderNo);
+      LastLogHeader.SETRANGE(Action,LastLogHeader.Action::New,LastLogHeader.Action::Change);
+      IF LastLogHeader.FINDLAST THEN BEGIN
+       SalesHeader.GET(1,p_OrderNo);
+       IF (LastLogHeader."Shipment Date" = 11112911D) AND (SalesHeader.Status = SalesHeader.Status::Released) THEN
+         p_IsPaymentUpdate_Var := TRUE;
+       IF (LastLogHeader."Document Type" <> LastLogHeader."Document Type"::Order) OR
+          (LastLogHeader."Document No." <> p_OrderNo) OR
+          (LastLogHeader."Sell-to Customer No." <> SalesHeader."Sell-to Customer No.") OR
+          (LastLogHeader."Order Date" <> SalesHeader."Order Date") OR
+          (LastLogHeader."External Document No." <> SalesHeader."External Document No.") OR
+          (LastLogHeader."Website No." <> SalesHeader."Website No.") OR
+          (LastLogHeader."Ship-to Address" <> SalesHeader."Ship-to Address") OR
+          (LastLogHeader."Ship-to Address 2" <> SalesHeader."Ship-to Address 2") OR
+          (LastLogHeader."Ship-to City" <> SalesHeader."Ship-to City") OR
+          (LastLogHeader."Ship-to Contact" <> SalesHeader."Ship-to Contact") OR
+          (LastLogHeader."Ship-to Country/Region Code" <> SalesHeader."Ship-to Country/Region Code") OR
+          (LastLogHeader."Ship-to Post Code" <> SalesHeader."Ship-to Post Code") OR
+          (LastLogHeader."Ship-to Code" <> SalesHeader."Ship-to Code")
+        THEN
+          EXIT(TRUE);
+        //IF (SalesHeader."First name" <> '') AND (SalesHeader."Last name" <> '') THEN BEGIN
+          //IF (LastLogHeader."Ship-to Name" <> SalesHeader."Last name") OR
+             //(LastLogHeader."Ship-to Name 2" <> SalesHeader."First name")
+          //THEN
+            //EXIT(TRUE);
+        //END ELSE BEGIN
+          IF (LastLogHeader."Ship-to Name" <> SalesHeader."Ship-to Name") OR
+             (LastLogHeader."Ship-to Name 2" <> SalesHeader."Ship-to Name 2")
+          THEN
+            EXIT(TRUE);
+        //END;
+      END;
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE CheckCancelRenewForBranch@1000000057(p_OrderNo@1000000000 : Code[20];p_Branch@1000000001 : Code[10];VAR p_CancelBranch_Var@1000000007 : Boolean;VAR p_NewBranch_Var@1000000008 : Boolean;VAR p_LastSEQNo_Var@1000000005 : Code[10];VAR p_BranchChange_Var@1000000006 : Boolean);
+    VAR
+      CheckLastLog@1000000002 : Record 50070;
+      SalesLine@1000000004 : Record 37;
+      FilterChange@1000000003 : Boolean;
+      PurchasesPayablesSetup@1000000009 : Record 312;
+    BEGIN
+      // Check last Log for Branch against active Sales Order
+      PurchasesPayablesSetup.GET;
+      FilterChange := FALSE;
+      CheckLastLog.RESET;
+      CheckLastLog.SETRANGE("Source Type",CheckLastLog."Source Type"::Sales);
+      CheckLastLog.SETRANGE("Document Type",CheckLastLog."Document Type"::Order);
+      CheckLastLog.SETRANGE("Document No.",p_OrderNo);
+      CheckLastLog.SETRANGE("Branch Code",p_Branch);
+      IF CheckLastLog.FINDLAST THEN BEGIN
+        IF CheckLastLog.Action = CheckLastLog.Action::Change THEN
+          FilterChange := TRUE;
+        p_LastSEQNo_Var := CheckLastLog."Seq. Code";
+        CheckLastLog.RESET;
+        CheckLastLog.SETRANGE("Source Type",CheckLastLog."Source Type"::Sales);
+        CheckLastLog.SETRANGE("Document Type",CheckLastLog."Document Type"::Order);
+        CheckLastLog.SETRANGE("Document No.",p_OrderNo);
+        CheckLastLog.SETRANGE("Branch Code",p_Branch);
+        CheckLastLog.SETRANGE("Seq. Code",p_LastSEQNo_Var);
+        IF FilterChange THEN
+          CheckLastLog.SETRANGE(Action,CheckLastLog.Action::Change)
+        ELSE
+          CheckLastLog.SETRANGE(Action,CheckLastLog.Action::New);
+        // Check Log Against SalesLines
+        IF CheckLastLog.FINDSET(FALSE,FALSE) THEN BEGIN
+          REPEAT
+            SalesLine.RESET;
+            SalesLine.GET(CheckLastLog."Document Type",CheckLastLog."Document No.",CheckLastLog."Line No.");
+            IF (CheckLastLog."No." <> SalesLine."No.") OR
+               //A/P0662
+               //(CheckLastLog."Location Code" <> SalesLine."Location Code") OR
+               //E/P0662
+               (CheckLastLog."Unit of Measure" <> SalesLine."Unit of Measure") OR
+               (CheckLastLog.Quantity <> SalesLine.Quantity) OR
+               (CheckLastLog."Gross Weight" <> SalesLine."Gross Weight") OR
+               (CheckLastLog."Unit Volume" <> SalesLine."Unit Volume") OR
+               (CheckLastLog.Type <> SalesLine.Type) OR
+               (CheckLastLog."Delivery Type" <> SalesLine."Delivery Type") OR
+               (CheckLastLog.Description <> SalesLine.Description) OR
+               (CheckLastLog."Cross-Reference No." <> SalesLine."Cross-Reference No.") OR
+               (CheckLastLog."Amount Including VAT" <> SalesLine."Line Amount") OR
+               (CheckLastLog."Purchasing Code" <> SalesLine."Purchasing Code") OR
+               (CheckLastLog."Cancellation Qty." <> SalesLine."Cancellation Qty.") OR
+               (SalesLine."Line Status" = PurchasesPayablesSetup."Magento Status for Correction")
+             THEN BEGIN
+                 p_CancelBranch_Var := TRUE;
+                 p_NewBranch_Var := TRUE;
+             END;
+             IF SalesLine.Type = SalesLine.Type::Item THEN
+               IF CheckLastLog."Branch Code" <> GetBranchFromPurchCode(SalesLine."Purchasing Code") THEN BEGIN
+               p_CancelBranch_Var := TRUE;
+               p_NewBranch_Var := TRUE;
+               //A/
+               IF GetBranchFromPurchCode(SalesLine."Purchasing Code") <> '' THEN
+                 p_BranchChange_Var := TRUE;
+               //E
+             END;
+
+          UNTIL (p_NewBranch_Var = TRUE) OR (p_CancelBranch_Var = TRUE) OR (CheckLastLog.NEXT = 0);
+          // Check for New Sales Line for Branch
+          IF NOT p_NewBranch_Var THEN BEGIN
+            SalesLine.RESET;
+            SalesLine.SETRANGE("Document Type",SalesLine."Document Type"::Order);
+            SalesLine.SETRANGE("Document No.",p_OrderNo);
+            SalesLine.SETRANGE(Type,SalesLine.Type::Item);
+            SalesLine.SETFILTER("Line Status",'<>%1',PurchasesPayablesSetup."Magento Status for Correction");
+            IF SalesLine.FINDSET(FALSE,FALSE) THEN BEGIN
+              REPEAT
+                IF GetBranchFromPurchCode(SalesLine."Purchasing Code") = p_Branch THEN BEGIN
+                  CheckLastLog.RESET;
+                  CheckLastLog.SETRANGE("Source Type",CheckLastLog."Source Type"::Sales);
+                  CheckLastLog.SETRANGE("Document Type",CheckLastLog."Document Type"::Order);
+                  CheckLastLog.SETRANGE("Document No.",p_OrderNo);
+                  CheckLastLog.SETRANGE("Line No.",SalesLine."Line No.");
+                  CheckLastLog.SETRANGE("Seq. Code",p_LastSEQNo_Var);
+                  CheckLastLog.SETRANGE("Branch Code",GetBranchFromPurchCode(SalesLine."Purchasing Code"));
+                  IF FilterChange THEN
+                    CheckLastLog.SETRANGE(Action,CheckLastLog.Action::Change)
+                  ELSE
+                    CheckLastLog.SETRANGE(Action,CheckLastLog.Action::New);
+                  IF CheckLastLog.ISEMPTY THEN BEGIN
+                    p_CancelBranch_Var := TRUE;
+                    p_NewBranch_Var := TRUE;
+                  END;
+                END;
+              UNTIL (p_CancelBranch_Var = TRUE) OR (p_NewBranch_Var = TRUE) OR (SalesLine.NEXT = 0);
+            END;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE AddCancelAllBranch@1000000076(p_OrderNo@1000000000 : Code[20]);
+    VAR
+      LastZLLog@1000000001 : Record 50070;
+      Last639Log@1000000002 : Record 50070;
+      FPCGeneralSetup@1000000003 : Record 50055;
+    BEGIN
+      //A/P0838
+      FPCGeneralSetup.RESET;
+      //A/P0881
+      FPCGeneralSetup.GET;
+      //E/P0881
+      FPCGeneralSetup.TESTFIELD("Branch Rhenus Freienbrink");
+      FPCGeneralSetup.TESTFIELD("Branch Rhenus Grevenbroich");
+      //E/P0838
+      // Add Cancel for last ZL and 639 Sequences
+      LastZLLog.RESET;
+      LastZLLog.SETRANGE("Source Type",LastZLLog."Source Type"::Sales);
+      LastZLLog.SETRANGE("Document Type",LastZLLog."Document Type"::Order);
+      LastZLLog.SETRANGE("Document No.",p_OrderNo);
+      LastZLLog.SETRANGE(Action,LastZLLog.Action::New,LastZLLog.Action::Change);
+      //A/P0838
+      //LastZLLog.SETRANGE("Branch Code",'ZL');
+      LastZLLog.SETRANGE("Branch Code",FPCGeneralSetup."Branch Rhenus Freienbrink");
+      //E/P0838
+      IF LastZLLog.FINDLAST THEN
+        AddCancelForSequence(p_OrderNo,LastZLLog."Seq. Code");
+
+      Last639Log.RESET;
+      Last639Log.SETRANGE("Source Type",Last639Log."Source Type"::Sales);
+      Last639Log.SETRANGE("Document Type",Last639Log."Document Type"::Order);
+      Last639Log.SETRANGE("Document No.",p_OrderNo);
+      Last639Log.SETRANGE(Action,Last639Log.Action::New,Last639Log.Action::Change);
+      //A/P0838
+      //Last639Log.SETRANGE("Branch Code",'639');
+      Last639Log.SETRANGE("Branch Code",FPCGeneralSetup."Branch Rhenus Grevenbroich");
+      //E/P0838
+      IF Last639Log.FINDLAST THEN
+        AddCancelForSequence(p_OrderNo,Last639Log."Seq. Code");
+    END;
+
+    PROCEDURE AddCancelForSequence@1000000060(p_OrderNo@1000000000 : Code[20];p_SEQNo@1000000001 : Code[10]);
+    VAR
+      ExistingSequence@1000000002 : Record 50070;
+      RhenusChangeLog@1000000003 : Record 50070;
+      CountLines@1000000004 : Integer;
+      CountUnprocessed@1000000005 : Integer;
+      FPCGeneralSetup@1000000006 : Record 50055;
+    BEGIN
+      // Add Cancel for one Sequnce to Rhenus Change Log
+      // Action::Change, "Line No." := 0
+      // If Sequence to Cancel not processed then LOCKTABLE, DELETEALL -> No Transfer
+      //A/P0564
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Branch Rhenus Freienbrink");
+      FPCGeneralSetup.TESTFIELD("Branch Rhenus Grevenbroich");
+      //E/P0564
+      CountLines := 0;
+      CountUnprocessed := 0;
+      ExistingSequence.RESET;
+      ExistingSequence.SETRANGE("Source Type",ExistingSequence."Source Type"::Sales);
+      ExistingSequence.SETRANGE("Document Type",ExistingSequence."Document Type"::Order);
+      ExistingSequence.SETRANGE("Document No.",p_OrderNo);
+      ExistingSequence.SETRANGE("Seq. Code",p_SEQNo);
+      ExistingSequence.SETRANGE(Action,ExistingSequence.Action::Cancelation);
+      IF NOT ExistingSequence.FINDFIRST THEN BEGIN
+        ExistingSequence.RESET;
+        ExistingSequence.SETRANGE("Source Type",ExistingSequence."Source Type"::Sales);
+        ExistingSequence.SETRANGE("Document Type",ExistingSequence."Document Type"::Order);
+        ExistingSequence.SETRANGE("Document No.",p_OrderNo);
+        ExistingSequence.SETRANGE("Seq. Code",p_SEQNo);
+        IF ExistingSequence.FIND('+') THEN BEGIN
+          CountLines := ExistingSequence.COUNT;
+          ExistingSequence.SETRANGE(Processed,FALSE);
+          CountUnprocessed := ExistingSequence.COUNT;
+          ExistingSequence.SETRANGE(Processed);
+          IF CountLines = CountUnprocessed THEN BEGIN
+            RhenusChangeLog.RESET;
+            RhenusChangeLog.LOCKTABLE;
+            RhenusChangeLog.SETRANGE("Source Type",RhenusChangeLog."Source Type"::Sales);
+            RhenusChangeLog.SETRANGE("Document Type",RhenusChangeLog."Document Type"::Order);
+            RhenusChangeLog.SETRANGE("Document No.",p_OrderNo);
+            RhenusChangeLog.SETRANGE("Seq. Code",p_SEQNo);
+            RhenusChangeLog.SETRANGE(Processed,FALSE);
+            IF RhenusChangeLog.FINDSET(FALSE,FALSE) THEN BEGIN
+              //A/P0564
+              DeleteInfoLogsIPL(RhenusChangeLog);
+              //E/P0564
+              RhenusChangeLog.DELETEALL;
+            END;
+          END ELSE BEGIN
+            RhenusChangeLog.RESET;
+            RhenusChangeLog.TRANSFERFIELDS(ExistingSequence);
+            RhenusChangeLog."Line No." := 0;
+            RhenusChangeLog.Action := RhenusChangeLog.Action::Cancelation;
+            RhenusChangeLog."Creation Datetime" := CURRENTDATETIME;
+            RhenusChangeLog."Processing Date" := 0DT;
+            RhenusChangeLog."Export File Name" := '';
+            RhenusChangeLog."Cancellation Qty." := RhenusChangeLog.Quantity;
+            RhenusChangeLog.Quantity := 0;
+            RhenusChangeLog.Processed := FALSE;
+            RhenusChangeLog.INSERT;
+            //A/P0564
+            InsertInfoCancelIPL(ExistingSequence);
+            IF (ExistingSequence."Branch Code" = FPCGeneralSetup."Branch Rhenus Freienbrink") THEN
+              InsertInfoPickIPLZL := TRUE;
+            IF (ExistingSequence."Branch Code" = FPCGeneralSetup."Branch Rhenus Grevenbroich") THEN
+              InsertInfoPickIPL639 := TRUE;
+            //E/P0564
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE InsertPaymentUpdateForSequence@1000000044(p_OrderNo@1000000000 : Code[20];p_SEQNo@1000000001 : Code[10];p_InsertDateTime@1000000007 : DateTime);
+    VAR
+      ReservationLog@1000000002 : Record 50070;
+      PaymentUpdateLog@1000000003 : Record 50070;
+      UnProcessedCounter@1000000004 : Integer;
+      Counter@1000000005 : Integer;
+      IsAlreadyCanceled@1000000006 : Record 50070;
+      InterfaceProcessMgt@1000000008 : Codeunit 50087;
+      FPCGeneralSetup@1000000009 : Record 50055;
+    BEGIN
+      // add Payment Update, Action::Change for Orders Pending Prepayment
+      FPCGeneralSetup.RESET;
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Status Pick");
+      FPCGeneralSetup.TESTFIELD("Interface Code Rhenus");
+
+      ReservationLog.LOCKTABLE;
+      ReservationLog.RESET;
+      ReservationLog.SETRANGE("Source Type",ReservationLog."Source Type"::Sales);
+      ReservationLog.SETRANGE("Document Type",ReservationLog."Document Type"::Order);
+      ReservationLog.SETRANGE("Document No.",p_OrderNo);
+      ReservationLog.SETRANGE("Seq. Code",p_SEQNo);
+      ReservationLog.SETRANGE(Action,ReservationLog.Action::New);
+      ReservationLog.SETRANGE(Processed,FALSE);
+      UnProcessedCounter := ReservationLog.COUNT;
+      ReservationLog.SETRANGE(Processed);
+      Counter := ReservationLog.COUNT;
+        IF ReservationLog.FINDSET(FALSE,FALSE) THEN BEGIN
+          IsAlreadyCanceled.RESET;
+          IsAlreadyCanceled.SETRANGE("Source Type",ReservationLog."Source Type");
+          IsAlreadyCanceled.SETRANGE("Document Type",ReservationLog."Document Type");
+          IsAlreadyCanceled.SETRANGE("Document No.",ReservationLog."Document No.");
+          IsAlreadyCanceled.SETRANGE("Seq. Code",ReservationLog."Seq. Code");
+          IsAlreadyCanceled.SETRANGE("Line No.",0);
+          IsAlreadyCanceled.SETRANGE(Action,IsAlreadyCanceled.Action::Cancelation);
+          IsAlreadyCanceled.SETRANGE("Branch Code",ReservationLog."Branch Code");
+          IF IsAlreadyCanceled.ISEMPTY THEN BEGIN
+            IF UnProcessedCounter = Counter  THEN BEGIN
+              REPEAT
+                ReservationLog."Shipment Date" := 0D;
+                ReservationLog.MODIFY;
+              UNTIL ReservationLog.NEXT = 0;
+            END ELSE BEGIN
+              REPEAT
+                PaymentUpdateLog.INIT;
+                PaymentUpdateLog.TRANSFERFIELDS(ReservationLog);
+                PaymentUpdateLog.Action := PaymentUpdateLog.Action::Change;
+                PaymentUpdateLog."Shipment Date" := 0D;
+                PaymentUpdateLog."Creation Datetime" := p_InsertDateTime;
+                PaymentUpdateLog."Processing Date" := 0DT;
+                PaymentUpdateLog."Export File Name" := '';
+                PaymentUpdateLog.Processed := FALSE;
+                IF PaymentUpdateLog.INSERT THEN;
+              UNTIL ReservationLog.NEXT = 0;
+            END;
+
+          END ELSE BEGIN
+            FillNewChangeLogForBranch(ReservationLog."Document No.",ReservationLog."Branch Code",CURRENTDATETIME);
+          END;
+        END;
+    END;
+
+    PROCEDURE GetItemParcels@1000000080(p_SalesLine@1000000000 : Record 37) : Integer;
+    VAR
+      CheckTransferedParcels@1000000001 : Record 50070;
+      Item@1000000002 : Record 27;
+    BEGIN
+      // Send alwasy the same Parcels Number to Rhenus for one Order.
+      // If the Parcels Number changes during one Order, Rhenus creates a new Item
+      // New enqueue in Pickinglist, late Shipment
+      CheckTransferedParcels.SETRANGE("Source Type",CheckTransferedParcels."Source Type"::Sales);
+      CheckTransferedParcels.SETRANGE("Document Type",CheckTransferedParcels."Document Type"::Order);
+      CheckTransferedParcels.SETRANGE("Document No.",p_SalesLine."Document No.");
+      CheckTransferedParcels.SETRANGE("Line No.",p_SalesLine."Line No.");
+      CheckTransferedParcels.SETRANGE("No.",p_SalesLine."No.");
+      IF CheckTransferedParcels.FINDFIRST THEN
+        EXIT(CheckTransferedParcels."Parcels Number")
+      ELSE BEGIN
+        Item.RESET;
+        IF Item.GET(p_SalesLine."No.") THEN BEGIN
+          Item.CALCFIELDS("Parcels Number");
+          IF Item."Parcels Number" <> 0 THEN
+            EXIT(Item."Parcels Number");
+        END;
+      END;
+      EXIT(1);
+    END;
+
+    PROCEDURE DeleteInfoLogsIPL@1000000003(p_RhenusChangeLog@1000000000 : Record 50070);
+    VAR
+      InterfaceProcessLog@1000000001 : Record 50087;
+      FPCGeneralSetup@1000000002 : Record 50055;
+      RhenusChangeLog2@1000000003 : Record 50070;
+      InterfaceProcessMgt@1000000004 : Codeunit 50087;
+    BEGIN
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Status Cancel");
+      FPCGeneralSetup.TESTFIELD("Interface Code Rhenus");
+      FPCGeneralSetup.TESTFIELD("Trigger Rhenus Interface");
+      IF InterfaceProcessMgt.TriggerActive(FPCGeneralSetup."Trigger Rhenus Interface") THEN BEGIN
+        RhenusChangeLog2.RESET;
+        RhenusChangeLog2.SETRANGE("Source Type",p_RhenusChangeLog."Source Type");
+        RhenusChangeLog2.SETRANGE("Document Type",p_RhenusChangeLog."Document Type");
+        RhenusChangeLog2.SETRANGE("Document No.",p_RhenusChangeLog."Document No.");
+        RhenusChangeLog2.SETRANGE("Seq. Code",p_RhenusChangeLog."Seq. Code");
+        RhenusChangeLog2.SETFILTER(Action,'<>%1',RhenusChangeLog2.Action::Cancelation);
+        IF RhenusChangeLog2.FINDSET THEN BEGIN
+          REPEAT
+            InterfaceProcessLog.RESET;
+            //A/gob-adb/16.05.13
+            InterfaceProcessLog.SETCURRENTKEY("Document No.","Document Line No.");
+            //E/gob-adb/16.05.13
+            InterfaceProcessLog.SETRANGE("Entry Type",InterfaceProcessLog."Entry Type"::Sales);
+            InterfaceProcessLog.SETRANGE("Entry Subtype",InterfaceProcessLog."Entry Subtype"::Order);
+            InterfaceProcessLog.SETRANGE("Document No.",RhenusChangeLog2."Document No.");
+            InterfaceProcessLog.SETRANGE("Document Line No.",RhenusChangeLog2."Line No.");
+            InterfaceProcessLog.SETRANGE(Interface,FPCGeneralSetup."Interface Code Rhenus");
+            InterfaceProcessLog.SETRANGE("Process Status",InterfaceProcessLog."Process Status"::Information);
+            InterfaceProcessLog.SETFILTER(Status,'%1|%2',FPCGeneralSetup."Status Reserve",FPCGeneralSetup."Status Pick");
+            //A/gob-adb/16.05.13
+            //IF InterfaceProcessLog.FINDSET(TRUE,FALSE) THEN
+            IF InterfaceProcessLog.FINDFIRST THEN
+            //E/gob-adb/16.05.13
+              InterfaceProcessLog.DELETE;
+          UNTIL p_RhenusChangeLog.NEXT = 0;
+        END;
+      END;
+    END;
+
+    PROCEDURE InsertInfoCancelIPL@1000000007(p_RhenusChangeLog@1000000000 : Record 50070);
+    VAR
+      RhenusChangeLog2@1000000001 : Record 50070;
+      InterfaceProcessMgt@1000000002 : Codeunit 50087;
+      FPCGeneralSetup@1000000003 : Record 50055;
+    BEGIN
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Status Cancel");
+      FPCGeneralSetup.TESTFIELD("Interface Code Rhenus");
+      FPCGeneralSetup.TESTFIELD("Trigger Rhenus Interface");
+      IF InterfaceProcessMgt.TriggerActive(FPCGeneralSetup."Trigger Rhenus Interface") THEN BEGIN
+        RhenusChangeLog2.RESET;
+        RhenusChangeLog2.SETRANGE("Source Type",p_RhenusChangeLog."Source Type");
+        RhenusChangeLog2.SETRANGE("Document Type",p_RhenusChangeLog."Document Type");
+        RhenusChangeLog2.SETRANGE("Document No.",p_RhenusChangeLog."Document No.");
+        RhenusChangeLog2.SETRANGE("Seq. Code",p_RhenusChangeLog."Seq. Code");
+        RhenusChangeLog2.SETFILTER(Action,'<>%1',RhenusChangeLog2.Action::Cancelation);
+        IF RhenusChangeLog2.FINDSET(FALSE,FALSE) THEN BEGIN
+          REPEAT
+            InterfaceProcessMgt.AddInformationLogCancelRenew(RhenusChangeLog2."Document No.",
+                                                             RhenusChangeLog2."Line No.",
+                                                             FPCGeneralSetup."Interface Code Rhenus",
+                                                             FPCGeneralSetup."Status Cancel",
+                                                             FPCGeneralSetup."Trigger Rhenus Interface");
+          UNTIL RhenusChangeLog2.NEXT = 0;
+        END;
+      END;
+    END;
+
+    PROCEDURE InsertInfoPickIPL@1000000035(p_RhenusChangeLog@1000000000 : Record 50070);
+    VAR
+      FPCGeneralSetup@1000000001 : Record 50055;
+      InterfaceProcessMgt@1000000002 : Codeunit 50087;
+    BEGIN
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Status Pick");
+      FPCGeneralSetup.TESTFIELD("Interface Code Rhenus");
+      FPCGeneralSetup.TESTFIELD("Trigger Rhenus Interface");
+      IF InterfaceProcessMgt.TriggerActive(FPCGeneralSetup."Trigger Rhenus Interface") THEN BEGIN
+        InterfaceProcessMgt.AddInformationLogCancelRenew(p_RhenusChangeLog."Document No.",
+                                                         p_RhenusChangeLog."Line No.",
+                                                         FPCGeneralSetup."Interface Code Rhenus",
+                                                         GetLastIPLStatusFprRenew(p_RhenusChangeLog."Document No.",
+                                                           p_RhenusChangeLog."Line No.",
+                                                           FPCGeneralSetup."Interface Code Rhenus"),
+                                                         FPCGeneralSetup."Trigger Rhenus Interface");
+      END;
+    END;
+
+    PROCEDURE SetAvoidCrossdock@1000000010(p_AvoidCrossdock@1000000000 : Boolean);
+    BEGIN
+      //S/P0966
+      AvoidCrossdock := p_AvoidCrossdock;
+      //E/P0966
+    END;
+
+    PROCEDURE GetInterfaceFromPurchCode@1000000016(p_PurchasingCode@1000000000 : Code[10]) : Code[10];
+    VAR
+      Purchasing@1000000001 : Record 5721;
+    BEGIN
+      //S/P0966
+      IF Purchasing.GET(p_PurchasingCode) THEN
+        EXIT(Purchasing."Interface Code");
+
+      EXIT('');
+      //E/P0966
+    END;
+
+    PROCEDURE GetLastIPLStatusFprRenew@1000000005(p_DocNo@1000000000 : Code[20];p_LineNo@1000000001 : Integer;p_Interface@1000000002 : Code[10]) : Code[20];
+    VAR
+      InterfaceProcessLog@1000000003 : Record 50087;
+      FPCGeneralSetup@1000000004 : Record 50055;
+    BEGIN
+      InterfaceProcessLog.RESET;
+      InterfaceProcessLog.SETCURRENTKEY("Document No.","Document Line No.");
+      InterfaceProcessLog.SETRANGE("Entry Subtype",InterfaceProcessLog."Entry Subtype"::Order);
+      InterfaceProcessLog.SETRANGE("Document No.",p_DocNo);
+      InterfaceProcessLog.SETRANGE("Document Line No.",p_LineNo);
+      InterfaceProcessLog.SETRANGE(Interface,p_Interface);
+      //S/P1122
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Status Cancel");
+      InterfaceProcessLog.SETFILTER(Status,'<>%1',FPCGeneralSetup."Status Cancel");
+      //E/P1122
+      IF InterfaceProcessLog.FINDLAST THEN
+        EXIT(InterfaceProcessLog.Status);
+
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Status Pick");
+      EXIT(FPCGeneralSetup."Status Pick");
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------------+
+      |                   ¸  Copyright                   |
+      |       GOB Software & Systeme GmbH & Co. KG       |
+      +--------------------------------------------------+
+      |                     FP Commerce                  |
+      +--------------------------------------------------+
+
+      Version   Date      Consultant  Project  Comment
+      ____________________________________________________________________________________________________________________________________
+      GOB1.00   20.08.12  gob-rste    P0214    gob-rste
+      GOB1.01   20.09.12  gob-rste    P0358    Alten Code entfernt, neuer Code Rhenus Extra Cancel
+      GOB1.03   24.09.12  gob-rste    P0369    New Code for manuell process, Job Queue removed, New Error Mgt.
+      GOB1.04   15.11.12  gob-rste    P0586    New Change Log Filler
+      GOB1.06   27.11.12  gob-rste    P0564    Fill Interface Process Log
+      GOB1.07   11.12.12  gob-rste    P0662    Don't check Location Code
+      GOB1.08   28.02.13  gob-rste    P0838    Get Brach Code from FPC General Setup
+      GOB1.09   04.04.13  gob-rste    P0881    Fix Get FPC Gen Setup
+      GOB1.10   11.04.13  gob-rste    P0886    Fix New Branch 639
+      GOB1.11   16.05.13  gob-adb     P0914    Performance
+      GOB1.12   22.07.13  gob-rste    P0966    Avoid Crossdocking Lines for Reservation
+      GOB1.13   28.10.13  gob-rste    P1122    Dont Set Info Cancel after Channel Change
+    }
+    END.
+  }
+}
+

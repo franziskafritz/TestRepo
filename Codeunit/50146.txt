@@ -1,0 +1,188 @@
+OBJECT Codeunit 50146 POCancInquiry_Functions
+{
+  OBJECT-PROPERTIES
+  {
+    Date=20.05.14;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=HME0636;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      TextHME004@1000000000 : TextConst 'ENU=No e-mail-address has been specified for vendor no. %1, %2.';
+      TextHME005@1000000001 : TextConst 'ENU="No record found in table ""%1"" for ""%2"" = ""%3""."';
+
+    PROCEDURE CheckPOCancInquirySetup@1000000000(VAR FPC_GeneralSetupR@1000000001 : Record 50055;VAR UserSetupR@1000000003 : Record 91);
+    VAR
+      MailIT_SetupL@1000000000 : Record 75402;
+    BEGIN
+      //H0609 11.10.13 HCN +++++++++++++++++++++++++++++
+      FPC_GeneralSetupR.GET;
+      FPC_GeneralSetupR.TESTFIELD("Enable POCancInquiryMails",TRUE);
+      FPC_GeneralSetupR.TESTFIELD("POCancInquiry Sender E-Mail");
+      FPC_GeneralSetupR.TESTFIELD("POCancInquiry Password");
+      FPC_GeneralSetupR.TESTFIELD("POCancInquiry Pretext");
+      FPC_GeneralSetupR.TESTFIELD("POCancInquiry Posttext");
+      FPC_GeneralSetupR.TESTFIELD(ExtText_SubjectIdentifier);
+      {
+      // next line deactivated upon request by Dawid Paskalski
+      FPC_GeneralSetupR.TESTFIELD("POCancInquiry HTML Footer Path");
+      }
+
+      MailIT_SetupL.GET;
+      MailIT_SetupL.TESTFIELD("HTML Path Footer DEU");
+      MailIT_SetupL.TESTFIELD("HTML Path Footer FR");
+      MailIT_SetupL.TESTFIELD("HTML Path Footer NL");
+      MailIT_SetupL.TESTFIELD("HTML Path Footer AUT");
+
+      IF (UserSetupR."User ID" = '') THEN BEGIN
+        UserSetupR.GET(USERID);
+      END;
+      UserSetupR.TESTFIELD("PDF Creator");
+      UserSetupR.TESTFIELD("E-Mail");
+      UserSetupR.TESTFIELD("Mail Client");
+      //H0609 11.10.13 HCN -----------------------------
+    END;
+
+    PROCEDURE RetrieveVendPOCancInqEmailAddr@1000000001(VendorV@1000000000 : Record 23;VAR ContactTypeR@1000000001 : Record 50189);
+    VAR
+      TotalNoOfRecordsFound@1000000002 : Integer;
+    BEGIN
+      //H0609 11.10.13 HCN +++++++++++++++++++++++++++++
+      CLEAR(ContactTypeR);
+      ContactTypeR.SETCURRENTKEY("Contact Type","Is primary Contact");
+      ContactTypeR.SETRANGE("Contact Type",ContactTypeR."Contact Type"::PurchOrderCancInq);
+      ContactTypeR.SETRANGE(TableID,DATABASE::Vendor);
+      ContactTypeR.SETRANGE(Code,VendorV."No.");
+      ContactTypeR.SETRANGE("Contact Medium Type",ContactTypeR."Contact Medium Type"::email);
+      ContactTypeR.SETFILTER("Contact Medium",'<>%1','');
+      TotalNoOfRecordsFound := ContactTypeR.COUNT;
+      ContactTypeR.FIND('-');
+      CASE TotalNoOfRecordsFound OF
+        0:ERROR(TextHME004,VendorV."No.",VendorV.Name);
+        1:EXIT;
+        ELSE BEGIN
+          ContactTypeR.SETRANGE("Is primary Contact",TRUE);
+          IF ContactTypeR.FIND('-') THEN BEGIN
+            EXIT
+          END ELSE BEGIN
+            ContactTypeR.SETRANGE("Is primary Contact");
+            ContactTypeR.FINDFIRST;
+            EXIT
+          END;
+        END;
+      END;
+
+      //H0609 11.10.13 HCN -----------------------------
+    END;
+
+    PROCEDURE CheckPOCancIsCompleteCancell@1000000003(BatchPostDocumentV@1000000000 : Record 50043) IsCompleteCancellationRV : Boolean;
+    VAR
+      BatchPostDocumentLineL@1000000002 : Record 50190;
+      PurchaseLineL@1000000001 : Record 39;
+      LineCounterL@1000000003 : Integer;
+      LineCounter2L@1000000004 : Integer;
+    BEGIN
+      //H0609 17.10.13 HCN +++++++++++++++++++++++++++++
+      CLEAR(BatchPostDocumentLineL);
+      BatchPostDocumentLineL.SETCURRENTKEY("Assigned to Entry No.","Line No.");
+      BatchPostDocumentLineL.SETRANGE("Assigned to Entry No.",BatchPostDocumentV."Entry No.");
+      LineCounterL := BatchPostDocumentLineL.COUNT;
+      BatchPostDocumentLineL.FINDFIRST;
+
+      CLEAR(PurchaseLineL);
+      PurchaseLineL.SETCURRENTKEY("Document No.","Line No.","Document Type");
+      PurchaseLineL.SETRANGE("Document No.",BatchPostDocumentLineL."Document No.");
+      PurchaseLineL.SETRANGE("Document Type",BatchPostDocumentLineL."Document Type"::Order);
+      IF PurchaseLineL.FIND('-') THEN BEGIN
+        REPEAT
+          IF (PurchaseLineL.Type = PurchaseLineL.Type::Item) THEN BEGIN
+            IF (PurchaseLineL."Sales Order No." <> '') OR
+               (PurchaseLineL."Special Order Sales No." <> '')
+            THEN BEGIN
+              LineCounter2L += 1;
+            END;
+          END;
+        UNTIL PurchaseLineL.NEXT = 0;
+      END;
+
+      IsCompleteCancellationRV := (LineCounterL = LineCounter2L);
+      EXIT(IsCompleteCancellationRV);
+      //H0609 17.10.13 HCN -----------------------------
+    END;
+
+    PROCEDURE GetUnpostedReturnOrder@1000000005(RecRefV@1000000000 : RecordRef;VAR ReturnOrderR@1000000001 : Record 36) : Boolean;
+    VAR
+      SalesLineL@1000000002 : Record 37;
+      SalesLineArchiveL@1000000004 : Record 5108;
+      ReturnOrderLineL@1000000003 : Record 37;
+    BEGIN
+      // GetUnpostedReturnOrder
+      //H0584 11.03.14 HCN +++++++++++++++++++++++++++++
+
+      CASE RecRefV.NUMBER OF
+        DATABASE::"Sales Line":
+          BEGIN
+            RecRefV.SETTABLE(SalesLineL);
+            CLEAR(ReturnOrderLineL);
+            ReturnOrderLineL.SETCURRENTKEY("Linked to Sales Order No.","Linked to Sales Order Line No.");
+            ReturnOrderLineL.SETRANGE("Document Type",SalesLineL."Document Type"::"Return Order");
+            ReturnOrderLineL.SETRANGE("Linked to Sales Order No.",SalesLineL."Document No.");
+            ReturnOrderLineL.SETRANGE("Linked to Sales Order Line No.",SalesLineL."Line No.");
+            IF ReturnOrderLineL.FINDFIRST THEN BEGIN
+              EXIT(ReturnOrderR.GET(ReturnOrderLineL."Document Type"::"Return Order",ReturnOrderLineL."Document No."));
+            END ELSE BEGIN
+              EXIT(FALSE);
+            END;
+          END;
+
+        DATABASE::"Sales Line Archive":
+          BEGIN
+            RecRefV.SETTABLE(SalesLineArchiveL);
+            CLEAR(ReturnOrderLineL);
+            ReturnOrderLineL.SETCURRENTKEY("Linked to Sales Order No.","Linked to Sales Order Line No.");
+            ReturnOrderLineL.SETRANGE("Document Type",ReturnOrderLineL."Document Type"::"Return Order");
+            ReturnOrderLineL.SETRANGE("Linked to Sales Order No.",SalesLineArchiveL."Document No.");
+            ReturnOrderLineL.SETRANGE("Linked to Sales Order Line No.",SalesLineArchiveL."Line No.");
+            IF ReturnOrderLineL.FINDFIRST THEN BEGIN
+              EXIT(ReturnOrderR.GET(ReturnOrderLineL."Document Type"::"Return Order",ReturnOrderLineL."Document No."));
+            END ELSE BEGIN
+              EXIT(FALSE);
+            END;
+          END;
+        ELSE BEGIN
+          EXIT(FALSE);
+        END;
+      END;
+      //H0584 11.03.14 HCN -----------------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+      H0609       11.10.13 HCN       Object created
+
+      H0584       13.03.14 HCN       New function "GetReturnOrder"
+
+      //H0609 11.10.13 HCN +++++++++++++++++++++++++++++
+      //H0609 11.10.13 HCN -----------------------------
+    }
+    END.
+  }
+}
+

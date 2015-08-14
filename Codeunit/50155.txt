@@ -1,0 +1,873 @@
+OBJECT Codeunit 50155 RHD Purchase Im/Export Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09.01.15;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=GOB,HME1882;
+  }
+  PROPERTIES
+  {
+    TableNo=50178;
+    OnRun=BEGIN
+            ExportWEA(Rec);
+            //Test
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      RHDSetup@1000000000 : Record 50177;
+      FPCInterfaceSetup@1000000003 : Record 50014;
+      RHDGeneralMgt@1000000002 : Codeunit 50157;
+      FileName@1000000001 : Text[255];
+
+    PROCEDURE "--- Export ---"@1000000004();
+    BEGIN
+    END;
+
+    PROCEDURE ExportWEA@1000000000(VAR pPurchExportHeader@1000000000 : Record 50178);
+    VAR
+      PurchExportLine@1000000001 : Record 50179;
+      FileRec@1000000004 : File;
+      FilePath@1000000005 : Text[255];
+      TextLine@1000000002 : Text[1024];
+      P1100_001@1000000003 : TextConst 'DEU=File could not be created.;ENU=File could not be created.';
+      P1100_002@1000000008 : TextConst 'DEU=File could not be opened.;ENU=File could not be opened.';
+      P1100_003@1000000006 : TextConst 'DEU=File could not be converted to UFT-8.;ENU=File could not be converted to UFT-8.';
+    BEGIN
+      PurchExportLine.SETRANGE("Entry No.",pPurchExportHeader."Entry No.");
+      PurchExportLine.FINDFIRST;
+      //Test
+      CLEAR(FileRec);
+      CLEAR(TextLine);
+
+      RHDSetup.GET();
+      RHDSetup.TESTFIELD("Interface Code WEA");
+
+      FPCInterfaceSetup.GET(RHDSetup."Interface Code WEA");
+      FPCInterfaceSetup.TESTFIELD("Export Folder");
+
+      FilePath := FPCInterfaceSetup."Export Folder";
+      FileName := CreateWEAFile;
+
+      IF COPYSTR(FilePath,STRLEN(FilePath),1) <> '\' THEN
+        FilePath := FilePath + '\';
+
+      // Datei anlegen und îffnen.
+      IF NOT RHDGeneralMgt.FileCreate(FilePath,FileName) THEN
+        ERROR(P1100_001);
+      IF NOT RHDGeneralMgt.FileOpen(FilePath,FileName) THEN
+        ERROR(P1100_002);
+
+      //Ab hier Zuweisung der einzelnen Werte gemÑ· Rhenus Spezifikation
+
+      // Satzart -> WEA
+      RHDGeneralMgt.AppendToString(TextLine,RHDSetup."Record Type WEA",3,' ',0);
+
+      // Mandant -> FPCO
+      RHDGeneralMgt.AppendToString(TextLine,RHDSetup."Rhenus Client Identifier",4,' ',0);
+
+      // öbertragungsgrund
+      CASE pPurchExportHeader."Transmission Mode" OF
+        pPurchExportHeader."Transmission Mode"::New: RHDGeneralMgt.AppendToString(TextLine,'1',1,' ',0);
+        pPurchExportHeader."Transmission Mode"::Cancel: RHDGeneralMgt.AppendToString(TextLine,'2',1,' ',0);
+        pPurchExportHeader."Transmission Mode"::Update: RHDGeneralMgt.AppendToString(TextLine,'3',1,' ',0);
+      END;
+
+      // Niederlassungsnummer
+      RHDGeneralMgt.AppendToString(TextLine,pPurchExportHeader."Branch Code",6,' ',1);
+
+      // Wareneingangsnummer
+      RHDGeneralMgt.AppendToString(TextLine,pPurchExportHeader."Rhenus Order No.",15,' ',1);
+
+      // Artikeltypnummer
+      RHDGeneralMgt.AppendToString(TextLine,PurchExportLine."No.",30,' ',1);
+
+      // Artikeltypbezeichnung
+      RHDGeneralMgt.AppendToString(TextLine,PurchExportLine.Description,50,' ',1);
+
+      // Artikeltypbarcode
+      RHDGeneralMgt.AppendToString(TextLine,PurchExportLine.Barcode,32,' ',1);
+
+      // Menge
+      RHDGeneralMgt.AppendToString(TextLine,FORMAT(ROUND(PurchExportLine.Quantity,1)),5,' ',0);
+
+      // PackstÅcke
+      RHDGeneralMgt.AppendToString(TextLine,FORMAT(ROUND(PurchExportLine."No. of Packages",1)),2,' ',0);
+
+      // Volumen
+      RHDGeneralMgt.AppendToString(TextLine,FORMAT(ROUND(PurchExportLine."Unit Volume",1)),5,' ',0);
+
+      // Gewicht
+      RHDGeneralMgt.AppendToString(TextLine,FORMAT(ROUND(PurchExportLine."Unit Weight",1)),4,' ',0);
+
+      // Liefertermin
+      RHDGeneralMgt.AppendToString(TextLine,
+        FORMAT(PurchExportLine."Promised Receipt Date",0,'<Day,2>.<Month,2>.<Year4,4>'),10,' ',0);
+
+      // Kundenauftragsnummer
+      // S/P1157
+      // RHDGeneralMgt.AppendToString(TextLine,PurchExportLine."Sales Order No.",20,' ',1);
+      RHDGeneralMgt.AppendToString(TextLine,PurchExportLine."Rhenus Sales Order No.",20,' ',1);
+      // E/P1157
+
+      // Satzabschluss
+      TextLine := TextLine + ';';
+
+      // Zeile anhÑngen
+      RHDGeneralMgt.FileAddLine(TextLine,TRUE);
+
+      // Datei schlie·en und in UTF-8 konvertieren
+      RHDGeneralMgt.FileSave();
+
+      //S/P1172
+      //SLEEP(1000);
+      //E/P1172
+
+      IF NOT RHDGeneralMgt.FileConvertToUTF8(FilePath,FileName) THEN
+        ERROR(P1100_003);
+
+      //S/P1193
+      //pPurchExportHeader.Filename := FilePath + FileName;
+      pPurchExportHeader.Filename := FileName;
+      //E/P1193
+      pPurchExportHeader."Process Timestamp" := CURRENTDATETIME;
+      pPurchExportHeader.MODIFY;
+    END;
+
+    LOCAL PROCEDURE CreateWEAFile@1000000005() : Text[50];
+    VAR
+      WEAIdent@1000000000 : Code[10];
+      ClientIdent@1000000001 : Code[10];
+      TimestampTxt@1000000003 : Text[50];
+    BEGIN
+      RHDSetup.TESTFIELD("Record Type WEA");
+      RHDSetup.TESTFIELD("Rhenus Client Identifier");
+      WEAIdent := RHDSetup."Record Type WEA";
+      ClientIdent := RHDSetup."Rhenus Client Identifier";
+      //S/P1222
+      //TimestampTxt := FORMAT(CURRENTDATETIME,0,'<Day,2><Month,2><Year4><Hours24,2><Minutes,2><Seconds,2><Thousands,3>');
+      TimestampTxt := FORMAT(CURRENTDATETIME,0,'<Year4><Month,2><Day,2><Hours24,2><Minutes,2><Seconds,2><Thousands,3>');
+      //E/P1222
+      EXIT(WEAIdent + ClientIdent + TimestampTxt + '.txt');
+    END;
+
+    LOCAL PROCEDURE SetFilename@1000000006(pFilename@1000000000 : Text[250]);
+    BEGIN
+      FileName := pFilename;
+    END;
+
+    PROCEDURE GetFilename@1000000003() : Text[250];
+    BEGIN
+      EXIT(FileName);
+    END;
+
+    PROCEDURE DeleteFileAfterError@1000000012();
+    BEGIN
+      RHDGeneralMgt.FileSave();
+      RHDGeneralMgt.FileDeleteAfterError(FPCInterfaceSetup."Export Folder",FileName);
+    END;
+
+    PROCEDURE "--- Import ---"@1000000007();
+    BEGIN
+    END;
+
+    PROCEDURE ReadWEM@1000000001(parFileName@1000000000 : Text[1024];pFileName@1000000005 : Text[250]) : Boolean;
+    VAR
+      FileRec@1000000003 : File;
+      NewLine@1000000002 : Text[1024];
+      UTFStream@1000000001 : Automation "{2A75196C-D9EB-4129-B803-931327F72D5C} 2.8:{00000566-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.8 Library'.Stream";
+      char@1000000004 : Char;
+      "*** H0854 ***"@1000000006 : Integer;
+      WemTypeL@1000000013 : Text[30];
+      ClientIdentifierL@1000000012 : Code[10];
+      BranchCodeL@1000000011 : Code[10];
+      ReceiptNoL@1000000010 : Code[20];
+      ShipmentNoL@1000000009 : Code[20];
+      ParentEntryNoL@1000000008 : Integer;
+      ShipmentPositionL@1000000007 : Integer;
+    BEGIN
+      FileRec.OPEN(parFileName);
+      CREATE(UTFStream);
+
+      UTFStream.Open();
+      UTFStream.Charset('UTF-8');
+      UTFStream.LoadFromFile(parFileName);
+
+      WHILE NOT UTFStream.EOS DO BEGIN
+        EVALUATE(char,UTFStream.ReadText(1));
+        IF (char <> 10) AND (char <> 13) THEN BEGIN
+          NewLine := NewLine + FORMAT(char);
+        END ELSE BEGIN
+          IF (NewLine <> '') AND (STRLEN(NewLine) > 0) THEN BEGIN
+            ProcessWEMLine(NewLine,pFileName);
+            NewLine := '';
+          END;
+        END;
+      END;
+      UTFStream.Close;
+      FileRec.CLOSE;
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE ProcessWEMLine@1000000002(TextLine@1000000000 : Text[1024];pFileName@1000000002 : Text[250]);
+    VAR
+      RHDPurchaseImport@1000000001 : Record 50180;
+    BEGIN
+      // Entry No. Integer (PK)
+      RHDPurchaseImport."Entry No." := RHDGeneralMgt.GetNextEntryNo(50180);
+      RHDPurchaseImport.INSERT;
+
+      // Setting Import Fields
+      RHDPurchaseImport."Import Timestamp" := CURRENTDATETIME;
+      RHDPurchaseImport."Import Status" := RHDPurchaseImport."Import Status"::Unprocessed;
+      RHDPurchaseImport."Process Timestamp" := 0DT;
+
+      // "Satzart" (Pos. 1) from file
+      RHDPurchaseImport."Record Type" := COPYSTR(TextLine,1,3);
+
+      // "Mandant" (Pos. 4) from file
+      RHDPurchaseImport."Client Identifier" := COPYSTR(TextLine,4,4);
+
+      // "Niederlassungsnummer" (Pos. 8) from file
+      RHDPurchaseImport."Branch Code" := COPYSTR(TextLine,8,6);
+
+      // "Wareneingangsnummer" (Pos. 14) from file
+      RHDPurchaseImport."Receipt No." := COPYSTR(TextLine,14,15);
+
+      // "Lieferscheinnummer" (Pos. 29) from file
+      RHDPurchaseImport."Shipment No." := COPYSTR(TextLine,29,30);
+
+      // "Lieferscheinposition" (Pos. 59) from file
+      EVALUATE(RHDPurchaseImport."Shipment Pos.",COPYSTR(TextLine,59,5));
+
+      // "Menge" (Pos. 64) from file
+      EVALUATE(RHDPurchaseImport.Quantity,COPYSTR(TextLine,64,5));
+
+      // "Bestandsart" (Pos. 69) from file
+      RHDPurchaseImport."Stock Type" := COPYSTR(TextLine,69,1);
+
+      // "davon Menge beschÑdigt" (Pos. 70) from file
+      EVALUATE(RHDPurchaseImport."Qty. Damaged",COPYSTR(TextLine,70,4));
+
+      // "Artikeltypnummer" (Pos. 74) from file
+      RHDPurchaseImport."Item No." := COPYSTR(TextLine,74,30);
+
+      // "Artikeltybeschreibung" (Pos. 104) from file
+      RHDPurchaseImport."Item Description" := COPYSTR(TextLine,104,50);
+
+      // "Artikeltypbarcode" (Pos. 154) from file
+      RHDPurchaseImport."Item Barcode" := COPYSTR(TextLine,154,32);
+
+      // "PackstÅcke" (Pos. 186) from file
+      EVALUATE(RHDPurchaseImport."No. of Packages",COPYSTR(TextLine,186,2));
+
+      // "Volumen" (Pos. 188) from file
+      EVALUATE(RHDPurchaseImport.Volume,COPYSTR(TextLine,188,5));
+
+      // "Gewicht" (Pos. 193) from file
+      EVALUATE(RHDPurchaseImport.Weight,COPYSTR(TextLine,193,4));
+
+      // "Wareneingangsdatum" (Pos. 197) from file
+      EVALUATE(RHDPurchaseImport."Receipt Date",COPYSTR(TextLine,197,10));
+
+      // "Kundenauftragsnummer" (Pos. 207) from file
+      RHDPurchaseImport."Customer Order No." := COPYSTR(TextLine,207,20);
+
+      // "Teilabschlusskennzeichen (Pos. 227) from file (if transmitted, else position is "Satzabschlusskennzeichen" (;) )
+      IF COPYSTR(TextLine,227,1) = '1' THEN
+        RHDPurchaseImport."Partially Completed" := TRUE
+      ELSE
+        RHDPurchaseImport."Partially Completed" := FALSE;
+
+      //S/P1193
+      RHDPurchaseImport.Filename := pFileName;
+      //E/P1193
+
+      // Final MODIFY
+      RHDPurchaseImport.MODIFY;
+    END;
+
+    PROCEDURE "*** H0854 ***"@1000000008();
+    BEGIN
+    END;
+
+    PROCEDURE ProcessWEMPSELine@1000000017(TextLineV@1000000000 : Text[1024];ClientIdentifierV@1000000002 : Code[10];BranchCodeV@1000000003 : Code[10];ReceiptNoV@1000000004 : Code[20];ShipmentNoV@1000000005 : Code[20];ShipmentPositionV@1000000007 : Integer;ParentEntryNoV@1000000006 : Integer;FileNameV@1000000008 : Text[250]);
+    VAR
+      RHDPurchaseImportL@1000000001 : Record 50180;
+      TempStringL@1000000009 : Text[30];
+    BEGIN
+      // Entry No. Integer (PK)
+      RHDPurchaseImportL."Entry No." := RHDGeneralMgt.GetNextEntryNo(50180);
+
+      // Setting Import Fields
+      RHDPurchaseImportL."Import Timestamp" := CURRENTDATETIME;
+      RHDPurchaseImportL.Filename := FileNameV;
+      RHDPurchaseImportL."Import Status" := RHDPurchaseImportL."Import Status"::Unprocessed;
+      RHDPurchaseImportL."Process Timestamp" := 0DT;
+      RHDPurchaseImportL."Parent Entry No." := ParentEntryNoV;
+      RHDPurchaseImportL."Shipment Pos." := ShipmentPositionV;
+
+      // "Satzart" (Pos. 1) from file
+      RHDPurchaseImportL."Record Type" := COPYSTR(TextLineV,1,3);
+
+      // "Menge" (Pos. 64) from file
+      //H0854 08.07.14 EHN ++++++++++++++++++++++++++++++++++++++++
+      //EVALUATE(RHDPurchaseImportL.Quantity,COPYSTR(TextLineV,67,1));
+      EVALUATE(RHDPurchaseImportL.Quantity,COPYSTR(TextLineV,67,5));
+      //H0854 08.07.14 EHN ----------------------------------------
+
+      // "Bestandsart" (Pos. 69) from file
+      //H0854 08.07.14 EHN ++++++++++++++++++++++++++++++++++++++++
+      //RHDPurchaseImportL."Stock Type" := COPYSTR(TextLineV,68,1);
+      RHDPurchaseImportL."Stock Type" := COPYSTR(TextLineV,72,1);
+      //H0854 08.07.14 EHN ----------------------------------------
+
+      // "davon Menge beschÑdigt" (Pos. 70) from file
+      //H0854 08.07.14 EHN ++++++++++++++++++++++++++++++++++++++++
+      //IF COPYSTR(TextLineV,68,1) = 'N' THEN
+      //  EVALUATE(RHDPurchaseImportL."Qty. Damaged",COPYSTR(TextLineV,67,1));
+      IF COPYSTR(TextLineV,34,1) = 'N' THEN
+        EVALUATE(RHDPurchaseImportL."Qty. Damaged",COPYSTR(TextLineV,67,5));
+      //H0854 08.07.14 EHN ----------------------------------------
+
+      // "Artikeltypnummer" (Pos. 74) from file
+      RHDPurchaseImportL."Item No." := COPYSTR(TextLineV,4,30);
+
+      // "Artikeltybeschreibung" (Pos. 104) from file
+      //H0854 08.07.14 EHN ++++++++++++++++++++++++++++++++++++++++
+      //RHDPurchaseImportL."Item Description" := COPYSTR(TextLineV,34,30);
+      RHDPurchaseImportL."Item Description" := COPYSTR(TextLineV,35,32);
+      //H0854 08.07.14 EHN ----------------------------------------
+
+      //H1882 05.01.15 EHN ++++++++++++++++++++++++++++++++++++++++++++++
+      {
+      // "PackstÅcke" (Pos. 186) from file
+      TempStringL := COPYSTR(TextLineV,35,5);
+      TempStringL := COPYSTR(TempStringL,STRPOS(TempStringL,'/')+1,STRLEN(TempStringL)-STRPOS(TempStringL,'/'));
+
+      IF STRPOS(TempStringL, ' ') <> 0 THEN
+        TempStringL := COPYSTR(TempStringL, 1, STRPOS(TempStringL, ' '));
+
+      EVALUATE(RHDPurchaseImportL."No. of Packages",TempStringL);
+      }
+      //H1882 05.01.15 EHN ----------------------------------------------
+
+      // Add data from WEM line
+      RHDPurchaseImportL."Client Identifier" := ClientIdentifierV;
+      RHDPurchaseImportL."Branch Code" := BranchCodeV;
+      RHDPurchaseImportL."Receipt No." := ReceiptNoV;
+      RHDPurchaseImportL."Shipment No." := ShipmentNoV;
+
+      // Final MODIFY
+      RHDPurchaseImportL.INSERT;
+    END;
+
+    PROCEDURE ReadWMP@1000000020(parFileName@1000000000 : Text[1024];pFileName@1000000005 : Text[250]) : Boolean;
+    VAR
+      FileRec@1000000003 : File;
+      NewLine@1000000002 : Text[1024];
+      UTFStream@1000000001 : Automation "{2A75196C-D9EB-4129-B803-931327F72D5C} 2.8:{00000566-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.8 Library'.Stream";
+      char@1000000004 : Char;
+      "*** H0854 ***"@1000000006 : Integer;
+      WemTypeL@1000000013 : Text[30];
+      ClientIdentifierL@1000000012 : Code[10];
+      BranchCodeL@1000000011 : Code[10];
+      ReceiptNoL@1000000010 : Code[20];
+      ShipmentNoL@1000000009 : Code[20];
+      ParentEntryNoL@1000000008 : Integer;
+      ShipmentPositionL@1000000007 : Integer;
+    BEGIN
+      FileRec.OPEN(parFileName);
+      CREATE(UTFStream);
+
+      UTFStream.Open;
+      UTFStream.Charset('UTF-8');
+      UTFStream.LoadFromFile(parFileName);
+
+      WHILE NOT UTFStream.EOS DO BEGIN
+        EVALUATE(char,UTFStream.ReadText(1));
+        IF (char <> 10) AND (char <> 13) THEN BEGIN
+          NewLine := NewLine + FORMAT(char);
+        END ELSE BEGIN
+          IF (NewLine <> '') AND (STRLEN(NewLine) > 0) THEN BEGIN
+            IF NOT (COPYSTR(NewLine,1,1) = '#') THEN BEGIN
+              WemTypeL := COPYSTR(NewLine,1,3);
+              IF WemTypeL = 'PSE' THEN
+                ProcessWEMPSELine(NewLine,ClientIdentifierL,BranchCodeL,ReceiptNoL,ShipmentNoL,ShipmentPositionL,
+                  ParentEntryNoL,pFileName)
+              ELSE BEGIN
+                ParentEntryNoL := 0;
+                ProcessWMPLine(NewLine,pFileName);
+                ParentEntryNoL := RHDGeneralMgt.GetLastEntryNo(DATABASE::"RHD Purchase Import",5,UPPERCASE(WemTypeL));
+                ClientIdentifierL := COPYSTR(NewLine,4,4);
+                BranchCodeL := COPYSTR(NewLine,8,6);
+                ReceiptNoL := COPYSTR(NewLine,14,15);
+                ShipmentNoL := COPYSTR(NewLine,29,20);
+                EVALUATE(ShipmentPositionL,COPYSTR(NewLine,59,5));
+              END;
+            END;
+            NewLine := '';
+          END;
+        END;
+      END;
+      UTFStream.Close;
+      FileRec.CLOSE;
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE ProcessWMPLine@1000000019(TextLine@1000000000 : Text[1024];pFileName@1000000002 : Text[250]);
+    VAR
+      RHDPurchaseImport@1000000001 : Record 50180;
+    BEGIN
+      // Entry No. Integer (PK)
+      RHDPurchaseImport."Entry No." := RHDGeneralMgt.GetNextEntryNo(50180);
+      RHDPurchaseImport.INSERT;
+
+      // Setting Import Fields
+      RHDPurchaseImport."Import Timestamp" := CURRENTDATETIME;
+      RHDPurchaseImport."Import Status" := RHDPurchaseImport."Import Status"::Unprocessed;
+      RHDPurchaseImport."Process Timestamp" := 0DT;
+
+      // "Satzart" (Pos. 1) from file
+      RHDPurchaseImport."Record Type" := COPYSTR(TextLine,1,3);
+
+      // "Mandant" (Pos. 4) from file
+      RHDPurchaseImport."Client Identifier" := COPYSTR(TextLine,4,4);
+
+      // "Niederlassungsnummer" (Pos. 8) from file
+      RHDPurchaseImport."Branch Code" := COPYSTR(TextLine,8,6);
+
+      // "Wareneingangsnummer" (Pos. 14) from file
+      RHDPurchaseImport."Receipt No." := COPYSTR(TextLine,14,15);
+
+      // "Lieferscheinnummer" (Pos. 29) from file
+      RHDPurchaseImport."Shipment No." := COPYSTR(TextLine,29,20);
+
+      // "Lieferscheinposition" (Pos. 59) from file
+      EVALUATE(RHDPurchaseImport."Shipment Pos.",COPYSTR(TextLine,59,5));
+
+      // "Menge" (Pos. 64) from file
+      EVALUATE(RHDPurchaseImport.Quantity,COPYSTR(TextLine,64,5));
+
+      // "Bestandsart" (Pos. 69) from file
+      RHDPurchaseImport."Stock Type" := COPYSTR(TextLine,69,1);
+
+      // "davon Menge beschÑdigt" (Pos. 70) from file
+      EVALUATE(RHDPurchaseImport."Qty. Damaged",COPYSTR(TextLine,70,4));
+
+      // "Artikeltypnummer" (Pos. 74) from file
+      RHDPurchaseImport."Item No." := COPYSTR(TextLine,74,30);
+
+      // "Artikeltybeschreibung" (Pos. 104) from file
+      RHDPurchaseImport."Item Description" := COPYSTR(TextLine,104,50);
+
+      // "Artikeltypbarcode" (Pos. 154) from file
+      RHDPurchaseImport."Item Barcode" := COPYSTR(TextLine,154,32);
+
+      // "PackstÅcke" (Pos. 186) from file
+      EVALUATE(RHDPurchaseImport."No. of Packages",COPYSTR(TextLine,186,2));
+
+      // "Volumen" (Pos. 188) from file
+      EVALUATE(RHDPurchaseImport.Volume,COPYSTR(TextLine,188,5));
+
+      // "Gewicht" (Pos. 193) from file
+      EVALUATE(RHDPurchaseImport.Weight,COPYSTR(TextLine,193,4));
+
+      // "Wareneingangsdatum" (Pos. 197) from file
+      EVALUATE(RHDPurchaseImport."Receipt Date",COPYSTR(TextLine,197,10));
+
+      // "Kundenauftragsnummer" (Pos. 207) from file
+      RHDPurchaseImport."Customer Order No." := COPYSTR(TextLine,207,20);
+
+      // "Teilabschlusskennzeichen (Pos. 227) from file (if transmitted, else position is "Satzabschlusskennzeichen" (;) )
+      IF COPYSTR(TextLine,227,1) = '1' THEN
+        RHDPurchaseImport."Partially Completed" := TRUE
+      ELSE
+        RHDPurchaseImport."Partially Completed" := FALSE;
+
+      //S/P1193
+      RHDPurchaseImport.Filename := pFileName;
+      //E/P1193
+
+      // Final MODIFY
+      RHDPurchaseImport.MODIFY;
+    END;
+
+    PROCEDURE "*** H0856 ***"@1000000009();
+    BEGIN
+    END;
+
+    PROCEDURE ReadUMP@1000000014(FilePathNameV@1000000000 : Text[1024];FileNameV@1000000006 : Text[250]) : Boolean;
+    VAR
+      FileRecL@1000000003 : File;
+      NewLineL@1000000002 : Text[1024];
+      UTFStreamL@1000000001 : Automation "{2A75196C-D9EB-4129-B803-931327F72D5C} 2.8:{00000566-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.8 Library'.Stream";
+      CharL@1000000004 : Char;
+      UmpTypeL@1000000007 : Text[30];
+      ClientIdentifierL@1000000011 : Code[10];
+      BranchCodeL@1000000010 : Code[10];
+      ReceiptNoL@1000000009 : Code[20];
+      ReceiptDateL@1000000008 : Date;
+      ParentEntryNoL@1000000005 : Integer;
+      EntryTimestampL@1000000012 : DateTime;
+    BEGIN
+      FileRecL.OPEN(FilePathNameV);
+      CREATE(UTFStreamL);
+
+      UTFStreamL.Open;
+      UTFStreamL.Charset('UTF-8');
+      UTFStreamL.LoadFromFile(FilePathNameV);
+
+      WHILE NOT UTFStreamL.EOS DO BEGIN
+        EVALUATE(CharL,UTFStreamL.ReadText(1));
+        IF (CharL <> 10) AND (CharL <> 13) THEN BEGIN
+          NewLineL := NewLineL + FORMAT(CharL);
+        END ELSE BEGIN
+          IF (NewLineL <> '') AND (STRLEN(NewLineL) > 0) THEN BEGIN
+            IF NOT (COPYSTR(NewLineL,1,1) = '#') THEN BEGIN
+              UmpTypeL := COPYSTR(NewLineL,1,3);
+              IF UmpTypeL = 'PSE' THEN
+                ProcessUMPPSELine(NewLineL,ClientIdentifierL,BranchCodeL,ReceiptNoL,ReceiptDateL,ParentEntryNoL,
+                  EntryTimestampL,FileNameV)
+              ELSE BEGIN
+                ParentEntryNoL := 0;
+                ProcessUMPLine(NewLineL,FileNameV);
+                ParentEntryNoL := RHDGeneralMgt.GetLastEntryNo(DATABASE::"RHD UMP Import Line",5,'UMP');
+                ClientIdentifierL := COPYSTR(NewLineL,4,4);
+                BranchCodeL := COPYSTR(NewLineL,8,6);
+                ReceiptNoL := COPYSTR(NewLineL,14,30);
+                EVALUATE(ReceiptDateL,COPYSTR(NewLineL,81,10));
+                EVALUATE(EntryTimestampL,CONVERTSTR(COPYSTR(NewLineL,81,19),'-',' '));
+              END;
+            END;
+            NewLineL := '';
+          END;
+        END;
+      END;
+      UTFStreamL.Close;
+      FileRecL.CLOSE;
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE ProcessUMPLine@1000000013(TextLineV@1000000000 : Text[1024];FileNameV@1000000002 : Text[250]);
+    VAR
+      UMPImportLineL@1000000001 : Record 50211;
+    BEGIN
+      // Entry No. Integer (PK)
+      UMPImportLineL."Entry No." := RHDGeneralMgt.GetNextEntryNo(DATABASE::"RHD UMP Import Line");
+
+      // Setting Import Fields
+      UMPImportLineL."Import Timestamp" := CURRENTDATETIME;
+      UMPImportLineL."File Name" := FileNameV;
+      UMPImportLineL."Import Status" := UMPImportLineL."Import Status"::Unprocessed;
+      UMPImportLineL."Process Timestamp" := 0DT;
+
+      // "Satzart" (Pos. 1) from file
+      UMPImportLineL."Record Type" := COPYSTR(TextLineV,1,3);
+
+      // "Mandant" (Pos. 4) from file
+      UMPImportLineL."Client Identifier" := COPYSTR(TextLineV,4,4);
+
+      // "Niederlassungsnummer" (Pos. 8) from file
+      UMPImportLineL."Branch Code" := COPYSTR(TextLineV,8,6);
+
+      // "Artikeltypnummer" (Pos. 14) from file
+      //H0856 08.07.14 EHN +++++++++++++++++++++++++++++++
+      //UMPImportLineL."Item No." := COPYSTR(TextLineV,14,20);
+      UMPImportLineL."Item No." := COPYSTR(TextLineV,14,30);
+      //H0856 08.07.14 EHN -------------------------------
+
+      // "Menge" (Pos. 44) from file
+      EVALUATE(UMPImportLineL.Quantity,COPYSTR(TextLineV,44,5));
+
+      // "Bewertung" (Pos. 49) from file
+      CASE COPYSTR(TextLineV,49,1) OF
+        'V': UMPImportLineL."Item Type" := UMPImportLineL."Item Type"::Sellable;
+        'N': UMPImportLineL."Item Type" := UMPImportLineL."Item Type"::Unsellable;
+      END;
+
+      //"öbertragungsgrund" (Pos. 50) from file
+      EVALUATE(UMPImportLineL."Relocation Reason",COPYSTR(TextLineV,50,1));
+
+      //WE_Umb_Ent (Pos. 51) from file
+      UMPImportLineL."Transfer Description" := COPYSTR(TextLineV,51,30);
+
+      //Zeitstempel (Pos. 81) from file
+      EVALUATE(UMPImportLineL."Entry Timestamp",CONVERTSTR(COPYSTR(TextLineV,81,19),'-',' '));
+
+      // Final MODIFY
+      UMPImportLineL.INSERT;
+    END;
+
+    PROCEDURE ProcessUMPPSELine@1000000016(TextLineV@1000000000 : Text[1024];ClientIdentifierV@1000000002 : Code[10];BranchCodeV@1000000003 : Code[10];ReceiptNoV@1000000004 : Code[20];ReceiptDateV@1000000005 : Date;ParentEntryNoV@1000000006 : Integer;EntryTimestampV@1000000007 : DateTime;FileNameV@1000000008 : Text[30]);
+    VAR
+      UMPImportLineL@1000000001 : Record 50211;
+    BEGIN
+      // Entry No. Integer (PK)
+      UMPImportLineL."Entry No." := RHDGeneralMgt.GetNextEntryNo(DATABASE::"RHD UMP Import Line");
+
+      // Setting Import Fields
+      UMPImportLineL."Import Timestamp" := CURRENTDATETIME;
+      UMPImportLineL."File Name" := FileNameV;
+      UMPImportLineL."Import Status" := UMPImportLineL."Import Status"::Unprocessed;
+      UMPImportLineL."Process Timestamp" := 0DT;
+      UMPImportLineL."Parent Entry No." := ParentEntryNoV;
+      UMPImportLineL."Entry Timestamp" := EntryTimestampV;
+
+      // "Satzart" (Pos. 1) from file
+      UMPImportLineL."Record Type" := COPYSTR(TextLineV,1,3);
+
+      // "Menge" (Pos. 64) from file
+      //H0856 08.07.14 EHN +++++++++++++++++++++++++++++++++++++
+      //EVALUATE(UMPImportLineL."Item Type",COPYSTR(TextLineV,67,1));
+      EVALUATE(UMPImportLineL.Quantity,COPYSTR(TextLineV,67,5));
+      //H0856 08.07.14 EHN -------------------------------------
+
+      // "Bestandsart" (Pos. 69) from file
+      //H0856 08.07.14 EHN +++++++++++++++++++++++++++++++++++++
+      //UMPImportLineL."Transfer Description" := COPYSTR(TextLineV,68,1);
+      UMPImportLineL."Inventory Type" := COPYSTR(TextLineV,72,1);
+      //H0856 08.07.14 EHN -------------------------------------
+
+      // "davon Menge beschÑdigt" (Pos. 70) from file
+      //H0856 08.07.14 EHN +++++++++++++++++++++++++++++++++++++
+      //IF COPYSTR(TextLineV,68,1) = 'N' THEN
+      //  EVALUATE(UMPImportLineL."Item Type",COPYSTR(TextLineV,67,1));
+      //H0856 08.07.14 EHN -------------------------------------
+
+      // "Referenz" (Pos. 34) from file
+      //H0856 08.07.14 EHN +++++++++++++++++++++++++++++++++++++
+      CASE COPYSTR(TextLineV,34,1) OF
+        'V': UMPImportLineL."Item Type" := UMPImportLineL."Item Type"::Sellable;
+        'N': UMPImportLineL."Item Type" := UMPImportLineL."Item Type"::Unsellable;
+      END;
+      //H0856 08.07.14 EHN -------------------------------------
+
+      // "Artikeltypnummer" (Pos. 74) from file
+      UMPImportLineL."Item No." := COPYSTR(TextLineV,4,30);
+
+      // "Artikeltybeschreibung" (Pos. 104) from file
+      //UMPImportLine.Quantity := COPYSTR(TextLine,34,50);
+      //H0854 08.07.14 EHN ++++++++++++++++++++++++++++++++++++++++
+      UMPImportLineL."Item Description" := COPYSTR(TextLineV,35,32);
+      //H0854 08.07.14 EHN ----------------------------------------
+
+      // Add data from UMP line
+      UMPImportLineL."Client Identifier" := ClientIdentifierV;
+      UMPImportLineL."Branch Code" := BranchCodeV;
+
+      UMPImportLineL.INSERT;
+    END;
+
+    PROCEDURE "*** H0857 ***"@1000000011();
+    BEGIN
+    END;
+
+    PROCEDURE ReadBMP@1000000010(FilePathNameV@1000000012 : Text[1024];FileNameV@1000000000 : Text[250]) : Boolean;
+    VAR
+      RHDBMPImportL@1000000010 : Record 50199;
+      FileRecL@1000000003 : File;
+      UTFStreamL@1000000001 : Automation "{2A75196C-D9EB-4129-B803-931327F72D5C} 2.8:{00000566-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.8 Library'.Stream";
+      ReceiptDateL@1000000005 : DateTime;
+      BmpTypeL@1000000009 : Text[30];
+      NewLineL@1000000002 : Text[1024];
+      ClientIdentifierL@1000000008 : Code[10];
+      BranchCodeL@1000000007 : Code[10];
+      ReceiptNoL@1000000006 : Code[20];
+      CharL@1000000004 : Char;
+      ParentEntryNoL@1000000011 : Integer;
+    BEGIN
+      FileRecL.OPEN(FilePathNameV);
+      CREATE(UTFStreamL);
+
+      UTFStreamL.Open;
+      UTFStreamL.Charset('UTF-8');
+      UTFStreamL.LoadFromFile(FilePathNameV);
+
+      RHDBMPImportL.RESET;
+      RHDBMPImportL.DELETEALL;
+
+      WHILE NOT UTFStreamL.EOS DO BEGIN
+        EVALUATE(CharL,UTFStreamL.ReadText(1));
+        IF (CharL <> 10) AND (CharL <> 13) THEN BEGIN
+          NewLineL := NewLineL + FORMAT(CharL);
+        END ELSE BEGIN
+          IF (NewLineL <> '') AND (STRLEN(NewLineL) > 0) THEN BEGIN
+            IF NOT (COPYSTR(NewLineL,1,1) = '#') THEN BEGIN
+              BmpTypeL := COPYSTR(NewLineL,1,3);
+
+              IF BmpTypeL = 'PSE' THEN
+                ProcessBMPPSELine(NewLineL,ClientIdentifierL,BranchCodeL,ReceiptNoL,ReceiptDateL,
+                  ParentEntryNoL,FileNameV)
+              ELSE BEGIN
+                ParentEntryNoL := 0;
+                ProcessBMPLine(NewLineL,FileNameV);
+                ParentEntryNoL := RHDGeneralMgt.GetLastEntryNo(DATABASE::"RHD BMP Import",5,'BMA');
+                ClientIdentifierL := COPYSTR(NewLineL,4,4);
+                BranchCodeL := COPYSTR(NewLineL,8,6);
+                ReceiptNoL := COPYSTR(NewLineL,14,15);
+                EVALUATE(ReceiptDateL,COPYSTR(NewLineL,60,10));
+              END;
+            END;
+          END;
+          NewLineL := '';
+        END;
+      END;
+      UTFStreamL.Close;
+      FileRecL.CLOSE;
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE ProcessBMPLine@1000000018(TextLineV@1000000000 : Text[1024];FileNameV@1000000002 : Text[250]);
+    VAR
+      RHDBMPImportL@1000000001 : Record 50212;
+    BEGIN
+      // Entry No. Integer (PK)
+      RHDBMPImportL.INIT;
+      RHDBMPImportL."Entry No." := RHDGeneralMgt.GetNextEntryNo(DATABASE::"RHD BMP Import");
+
+      // Setting Import Fields
+      RHDBMPImportL."Import Timestamp" := CURRENTDATETIME;
+      RHDBMPImportL."File Name" := FileNameV;
+      RHDBMPImportL."Import Status" := RHDBMPImportL."Import Status"::Unprocessed;
+      RHDBMPImportL."Process Timestamp" := 0DT;
+
+      // "Satzart" (Pos. 1) from file
+      RHDBMPImportL."Record Type" := COPYSTR(TextLineV,1,3);
+
+      // "Mandant" (Pos. 4) from file
+      RHDBMPImportL."Client Identifier" := COPYSTR(TextLineV,4,4);
+
+      // "Niederlassungsnummer" (Pos. 8) from file
+      RHDBMPImportL."Branch Code" := COPYSTR(TextLineV,8,6);
+
+      // "Wareneingangsnummer" (Pos. 14) from file
+      RHDBMPImportL."Refernce No." := COPYSTR(TextLineV,14,30);
+
+      // "Reservierte Menge" (Pos. 49) from file
+      //H0857 26.06.14 EHN ++++++++++++++++++++++++++++++++++++
+      //EVALUATE(RHDBMPImportL.Quantity,COPYSTR(TextLineV,49,5));
+      EVALUATE(RHDBMPImportL."Reserved Quantity",COPYSTR(TextLineV,49,5));
+      //H0857 26.06.14 EHN ------------------------------------
+
+      // "Menge" (Pos. 44) from file
+      EVALUATE(RHDBMPImportL.Quantity,COPYSTR(TextLineV,44,5));
+
+      // "Bestandsart" (Pos. 54) from file
+      RHDBMPImportL."Inventory Type" := COPYSTR(TextLineV,54,1);
+
+      // "davon Menge beschÑdigt" (Pos. 55) from file
+      //H0857 26.06.14 EHN ++++++++++++++++++++++++++++++++++++
+      //EVALUATE(RHDBMPImportL.Quantity,COPYSTR(TextLineV,55,5));
+      EVALUATE(RHDBMPImportL."Qty. to Review",COPYSTR(TextLineV,55,5));
+      //H0857 26.06.14 EHN ------------------------------------
+
+      // "Artikeltypnummer" (Pos. 14) from file
+      RHDBMPImportL."Item No." := COPYSTR(TextLineV,14,30);
+
+      // "Datum/Uhrzeit" (Pos. 60) from file we want date only
+      EVALUATE(RHDBMPImportL."Entry Date",COPYSTR(TextLineV,60,10));
+
+      // Final MODIFY
+      RHDBMPImportL.INSERT;
+    END;
+
+    PROCEDURE ProcessBMPPSELine@1000000015(TextLineV@1000000000 : Text[1024];ClientIdentifierV@1000000002 : Code[10];BranchCodeV@1000000003 : Code[10];ReceiptNoV@1000000004 : Code[20];ReceiptDateV@1000000005 : DateTime;ParentEntryNoV@1000000006 : Integer;FileNameV@1000000007 : Text[250]);
+    VAR
+      RHDBMPImportL@1000000001 : Record 50212;
+    BEGIN
+      // Entry No. Integer (PK)
+      RHDBMPImportL.INIT;
+
+      TextLineV := CONVERTSTR(TextLineV,'?','·');
+      IF STRLEN(TextLineV) = 67 THEN
+        TextLineV := INSSTR(TextLineV,'  ',STRLEN(TextLineV) - 3);
+
+      RHDBMPImportL."Entry No." := RHDGeneralMgt.GetNextEntryNo(DATABASE::"RHD BMP Import");
+
+      // Setting Import Fields
+      RHDBMPImportL."Import Timestamp" := CURRENTDATETIME;
+      RHDBMPImportL."File Name" := FileNameV;
+      RHDBMPImportL."Import Status" := RHDBMPImportL."Import Status"::Unprocessed;
+      RHDBMPImportL."Process Timestamp" := 0DT;
+
+      // "Satzart" (Pos. 1) from file
+      RHDBMPImportL."Record Type" := COPYSTR(TextLineV,1,3);
+
+      // "Artikeltypnummer" (Pos. 4) from file
+      RHDBMPImportL."Item No." := COPYSTR(TextLineV,4,20);
+
+      // "Referenz" (Pos. 34) from file
+      //H0857 26.06.14 EHN ++++++++++++++++++++++++++++++++++++
+      //RHDBMPImportL."Inventory Type" := COPYSTR(TextLineV,34,1);
+      RHDBMPImportL.Reference := COPYSTR(TextLineV,34,1);
+      //H0857 26.06.14 EHN ------------------------------------
+
+      // "PackstÅckbezeichnung" (Pos. 35) from file
+      RHDBMPImportL."Package Description" := COPYSTR(TextLineV,35,32);
+
+      // "Menge" (Pos. 67) from file
+      //H0857 26.06.14 EHN ++++++++++++++++++++++++++++++++++++
+      //EVALUATE(RHDBMPImportL.Quantity,COPYSTR(TextLineV,67,1));
+      EVALUATE(RHDBMPImportL.Quantity,COPYSTR(TextLineV,67,5));
+      //H0857 26.06.14 EHN ------------------------------------
+
+      // "Bestandsart" (Pos. 72) from file
+      //H0857 26.06.14 EHN ++++++++++++++++++++++++++++++++++++
+      //RHDBMPImportL."Inventory Type" := COPYSTR(TextLineV,68,1);
+      RHDBMPImportL."Inventory Type" := COPYSTR(TextLineV,72,1);
+      //H0857 26.06.14 EHN ------------------------------------
+
+      // Add data from BMP line
+      RHDBMPImportL."Client Identifier" := ClientIdentifierV;
+      RHDBMPImportL."Branch Code" := BranchCodeV;
+      RHDBMPImportL."Refernce No." := ReceiptNoV;
+      RHDBMPImportL."Entry Date" := ReceiptDateV;
+      RHDBMPImportL."Parent Entry No." := ParentEntryNoV;
+
+      // Final MODIFY
+      RHDBMPImportL.INSERT;
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------------+
+      |                   ∏  Copyright                   |
+      |       GOB Software & Systeme GmbH & Co. KG       |
+      +--------------------------------------------------+
+      |                      home24                      |
+      +--------------------------------------------------+
+
+      Project   Date        Consultant  Comment
+      ------------------------------------------------------
+      P1100     11.09.2013  gob-dst     Object Created
+      P1157     27.11.2013  gob-ael     Export der "Rhenus Sales Order No."
+      P1172     10.01.14    gob-rste    NO SLEEP(1000)
+      P1193     05.02.2014  gob-dst     Filename beim Import mitnehmen
+      P1222     11.03.2014  gob-rste    WEA Filename TIMESTAMP YYYYMMDDHHMMSSTTT
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+      H0854       12.02.14 DMA       Import of PSE records
+      H0856       12.02.14 DMA       Import of UMP files
+      H0857       12.02.14 DMA       Import of BMP files
+      H1882       05.01.14 EHN       BUG: Importing PSE records from WMP fails
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,579 @@
+OBJECT Codeunit 213 Res. Jnl.-Post Batch
+{
+  OBJECT-PROPERTIES
+  {
+    Date=21.05.03;
+    Time=12:00:00;
+    Version List=NAVW13.70,CO3.10.01;
+  }
+  PROPERTIES
+  {
+    TableNo=207;
+    Permissions=TableData 236=imd;
+    OnRun=BEGIN
+            ResJnlLine.COPY(Rec);
+            Code;
+            Rec := ResJnlLine;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst 'DEU=kann nicht %1 Zeichen Åberschreiten;ENU=cannot exceed %1 characters';
+      Text001@1001 : TextConst 'DEU=Buch.-Blattname       #1##########\\;ENU=Journal Batch Name    #1##########\\';
+      Text002@1002 : TextConst 'DEU=Zeilen prÅfen         #2######\;ENU=Checking lines        #2######\';
+      Text003@1003 : TextConst 'DEU=Zeilen buchen         #3###### @4@@@@@@@@@@@@@\;ENU=Posting lines         #3###### @4@@@@@@@@@@@@@\';
+      Text004@1004 : TextConst 'DEU=Zeilen aktualisieren  #5###### @6@@@@@@@@@@@@@;ENU=Updating lines        #5###### @6@@@@@@@@@@@@@';
+      Text005@1005 : TextConst 'DEU=Zeilen buchen         #3###### @4@@@@@@@@@@@@@;ENU=Posting lines         #3###### @4@@@@@@@@@@@@@';
+      Text006@1006 : TextConst 'DEU=Ein Maximum von %1 Buchungsnr.-Serien;ENU=A maximum of %1 posting number series can be used in each journal.';
+      Text007@1007 : TextConst 'DEU=<Month Text>;ENU=<Month Text>';
+      ResJnlTemplate@1008 : Record 206;
+      ResJnlBatch@1009 : Record 236;
+      ResJnlLine@1010 : Record 207;
+      ResJnlLine2@1011 : Record 207;
+      ResJnlLine3@1012 : Record 207;
+      LedgEntryDim@1013 : Record 355;
+      ResLedgEntry@1014 : Record 203;
+      ResReg@1015 : Record 240;
+      NoSeries@1016 : TEMPORARY Record 308;
+      ProjAccJnlLine@1105000007 : Record 5000202;
+      CostAccJnlLine@1105000006 : Record 5000027;
+      ProjectAccSetup@1105000005 : Record 5000221;
+      CostAccSetup@1105000004 : Record 5000099;
+      UnitOfMeasure@1105000003 : Record 204;
+      Resource@1105000002 : Record 156;
+      JnlLineDim@1105000001 : Record 356;
+      LicPermission@1105000000 : Record 2000000043;
+      ResJnlCheckLine@1017 : Codeunit 211;
+      ResJnlPostLine@1018 : Codeunit 212;
+      NoSeriesMgt@1019 : Codeunit 396;
+      NoSeriesMgt2@1020 : ARRAY [10] OF Codeunit 396;
+      DimMgt@1021 : Codeunit 408;
+      PostProjJnlLine@1105000010 : Codeunit 5000201;
+      PostCostJnlLine@1105000009 : Codeunit 5000032;
+      AutomaticCAPosting@1105000008 : Codeunit 5000099;
+      Window@1022 : Dialog;
+      ResRegNo@1023 : Integer;
+      StartLineNo@1024 : Integer;
+      Day@1025 : Integer;
+      Week@1026 : Integer;
+      Month@1027 : Integer;
+      MonthText@1028 : Text[30];
+      AccountingPeriod@1029 : Record 50;
+      LineCount@1030 : Integer;
+      NoOfRecords@1031 : Integer;
+      LastDocNo@1032 : Code[20];
+      LastDocNo2@1033 : Code[20];
+      LastPostedDocNo@1034 : Code[20];
+      NoOfPostingNoSeries@1035 : Integer;
+      PostingNoSeriesNo@1036 : Integer;
+      "0DF"@1037 : DateFormula;
+
+    LOCAL PROCEDURE Code@1();
+    VAR
+      JnlLineDim@1000 : Record 356;
+      TempJnlLineDim@1001 : TEMPORARY Record 356;
+      UpdateAnalysisView@1002 : Codeunit 410;
+      UpdateAnalysisViewCostAcc@1105000001 : Codeunit 5000097;
+      UpdateAnalysisViewProjAcc@1105000000 : Codeunit 5000230;
+    BEGIN
+      WITH ResJnlLine DO BEGIN
+        SETRANGE("Journal Template Name","Journal Template Name");
+        SETRANGE("Journal Batch Name","Journal Batch Name");
+        IF RECORDLEVELLOCKING THEN
+          LOCKTABLE;
+
+        ResJnlTemplate.GET("Journal Template Name");
+        ResJnlBatch.GET("Journal Template Name","Journal Batch Name");
+        IF STRLEN(INCSTR(ResJnlBatch.Name)) > MAXSTRLEN(ResJnlBatch.Name) THEN
+          ResJnlBatch.FIELDERROR(
+            Name,
+            STRSUBSTNO(
+              Text000,
+              MAXSTRLEN(ResJnlBatch.Name)));
+
+        IF ResJnlTemplate.Recurring THEN BEGIN
+          SETRANGE("Posting Date",0D,WORKDATE);
+          SETFILTER("Expiration Date",'%1 | %2..',0D,WORKDATE);
+        END;
+
+        IF NOT FIND('=><') THEN BEGIN
+          "Line No." := 0;
+          COMMIT;
+          EXIT;
+        END;
+
+        IF ResJnlTemplate.Recurring THEN
+          Window.OPEN(
+            Text001 +
+            Text002 +
+            Text003 +
+            Text004)
+        ELSE
+          Window.OPEN(
+            Text001 +
+            Text002 +
+            Text005);
+        Window.UPDATE(1,"Journal Batch Name");
+
+        // Check lines
+        LineCount := 0;
+        StartLineNo := "Line No.";
+        REPEAT
+          LineCount := LineCount + 1;
+          Window.UPDATE(2,LineCount);
+          CheckRecurringLine(ResJnlLine);
+          JnlLineDim.SETRANGE("Table ID",DATABASE::"Res. Journal Line");
+          JnlLineDim.SETRANGE("Journal Template Name","Journal Template Name");
+          JnlLineDim.SETRANGE("Journal Batch Name","Journal Batch Name");
+          JnlLineDim.SETRANGE("Journal Line No.","Line No.");
+          JnlLineDim.SETRANGE("Allocation Line No.",0);
+          TempJnlLineDim.DELETEALL;
+          DimMgt.CopyJnlLineDimToJnlLineDim(JnlLineDim,TempJnlLineDim);
+          ResJnlCheckLine.RunCheck(ResJnlLine,TempJnlLineDim);
+          IF NEXT = 0 THEN
+            FIND('-');
+        UNTIL "Line No." = StartLineNo;
+        NoOfRecords := LineCount;
+
+        // Find next register no.
+        LedgEntryDim.LOCKTABLE;
+        ResLedgEntry.LOCKTABLE;
+        IF RECORDLEVELLOCKING THEN
+          IF ResLedgEntry.FIND('+') THEN;
+        ResReg.LOCKTABLE;
+        IF ResReg.FIND('+') AND (ResReg."To Entry No." = 0) THEN
+          ResRegNo := ResReg."No."
+        ELSE
+          ResRegNo := ResReg."No." + 1;
+
+        // Post lines
+        LineCount := 0;
+        LastDocNo := '';
+        LastDocNo2 := '';
+        LastPostedDocNo := '';
+        FIND('-');
+        REPEAT
+          LineCount := LineCount + 1;
+          Window.UPDATE(3,LineCount);
+          Window.UPDATE(4,ROUND(LineCount / NoOfRecords * 10000,1));
+          IF NOT EmptyLine AND
+             (ResJnlBatch."No. Series" <> '') AND
+             ("Document No." <> LastDocNo2)
+          THEN
+            TESTFIELD("Document No.",NoSeriesMgt.GetNextNo(ResJnlBatch."No. Series","Posting Date",FALSE));
+          LastDocNo2 := "Document No.";
+          MakeRecurringTexts(ResJnlLine);
+          IF "Posting No. Series" = '' THEN
+            "Posting No. Series" := ResJnlBatch."No. Series"
+          ELSE
+            IF NOT EmptyLine THEN
+              IF "Document No." = LastDocNo THEN
+                "Document No." := LastPostedDocNo
+              ELSE BEGIN
+                IF NOT NoSeries.GET("Posting No. Series") THEN BEGIN
+                  NoOfPostingNoSeries := NoOfPostingNoSeries + 1;
+                  IF NoOfPostingNoSeries > ARRAYLEN(NoSeriesMgt2) THEN
+                    ERROR(
+                      Text006,
+                      ARRAYLEN(NoSeriesMgt2));
+                  NoSeries.Code := "Posting No. Series";
+                  NoSeries.Description := FORMAT(NoOfPostingNoSeries);
+                  NoSeries.INSERT;
+                END;
+                LastDocNo := "Document No.";
+                EVALUATE(PostingNoSeriesNo,NoSeries.Description);
+                "Document No." := NoSeriesMgt2[PostingNoSeriesNo].GetNextNo("Posting No. Series","Posting Date",FALSE);
+                LastPostedDocNo := "Document No.";
+              END;
+          JnlLineDim.SETRANGE("Table ID",DATABASE::"Res. Journal Line");
+          JnlLineDim.SETRANGE("Journal Template Name","Journal Template Name");
+          JnlLineDim.SETRANGE("Journal Batch Name","Journal Batch Name");
+          JnlLineDim.SETRANGE("Journal Line No.","Line No.");
+          JnlLineDim.SETRANGE("Allocation Line No.",0);
+          TempJnlLineDim.DELETEALL;
+          DimMgt.CopyJnlLineDimToJnlLineDim(JnlLineDim,TempJnlLineDim);
+          ResJnlPostLine.RunWithCheck(ResJnlLine,TempJnlLineDim);
+      // Start CKL01.dg
+          LicPermission.GET(
+            LicPermission."Object Type"::Table,
+            DATABASE::"Project Account Setup");
+          IF LicPermission."Execute Permission" = LicPermission."Execute Permission"::Yes THEN BEGIN
+            ProjectAccSetup.GET;
+            IF (ProjectAccSetup."Automatic Performance Posting") AND
+               (ResJnlLine."Shortcut Dimension 2 Code" <> '') THEN BEGIN
+              InsertProjJournalLine;
+              PostProjJnlLine.RUN(ProjAccJnlLine);
+              DimMgt.DeleteJnlLineDim(DATABASE::"Project Account Journal Line",
+                ProjAccJnlLine."Journal Template Name",
+                ProjAccJnlLine."Journal Batch Name",ProjAccJnlLine."Line No.",0);
+            END;
+          END;
+          LicPermission.GET(
+            LicPermission."Object Type"::Table,
+            DATABASE::"Cost Account Setup");
+          IF LicPermission."Execute Permission" = LicPermission."Execute Permission"::Yes THEN BEGIN
+            CostAccSetup.GET;
+            IF CostAccSetup."Automatic Performance Posting" THEN BEGIN
+              InsertCostJournalLine;
+              PostCostJnlLine.RUN(CostAccJnlLine);
+              DimMgt.DeleteJnlLineDim(DATABASE::"Cost Account Journal Line",
+                CostAccJnlLine."Journal Template Name",
+                CostAccJnlLine."Journal Batch Name",CostAccJnlLine."Line No.",0);
+            END;
+          END;
+      // Stop CKL01.dg
+        UNTIL NEXT = 0;
+
+        // Copy register no. and current journal batch name to the res. journal
+        IF NOT ResReg.FIND('+') OR (ResReg."No." <> ResRegNo) THEN
+          ResRegNo := 0;
+
+        INIT;
+        "Line No." := ResRegNo;
+
+        // Update/delete lines
+        IF ResRegNo <> 0 THEN BEGIN
+          IF NOT RECORDLEVELLOCKING THEN BEGIN
+            JnlLineDim.LOCKTABLE(TRUE,TRUE);
+            LOCKTABLE(TRUE,TRUE);
+          END;
+          IF ResJnlTemplate.Recurring THEN BEGIN
+            // Recurring journal
+            LineCount := 0;
+            ResJnlLine2.COPYFILTERS(ResJnlLine);
+            ResJnlLine2.FIND('-');
+            REPEAT
+              LineCount := LineCount + 1;
+              Window.UPDATE(5,LineCount);
+              Window.UPDATE(6,ROUND(LineCount / NoOfRecords * 10000,1));
+              IF ResJnlLine2."Posting Date" <> 0D THEN
+                ResJnlLine2.VALIDATE("Posting Date",CALCDATE(ResJnlLine2."Recurring Frequency",ResJnlLine2."Posting Date"));
+              IF (ResJnlLine2."Recurring Method" = ResJnlLine2."Recurring Method"::Variable) AND
+                 (ResJnlLine2."Resource No." <> '')
+              THEN BEGIN
+                ResJnlLine2.Quantity := 0;
+                ResJnlLine2."Total Cost" := 0;
+                ResJnlLine2."Total Price" := 0;
+              END;
+              ResJnlLine2.MODIFY;
+            UNTIL ResJnlLine2.NEXT = 0;
+          END ELSE BEGIN
+            // Not a recurring journal
+            ResJnlLine2.COPYFILTERS(ResJnlLine);
+            ResJnlLine2.SETFILTER("Resource No.",'<>%1','');
+            IF ResJnlLine2.FIND('+') THEN; // Remember the last line
+            JnlLineDim.SETRANGE("Table ID",DATABASE::"Res. Journal Line");
+            JnlLineDim.COPYFILTER("Journal Template Name","Journal Template Name");
+            JnlLineDim.COPYFILTER("Journal Batch Name","Journal Batch Name");
+            JnlLineDim.SETRANGE("Allocation Line No.",0);
+            ResJnlLine3.COPY(ResJnlLine);
+            IF ResJnlLine3.FIND('-') THEN
+              REPEAT
+                JnlLineDim.SETRANGE("Journal Line No.",ResJnlLine3."Line No.");
+                JnlLineDim.DELETEALL;
+                ResJnlLine3.DELETE;
+              UNTIL ResJnlLine3.NEXT = 0;
+            ResJnlLine3.RESET;
+            ResJnlLine3.SETRANGE("Journal Template Name","Journal Template Name");
+            ResJnlLine3.SETRANGE("Journal Batch Name","Journal Batch Name");
+            IF NOT ResJnlLine3.FIND('+') THEN
+              IF INCSTR("Journal Batch Name") <> '' THEN BEGIN
+                ResJnlBatch.DELETE;
+                ResJnlBatch.Name := INCSTR("Journal Batch Name");
+                IF ResJnlBatch.INSERT THEN;
+                "Journal Batch Name" := ResJnlBatch.Name;
+              END;
+
+            ResJnlLine3.SETRANGE("Journal Batch Name","Journal Batch Name");
+            IF (ResJnlBatch."No. Series" = '') AND NOT ResJnlLine3.FIND('+') THEN BEGIN
+              ResJnlLine3.INIT;
+              ResJnlLine3."Journal Template Name" := "Journal Template Name";
+              ResJnlLine3."Journal Batch Name" := "Journal Batch Name";
+              ResJnlLine3."Line No." := 10000;
+              ResJnlLine3.INSERT;
+              ResJnlLine3.SetUpNewLine(ResJnlLine2);
+              ResJnlLine3.MODIFY;
+            END;
+          END;
+        END;
+        IF ResJnlBatch."No. Series" <> '' THEN
+          NoSeriesMgt.SaveNoSeries;
+        IF NoSeries.FIND('-') THEN
+          REPEAT
+            EVALUATE(PostingNoSeriesNo,NoSeries.Description);
+            NoSeriesMgt2[PostingNoSeriesNo].SaveNoSeries;
+          UNTIL NoSeries.NEXT = 0;
+
+        COMMIT;
+      END;
+      UpdateAnalysisView.UpdateAll(0,TRUE);
+      // Start CKL01.sk
+      LicPermission.GET(
+        LicPermission."Object Type"::Codeunit,
+        CODEUNIT::"Update Cost Acc. Analysis View");
+      IF LicPermission."Execute Permission" = LicPermission."Execute Permission"::Yes THEN
+        UpdateAnalysisViewCostAcc.UpdateAll(0,TRUE);
+      LicPermission.GET(
+        LicPermission."Object Type"::Codeunit,
+        CODEUNIT::"Update Proj Acc. Analysis View");
+      IF LicPermission."Execute Permission" = LicPermission."Execute Permission"::Yes THEN
+        UpdateAnalysisViewProjAcc.UpdateAll(0,TRUE);
+      // Stop CKL01.sk
+      COMMIT;
+    END;
+
+    LOCAL PROCEDURE CheckRecurringLine@2(VAR ResJnlLine2@1000 : Record 207);
+    BEGIN
+      WITH ResJnlLine2 DO BEGIN
+        IF "Resource No." <> '' THEN
+          IF ResJnlTemplate.Recurring THEN BEGIN
+            TESTFIELD("Recurring Method");
+            TESTFIELD("Recurring Frequency");
+            IF "Recurring Method" = "Recurring Method"::Variable THEN
+              TESTFIELD(Quantity);
+          END ELSE BEGIN
+            TESTFIELD("Recurring Method",0);
+            TESTFIELD("Recurring Frequency","0DF");
+          END;
+      END;
+    END;
+
+    LOCAL PROCEDURE MakeRecurringTexts@3(VAR ResJnlLine2@1000 : Record 207);
+    BEGIN
+      WITH ResJnlLine2 DO BEGIN
+        IF ("Resource No." <> '') AND ("Recurring Method" <> 0) THEN BEGIN // Not recurring
+          Day := DATE2DMY("Posting Date",1);
+          Week := DATE2DWY("Posting Date",2);
+          Month := DATE2DMY("Posting Date",2);
+          MonthText := FORMAT("Posting Date",0,Text007);
+          AccountingPeriod.SETRANGE("Starting Date",0D,"Posting Date");
+          IF NOT AccountingPeriod.FIND('+') THEN
+            AccountingPeriod.Name := '';
+          "Document No." :=
+            DELCHR(
+              PADSTR(
+                STRSUBSTNO("Document No.",Day,Week,Month,MonthText,AccountingPeriod.Name),
+                MAXSTRLEN("Document No.")),
+              '>');
+          Description :=
+            DELCHR(
+              PADSTR(
+                STRSUBSTNO(Description,Day,Week,Month,MonthText,AccountingPeriod.Name),
+                MAXSTRLEN(Description)),
+              '>');
+        END;
+      END;
+    END;
+
+    PROCEDURE InsertProjJournalLine@1105000012();
+    VAR
+      ResLedgEntry@1105000013 : Record 203;
+      WorkType@1105000014 : Record 200;
+      JnlDim@1105000015 : Record 356;
+      SourceCodeSetup@1105000022 : Record 242;
+      LastEntryNo@1105000016 : Integer;
+    BEGIN
+      ResLedgEntry.LOCKTABLE;
+      IF ResLedgEntry.FIND('+') THEN
+        LastEntryNo := ResLedgEntry."Entry No.";
+
+      WITH ProjAccJnlLine DO BEGIN
+        INIT;
+        "Journal Template Name" := '';
+        "Journal Batch Name" := '';
+        "Reason Code" := '';
+        "Line No." := "Line No." + 10000;
+        "Posting Type" := "Posting Type"::"Reference Unit";
+
+        ProjAccJnlLine."Performance Source Type" := "Performance Source Type"::Resource;
+        "Entry No. Performance Source" := LastEntryNo;
+        "Posting Date" := ResJnlLine."Posting Date";
+        "Shortcut Dimension 2 Code" := ResJnlLine."Shortcut Dimension 2 Code";
+        Quantity := ResJnlLine.Quantity;
+        // Find the Project Account No.
+        IF ResJnlLine."Work Type Code" <> '' THEN BEGIN
+          WorkType.GET(ResJnlLine."Work Type Code");
+          "Project Account No." := WorkType."Project Account No.";
+          VALIDATE("Project Account No.");
+        END;
+        IF ("Project Account No." = '') THEN BEGIN
+          "Project Account No." := ProjectAccSetup."Project Account No.";
+          VALIDATE("Project Account No.");
+        END;
+
+        // find the Reference Unit for Posting
+        IF (ResJnlLine."Unit of Measure Code" <> '') THEN BEGIN
+          IF UnitOfMeasure.GET(ResJnlLine."Unit of Measure Code") THEN BEGIN
+            IF (UnitOfMeasure."Reference Unit Code" <> '') THEN BEGIN
+              "Reference Unit Code" := UnitOfMeasure."Reference Unit Code";
+            END;
+          END ELSE BEGIN
+            IF Resource.GET(ResJnlLine."Resource No.") THEN BEGIN
+              IF (Resource."Base Unit of Measure" <> '') THEN BEGIN
+                IF UnitOfMeasure.GET(Resource."Base Unit of Measure") THEN BEGIN
+                  IF (UnitOfMeasure."Reference Unit Code" <> '') THEN BEGIN
+                    "Reference Unit Code" := UnitOfMeasure."Reference Unit Code";
+                  END;
+                END;
+              END;
+            END ELSE BEGIN
+              IF (ProjectAccSetup."Reference Unit Code" <> '') THEN
+                "Reference Unit Code" := ProjectAccSetup."Reference Unit Code";
+            END;
+            VALIDATE("Reference Unit Code");
+          END;
+        END ELSE BEGIN
+          IF Resource.GET(ResJnlLine."Resource No.") THEN BEGIN
+            IF (Resource."Base Unit of Measure" <> '') THEN BEGIN
+              IF UnitOfMeasure.GET(Resource."Base Unit of Measure") THEN BEGIN
+                IF (UnitOfMeasure."Reference Unit Code" <> '') THEN BEGIN
+                  "Reference Unit Code" := UnitOfMeasure."Reference Unit Code";
+                END;
+              END;
+            END;
+          END ELSE BEGIN
+            IF (ProjectAccSetup."Reference Unit Code" <> '') THEN
+              "Reference Unit Code" := ProjectAccSetup."Reference Unit Code";
+          END;
+          VALIDATE("Reference Unit Code");
+        END;
+
+        "Source Code" := ResJnlLine."Source Code";
+        "Document No." := ResJnlLine."Document No.";
+        "Gen. Bus. Posting Group" := ResJnlLine."Gen. Bus. Posting Group";
+        "Gen. Prod. Posting Group" := ResJnlLine."Gen. Prod. Posting Group";
+        Description := ResJnlLine.Description;
+
+        JnlDim.SETRANGE("Table ID",DATABASE::"Res. Journal Line");
+        JnlDim.SETRANGE("Journal Template Name",ResJnlLine."Journal Template Name");
+        JnlDim.SETRANGE("Journal Batch Name",ResJnlLine."Journal Batch Name");
+        JnlDim.SETRANGE("Journal Line No.",ResJnlLine."Line No.");
+        IF JnlDim.FIND('-') THEN
+          REPEAT
+            JnlLineDim.INIT;
+            JnlLineDim."Table ID" := DATABASE::"Project Account Journal Line";
+            JnlLineDim."Journal Template Name" := ProjAccJnlLine."Journal Template Name";
+            JnlLineDim."Journal Batch Name" := ProjAccJnlLine."Journal Batch Name";
+            JnlLineDim."Journal Line No." := ProjAccJnlLine."Line No.";
+            JnlLineDim."Dimension Code" := JnlDim."Dimension Code";
+            JnlLineDim."Dimension Value Code" := JnlDim."Dimension Value Code";
+            JnlLineDim.INSERT;
+          UNTIL JnlDim.NEXT = 0;
+        IF ResJnlLine."Resource No." <> '' THEN BEGIN
+          Resource.GET(ResJnlLine."Resource No.");
+          "Shortcut Dimension 1 Code" := Resource."Global Dimension 1 Code";
+          VALIDATE("Shortcut Dimension 1 Code");
+        END;
+        SourceCodeSetup.GET;
+        AutomaticCAPosting.CreateDimProjAcc(ProjAccJnlLine,SourceCodeSetup."Trans. Perfo. to Proj. Account");
+
+        "Document Date" := TODAY;
+        "Operational Amount Var" := ROUND("Operational Amount Var");
+        "Tax Amount Var" := ROUND("Tax Amount Var");
+        "Operational Amount" := ROUND("Operational Amount");
+        "Tax Amount" := ROUND("Tax Amount");
+        "Operational Amount Fix" := ROUND("Operational Amount Fix");
+        "Tax Amount Fix" := ROUND("Tax Amount Fix");
+      END;
+    END;
+
+    PROCEDURE InsertCostJournalLine@1105000017();
+    VAR
+      ResLedgEntry@1105000018 : Record 203;
+      JnlDim@1105000019 : Record 356;
+      SourceCodeSetup@1105000023 : Record 242;
+      LastEntryNo@1105000020 : Integer;
+    BEGIN
+      ResLedgEntry.LOCKTABLE;
+      IF ResLedgEntry.FIND('+') THEN
+        LastEntryNo := ResLedgEntry."Entry No.";
+
+      WITH CostAccJnlLine DO BEGIN
+        INIT;
+        "Journal Template Name" := '';
+        "Journal Batch Name" := '';
+        "Reason Code" := '';
+        "Line No." := "Line No." + 10000;
+        "Posting Type" := "Posting Type"::Performance;
+
+        "Performance Source Type" := "Performance Source Type"::Resource;
+        "Entry No. Performance Source" := LastEntryNo;
+        "Posting Date" := ResJnlLine."Posting Date";
+        "Debit Global Dimension 1 Code" := ResJnlLine."Shortcut Dimension 1 Code";
+        Quantity := ResJnlLine.Quantity;
+
+        // find the Reference Unit for Posting
+        IF (ResJnlLine."Unit of Measure Code" <> '') THEN BEGIN
+          IF UnitOfMeasure.GET(ResJnlLine."Unit of Measure Code") THEN BEGIN
+            IF (UnitOfMeasure."Reference Unit Code" <> '') THEN BEGIN
+              "Reference Unit Code" := UnitOfMeasure."Reference Unit Code";
+            END;
+          END ELSE BEGIN
+            IF Resource.GET(ResJnlLine."Resource No.") THEN BEGIN
+              IF (Resource."Base Unit of Measure" <> '') THEN BEGIN
+                IF UnitOfMeasure.GET(Resource."Base Unit of Measure") THEN BEGIN
+                  IF (UnitOfMeasure."Reference Unit Code" <> '') THEN BEGIN
+                    "Reference Unit Code" := UnitOfMeasure."Reference Unit Code";
+                  END;
+                END;
+              END;
+            END ELSE BEGIN
+              IF (CostAccSetup."Reference Unit Code" <> '') THEN
+                "Reference Unit Code" := CostAccSetup."Reference Unit Code";
+            END;
+            VALIDATE("Reference Unit Code");
+          END;
+        END ELSE BEGIN
+          IF Resource.GET(ResJnlLine."Resource No.") THEN BEGIN
+            IF (Resource."Base Unit of Measure" <> '') THEN BEGIN
+              IF UnitOfMeasure.GET(Resource."Base Unit of Measure") THEN BEGIN
+                IF (UnitOfMeasure."Reference Unit Code" <> '') THEN BEGIN
+                  "Reference Unit Code" := UnitOfMeasure."Reference Unit Code";
+                END;
+              END;
+            END;
+          END ELSE BEGIN
+            IF (CostAccSetup."Reference Unit Code" <> '') THEN
+              "Reference Unit Code" := CostAccSetup."Reference Unit Code";
+          END;
+          VALIDATE("Reference Unit Code");
+        END;
+
+        "Source Code" := ResJnlLine."Source Code";
+        "Document No." := ResJnlLine."Document No.";
+        Description := ResJnlLine.Description;
+
+        JnlDim.SETRANGE("Table ID",DATABASE::"Res. Journal Line");
+        JnlDim.SETRANGE("Journal Template Name",ResJnlLine."Journal Template Name");
+        JnlDim.SETRANGE("Journal Batch Name",ResJnlLine."Journal Batch Name");
+        JnlDim.SETRANGE("Journal Line No.",ResJnlLine."Line No.");
+        IF JnlDim.FIND('-') THEN
+          REPEAT
+            JnlLineDim.INIT;
+            JnlLineDim."Table ID" := DATABASE::"Cost Account Journal Line";
+            JnlLineDim."Journal Template Name" := CostAccJnlLine."Journal Template Name";
+            JnlLineDim."Journal Batch Name" := CostAccJnlLine."Journal Batch Name";
+            JnlLineDim."Journal Line No." := CostAccJnlLine."Line No.";
+            JnlLineDim."Dimension Code" := JnlDim."Dimension Code";
+            JnlLineDim."Dimension Value Code" := JnlDim."Dimension Value Code";
+            JnlLineDim.INSERT;
+          UNTIL JnlDim.NEXT = 0;
+        IF ResJnlLine."Resource No." <> '' THEN BEGIN
+          Resource.GET(ResJnlLine."Resource No.");
+          "Shortcut Dimension 1 Code" := Resource."Global Dimension 1 Code";
+          VALIDATE("Shortcut Dimension 1 Code");
+        END;
+        SourceCodeSetup.GET;
+        AutomaticCAPosting.CreateDimCostAcc(CostAccJnlLine,SourceCodeSetup."Trans. Perfo. to Cost Account");
+
+        "Document Date" := TODAY;
+      END;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

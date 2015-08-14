@@ -1,0 +1,552 @@
+OBJECT Codeunit 50214 Purchase Invoice
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02.09.13;
+    Time=14:59:54;
+    Version List=HME0513;
+  }
+  PROPERTIES
+  {
+    Subtype=Test;
+    OnRun=BEGIN
+            isInitialized := FALSE;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Assert@1004 : Codeunit 50200;
+      LibraryFinance@1003 : Codeunit 50207;
+      LibrarySCM@1002 : Codeunit 50210;
+      isInitialized@1000 : Boolean;
+      VATAmountErrorMessage@1008 : TextConst 'ENU=VAT Amount must be %1 in %2.';
+      FieldError@1007 : TextConst 'ENU=Number of Lines for %1 and %2  must be Equal.';
+      AmountError@1006 : TextConst 'ENU=%1 must be Equal in %2.';
+      CurrencyError@1005 : TextConst 'ENU=%1 must be Equal in %2.';
+
+    [Normal]
+    LOCAL PROCEDURE Initialize@8();
+    VAR
+      BackupManagement@1001 : Codeunit 50201;
+    BEGIN
+      RANDOMIZE(1);  // Seed RANDOM function.
+      IF isInitialized THEN
+        EXIT;
+
+      BackupManagement.DefaultFixture;
+      LibraryFinance.InitializeGeneralPostingSetup;
+      LibraryFinance.InitializeVATPostingSetup;
+
+      isInitialized := TRUE;
+      COMMIT;
+    END;
+
+    [Test]
+    PROCEDURE PurchaseInvoiceCreation@3();
+    VAR
+      PurchaseHeader@1000 : Record 38;
+      PurchaseLine@1001 : Record 39;
+    BEGIN
+      // Test New Purchase Invoice creation.
+
+      // Setup.
+      Initialize;
+
+      // Exercise: Create Purchase Invoice.
+      CreatePurchaseInvoice(PurchaseHeader,PurchaseLine);
+
+      // Verify: Verify Purchase Invoice created.
+      PurchaseHeader.GET(PurchaseHeader."Document Type",PurchaseHeader."No.");
+      PurchaseLine.GET(PurchaseLine."Document Type",PurchaseLine."Document No.",PurchaseLine."Line No.");
+    END;
+
+    [Test]
+    PROCEDURE VATAmountOnPurchaseInvoice@4();
+    VAR
+      GeneralLedgerSetup@1008 : Record 98;
+      PurchaseHeader@1001 : Record 38;
+      PurchaseLine@1000 : Record 39;
+      VATAmountLine@1002 : Record 290;
+      ReleasePurchaseDocument@1004 : Codeunit 415;
+      QtyType@1003 : 'General,Invoicing,Shipping';
+    BEGIN
+      // Create a Purchase Invoice, Calculates applicable VAT for a VAT Posting Group and verify it with VAT Amount Line.
+
+      // Setup.
+      Initialize;
+      CreatePurchaseInvoice(PurchaseHeader,PurchaseLine);
+
+      // Exercise: Calculate VAT Amount on Purchase Invoice.
+      PurchaseLine.CalcVATAmountLines(QtyType::Invoicing,PurchaseHeader,PurchaseLine,VATAmountLine);
+      ReleasePurchaseDocument.PerformManualRelease(PurchaseHeader);
+      PurchaseHeader.CALCFIELDS(Amount);
+
+      // Verify: Verify VAT Amount on Purchase Invoice.
+      GeneralLedgerSetup.GET;
+      Assert.AreNearlyEqual(
+        PurchaseHeader.Amount * PurchaseLine."VAT %" / 100,VATAmountLine."VAT Amount",GeneralLedgerSetup."Amount Rounding Precision",
+        STRSUBSTNO(VATAmountErrorMessage,PurchaseHeader.Amount * PurchaseLine."VAT %" / 100,VATAmountLine.TABLECAPTION));
+    END;
+
+    [Test]
+    PROCEDURE PurchaseInvoiceReport@5();
+    VAR
+      PurchaseHeader@1001 : Record 38;
+      PurchaseLine@1000 : Record 39;
+      PurchaseDocumentTest@1005 : Report 402;
+      LibraryUtility@1004 : Codeunit 50206;
+      FilePath@1003 : Text[1024];
+    BEGIN
+      // Create New Purchase Invoice and save as external file and verify saved files have data.
+
+      // Setup.
+      Initialize;
+      CreatePurchaseInvoice(PurchaseHeader,PurchaseLine);
+
+      // Exercise: Generate Report as external file for Purchase Invoice.
+      PurchaseHeader.SETRANGE("Document Type",PurchaseHeader."Document Type");
+      PurchaseHeader.SETRANGE("No.",PurchaseHeader."No.");
+      PurchaseDocumentTest.SETTABLEVIEW(PurchaseHeader);
+      IF ISSERVICETIER THEN BEGIN
+        FilePath := TEMPORARYPATH + FORMAT(PurchaseHeader."Document Type") + PurchaseHeader."No." + '.xls';
+        PurchaseDocumentTest.SAVEASEXCEL(FilePath)
+      END ELSE BEGIN
+        FilePath := TEMPORARYPATH + FORMAT(PurchaseHeader."Document Type") + PurchaseHeader."No." + '.xml';
+        PurchaseDocumentTest.SAVEASXML(FilePath);
+      END;
+
+      // Verify: Verify that saved files have some data.
+      LibraryUtility.CheckFileNotEmpty(FilePath);
+    END;
+
+    [Test]
+    PROCEDURE PostPurchaseInvoice@14();
+    VAR
+      PurchaseHeader@1006 : Record 38;
+      PurchaseLine@1005 : Record 39;
+      PurchInvHeader@1001 : Record 122;
+      PurchRcptLine@1004 : Record 121;
+      NoSeriesManagement@1002 : Codeunit 396;
+      PurchaseLineCount@1007 : Integer;
+      PostedInvoiceNo@1003 : Code[20];
+      PostedReceiptNo@1000 : Code[20];
+    BEGIN
+      // Create and Post Purchase Invoice and verify Purchase Posted Receipt Line,Vendor Ledger, GL Entry, and VAT Entry.
+
+      // Setup: Update Purchase and Payable Setup to generate Posted Purchase Receipt document from Purchase Invoice.
+      // Create Purchase Invoice, Store Line count of Purchase Invoice, Posted Receipt No. and Posted Invoice No. in a variable.
+      Initialize;
+      UpadatePurchaseAndPayableSetup;
+      CreatePurchaseInvoice(PurchaseHeader,PurchaseLine);
+      PurchaseHeader.VALIDATE("Vendor Invoice No.",PurchaseHeader."No.");
+      PurchaseHeader.MODIFY(TRUE);
+      PurchaseLine.SETRANGE("Document No.",PurchaseHeader."No.");
+      PurchaseLine.SETRANGE("Document Type",PurchaseLine."Document Type");
+      PurchaseLineCount := PurchaseLine.COUNT;
+      PostedReceiptNo := NoSeriesManagement.GetNextNo(PurchaseHeader."Receiving No. Series",WORKDATE,FALSE);
+      CLEAR(NoSeriesManagement);
+      PostedInvoiceNo := NoSeriesManagement.GetNextNo(PurchaseHeader."Posting No. Series",WORKDATE,FALSE);
+
+
+      // Exercise: Post Purchase Invoice.
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,TRUE,TRUE);
+
+      // Verify: Verify Posted Purchase Receipt,GL Entry, Vendor Ledger Entry, Value Entry and VAT Entry.
+      PurchRcptLine.SETRANGE("Document No.",PostedReceiptNo);
+      Assert.AreEqual(
+        PurchaseLineCount,PurchRcptLine.COUNT,STRSUBSTNO(FieldError,PurchaseLine.TABLECAPTION,PurchRcptLine.TABLECAPTION));
+      PurchInvHeader.GET(PostedInvoiceNo);
+      PurchInvHeader.CALCFIELDS(Amount,"Amount Including VAT");
+      VerifyGLEntry(PostedInvoiceNo,PurchInvHeader."Amount Including VAT");
+      VerifyVendorLedgerEntry(PostedInvoiceNo,PurchInvHeader."Amount Including VAT");
+      VerifyVATEntry(PostedInvoiceNo,PurchInvHeader."Amount Including VAT");
+      VerifyValueEntry(PostedInvoiceNo,PurchInvHeader.Amount);
+    END;
+
+    [Test]
+    PROCEDURE PostedPurchaseInvoiceReport@12();
+    VAR
+      PurchaseHeader@1001 : Record 38;
+      PurchaseLine@1000 : Record 39;
+      PurchInvHeader@1003 : Record 122;
+      PurchaseInvoice@1005 : Report 406;
+      LibraryUtility@1007 : Codeunit 50206;
+      NoSeriesManagement@1004 : Codeunit 396;
+      FilePath@1006 : Text[1024];
+      PostedDocumentNo@1002 : Code[20];
+    BEGIN
+      // Test if Post a Purchase Invoice and generate Posted Purchase Invoice Report.
+
+      // Setup.
+      Initialize;
+      CreatePurchaseInvoice(PurchaseHeader,PurchaseLine);
+      PurchaseHeader.VALIDATE("Vendor Invoice No.",PurchaseHeader."No.");
+      PurchaseHeader.MODIFY(TRUE);
+      PostedDocumentNo := NoSeriesManagement.GetNextNo(PurchaseHeader."Posting No. Series",WORKDATE,FALSE);
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,TRUE,TRUE);
+
+      // Exercise: Generate Report as external file for Posted Purchase Invoice.
+      PurchInvHeader.SETRANGE("No.",PostedDocumentNo);
+      PurchaseInvoice.SETTABLEVIEW(PurchInvHeader);
+      IF ISSERVICETIER THEN BEGIN
+        FilePath := TEMPORARYPATH + FORMAT('Purchase - Invoice') + PurchInvHeader."No." + '.xls';
+        PurchaseInvoice.SAVEASEXCEL(FilePath)
+      END ELSE BEGIN
+        FilePath := TEMPORARYPATH + FORMAT('Purchase - Invoice') + PurchInvHeader."No." + '.xml';
+        PurchaseInvoice.SAVEASXML(FilePath);
+      END;
+
+      // Verify: Verify that Saved files have some data.
+      LibraryUtility.CheckFileNotEmpty(FilePath);
+    END;
+
+    [Test]
+    PROCEDURE PurchaseInvoiceForWhseLocation@16();
+    VAR
+      PurchaseHeader@1001 : Record 38;
+      PurchaseLine@1000 : Record 39;
+      PurchRcptLine@1009 : Record 121;
+      WarehouseEmployee@1003 : Record 7301;
+      LibrarySCM@1002 : Codeunit 50210;
+      NoSeriesManagement@1010 : Codeunit 396;
+      PostedDocumentNo@1008 : Code[20];
+    BEGIN
+      // Test if Post a Purchase Invoice with Warehouse Location and verify Posted Purchase Receipt Entry.
+
+      // Setup: Update Purchase and Payable Setup to generate Posted Purchase Receipt document from Purchase Invoice.
+      Initialize;
+      UpadatePurchaseAndPayableSetup;
+
+      // Exercise: Create Purchase Invoice for Warehouse Location. Using RANDOM Quantity for Purchase Line, value is not important.
+      LibrarySCM.CreatePurchaseHeader(PurchaseHeader,PurchaseHeader."Document Type"::Invoice,CreateVendor);
+      PurchaseHeader.VALIDATE("Vendor Invoice No.",PurchaseHeader."No.");
+      PurchaseHeader.VALIDATE("Location Code",LibrarySCM.FindLocation);
+      PurchaseHeader.MODIFY(TRUE);
+      LibrarySCM.CreatePurchaseLine(PurchaseHeader,PurchaseLine,PurchaseLine.Type::Item,CreateItem,
+        RANDOM(10));
+      LibrarySCM.CreateWarehouseEmployee(WarehouseEmployee,PurchaseLine."Location Code",FALSE);
+      PostedDocumentNo := NoSeriesManagement.GetNextNo(PurchaseHeader."Receiving No. Series",WORKDATE,FALSE);
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,TRUE,TRUE);
+
+      // Verify: Verify Quantity Posted Receipt Document.
+      PurchRcptLine.SETRANGE("Document No.",PostedDocumentNo);
+      PurchRcptLine.FINDFIRST;
+      Assert.AreEqual(PurchaseLine.Quantity,PurchRcptLine.Quantity,STRSUBSTNO(FieldError,PurchaseLine.TABLECAPTION,
+          PurchRcptLine.TABLECAPTION));
+
+      // Tear Down: Rollback Setup changes for Location and Warehouse Employee.
+      WarehouseEmployee.GET(USERID,PurchaseLine."Location Code");
+      WarehouseEmployee.DELETE;
+    END;
+
+    [Test]
+    PROCEDURE LineDiscountOnPurhcaseInvoice@21();
+    VAR
+      PurchaseHeader@1004 : Record 38;
+      PurchaseLine@1003 : Record 39;
+      PurchaseLineDiscount@1005 : Record 7014;
+      NoSeriesManagement@1001 : Codeunit 396;
+      PostedDocumentNo@1000 : Code[20];
+    BEGIN
+      // Test Line Discount on Purchase Invoice, Post Invoice and verify Posted GL Entry.
+
+      // Setup: Create Line Discount Setup.
+      Initialize;
+      SetupLineDiscount(PurchaseLineDiscount);
+
+      // Exercise: Create and Post Invoice with Random Quantity. Take Quantity greater than Purchase Line Discount Minimum Quantity.
+      LibrarySCM.CreatePurchaseHeader(PurchaseHeader,PurchaseHeader."Document Type"::Invoice,PurchaseLineDiscount."Vendor No.");
+      PurchaseHeader.VALIDATE("Vendor Invoice No.",PurchaseHeader."No.");
+      PurchaseHeader.MODIFY(TRUE);
+      LibrarySCM.CreatePurchaseLine(PurchaseHeader,PurchaseLine,PurchaseLine.Type::Item,PurchaseLineDiscount."Item No.",
+        PurchaseLineDiscount."Minimum Quantity" + RANDOM(10));
+      PostedDocumentNo := NoSeriesManagement.GetNextNo(PurchaseHeader."Posting No. Series",WORKDATE,FALSE);
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,TRUE,TRUE);
+
+      // Verify: Verify Purchase Line and Posted G/L Entry for Line Discount Amount.
+      VerifyLineDiscountAmount(
+        PurchaseLine,PostedDocumentNo,
+        (PurchaseLine.Quantity * PurchaseLine."Direct Unit Cost") * PurchaseLineDiscount."Line Discount %" / 100);
+    END;
+
+    [Test]
+    PROCEDURE InvDiscountOnPurchaseInvoice@29();
+    VAR
+      VendorInvoiceDisc@1002 : Record 24;
+      PurchaseHeader@1004 : Record 38;
+      PurchaseLine@1003 : Record 39;
+      NoSeriesManagement@1001 : Codeunit 396;
+      PostedDocumentNo@1000 : Code[20];
+    BEGIN
+      // Create New Invoice Discount Setup for Vendor and make new Purchase Invoice, Post Invoice and verify Posted GL Entry.
+
+      // Setup: Create Invoice Discount Setup.
+      Initialize;
+      SetupInvoiceDiscount(VendorInvoiceDisc);
+
+      // Exercise: Create Purchase Invoice using Random value for Quantity, calculate Invoice Discount and Post Invoice.
+      LibrarySCM.CreatePurchaseHeader(PurchaseHeader,PurchaseHeader."Document Type"::Invoice,VendorInvoiceDisc.Code);
+      PurchaseHeader.VALIDATE("Vendor Invoice No.",PurchaseHeader."No.");
+      PurchaseHeader.MODIFY(TRUE);
+      LibrarySCM.CreatePurchaseLine(PurchaseHeader,PurchaseLine,PurchaseLine.Type::Item,
+        CreateItem,RANDOM(10));
+
+      // Invoice Value always greater than Minimum Amount of Invoice Discount Setup.
+      PurchaseLine.VALIDATE("Direct Unit Cost",VendorInvoiceDisc."Minimum Amount");
+      PurchaseLine.MODIFY(TRUE);
+      PostedDocumentNo := NoSeriesManagement.GetNextNo(PurchaseHeader."Posting No. Series",WORKDATE,FALSE);
+      CODEUNIT.RUN(CODEUNIT::"Purch.-Calc.Discount",PurchaseLine);
+      PurchaseLine.GET(PurchaseLine."Document Type",PurchaseLine."Document No.",PurchaseLine."Line No.");
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,TRUE,TRUE);
+
+      // Verify: Verify Purchase Line and Posted G/L Entry for Invoice Discount Amount.
+      VerifyInvoiceDiscountAmount(PurchaseLine,PostedDocumentNo,
+        (PurchaseLine.Quantity * PurchaseLine."Direct Unit Cost") * VendorInvoiceDisc."Discount %" / 100);
+    END;
+
+    [Test]
+    PROCEDURE PurchaseInvoiceWithFCY@25();
+    VAR
+      PurchaseHeader@1002 : Record 38;
+      PurchaseLine@1001 : Record 39;
+      PurchInvHeader@1005 : Record 122;
+      NoSeriesManagement@1004 : Codeunit 396;
+      PostedDocumentNo@1000 : Code[20];
+    BEGIN
+      // Create and Post a Purchase Invoice with Currency and verify currency on Posted Purchase Invoice Entry.
+
+      // Setup.
+      Initialize;
+
+      // Exercise: Create Purchase Invoice, attach new Currency on Purchase Invoice and Post Invoice.
+      LibrarySCM.CreatePurchaseHeader(PurchaseHeader,PurchaseHeader."Document Type"::Invoice,CreateVendor);
+      PurchaseHeader.VALIDATE("Currency Code",CreateCurrency);
+      PurchaseHeader.VALIDATE("Vendor Invoice No.",PurchaseHeader."No.");
+      PurchaseHeader.MODIFY(TRUE);
+      LibrarySCM.CreatePurchaseLine(PurchaseHeader,PurchaseLine,PurchaseLine.Type::Item,
+        CreateItem,RANDOM(10));
+      PostedDocumentNo := NoSeriesManagement.GetNextNo(PurchaseHeader."Posting No. Series",WORKDATE,FALSE);
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,TRUE,TRUE);
+
+      // Verify: Verify Currency Code in Purchase Line and Posted Purchase Invoice Header.
+      PurchInvHeader.GET(PostedDocumentNo);
+      Assert.AreEqual(PurchaseHeader."Currency Code",PurchaseLine."Currency Code",
+        STRSUBSTNO(CurrencyError,PurchaseLine.FIELDCAPTION("Currency Code"),PurchaseLine.TABLECAPTION));
+      Assert.AreEqual(PurchaseHeader."Currency Code",PurchInvHeader."Currency Code",
+        STRSUBSTNO(CurrencyError,PurchInvHeader.FIELDCAPTION("Currency Code"),PurchInvHeader.TABLECAPTION));
+    END;
+
+    LOCAL PROCEDURE CreateCurrency@27() : Code[10];
+    VAR
+      Currency@1001 : Record 4;
+    BEGIN
+      LibraryFinance.CreateCurrency(Currency);
+      LibraryFinance.CreateRandomExchangeRate(Currency.Code);
+      EXIT(Currency.Code);
+    END;
+
+    LOCAL PROCEDURE CreateItem@9() : Code[20];
+    VAR
+      Item@1000 : Record 27;
+      InventorySetup@1003 : Record 313;
+      VATPostingSetup@1002 : Record 325;
+      LibraryUtility@1004 : Codeunit 50206;
+      LibrarySCM@1001 : Codeunit 50210;
+    BEGIN
+      FindVATPostingSetup(VATPostingSetup);
+
+      // Modify Item No. Series in Inventory setup.
+      InventorySetup.GET;
+      InventorySetup.VALIDATE("Item Nos.",LibraryUtility.GetNoSeriesCode);
+      InventorySetup.MODIFY(TRUE);
+      LibrarySCM.CreateItem(Item);
+      Item.VALIDATE("VAT Prod. Posting Group",VATPostingSetup."VAT Prod. Posting Group");
+      Item.VALIDATE("Last Direct Cost",RANDOM(100));  // Using RANDOM value for Last Direct Cost.
+      Item.MODIFY(TRUE);
+      EXIT(Item."No.");
+    END;
+
+    LOCAL PROCEDURE CreatePurchaseInvoice@10(VAR PurchaseHeader@1000 : Record 38;VAR PurchaseLine@1001 : Record 39);
+    VAR
+      Counter@1002 : Integer;
+    BEGIN
+      LibrarySCM.CreatePurchaseHeader(PurchaseHeader,PurchaseHeader."Document Type"::Invoice,CreateVendor);
+
+      // Create Multiple purchase line and using RANDOM for Quantity.
+      FOR Counter := 1 TO 1 + RANDOM(10) DO
+        LibrarySCM.CreatePurchaseLine(
+          PurchaseHeader,PurchaseLine,PurchaseLine.Type::Item,CreateItem,RANDOM(10));
+    END;
+
+    LOCAL PROCEDURE CreateVendor@1() : Code[20];
+    VAR
+      Vendor@1001 : Record 23;
+      VATPostingSetup@1000 : Record 325;
+    BEGIN
+      FindVATPostingSetup(VATPostingSetup);
+      LibrarySCM.CreateVendor(Vendor);
+      Vendor.VALIDATE("VAT Bus. Posting Group",VATPostingSetup."VAT Bus. Posting Group");
+      Vendor.MODIFY(TRUE);
+      EXIT(Vendor."No.");
+    END;
+
+    LOCAL PROCEDURE FindVATPostingSetup@13(VAR VATPostingSetup@1000 : Record 325);
+    BEGIN
+      VATPostingSetup.SETFILTER("VAT Bus. Posting Group",'<>''''');
+      VATPostingSetup.SETFILTER("VAT Prod. Posting Group",'<>''''');
+      VATPostingSetup.SETRANGE("VAT Calculation Type",VATPostingSetup."VAT Calculation Type"::"Normal VAT");
+      VATPostingSetup.SETFILTER("VAT %",'>0');
+      VATPostingSetup.FINDFIRST;
+    END;
+
+    [Test]
+    PROCEDURE UpadatePurchaseAndPayableSetup@18();
+    VAR
+      PurchasesPayablesSetup@1000 : Record 312;
+    BEGIN
+      // Update Purchase and Payable Setup to generate Posted Purchase Receipt document from Purchase Invoice.
+      PurchasesPayablesSetup.GET;
+      IF NOT PurchasesPayablesSetup."Receipt on Invoice" THEN BEGIN
+        PurchasesPayablesSetup.VALIDATE("Receipt on Invoice",TRUE);
+        PurchasesPayablesSetup.MODIFY(TRUE);
+      END;
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE SetupInvoiceDiscount@31(VAR VendorInvoiceDisc@1001 : Record 24);
+    BEGIN
+      // Required Random Value for "Minimum Amount" and "Discount %" fields value is not important.
+      LibraryFinance.CreateInvDiscForVendor(VendorInvoiceDisc,CreateVendor,'',RANDOM(100));
+      VendorInvoiceDisc.VALIDATE("Discount %",RANDOM(10));
+      VendorInvoiceDisc.MODIFY(TRUE);
+    END;
+
+    LOCAL PROCEDURE SetupLineDiscount@22(VAR PurchaseLineDiscount@1000 : Record 7014);
+    VAR
+      Item@1002 : Record 27;
+    BEGIN
+      // Required Random Value for "Minimum Quantity" and "Line Discount %" fields value is not important.
+      Item.GET(CreateItem);
+      LibraryFinance.CreateLineDiscForVendor(PurchaseLineDiscount,Item."No.",CreateVendor,WORKDATE,'','',
+        Item."Base Unit of Measure",RANDOM(10));
+      PurchaseLineDiscount.VALIDATE("Line Discount %",RANDOM(10));
+      PurchaseLineDiscount.MODIFY(TRUE);
+    END;
+
+    LOCAL PROCEDURE VerifyGLEntry@2(DocumentNo@1000 : Code[20];Amount@1001 : Decimal);
+    VAR
+      GLEntry@1002 : Record 17;
+      GeneralLedgerSetup@1004 : Record 98;
+      TotalGLAmount@1003 : Decimal;
+    BEGIN
+      GeneralLedgerSetup.GET;
+      GLEntry.SETRANGE("Document No.",DocumentNo);
+      GLEntry.SETRANGE("Document Type",GLEntry."Document Type"::Invoice);
+      GLEntry.SETFILTER(Amount,'>0');
+      GLEntry.FINDSET;
+      REPEAT
+        TotalGLAmount += GLEntry.Amount;
+      UNTIL GLEntry.NEXT = 0;
+      Assert.AreNearlyEqual(Amount,TotalGLAmount,GeneralLedgerSetup."Amount Rounding Precision",
+        STRSUBSTNO(AmountError,GLEntry.FIELDCAPTION(Amount),GLEntry.TABLECAPTION));
+    END;
+
+    LOCAL PROCEDURE VerifyValueEntry@15(DocumentNo@1001 : Code[20];Amount@1000 : Decimal);
+    VAR
+      GeneralLedgerSetup@1003 : Record 98;
+      ValueEntry@1002 : Record 5802;
+      PurchaseAmount@1004 : Decimal;
+    BEGIN
+      GeneralLedgerSetup.GET;
+      ValueEntry.SETRANGE("Document No.",DocumentNo);
+      ValueEntry.FINDSET;
+      REPEAT
+        PurchaseAmount += ValueEntry."Purchase Amount (Actual)";
+      UNTIL ValueEntry.NEXT = 0;
+      Assert.AreNearlyEqual(Amount,PurchaseAmount,GeneralLedgerSetup."Amount Rounding Precision",
+        STRSUBSTNO(AmountError,ValueEntry.FIELDCAPTION("Purchase Amount (Actual)"),ValueEntry.TABLECAPTION));
+    END;
+
+    LOCAL PROCEDURE VerifyVATEntry@7(DocumentNo@1001 : Code[20];Amount@1000 : Decimal);
+    VAR
+      GeneralLedgerSetup@1003 : Record 98;
+      VATEntry@1002 : Record 254;
+    BEGIN
+      GeneralLedgerSetup.GET;
+      VATEntry.SETRANGE("Document No.",DocumentNo);
+      VATEntry.SETRANGE("Document Type",VATEntry."Document Type"::Invoice);
+      VATEntry.FINDFIRST;
+      Assert.AreNearlyEqual(Amount,VATEntry.Base + VATEntry.Amount,GeneralLedgerSetup."Amount Rounding Precision",
+        STRSUBSTNO(AmountError,VATEntry.FIELDCAPTION(Amount),VATEntry.TABLECAPTION));
+    END;
+
+    LOCAL PROCEDURE VerifyVendorLedgerEntry@11(DocumentNo@1001 : Code[20];Amount@1000 : Decimal);
+    VAR
+      VendorLedgerEntry@1002 : Record 25;
+      GeneralLedgerSetup@1003 : Record 98;
+    BEGIN
+      GeneralLedgerSetup.GET;
+      VendorLedgerEntry.SETRANGE("Document No.",DocumentNo);
+      VendorLedgerEntry.SETRANGE("Document Type",VendorLedgerEntry."Document Type"::Invoice);
+      VendorLedgerEntry.FINDFIRST;
+      VendorLedgerEntry.CALCFIELDS("Amount (LCY)");
+      Assert.AreNearlyEqual(-Amount,VendorLedgerEntry."Amount (LCY)",GeneralLedgerSetup."Amount Rounding Precision",
+        STRSUBSTNO(AmountError,VendorLedgerEntry.FIELDCAPTION("Amount (LCY)"),VendorLedgerEntry.TABLECAPTION));
+    END;
+
+    LOCAL PROCEDURE VerifyInvoiceDiscountAmount@24(PurchaseLine@1005 : Record 39;DocumentNo@1004 : Code[20];InvoiceDiscountAmount@1003 : Decimal);
+    VAR
+      GeneralLedgerSetup@1002 : Record 98;
+      GeneralPostingSetup@1001 : Record 252;
+      GLEntry@1000 : Record 17;
+    BEGIN
+      GeneralLedgerSetup.GET;
+      GeneralPostingSetup.GET(PurchaseLine."Gen. Bus. Posting Group",PurchaseLine."Gen. Prod. Posting Group");
+      GLEntry.SETRANGE("Document No.",DocumentNo);
+      GLEntry.SETRANGE("G/L Account No.",GeneralPostingSetup."Purch. Inv. Disc. Account");
+      GLEntry.FINDFIRST;
+      Assert.AreNearlyEqual(-InvoiceDiscountAmount,GLEntry.Amount,GeneralLedgerSetup."Amount Rounding Precision",
+        STRSUBSTNO(AmountError,GLEntry.FIELDCAPTION(Amount),GLEntry.TABLECAPTION));
+      Assert.AreNearlyEqual(InvoiceDiscountAmount,PurchaseLine."Inv. Discount Amount",GeneralLedgerSetup."Amount Rounding Precision",
+        STRSUBSTNO(AmountError,PurchaseLine.FIELDCAPTION("Inv. Discount Amount"),PurchaseLine.TABLECAPTION));
+    END;
+
+    LOCAL PROCEDURE VerifyLineDiscountAmount@23(PurchaseLine@1000 : Record 39;DocumentNo@1001 : Code[20];LineDiscountAmount@1002 : Decimal);
+    VAR
+      GeneralLedgerSetup@1005 : Record 98;
+      GeneralPostingSetup@1004 : Record 252;
+      GLEntry@1003 : Record 17;
+    BEGIN
+      GeneralLedgerSetup.GET;
+      GeneralPostingSetup.GET(PurchaseLine."Gen. Bus. Posting Group",PurchaseLine."Gen. Prod. Posting Group");
+      GLEntry.SETRANGE("Document No.",DocumentNo);
+      GLEntry.SETRANGE("G/L Account No.",GeneralPostingSetup."Purch. Line Disc. Account");
+      GLEntry.FINDFIRST;
+      Assert.AreNearlyEqual(-LineDiscountAmount,GLEntry.Amount,GeneralLedgerSetup."Amount Rounding Precision",
+        STRSUBSTNO(AmountError,GLEntry.FIELDCAPTION(Amount),GLEntry.TABLECAPTION));
+      Assert.AreNearlyEqual(LineDiscountAmount,PurchaseLine."Line Discount Amount",GeneralLedgerSetup."Amount Rounding Precision",
+        STRSUBSTNO(AmountError,PurchaseLine.FIELDCAPTION("Line Discount Amount"),PurchaseLine.TABLECAPTION));
+    END;
+
+    BEGIN
+    {
+      Check the functionalities of Purchase Invoice.
+       1. Test if the system allows to create a New Purchase Invoice for Vendor.
+       2. Test if the system calculates applicable VAT on Purchase Invoice and verify VAT Amount with VAT Amount Line.
+       3. Test if the system generates Purchase Invoice Report and verify new external file created.
+       4. Test if Purchase Invoice allowing to Post and verify Posted Purchase Receipt Entry Posted G/L Entry, VAT Entry,
+          Value Entry and Vendor Ledger Entry.
+       5. Test if the system generates Posted Purchase Invoice Report and verify new external file created.
+       6. Test if the system allows creating a Purchase Invoice with a Location having Warehouse Receipt checked, system
+          allow to post the Invoice and verify Posted Receipt Entry.
+       7. Test if the system calculates Line Discount on Purchase Invoice and after Post, creates G/L entry for Discount.
+       8. Test if the system calculates Invoice Discount on Purchase Invoice and after Post, creates G/L entry for Invoice Discount.
+       9. Test if the system allows creating Purchase Invoice with Foreign Currency and allow to Post the Purchase Invoice
+          with Foreign Currency.
+    }
+    END.
+  }
+}
+

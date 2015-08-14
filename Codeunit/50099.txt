@@ -1,0 +1,482 @@
+OBJECT Codeunit 50099 Outbound EDI CreatePDF
+{
+  OBJECT-PROPERTIES
+  {
+    Date=20.02.15;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=EDIINT6.00,HME2030;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=VAR
+            PurchaseHeader_l@1000000000 : Record 38;
+            PurchaseLine_l@1000000001 : Record 39;
+            Location_l@1000000002 : Record 14;
+            EDIPartnerDocumentType_l@1000000003 : Record 82852;
+            HermesSetupL@1000000014 : Record 50319;
+            Vendor_l@1000000004 : Record 23;
+            "--- P1004 Locals ---"@1000000006 : Integer;
+            cEDIOrdersExportService@1000000005 : Codeunit 50166;
+            P1004_001@1000000007 : TextConst 'ENU=Error creating EDI label and delivery note.';
+            P1004_002@1000000008 : TextConst 'ENU=Error creating EDI label.';
+            P1004_003@1000000009 : TextConst 'ENU=Error creating the EDI file.';
+            rPurchHeader@1000000010 : Record 38;
+            P1004_004@1000000011 : TextConst 'ENU=Error creating EDI CD label.';
+            "--- P1106 Locals ---"@1000000012 : Integer;
+            rPurchasing@1000000013 : Record 5721;
+          BEGIN
+            EDIPartnerDocumentType_l.SETRANGE("Document Direction",EDIPartnerDocumentType_l."Document Direction"::Outbound);
+            EDIPartnerDocumentType_l.SETRANGE("Document Type",'ORDERS');
+            //H2030 23.01.15 EHN +++++++++++++++++++++++++++++++++++++++++
+            IF "Parameter String" <> '' THEN
+              EDIPartnerDocumentType_l.SETRANGE("Partner Code","Parameter String");
+            //H2030 23.01.15 EHN -----------------------------------------
+            EDIPartnerDocumentType_l.SETRANGE(Active,TRUE);
+            IF EDIPartnerDocumentType_l.FINDSET(FALSE,FALSE) THEN
+              REPEAT
+                Vendor_l.SETRANGE("EDI ORDERS Partner",EDIPartnerDocumentType_l."Partner Code");
+                IF Vendor_l.FINDSET(FALSE,FALSE) THEN
+                  REPEAT
+                    PurchaseHeader_l.RESET;
+                    PurchaseHeader_l.SETCURRENTKEY("Buy-from Vendor No.");
+                    PurchaseHeader_l.SETRANGE("Buy-from Vendor No.",Vendor_l."No.");
+                    //PurchaseHeader_l.SETFILTER("Document Date",'>=%1',EDIPartnerDocumentType_l."ORDERS Startdate");
+                    PurchaseHeader_l.SETFILTER("Order Date",'>=%1',EDIPartnerDocumentType_l."ORDERS Startdate");
+                    PurchaseHeader_l.SETRANGE(Status,PurchaseHeader_l.Status::Released);
+                    PurchaseHeader_l.SETFILTER("Outbound EDI No.",'%1','');
+                    IF PurchaseHeader_l.FINDFIRST THEN
+                      REPEAT
+                        IF CreateEDISingleOrder_g.CheckRequirementsForSending(PurchaseHeader_l,FALSE) THEN BEGIN
+                          CLEAR(CreateEDISingleOrder_g);
+                          //A,gob-dst,03.07.2013,P1004
+                          CLEAR(cEDIOrdersExportService);
+                          //E,gob-dst,03.07.2013,P1004
+                          IF PurchaseHeader_l."Sell-to Customer No." <> '' THEN BEGIN
+                            PurchaseLine_l.RESET;
+                            PurchaseLine_l.SETRANGE("Document Type",PurchaseHeader_l."Document Type");
+                            PurchaseLine_l.SETRANGE("Document No.",PurchaseHeader_l."No.");
+                            PurchaseLine_l.SETRANGE(Type,PurchaseLine_l.Type::Item);
+                            PurchaseLine_l.SETFILTER("Purchasing Code",'%1|%2|%3','*-4','*-7','*-12');
+                            IF NOT PurchaseLine_l.ISEMPTY THEN BEGIN
+                              //A,gob-dst,03.07.2013,P1004
+                              //CreateDNandLabel_PDF(PurchaseHeader_l,Vendor_l);
+                              cEDIOrdersExportService.SetVariables('1',PurchaseHeader_l,Vendor_l,'');
+                              COMMIT;
+                              IF NOT cEDIOrdersExportService.RUN() THEN BEGIN
+                                SendErrorMail(PurchaseHeader_l."No.",P1004_001,GETLASTERRORTEXT);
+                                IF rPurchHeader.GET(PurchaseHeader_l."Document Type",PurchaseHeader_l."No.") THEN BEGIN
+                                  rPurchHeader."Outbound EDI No." := 'ERROR1';
+                                  rPurchHeader.MODIFY(FALSE);
+                                END;
+                              END;
+                              //E,gob-dst,03.07.2013,P1004
+                            END ELSE BEGIN
+                              PurchaseLine_l.SETFILTER("Purchasing Code",'%1|%2','*-8','*-13');
+                              IF NOT PurchaseLine_l.ISEMPTY THEN BEGIN
+                                //A,gob-dst,03.07.2013,P1004
+                                //CreateDeliveryNoteLabel_PDF(PurchaseHeader_l,Vendor_l,'');
+                                cEDIOrdersExportService.SetVariables('2',PurchaseHeader_l,Vendor_l,'');
+                                COMMIT;
+                                IF NOT cEDIOrdersExportService.RUN() THEN BEGIN
+                                  SendErrorMail(PurchaseHeader_l."No.",P1004_002,GETLASTERRORTEXT);
+                                  IF rPurchHeader.GET(PurchaseHeader_l."Document Type",PurchaseHeader_l."No.") THEN BEGIN
+                                    rPurchHeader."Outbound EDI No." := 'ERROR2';
+                                    rPurchHeader.MODIFY(FALSE);
+                                  END;
+                                END;
+                                //E,gob-dst,03.07.2013,P1004
+                              END ELSE BEGIN
+                                // H1698  19.01.15  MKR +++++++++++++++++++++
+                                HermesSetupL.GET;
+                                // Normally you would do something like
+                                //PurchaseLine_l.SETFILTER("Purchasing Code",'*-%1', format(HermesSetupL."Channel HES CD-DI"));
+                                // due to SETFILTER issues Microsoft refuses to correct it won't work, instead we do:
+                                PurchaseLine_l.SETFILTER("Purchasing Code",'%1', STRSUBSTNO('*-%1', FORMAT(HermesSetupL."Channel HES CD-DI")))
+            ;
+                                // This works properly. Silly, isn't it?
+                                // H1698  19.01.15  MKR ---------------------
+                                IF NOT PurchaseLine_l.ISEMPTY THEN BEGIN
+                                  cEDIOrdersExportService.SetVariables('5',PurchaseHeader_l,Vendor_l,'');
+                                  COMMIT;
+                                  IF NOT cEDIOrdersExportService.RUN() THEN BEGIN
+                                    SendErrorMail(PurchaseHeader_l."No.",P1004_002,GETLASTERRORTEXT);
+                                    MESSAGE(GETLASTERRORTEXT);
+                                    IF rPurchHeader.GET(PurchaseHeader_l."Document Type",PurchaseHeader_l."No.") THEN BEGIN
+                                      rPurchHeader."Outbound EDI No." := 'ERROR7';
+                                      rPurchHeader.MODIFY(FALSE);
+                                    END;
+                                  END;
+                                END ELSE BEGIN
+                                //H1698 19.01.15 tec-ar ---------------
+                                  // S/P1106/P1173
+                                  //Location_l.GET(PurchaseHeader_l."Location Code");
+                                  //IF NOT Location_l."Rhenus Crossdock Location" THEN BEGIN
+
+                                  PurchaseLine_l.SETRANGE("Purchasing Code");
+                                  PurchaseLine_l.FINDFIRST();
+                                  rPurchasing.GET(PurchaseLine_l."Purchasing Code");
+                                  Location_l.GET(PurchaseLine_l."Location Code");
+                                  IF NOT rPurchasing."RHD Real Crossdocking" THEN BEGIN
+                                  // E/P1106/P1173
+                                    IF Location_l."EDI Cross Docking" THEN BEGIN
+                                      //A,gob-dst,03.07.2013,P1004
+                                      //CreateDeliveryNoteLabel_PDF(PurchaseHeader_l,Vendor_l,'');
+                                      cEDIOrdersExportService.SetVariables('2',PurchaseHeader_l,Vendor_l,'');
+                                      COMMIT;
+                                      IF NOT cEDIOrdersExportService.RUN() THEN BEGIN
+                                        SendErrorMail(PurchaseHeader_l."No.",P1004_002,GETLASTERRORTEXT);
+                                        IF rPurchHeader.GET(PurchaseHeader_l."Document Type",PurchaseHeader_l."No.") THEN BEGIN
+                                          rPurchHeader."Outbound EDI No." := 'ERROR(3)';
+                                          rPurchHeader.MODIFY(FALSE);
+                                        END;
+                                      END;
+                                      //E,gob-dst,03.07.2013,P1004
+                                    END ELSE BEGIN
+                                      //A,gob-dst,03.07.2013,P1004
+                                      //CreateEDISingleOrder_g.CreateSingleOrder(PurchaseHeader_l,FALSE,'','');
+                                      cEDIOrdersExportService.SetVariables('3',PurchaseHeader_l,Vendor_l,'');
+                                      COMMIT;
+                                      IF NOT cEDIOrdersExportService.RUN() THEN BEGIN
+                                        SendErrorMail(PurchaseHeader_l."No.",P1004_003,GETLASTERRORTEXT);
+                                        IF rPurchHeader.GET(PurchaseHeader_l."Document Type",PurchaseHeader_l."No.") THEN BEGIN
+                                          rPurchHeader."Outbound EDI No." := 'ERROR(4)';
+                                          rPurchHeader.MODIFY(FALSE);
+                                        END;
+                                      END;
+                                      //E,gob-dst,03.07.2013,P1004
+                                    END;
+                                  // S/P1106
+                                  END ELSE BEGIN
+                                    IF Location_l."EDI Cross Docking" THEN BEGIN
+                                      cEDIOrdersExportService.SetVariables('4',PurchaseHeader_l,Vendor_l,'');
+                                      COMMIT;
+                                      IF NOT cEDIOrdersExportService.RUN() THEN BEGIN
+                                        SendErrorMail(PurchaseHeader_l."No.",P1004_004,GETLASTERRORTEXT);
+                                        IF rPurchHeader.GET(PurchaseHeader_l."Document Type",PurchaseHeader_l."No.") THEN BEGIN
+                                          rPurchHeader."Outbound EDI No." := 'ERROR(6)';
+                                          rPurchHeader.MODIFY(FALSE);
+                                        END;
+                                      END;
+                                    END;
+                                  END;
+                                  // E/P1106
+                                //H1698 02.12.14 tec-ar +++++++++++++++
+                                END;
+                                //H1698 02.12.14 tec-ar ---------------
+                              END;
+                            END;
+                          END ELSE
+                          //A,gob-dst,03.07.2013,P1004
+                            //CreateEDISingleOrder_g.CreateSingleOrder(PurchaseHeader_l,FALSE,'','');
+                          BEGIN
+                            cEDIOrdersExportService.SetVariables('3',PurchaseHeader_l,Vendor_l,'');
+                            COMMIT;
+                            IF NOT cEDIOrdersExportService.RUN() THEN BEGIN
+                              SendErrorMail(PurchaseHeader_l."No.",P1004_003,GETLASTERRORTEXT);
+                              IF rPurchHeader.GET(PurchaseHeader_l."Document Type",PurchaseHeader_l."No.") THEN BEGIN
+                                rPurchHeader."Outbound EDI No." := 'ERROR5';
+                                rPurchHeader.MODIFY(FALSE);
+                              END;
+                            END;
+                          END;
+                          //E,gob-dst,03.07.2013,P1004
+                        END;
+                      UNTIL PurchaseHeader_l.NEXT = 0;
+                  UNTIL Vendor_l.NEXT = 0;
+              UNTIL EDIPartnerDocumentType_l.NEXT = 0;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      CreateEDISingleOrder_g@1000000000 : Codeunit 82857;
+
+    PROCEDURE CreateDNandLabel_PDF@1000000000(PurchaseHeader_r@1000000018 : Record 38;Vendor_r@1000000017 : Record 23);
+    VAR
+      DHLPaketLabel_l@1000000001 : Report 50009;
+      DHLHDLabel_l@1000000016 : Report 50008;
+      SalesPackingList_l@1000000006 : Report 50020;
+      PurchaseLine_l@1000000002 : Record 39;
+      SalesHeader_l@1000000008 : Record 36;
+      SalesLine_l@1000000007 : Record 37;
+      EDIPartnerDocumentType_l@1000000005 : Record 82852;
+      MailITSetup_l@1000000003 : Record 75402;
+      filename@1000000004 : Text[250];
+      ClientFso@1000000010 : Automation "{420B2830-E718-11CF-893D-00A0C9054228} 1.0:{0D43FE01-F093-11CF-8940-00A0C9054228}:'Microsoft Scripting Runtime'.FileSystemObject";
+      MailIT@1000000011 : OCX "{C8C4804C-89BA-4291-AB58-4C6050B65175}:'ExpandIT.MailIT2'";
+      DefaultPrinterChanged@1000000012 : Boolean;
+      OldDefaultPrinter@1000000013 : Text[250];
+      UserSetup@1000000014 : Record 91;
+      Error001@1000000015 : TextConst 'ENU=No PDF DHL Label for %1 generated.';
+      LabelPath@1000000000 : Text[250];
+      EDIPartner@1000000009 : Record 82851;
+      DHLPaketLabelInt_l@1000000019 : Report 50156;
+    BEGIN
+      //P1004  Funktion ausgelagert in CU50166
+
+      {
+      MailITSetup_l.GET();
+      CREATE(ClientFso,TRUE,TRUE);
+      CLEAR(DHLPaketLabel_l);
+      CLEAR(DHLHDLabel_l);
+
+      EDIPartnerDocumentType_l.GET(Vendor_r."EDI ORDERS Partner",1,'ORDERS');
+
+      PurchaseLine_l.SETRANGE("Document Type",PurchaseHeader_r."Document Type");
+      PurchaseLine_l.SETRANGE("Document No.",PurchaseHeader_r."No.");
+      PurchaseLine_l.SETRANGE(Type,PurchaseLine_l.Type::Item);
+      PurchaseLine_l.SETFILTER("Purchasing Code",'%1|%2|%3','*-4','*-7','*-12');
+
+      //filename := 'C:\Temp\lku\' + 'LABEL_' + DELCHR(CREATEGUID(), '=', '{}-') + '.pdf';
+      //filename := EDIPartnerDocumentType_l."Im-/Export Path" + '\LABEL_' + DELCHR(CREATEGUID(), '=', '{}-') + '.pdf';
+      filename := EDIPartnerDocumentType_l."Im-/Export Path" + '\LABEL_' + PurchaseHeader_r."No." + '.pdf';
+
+      IF ClientFso.FileExists(filename) THEN
+        ClientFso.DeleteFile(filename);
+      MailIT.PDFParameter('Output',filename);
+      MailIT.PDFParameter('ShowPDF','no');
+      MailIT.PDFParameter('Author',USERID);
+      MailIT.PDFPreparePrinter();
+      IF NOT DefaultPrinterChanged THEN BEGIN
+        IF OldDefaultPrinter = '' THEN
+          OldDefaultPrinter := MailIT.GetDefaultPrinter();
+        IF OldDefaultPrinter <> UserSetup."PDF Creator" THEN BEGIN
+          MailIT.SetDefaultPrinter(UserSetup."PDF Creator");
+          DefaultPrinterChanged := TRUE;
+        END;
+      END;
+
+      PurchaseLine_l.SETFILTER("Purchasing Code",'%1|%2','*-7','*-12');
+      IF PurchaseLine_l.FINDFIRST THEN BEGIN
+        //A/P0848
+        // Wenn Label bereits Åber EK-Mail gedruckt zieht der erneute Druck die Trackingnummern aus der Tabelle und erstellt keine neuen
+        //A,gob-dst,21.05.2013,P0924
+        //IF (Vendor_r."EDI ORDERS Partner" <> '')
+        //AND (EDIPartner.GET(Vendor_r."EDI ORDERS Partner"))
+        //AND NOT (EDIPartner."Surpress Purch. Mail")
+        //THEN
+        //  DHLPaketLabel_l.SetUseExistingDHLLabels(TRUE)
+        //ELSE
+        //  DHLPaketLabel_l.SetUseExistingDHLLabels(FALSE);
+        ////E/P0848
+        //DHLPaketLabel_l.SETTABLEVIEW(PurchaseLine_l);
+        //DHLPaketLabel_l.USEREQUESTFORM(FALSE);
+        //DHLPaketLabel_l.RUNMODAL;
+
+        IF NOT (PurchaseHeader_r."Ship-to Country/Region Code" IN ['DE','']) THEN BEGIN
+          CLEAR(DHLPaketLabelInt_l);
+          IF (Vendor_r."EDI ORDERS Partner" <> '')
+          AND (EDIPartner.GET(Vendor_r."EDI ORDERS Partner"))
+          AND (NOT EDIPartner."Surpress Purch. Mail")
+          THEN
+            DHLPaketLabelInt_l.SetUseExistingDHLLabels(TRUE)
+          ELSE
+            DHLPaketLabelInt_l.SetUseExistingDHLLabels(FALSE);
+          DHLPaketLabelInt_l.SETTABLEVIEW(PurchaseLine_l);
+          DHLPaketLabelInt_l.USEREQUESTFORM(FALSE);
+          DHLPaketLabelInt_l.RUNMODAL;
+        END ELSE BEGIN
+          CLEAR(DHLPaketLabel_l);
+          IF (Vendor_r."EDI ORDERS Partner" <> '')
+          AND (EDIPartner.GET(Vendor_r."EDI ORDERS Partner"))
+          AND NOT (EDIPartner."Surpress Purch. Mail")
+          THEN
+            DHLPaketLabel_l.SetUseExistingDHLLabels(TRUE)
+          ELSE
+            DHLPaketLabel_l.SetUseExistingDHLLabels(FALSE);
+          DHLPaketLabel_l.SETTABLEVIEW(PurchaseLine_l);
+          DHLPaketLabel_l.USEREQUESTFORM(FALSE);
+          DHLPaketLabel_l.RUNMODAL;
+        END;
+        //E,gob-dst,21.05.2013,P0924
+
+        IF (MailIT.WaitForFile(filename,20000) = 0) THEN
+          ERROR(Error001,PurchaseLine_l."Document No.");
+
+        LabelPath := filename;
+      END;
+
+      PurchaseLine_l.SETFILTER("Purchasing Code",'%1','*-4');
+      IF PurchaseLine_l.FINDFIRST THEN BEGIN
+
+        DHLHDLabel_l.SETTABLEVIEW(PurchaseLine_l);
+        DHLHDLabel_l.USEREQUESTFORM(FALSE);
+        DHLHDLabel_l.RUNMODAL;
+
+        IF (MailIT.WaitForFile(filename,20000) = 0) THEN
+          ERROR(Error001,PurchaseLine_l."Document No.");
+
+        LabelPath := filename;
+      END;
+
+      PurchaseLine_l.SETRANGE("Purchasing Code");
+      CreateDeliveryNoteLabel_PDF(PurchaseHeader_r,Vendor_r,LabelPath);
+
+      IF DefaultPrinterChanged THEN
+        MailIT.SetDefaultPrinter(OldDefaultPrinter);
+      }
+    END;
+
+    PROCEDURE CreateDeliveryNoteLabel_PDF@1000000001(PurchaseHeader_r@1000000016 : Record 38;Vendor_r@1000000001 : Record 23;LabelPath_r@1000000002 : Text[250]);
+    VAR
+      SalesPackingList_l@1000000006 : Report 50020;
+      SalesHeader_l@1000000008 : Record 36;
+      PurchaseLine_l@1000000018 : Record 39;
+      PurchaseHeader_l@1000000019 : Record 38;
+      SalesLine_l@1000000007 : Record 37;
+      EDIPartnerDocumentType_l@1000000005 : Record 82852;
+      MailITSetup_l@1000000003 : Record 75402;
+      OutboundEDIDocumentList_l@1000000009 : Record 82864;
+      OutboundEDIMessage_l@1000000000 : Record 82859;
+      filename@1000000004 : Text[250];
+      ClientFso@1000000010 : Automation "{420B2830-E718-11CF-893D-00A0C9054228} 1.0:{0D43FE01-F093-11CF-8940-00A0C9054228}:'Microsoft Scripting Runtime'.FileSystemObject";
+      MailIT@1000000011 : OCX "{C8C4804C-89BA-4291-AB58-4C6050B65175}:'ExpandIT.MailIT2'";
+      DefaultPrinterChanged@1000000012 : Boolean;
+      OldDefaultPrinter@1000000013 : Text[250];
+      UserSetup@1000000014 : Record 91;
+      Error001@1000000015 : TextConst 'ENU=No PDF Delivery Note for %1 generated.';
+      DNPath@1000000017 : Text[250];
+    BEGIN
+      //P1004  Funktion ausgelagert in CU50166
+
+      {
+      MailITSetup_l.GET();
+      CREATE(ClientFso,TRUE,TRUE);
+      CLEAR(SalesPackingList_l);
+      SalesHeader_l.RESET;
+
+      PurchaseLine_l.SETRANGE("Document Type",PurchaseHeader_r."Document Type");
+      PurchaseLine_l.SETRANGE("Document No.",PurchaseHeader_r."No.");
+      PurchaseLine_l.SETRANGE(Type,PurchaseLine_l.Type::Item);
+      PurchaseLine_l.FINDFIRST;
+
+      IF PurchaseLine_l."Sales Order No." <> '' THEN
+        SalesHeader_l.SETRANGE("No.",PurchaseLine_l."Sales Order No.")
+      ELSE
+        IF PurchaseLine_l."Special Order Sales No." <> '' THEN
+          SalesHeader_l.SETRANGE("No.",PurchaseLine_l."Special Order Sales No.");
+      IF SalesHeader_l.FINDFIRST THEN BEGIN
+        EDIPartnerDocumentType_l.GET(Vendor_r."EDI ORDERS Partner",1,'ORDERS');
+        //filename := 'C:\Temp\lku\' + 'DN_' + DELCHR(CREATEGUID(), '=', '{}-') + '.pdf';
+        //filename := EDIPartnerDocumentType_l."Im-/Export Path" + '\DN_' + DELCHR(CREATEGUID(), '=', '{}-') + '.pdf';
+        filename := EDIPartnerDocumentType_l."Im-/Export Path" + '\DN_' + PurchaseHeader_r."No." + '.pdf';
+
+        IF ClientFso.FileExists(filename) THEN
+          ClientFso.DeleteFile(filename);
+        MailIT.PDFParameter('Output',filename);
+        MailIT.PDFParameter('ShowPDF','no');
+        MailIT.PDFParameter('Author',USERID);
+        MailIT.PDFPreparePrinter();
+        IF NOT DefaultPrinterChanged THEN BEGIN
+          IF OldDefaultPrinter = '' THEN
+            OldDefaultPrinter := MailIT.GetDefaultPrinter();
+          IF OldDefaultPrinter <> UserSetup."PDF Creator" THEN BEGIN
+            MailIT.SetDefaultPrinter(UserSetup."PDF Creator");
+            DefaultPrinterChanged := TRUE;
+          END;
+        END;
+
+        SalesPackingList_l.SetParameters(PurchaseLine_l."Document No.");
+        SalesPackingList_l.SETTABLEVIEW(SalesHeader_l);
+        SalesPackingList_l.USEREQUESTFORM(FALSE);
+        SalesPackingList_l.RUNMODAL;
+
+        IF (MailIT.WaitForFile(filename,20000) = 0) THEN
+          ERROR(Error001,PurchaseLine_l."Document No.");
+
+        DNPath := filename;
+
+        CreateEDISingleOrder_g.CreateSingleOrder(PurchaseHeader_r,FALSE,LabelPath_r,DNPath);
+
+      END;
+
+      IF DefaultPrinterChanged THEN
+        MailIT.SetDefaultPrinter(OldDefaultPrinter);
+      }
+    END;
+
+    PROCEDURE "--- P1004 Functions ---"@1000000002();
+    BEGIN
+    END;
+
+    PROCEDURE SendErrorMail@1000000003(pPONo@1000000005 : Code[20];pErrorText@1000000002 : Text[250];pLastErrorText@1000000004 : Text[1024]);
+    VAR
+      rAdminMailQueueSetup@1000000001 : Record 50092;
+      rEDIIntegratorSetup@1000000003 : Record 82850;
+      cAdminMailQueueFunctions@1000000000 : Codeunit 50019;
+      Text001@1000000006 : TextConst 'ENU=Error sending EDI';
+      Text002@1000000007 : TextConst 'ENU=Error in Purchase Order No. %1';
+    BEGIN
+      rEDIIntegratorSetup.GET;
+      rAdminMailQueueSetup.GET;
+      COMMIT;
+
+      // H0531       27.08.13  FX +++++++++++++++++++++++++++++++++++++++++++++++
+      cAdminMailQueueFunctions.InitMail(rAdminMailQueueSetup."EDI Mail Code",'erp-edi@home24.de');
+      // cAdminMailQueueFunctions.InitMail(rAdminMailQueueSetup."EDI Mail Code", 'arthur.berganski@home24.de');
+      // cAdminMailQueueFunctions.AddRecipient(rEDIIntegratorSetup."Error Mail Address");
+      IF rEDIIntegratorSetup."Error CC Mail Address" <> '' THEN
+        cAdminMailQueueFunctions.AddRecipientCC(rEDIIntegratorSetup."Error CC Mail Address");
+
+      cAdminMailQueueFunctions.AddSubject(Text001);
+      cAdminMailQueueFunctions.AddText(pErrorText);
+      cAdminMailQueueFunctions.AddText(STRSUBSTNO(Text002,pPONo));
+      // H0531       27.08.13  FX ------------------------------------------------
+      // MESSAGE(pLastErrorText);
+
+      IF STRLEN(pLastErrorText) > 250 THEN
+        cAdminMailQueueFunctions.AddText(COPYSTR(pLastErrorText,1,250));
+      IF STRLEN(pLastErrorText) > 500 THEN
+        cAdminMailQueueFunctions.AddText(COPYSTR(pLastErrorText,251,250));
+      IF STRLEN(pLastErrorText) > 750 THEN
+        cAdminMailQueueFunctions.AddText(COPYSTR(pLastErrorText,501,250));
+      IF STRLEN(pLastErrorText) > 1000 THEN
+        cAdminMailQueueFunctions.AddText(COPYSTR(pLastErrorText,751,250));
+
+      cAdminMailQueueFunctions.FinishMail;
+    END;
+
+    BEGIN
+    {
+      EDIINT6.00  gob-lku   15.11.2012  Neues Objekt
+      P0848       gob-rste  07.03.2013  Reprint DHL Paket Label wenn bereits durch E-Mail gedruckt
+      P1004       gob-dst   03.07.2013  Absicherung CU 50099
+      P1106       gob-lku   25.09.2013  Cross-Dock Label Logik
+      P1173       gob-dst   10.01.2014  Anpassung echtes CrosDocking
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation Tectura & Home24 NAV Team  |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      H1698       19.12.14  tec-ar    Hermes 2MH Adjustments Cross-Dock LabelEDI ORDERSCSV
+
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      *** Module: EDI ***
+      H0531       27.08.13  FX        Remove too many recipients in EDI error mail
+      H0552       13.09.13  FX        Translation to ENU of the Text Constants in OnRun
+      H1750       08.12.14  DMA       BUG: EDI Delivery Note is missing for EDI Crossdock Orders
+      H1930       16.12.14  DMA       HOTFIX: send out cross-dock label,CODECHAGNE - Unmerge of H1750
+      H1698       15.01.15  MKR       Hermes 2MH: Adjustments Cross-Dock Label/EDI ORDERS/CSV
+      H2030       23.01.15  EHN       BUG: EDI Outbound ORDERS do not contain RFF-ON Segment
+    }
+    END.
+  }
+}
+

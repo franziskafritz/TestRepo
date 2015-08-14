@@ -1,0 +1,369 @@
+OBJECT Codeunit 50238 CustEntry-App.Post.Ent. GOB
+{
+  OBJECT-PROPERTIES
+  {
+    Date=22.05.15;
+    Time=16:44:07;
+    Modified=Yes;
+    Version List=P1274;
+  }
+  PROPERTIES
+  {
+    TableNo=21;
+    OnRun=VAR
+            EntriesToApplyL@1000 : Record 21;
+            ApplicationDateL@1001 : Date;
+            ApplDocNoL@1108200000 : Code[20];
+          BEGIN
+            FirstPostingDate := CheckFirstPostingDate;
+            CustEntry1.GET("Entry No.");
+            applydate := CustEntry1."Posting Date";
+            AusgleichStapel(CustEntry1,applydate) ;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      HMEText001@1000 : TextConst 'DEU=Ausgleich wird gebucht...;ENU=Posting application...';
+      HMEText002@1001 : TextConst 'DEU=Der Ausgleich ist gebucht worden.;ENU=The application was successfully posted.';
+      HMEText003@1002 : TextConst 'DEU=Das eingegebene %1 darf nicht vor dem %2 im %3 liegen.;ENU=The %1 entered must not be before the %2 on the %3.';
+      HMEText004@1003 : TextConst 'DEU=Der Ausgleich ist gebucht worden, aber es wurden keine Posten ausgeglichen.;ENU=The application was successfully posted though no entries have been applied.';
+      SourceCodeSetup@1004 : Record 242;
+      GenJnlLine@1005 : Record 81;
+      PostApplication@1006 : Form 579;
+      GenJnlCheckLine@1022 : Codeunit 11;
+      GenJnlPostLine@1007 : Codeunit 12;
+      PaymentToleracenMgt@1011 : Codeunit 426;
+      Window@1008 : Dialog;
+      EntryNoBeforeApplication@1009 : Integer;
+      EntryNoAfterApplication@1010 : Integer;
+      HMEText005@1018 : TextConst 'DEU=Bevor Sie den Ausgleich fr diesen Posten aufheben k”nnen, mssen Sie den Ausgleich fr alle Ausgleichsposten aufheben, die nach diesem Posten gebucht wurden.;ENU=Before you can unapply this entry, you must first unapply all application entries that were posted after this entry.';
+      HMEText006@1017 : TextConst 'DEU=%1 Nr. %2 verfgt ber keinen Ausgleichsposten.;ENU=%1 No. %2 does not have an application entry.';
+      HMEText007@1016 : TextConst 'DEU=Soll der Ausgleich fr diese Posten aufgehoben werden?;ENU=Do you want to unapply the entries?';
+      HMEText008@1015 : TextConst 'DEU=Ausgleich wird aufgehoben und Buchung erfolgt...;ENU=Unapplying and posting...';
+      HMEText009@1014 : TextConst 'DEU=Der Ausgleich fr diese Posten wurde erfolgreich aufgehoben.;ENU=The entries were successfully unapplied.';
+      HMEText010@1013 : TextConst 'DEU="Es kann kein Ausgleich aufgehoben werden. ";ENU="There is nothing to unapply. "';
+      HMEText011@1012 : TextConst 'DEU=Zum Aufheben des Ausgleichs fr diese Posten bucht das Programm Korrekturposten.\;ENU=To unapply these entries, the program will post correcting entries.\';
+      HMEText012@1019 : TextConst 'DEU=Bevor Sie den Ausgleich fr diesen Posten aufheben k”nnen, mssen Sie den Ausgleich fr alle Ausgleichsposten in %1 Nr. %2 aufheben, die nach diesem Posten gebucht wurden.;ENU=Before you can unapply this entry, you must first unapply all application entries in %1 No. %2 that were posted after this entry.';
+      HMEText013@1020 : TextConst 'DEU=%1 liegt nicht innerhalb des zul„ssigen Buchungsdatumsbereichs in %2 Nr. %3.;ENU=%1 is not within your range of allowed posting dates in %2 No. %3.';
+      HMEText014@1021 : TextConst 'DEU=%1 liegt nicht innerhalb des zugelassenen Buchungszeitraums.;ENU=%1 is not within your range of allowed posting dates.';
+      HMEText015@1024 : TextConst 'DEU=Das aktuellste %3 muss ein Ausgleich in %1 Nr. %2 sein.;ENU=The latest %3 must be an application in %1 No. %2.';
+      HMEText016@1023 : TextConst 'DEU="Sie k”nnen den Ausgleich fr den Posten mit dem Buchungsdatum %1 nicht aufheben, weil der Wechselkurs fr die zus„tzliche Berichtsw„hrung ge„ndert wurde. ";ENU="You cannot unapply the entry with the posting date %1, because the exchange rate for the additional reporting currency has been changed. "';
+      MaxPostingDate@1025 : Date;
+      HMEText017@1026 : TextConst 'DEU=Sie k”nnen den Ausgleich fr %1 Nr. %2 nicht aufheben, weil der Posten bereits Gegenstand einer Stornierung war.;ENU=You cannot unapply %1 No. %2 because the entry has been involved in a reversal.';
+      "----- VAR FIEB START -----"@1140003 : Integer;
+      ZahlungVorhanden@1140002 : Boolean;
+      RechnungVorhanden@1140001 : Boolean;
+      "----- VAR FIEB END -----"@1140000 : Integer;
+      HMEText51100@1140004 : TextConst 'DEU=Sie k”nnen nicht mehrere Zahlungen oder Erstattungen in einem Vorgang ausgleichen.';
+      CustEntry1@1000000000 : Record 21;
+      applydate@1000000001 : Date;
+      GLSetup@1000000002 : Record 98;
+      UserSetup@1000000003 : Record 91;
+      FirstPostingDate@1000000004 : Date;
+
+    LOCAL PROCEDURE FindLastApplDtldCustLedgEntry@1() : Integer;
+    VAR
+      DtldCustLedgEntryL@1000 : Record 379;
+    BEGIN
+      DtldCustLedgEntryL.LOCKTABLE;
+      IF DtldCustLedgEntryL.FIND('+') THEN
+        EXIT(DtldCustLedgEntryL."Entry No.")
+      ELSE
+        EXIT(0);
+    END;
+
+    LOCAL PROCEDURE FindLastApplEntry@2(CustLedgEntryNoV@1002 : Integer) : Integer;
+    VAR
+      DtldCustLedgEntryL@1001 : Record 379;
+      ApplicationEntryNoL@1000 : Integer;
+    BEGIN
+      DtldCustLedgEntryL.SETCURRENTKEY("Cust. Ledger Entry No.","Entry Type");
+      DtldCustLedgEntryL.SETRANGE("Cust. Ledger Entry No.",CustLedgEntryNoV);
+      DtldCustLedgEntryL.SETRANGE("Entry Type",DtldCustLedgEntryL."Entry Type"::Application);
+      ApplicationEntryNoL := 0;
+      IF DtldCustLedgEntryL.FIND('-') THEN
+        REPEAT
+          IF (DtldCustLedgEntryL."Entry No." > ApplicationEntryNoL) AND NOT DtldCustLedgEntryL.Unapplied THEN
+            ApplicationEntryNoL := DtldCustLedgEntryL."Entry No.";
+        UNTIL DtldCustLedgEntryL.NEXT = 0;
+      EXIT(ApplicationEntryNoL);
+    END;
+
+    LOCAL PROCEDURE FindLastTransactionNo@6(CustLedgEntryNoV@1002 : Integer) : Integer;
+    VAR
+      DtldCustLedgEntryL@1001 : Record 379;
+      LastTransactionNoL@1000 : Integer;
+    BEGIN
+      DtldCustLedgEntryL.SETCURRENTKEY("Cust. Ledger Entry No.","Entry Type");
+      DtldCustLedgEntryL.SETRANGE("Cust. Ledger Entry No.",CustLedgEntryNoV);
+      LastTransactionNoL := 0;
+      IF DtldCustLedgEntryL.FIND('-') THEN
+        REPEAT
+          IF (DtldCustLedgEntryL."Transaction No." > LastTransactionNoL) AND NOT DtldCustLedgEntryL.Unapplied THEN
+            LastTransactionNoL := DtldCustLedgEntryL."Transaction No.";
+        UNTIL DtldCustLedgEntryL.NEXT = 0;
+      EXIT(LastTransactionNoL);
+    END;
+
+    PROCEDURE UnApplyDtldCustLedgEntry@3(DtldCustLedgEntryV@1000 : Record 379);
+    VAR
+      ApplicationEntryNoL@1001 : Integer;
+    BEGIN
+      DtldCustLedgEntryV.TESTFIELD("Entry Type",DtldCustLedgEntryV."Entry Type"::Application);
+      DtldCustLedgEntryV.TESTFIELD(Unapplied,FALSE);
+      ApplicationEntryNoL := FindLastApplEntry(DtldCustLedgEntryV."Cust. Ledger Entry No.");
+
+      IF DtldCustLedgEntryV."Entry No." <> ApplicationEntryNoL THEN
+        ERROR(HMEText005);
+      CheckReversal(DtldCustLedgEntryV."Cust. Ledger Entry No.");
+      UnApplyCustomer(DtldCustLedgEntryV);
+    END;
+
+    PROCEDURE UnApplyCustLedgEntry@7(CustLedgEntryNoV@1000 : Integer);
+    VAR
+      CustLedgentryL@1003 : Record 21;
+      DtldCustLedgEntryL@1002 : Record 379;
+      ApplicationEntryNoL@1001 : Integer;
+    BEGIN
+      CheckReversal(CustLedgEntryNoV);
+      ApplicationEntryNoL := FindLastApplEntry(CustLedgEntryNoV);
+      IF ApplicationEntryNoL = 0 THEN
+        ERROR(HMEText006,CustLedgentryL.TABLECAPTION,CustLedgEntryNoV);
+      DtldCustLedgEntryL.GET(ApplicationEntryNoL);
+      UnApplyCustomer(DtldCustLedgEntryL);
+    END;
+
+    LOCAL PROCEDURE UnApplyCustomer@19(DtldCustLedgEntryV@1000000000 : Record 379);
+    VAR
+      UnapplyCustEntriesL@1000 : Form 623;
+    BEGIN
+      WITH DtldCustLedgEntryV DO BEGIN
+        TESTFIELD("Entry Type","Entry Type"::Application);
+        TESTFIELD(Unapplied,FALSE);
+        UnapplyCustEntriesL.SetDtldCustLedgEntry("Entry No.");
+        UnapplyCustEntriesL.LOOKUPMODE(TRUE);
+        UnapplyCustEntriesL.RUNMODAL;
+      END;
+    END;
+
+    PROCEDURE PostUnApplyCustomer@4(VAR DtldCustLedgEntryBufR@1008 : Record 379;DtldCustLedgEntry2V@1007 : Record 379;VAR DocNoR@1000 : Code[20];VAR PostingDateR@1001 : Date);
+    VAR
+      GLEntryL@1019 : Record 17;
+      CustLedgEntryL@1018 : Record 21;
+      SourceCodeSetupL@1017 : Record 242;
+      GenJnlLineL@1016 : Record 81;
+      DtldCustLedgEntryL@1014 : Record 379;
+      GenJnlPostLineL@1002 : Codeunit 12;
+      DateComprRegL@1005 : Record 87;
+      WindowL@1012 : Dialog;
+      ApplicationEntryNoL@1010 : Integer;
+      LastTransactionNoL@1003 : Integer;
+      AddCurrCheckedL@1004 : Boolean;
+    BEGIN
+      IF NOT DtldCustLedgEntryBufR.FIND('-') THEN
+        ERROR(HMEText010);
+      IF NOT CONFIRM(HMEText011 + HMEText007,FALSE) THEN
+        EXIT;
+      MaxPostingDate := 0D;
+      GLEntryL.LOCKTABLE;
+      DtldCustLedgEntryL.LOCKTABLE;
+      CustLedgEntryL.LOCKTABLE;
+      CustLedgEntryL.GET(DtldCustLedgEntry2V."Cust. Ledger Entry No.");
+      CheckPostingDate(PostingDateR,'',0);
+      DtldCustLedgEntryL.SETCURRENTKEY("Transaction No.","Customer No.","Entry Type");
+      DtldCustLedgEntryL.SETRANGE("Transaction No.",DtldCustLedgEntry2V."Transaction No.");
+      DtldCustLedgEntryL.SETRANGE("Customer No.",DtldCustLedgEntry2V."Customer No.");
+      IF DtldCustLedgEntryL.FIND('-') THEN
+        REPEAT
+          IF (DtldCustLedgEntryL."Entry Type" <> DtldCustLedgEntryL."Entry Type"::"Initial Entry") AND
+             NOT DtldCustLedgEntryL.Unapplied
+          THEN BEGIN
+            IF NOT AddCurrCheckedL THEN BEGIN
+              CheckAdditionalCurrency(PostingDateR,DtldCustLedgEntryL."Posting Date");
+              AddCurrCheckedL := TRUE;
+            END;
+            CheckReversal(DtldCustLedgEntryL."Cust. Ledger Entry No.");
+            IF DtldCustLedgEntryL."Entry Type" = DtldCustLedgEntryL."Entry Type"::Application THEN BEGIN
+              ApplicationEntryNoL :=
+                FindLastApplEntry(DtldCustLedgEntryL."Cust. Ledger Entry No.");
+              IF (ApplicationEntryNoL <> 0) AND (ApplicationEntryNoL <> DtldCustLedgEntryL."Entry No.") THEN
+                ERROR(HMEText012,CustLedgEntryL.TABLECAPTION,DtldCustLedgEntryL."Cust. Ledger Entry No.");
+            END;
+            LastTransactionNoL := FindLastTransactionNo(DtldCustLedgEntryL."Cust. Ledger Entry No.");
+            IF (LastTransactionNoL <> 0) AND (LastTransactionNoL <> DtldCustLedgEntryL."Transaction No.") THEN
+              ERROR(
+                HMEText015,
+                CustLedgEntryL.TABLECAPTION,
+                DtldCustLedgEntryL."Cust. Ledger Entry No.",
+                CustLedgEntryL.FIELDCAPTION("Transaction No."));
+          END;
+        UNTIL DtldCustLedgEntryL.NEXT = 0;
+
+      DateComprRegL.CheckMaxDateCompressed(MaxPostingDate,0);
+
+      WITH DtldCustLedgEntry2V DO BEGIN
+        SourceCodeSetup.GET;
+        CustLedgEntryL.GET("Cust. Ledger Entry No.");
+        GenJnlLine."Document No." := DocNoR;
+        GenJnlLine."Posting Date" := PostingDateR;
+        GenJnlLine."Account Type" := GenJnlLine."Account Type"::Customer;
+        GenJnlLine."Account No." := "Customer No.";
+        GenJnlLine.Correction := TRUE;
+        GenJnlLine."Document Type" := GenJnlLine."Document Type"::" ";
+        GenJnlLine.Description := CustLedgEntryL.Description;
+        GenJnlLine."Shortcut Dimension 1 Code" := CustLedgEntryL."Global Dimension 1 Code";
+        GenJnlLine."Shortcut Dimension 2 Code" := CustLedgEntryL."Global Dimension 2 Code";
+        GenJnlLine."Posting Group" := CustLedgEntryL."Customer Posting Group";
+        GenJnlLine."Source Type" := GenJnlLine."Source Type"::Customer;
+        GenJnlLine."Source No." := "Customer No.";
+        GenJnlLine."Source Code" := SourceCodeSetup."Unapplied Sales Entry Appln.";
+        GenJnlLine."System-Created Entry" := TRUE;
+        Window.OPEN(HMEText008);
+        GenJnlPostLine.UnapplyCustLedgEntry(GenJnlLine,DtldCustLedgEntry2V);
+        DtldCustLedgEntryBufR.DELETEALL;
+        DocNoR := '';
+        PostingDateR := 0D;
+        COMMIT;
+        Window.CLOSE;
+        MESSAGE(HMEText009);
+      END;
+    END;
+
+    LOCAL PROCEDURE CheckPostingDate@5(PostingDateV@1001 : Date;CaptionV@1002 : Text[50];EntryNoV@1003 : Integer);
+    VAR
+      CustLedgEntryL@1004 : Record 21;
+    BEGIN
+      IF GenJnlCheckLine.DateNotAllowed(PostingDateV) THEN BEGIN
+        IF CaptionV <> '' THEN
+          ERROR(HMEText013,CustLedgEntryL.FIELDCAPTION("Posting Date"),CaptionV,EntryNoV)
+        ELSE
+          ERROR(HMEText014,CustLedgEntryL.FIELDCAPTION("Posting Date"));
+      END;
+      IF PostingDateV > MaxPostingDate THEN
+        MaxPostingDate := PostingDateV;
+    END;
+
+    LOCAL PROCEDURE CheckAdditionalCurrency@8(OldPostingDateV@1000 : Date;NewPostingDateV@1001 : Date);
+    VAR
+      GLSetupL@1002 : Record 98;
+      CurrExchRateL@1003 : Record 330;
+    BEGIN
+      IF OldPostingDateV = NewPostingDateV THEN
+        EXIT;
+      GLSetup.GET;
+      IF GLSetup."Additional Reporting Currency" <> '' THEN
+        IF CurrExchRateL.ExchangeRate(OldPostingDateV,GLSetupL."Additional Reporting Currency") <>
+           CurrExchRateL.ExchangeRate(NewPostingDateV,GLSetupL."Additional Reporting Currency")
+        THEN
+          ERROR(HMEText016,NewPostingDateV);
+    END;
+
+    PROCEDURE CheckReversal@9(CustLedgEntryNoV@1000 : Integer);
+    VAR
+      CustLedgEntryL@1001 : Record 21;
+    BEGIN
+      CustLedgEntryL.GET(CustLedgEntryNoV);
+      IF CustLedgEntryL.Reversed THEN
+        ERROR(HMEText017,CustLedgEntryL.TABLECAPTION,CustLedgEntryNoV);
+    END;
+
+    PROCEDURE AusgleichStapel@1000000000(VAR RecR@1000000003 : Record 21;PostingDateV@1000000004 : Date);
+    VAR
+      EntriesToApplyL@1000000002 : Record 21;
+      ApplicationDateL@1000000001 : Date;
+      ApplDocNoL@1000000000 : Code[20];
+    BEGIN
+
+      WITH RecR DO BEGIN
+        GET("Entry No.");
+        ApplicationDateL := PostingDateV;
+        EntriesToApplyL.SETCURRENTKEY("Customer No.","Applies-to ID");
+        EntriesToApplyL.SETRANGE("Customer No.","Customer No.");
+        EntriesToApplyL.SETRANGE("Applies-to ID","Applies-to ID");
+
+
+
+        EntriesToApplyL.FIND('-');
+        REPEAT
+          IF (EntriesToApplyL."Posting Date" > ApplicationDateL) THEN
+            BEGIN
+              ApplicationDateL :=  ApplicationDateL
+             END ELSE
+              ApplicationDateL := "Posting Date";
+             IF ApplicationDateL < FirstPostingDate THEN
+                ApplicationDateL := GLSetup."Posting Date for Application";
+
+
+            ApplDocNoL := EntriesToApplyL."Document No."
+
+        UNTIL EntriesToApplyL.NEXT = 0;
+        ApplicationDateL := PostingDateV;
+        GenJnlLine.INIT;
+        GenJnlLine."Document No." := "Document No.";
+        GenJnlLine."Posting Date" := PostingDateV;
+
+        SourceCodeSetup.GET;
+
+        GenJnlLine."Account Type" := GenJnlLine."Account Type"::Customer;
+        GenJnlLine."Account No." := "Customer No.";
+        CALCFIELDS("Debit Amount","Credit Amount","Debit Amount (LCY)","Credit Amount (LCY)");
+        GenJnlLine.Correction :=
+          ("Debit Amount" < 0) OR ("Credit Amount" < 0) OR
+          ("Debit Amount (LCY)" < 0) OR ("Credit Amount (LCY)" < 0);
+        GenJnlLine."Document Type" := "Document Type";
+        GenJnlLine.Description := Description;
+        GenJnlLine."Shortcut Dimension 1 Code" := "Global Dimension 1 Code";
+        GenJnlLine."Shortcut Dimension 2 Code" := "Global Dimension 2 Code";
+        GenJnlLine."Posting Group" := "Customer Posting Group";
+        GenJnlLine."Source Type" := GenJnlLine."Source Type"::Customer;
+        GenJnlLine."Source No." := "Customer No.";
+        GenJnlLine."Source Code" := SourceCodeSetup."Sales Entry Application";
+        GenJnlLine."System-Created Entry" := TRUE;
+
+        GenJnlLine."External Document No." := "External Document No.";
+
+
+
+        EntryNoBeforeApplication := FindLastApplDtldCustLedgEntry;
+
+        GenJnlPostLine.CustPostApplyCustLedgEntry(GenJnlLine,RecR);
+
+        EntryNoAfterApplication := FindLastApplDtldCustLedgEntry;
+
+        COMMIT;
+      END;
+    END;
+
+    PROCEDURE CheckFirstPostingDate@1000000003() : Date;
+    BEGIN
+      GLSetup.GET('');
+      IF NOT UserSetup.GET(USERID) THEN
+        EXIT(GLSetup."Allow Posting From")
+      ELSE BEGIN
+        IF (UserSetup."Allow Posting From" = 0D) AND (UserSetup."Allow Posting To" = 0D) THEN
+          EXIT(GLSetup."Allow Posting From")
+        ELSE
+           EXIT(UserSetup."Allow Posting From");
+      END;
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+
+      P1274       05.09.14 gob-ko    codeunit created
+    }
+    END.
+  }
+}
+

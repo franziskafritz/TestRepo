@@ -1,0 +1,474 @@
+OBJECT Codeunit 50165 RF Application Handling
+{
+  OBJECT-PROPERTIES
+  {
+    Date=22.04.15;
+    Time=16:12:48;
+    Modified=Yes;
+    Version List=HME4063;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=BEGIN
+            //ImportResponseFile();
+            //FindApplicationEntries();
+            //RunThroughEntries();
+            //TransferEntries
+            //H4063 22.04.15 nst +++++++++++++++++++++++++++++
+            {
+            SpecifyVendLedgEntries();
+            }
+            //H4063 22.04.15 nst -----------------------------
+            //H1340 09.08.14 nst +++++++++++++++++++++++++++++
+            //ExportEntries();
+            //H1340 09.08.14 nst -----------------------------
+
+            //H4063 22.04.15 nst +++++++++++++++++++++++++++++
+            IF UPPERCASE("Parameter String") = 'POSTTRANSFER' THEN
+              SpecifyVendLedgEntries();
+            IF UPPERCASE("Parameter String") = 'EXPORTENTRIES' THEN
+              ExportEntries();
+            //H4063 22.04.15 nst -----------------------------
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text001@1000000000 : TextConst 'DEU=Multiple or no  entries found;ENU=Multiple Entries Found';
+      PaymentSetup@1000000001 : Record 5001901;
+      FileHandler@1000000002 : Automation "{F935DC20-1CF0-11D0-ADB9-00C04FD58A0B} 1.0:{0D43FE01-F093-11CF-8940-00A0C9054228}:'Windows Script Host Object Model'.FileSystemObject";
+      EntryAmount@1000000003 : Decimal;
+      Text64500@1000000004 : TextConst 'DEU='''';ENU=''''';
+      GenJnlPost@1000000005 : Codeunit 12;
+      GenJnlLine1@1000000006 : Record 81;
+      JnlLineDim@1000000007 : Record 356;
+      "**HME*************************"@1000000008 : TextConst;
+      TextHME001@1000000009 : TextConst 'DEU=Das Buch.-Blatt konnte nicht gebucht werden.;ENU=Gen. Journal could not be posted';
+
+    PROCEDURE FindApplicationEntries@1000000000(ResponseEntries@1000000007 : Record 50230);
+    VAR
+      VendLedgEntry@1000000001 : Record 25;
+      CurrCode@1000000002 : Code[3];
+      EntryIdentified@1000000003 : Boolean;
+      ConfirmationTimeStamp@1000000004 : DateTime;
+      VendEntryEdit@1000000005 : Codeunit 113;
+      ResponseEntry1@1000000006 : Record 50230;
+    BEGIN
+      // Handling Factorer Response File
+
+      ConfirmationTimeStamp := CURRENTDATETIME;
+
+      EntryAmount := 0;
+      VendLedgEntry.SETRANGE("Vendor No.",ResponseEntries.OPDBNR);
+      VendLedgEntry.SETRANGE("Document No.",ResponseEntries.OPITMNRREF);
+      IF VendLedgEntry.COUNT <> 1 THEN BEGIN
+        ResponseEntries."Error Type" := Text001;
+        ResponseEntries.MODIFY;
+      END ELSE
+        BEGIN
+          VendLedgEntry.FINDSET;
+          EntryIdentified := TRUE;
+          // ######
+          IF ResponseEntries.OPITMDAT <> VendLedgEntry."Posting Date" THEN BEGIN
+            ResponseEntries."Error Type" := 'Posting Date Does not match';
+            EntryIdentified := FALSE;
+          END;
+          // If ResponseEntries.OPAMT <>   ###Berechnung noch aus Export ziehen
+          VendLedgEntry.CALCFIELDS("Remaining Amount");
+          IF ResponseEntries.OPITMDAT < VendLedgEntry."Pmt. Discount Date" THEN
+            EntryAmount := -VendLedgEntry."Remaining Amount" -
+              -VendLedgEntry."Remaining Pmt. Disc. Possible" - VendLedgEntry."C/M Amount"
+          ELSE
+            EntryAmount := -VendLedgEntry."Remaining Amount" - VendLedgEntry."C/M Amount";
+          IF EntryAmount <> ResponseEntries.OPAMT THEN BEGIN
+            ResponseEntries."Error Type" := 'Amount difference';
+            EntryIdentified := FALSE;
+          END;
+          IF ResponseEntries.OPCUR = 'EUR' THEN
+            CurrCode := ''
+          ELSE
+            CurrCode := ResponseEntries.OPCUR;
+          IF CurrCode <> VendLedgEntry."Currency Code" THEN BEGIN
+            ResponseEntries."Error Type" := 'Currency missmatch';
+            EntryIdentified := FALSE;
+          END;
+
+              // ######
+              IF EntryIdentified THEN
+                BEGIN
+                  ResponseEntries."Vendor Ledger Entry No." := VendLedgEntry."Entry No.";
+                  ResponseEntries."Purch. Inv. No." := VendLedgEntry."Document No.";
+                  //TransferFactorerEntries(VendLedgEntry,ResponseEntries);
+                  VendLedgEntry."Confirmation Time Stamp" := ConfirmationTimeStamp;
+                  ResponseEntries."Confirmed Time Stamp" := ConfirmationTimeStamp;
+                  VendEntryEdit.RUN(VendLedgEntry);
+                END;
+              ResponseEntry1.GET(ResponseEntries."Entry No.");
+              ResponseEntry1.COPY(ResponseEntries);
+              ResponseEntry1.MODIFY;
+
+        END;
+        EXIT;
+    END;
+
+    PROCEDURE TransferFactorerEntries@1000000001(VendLedgEntry@1000000000 : Record 25);
+    VAR
+      GenJnlLine@1000000001 : Record 81;
+      LineNo@1000000003 : Integer;
+      PaymentSetup@1000000004 : Record 5001901;
+      VendLedgEntry1@1000000005 : Record 25;
+      Vendor@1000000006 : Record 23;
+      GenJnlBatch@1000000007 : Record 232;
+    BEGIN
+      //Transfer VendLedgEntries to Factorer
+      IF NOT GenJnlBatch.GET('STANDARD','REV-FACT') THEN BEGIN
+        GenJnlBatch.INIT;
+        GenJnlBatch."Journal Template Name" := 'STANDARD';
+        GenJnlBatch.Name := 'REV-FACT';
+        GenJnlBatch.Description := 'Reverse Factoring';
+        GenJnlBatch.INSERT(TRUE);
+      END;
+
+      GenJnlLine.SETRANGE("Journal Template Name",'STANDARD');
+      GenJnlLine.SETRANGE("Journal Batch Name",'REV-FACT');
+      IF GenJnlLine.FINDLAST THEN
+        LineNo := GenJnlLine."Line No.";
+
+      PaymentSetup.GET();
+      Vendor.GET(VendLedgEntry."Vendor No.");
+
+      // Apply initial entry
+      LineNo += 10000;
+      GenJnlLine.INIT;
+      GenJnlLine."Journal Template Name" := 'STANDARD';
+      GenJnlLine."Journal Batch Name" := 'REV-FACT';
+      GenJnlLine."Line No." := LineNo;
+      GenJnlLine."Account Type" := GenJnlLine."Account Type"::Vendor;
+      GenJnlLine.VALIDATE("Account No.",VendLedgEntry."Vendor No.");
+      GenJnlLine.VALIDATE("Posting Date",VendLedgEntry."Posting Date");
+      GenJnlLine.VALIDATE("Document Date",VendLedgEntry."Document Date");
+      GenJnlLine."Document Type" := GenJnlLine."Document Type"::Payment;
+      GenJnlLine."Document No." := VendLedgEntry."Document No.";
+      GenJnlLine."Bal. Account Type" := VendLedgEntry."Bal. Account Type"::"G/L Account";
+      GenJnlLine.VALIDATE("Bal. Account No.",PaymentSetup."RF Transfer Account");
+      GenJnlLine."Applies-to Doc. Type" := VendLedgEntry."Document Type";
+      GenJnlLine."Applies-to Doc. No." := VendLedgEntry."Document No.";
+      VendLedgEntry.CALCFIELDS("Remaining Amount");
+      GenJnlLine.VALIDATE(Amount, (VendLedgEntry."Remaining Amount" - VendLedgEntry."Remaining Pmt. Disc. Possible")
+         + VendLedgEntry."C/M Amount");
+      GenJnlLine."Source Code" := 'FIBUBUCHBL';
+      GenJnlLine.INSERT;
+
+      // If credit memo has been deducted apply credit memo
+      IF VendLedgEntry."C/M No. for Deduction" <> 0 THEN BEGIN
+        VendLedgEntry1.GET(VendLedgEntry."C/M No. for Deduction");
+        LineNo += 10000;
+        GenJnlLine.INIT;
+        GenJnlLine."Journal Template Name" := 'STANDARD';
+        GenJnlLine."Journal Batch Name" := 'REV-FACT';
+        GenJnlLine."Line No." := LineNo;
+        GenJnlLine."Account Type" := GenJnlLine."Account Type"::Vendor;
+        GenJnlLine.VALIDATE("Account No.",VendLedgEntry1."Vendor No.");
+        GenJnlLine.VALIDATE("Posting Date",VendLedgEntry."Posting Date");
+        GenJnlLine.VALIDATE("Document Date",VendLedgEntry."Document Date");
+        GenJnlLine."Document Type" := GenJnlLine."Document Type"::Refund;
+        GenJnlLine."Document No." := VendLedgEntry1."Document No.";
+        GenJnlLine."Bal. Account Type" := VendLedgEntry1."Bal. Account Type"::"G/L Account";
+        GenJnlLine.VALIDATE("Bal. Account No.",PaymentSetup."RF Transfer Account");
+        GenJnlLine."Applies-to Doc. Type" := VendLedgEntry1."Document Type";
+        GenJnlLine."Applies-to Doc. No." := VendLedgEntry1."Document No.";
+
+        VendLedgEntry1.CALCFIELDS("Remaining Amount");
+        GenJnlLine.VALIDATE(Amount, -VendLedgEntry1."Remaining Amount");
+        GenJnlLine."Source Code" := 'FIBUBUCHBL';
+        GenJnlLine.INSERT;
+      END;
+
+      // Create Entry on factorers account
+
+      LineNo += 10000;
+      GenJnlLine.INIT;
+      GenJnlLine."Journal Template Name" := 'STANDARD';
+      GenJnlLine."Journal Batch Name" := 'REV-FACT';
+      GenJnlLine."Line No." := LineNo;
+      GenJnlLine."Account Type" := GenJnlLine."Account Type"::Vendor;
+      GenJnlLine.VALIDATE("Account No.",Vendor."Reverse Factorer");
+      GenJnlLine.VALIDATE("Posting Date",VendLedgEntry."Posting Date");
+      GenJnlLine.VALIDATE("Document Date",VendLedgEntry."Document Date");
+      GenJnlLine."External Document No." := VendLedgEntry."Vendor No." + '-' + VendLedgEntry."External Document No.";
+      GenJnlLine."Document Type" := GenJnlLine."Document Type"::Invoice;
+      GenJnlLine."Document No." := VendLedgEntry."Document No." + '-RF';
+      GenJnlLine."Bal. Account Type" := VendLedgEntry."Bal. Account Type"::"G/L Account";
+      GenJnlLine.VALIDATE("Bal. Account No.",PaymentSetup."RF Transfer Account");
+      VendLedgEntry.CALCFIELDS("Remaining Amount");
+      GenJnlLine."Source Code" := 'FIBUBUCHBL';
+      GenJnlLine.INSERT;
+
+      EXIT;
+    END;
+
+    PROCEDURE ImportResponseFile@1000000002();
+    VAR
+      DataportImmport@1000000000 : Dataport 50108;
+      File@1000000002 : Record 2000000022;
+      DataportImport@1000000003 : Dataport 50108;
+      MyDataport@1000000001 : Dataport 50108;
+    BEGIN
+      PaymentSetup.GET;
+      PaymentSetup.TESTFIELD("RF Resp. File Path");
+
+      PaymentSetup."RF Resp. File Path" :=
+        DELCHR(PaymentSetup."RF Resp. File Path",'>','\')  + '\';
+
+
+      File.RESET;
+      File.SETRANGE(Path,PaymentSetup."RF Resp. File Path");
+      File.SETRANGE("Is a file",TRUE);
+      File.SETFILTER(Name,'*.csv');
+      IF File.FINDSET THEN
+        REPEAT
+          CLEAR(DataportImport);
+          MyDataport.FILENAME := PaymentSetup."RF Resp. File Path" + File.Name;
+          MyDataport.IMPORT := TRUE;
+          MyDataport.RUNMODAL;
+          COMMIT;
+          IF ISCLEAR(FileHandler) THEN
+            CREATE(FileHandler);
+          FileHandler.MoveFile(PaymentSetup."RF Resp. File Path" + File.Name, PaymentSetup."RF Resp File Save Path" + File.Name);
+        UNTIL File.NEXT = 0;
+
+      EXIT;
+    END;
+
+    PROCEDURE RunThroughEntries@1000000005();
+    VAR
+      Entries@1000000000 : Record 50230;
+    BEGIN
+      Entries.RESET;
+      Entries.SETRANGE("Confirmed Time Stamp",0DT);
+      IF Entries.FINDSET THEN
+        REPEAT
+          FindApplicationEntries(Entries);
+        UNTIL Entries.NEXT = 0;
+    END;
+
+    PROCEDURE SpecifyVendLedgEntries@1000000003();
+    VAR
+      Vendor@1000000000 : Record 23;
+      VendLedgEntries@1000000001 : Record 25;
+      PaymentSetup@1000000002 : Record 5001901;
+      GenJnlLineL@1000000003 : Record 81;
+      VendLedgEntryEditL@1000000004 : Codeunit 113;
+    BEGIN
+      PaymentSetup.GET();
+      Vendor.SETRANGE("Reverse Factorer",PaymentSetup."RF Vendor");
+      IF Vendor.FIND('-') THEN
+        REPEAT
+          VendLedgEntries.SETRANGE("Vendor No.", Vendor."No.");
+          VendLedgEntries.SETRANGE("Document Type", VendLedgEntries."Document Type"::Invoice);
+          VendLedgEntries.SETRANGE(Open,TRUE);
+          VendLedgEntries.SETFILTER("Posting Date",'>=%1',Vendor."RF Export from");
+          IF VendLedgEntries.FINDSET THEN
+            REPEAT
+              TransferFactorerEntriesNew(VendLedgEntries);
+              //H2169 18.03.15 nst +++++++++++++++++++++++++++++
+              IF VendLedgEntries."Pmt. Discount Date" < VendLedgEntries."Posting Date" THEN BEGIN
+                VendLedgEntries."Pmt. Discount Date" := VendLedgEntries."Posting Date";
+                VendLedgEntryEditL.RUN(VendLedgEntries);
+              END;
+              //H2169 18.03.15 nst -----------------------------
+            UNTIL VendLedgEntries.NEXT = 0;
+        UNTIL Vendor.NEXT = 0;
+
+      //H1340 09.08.14 nst +++++++++++++++++++++++++++++
+      COMMIT;
+      GenJnlLine1.SETRANGE("Journal Template Name",'STANDARD');
+      GenJnlLine1.SETRANGE("Journal Batch Name",'REV-FACT');
+      JnlLineDim.SETRANGE("Table ID",81);
+      JnlLineDim.SETRANGE("Journal Template Name",'STANDARD');
+      JnlLineDim.SETRANGE("Journal Batch Name",'REV-FACT');
+      IF GenJnlLine1.FIND('-') THEN
+        //H4063 22.04.15 nst +++++++++++++++++++++++++++++
+        {
+        IF NOT CODEUNIT.RUN(CODEUNIT::"Gen. Jnl.-Post",GenJnlLine1) THEN BEGIN
+        }
+        IF NOT CODEUNIT.RUN(CODEUNIT::"Gen. Jnl.-Post",GenJnlLine1) THEN
+        //H4063 22.04.15 nst -----------------------------
+        //H2169 20.11.15 nst +++++++++++++++++++++++++++++
+          ERROR(TextHME001);
+        //H4063 22.04.15 nst +++++++++++++++++++++++++++++
+        {
+        END ELSE
+          ExportEntries();
+        }
+        //H4063 22.04.15 nst -----------------------------
+        //H2169,H1340 20.11.15 nst -----------------------------
+      //H1340 09.08.14 nst -----------------------------
+    END;
+
+    PROCEDURE TransferFactorerEntriesNew@1000000006(VendLedgEntry@1000000000 : Record 25);
+    VAR
+      GenJnlLine@1000000001 : Record 81;
+      LineNo@1000000003 : Integer;
+      PaymentSetup@1000000004 : Record 5001901;
+      VendLedgEntry1@1000000005 : Record 25;
+      Vendor@1000000006 : Record 23;
+      GenJnlBatch@1000000007 : Record 232;
+      Amount1@1000000002 : Decimal;
+      Amount2@1000000008 : Decimal;
+      PmtSetupL@1000000009 : Record 5001901;
+    BEGIN
+      //Transfer VendLedgEntries to Factorer
+      IF NOT GenJnlBatch.GET('STANDARD','REV-FACT') THEN BEGIN
+        GenJnlBatch.INIT;
+        GenJnlBatch."Journal Template Name" := 'STANDARD';
+        GenJnlBatch.Name := 'REV-FACT';
+        GenJnlBatch.Description := 'Reverse Factoring';
+        GenJnlBatch.INSERT(TRUE);
+      END;
+
+      GenJnlLine.SETRANGE("Journal Template Name",'STANDARD');
+      GenJnlLine.SETRANGE("Journal Batch Name",'REV-FACT');
+      IF GenJnlLine.FINDLAST THEN
+        LineNo := GenJnlLine."Line No.";
+
+      PaymentSetup.GET();
+      Vendor.GET(VendLedgEntry."Vendor No.");
+
+      // Apply initial entry
+      LineNo += 10000;
+      GenJnlLine.INIT;
+      GenJnlLine."Journal Template Name" := 'STANDARD';
+      GenJnlLine."Journal Batch Name" := 'REV-FACT';
+      GenJnlLine."Line No." := LineNo;
+      GenJnlLine.VALIDATE("Posting Date",VendLedgEntry."Posting Date");
+      GenJnlLine.VALIDATE("Document Date",VendLedgEntry."Document Date");
+      GenJnlLine."Account Type" := GenJnlLine."Account Type"::Vendor;
+      GenJnlLine.VALIDATE("Account No.",VendLedgEntry."Vendor No.");
+      GenJnlLine."Document Type" := GenJnlLine."Document Type"::Payment;
+      GenJnlLine."Document No." := VendLedgEntry."Document No.";
+      GenJnlLine."Bal. Account Type" := VendLedgEntry."Bal. Account Type"::"G/L Account";
+      GenJnlLine.VALIDATE("Bal. Account No.",PaymentSetup."RF Transfer Account");
+      GenJnlLine."Applies-to Doc. Type" := VendLedgEntry."Document Type";
+      GenJnlLine."Applies-to Doc. No." := VendLedgEntry."Document No.";
+      VendLedgEntry.CALCFIELDS("Remaining Amount");
+      GenJnlLine.VALIDATE(Amount, -((VendLedgEntry."Remaining Amount" - VendLedgEntry."Remaining Pmt. Disc. Possible")));
+         Amount1 := (VendLedgEntry."Remaining Amount" - VendLedgEntry."Remaining Pmt. Disc. Possible");
+      GenJnlLine."Source Code" := 'FIBUBUCHBL';
+      GenJnlLine.INSERT;
+
+      // If credit memo has been deducted apply credit memo
+      IF VendLedgEntry."C/M No. for Deduction" <> 0 THEN BEGIN
+        VendLedgEntry1.GET(VendLedgEntry."C/M No. for Deduction");
+        LineNo += 10000;
+        GenJnlLine.INIT;
+        GenJnlLine."Journal Template Name" := 'STANDARD';
+        GenJnlLine."Journal Batch Name" := 'REV-FACT';
+        GenJnlLine."Line No." := LineNo;
+        GenJnlLine.VALIDATE("Posting Date",TODAY);
+        GenJnlLine.VALIDATE("Document Date",VendLedgEntry."Document Date");
+        GenJnlLine."Account Type" := GenJnlLine."Account Type"::Vendor;
+        GenJnlLine.VALIDATE("Account No.",VendLedgEntry1."Vendor No.");
+        //GenJnlLine.VALIDATE("Posting Date",VendLedgEntry."Posting Date");
+        GenJnlLine."Document Type" := GenJnlLine."Document Type"::Refund;
+        GenJnlLine."Document No." := VendLedgEntry1."Document No.";
+        GenJnlLine."Bal. Account Type" := VendLedgEntry1."Bal. Account Type"::"G/L Account";
+        GenJnlLine.VALIDATE("Bal. Account No.",PaymentSetup."RF Transfer Account");
+        GenJnlLine."Applies-to Doc. Type" := VendLedgEntry1."Document Type";
+        GenJnlLine."Applies-to Doc. No." := VendLedgEntry1."Document No.";
+
+        VendLedgEntry1.CALCFIELDS("Remaining Amount");
+        //H1458 03.09.14 nst +++++++++++++++++++++++++++++
+        GenJnlLine.VALIDATE(Amount, -(VendLedgEntry1."Remaining Amount"- VendLedgEntry1."Remaining Pmt. Disc. Possible"));
+        //H1458 03.09.14 nst -----------------------------
+        Amount2 :=  VendLedgEntry1."Remaining Amount";
+        GenJnlLine."Source Code" := 'FIBUBUCHBL';
+        GenJnlLine.INSERT;
+      END;
+
+      // Create Entry on factorers account
+      PaymentSetup.GET();
+      Vendor.GET(PaymentSetup."RF Vendor");
+
+      LineNo += 10000;
+      GenJnlLine.INIT;
+      GenJnlLine."Journal Template Name" := 'STANDARD';
+      GenJnlLine."Journal Batch Name" := 'REV-FACT';
+      GenJnlLine."Line No." := LineNo;
+      GenJnlLine.VALIDATE("Posting Date",TODAY);
+      GenJnlLine.VALIDATE("Document Date",VendLedgEntry."Posting Date");
+      GenJnlLine."Account Type" := GenJnlLine."Account Type"::Vendor;
+      GenJnlLine.VALIDATE("Account No.",PaymentSetup."RF Vendor");
+      GenJnlLine.Description := VendLedgEntry.Description;
+      GenJnlLine."External Document No." := COPYSTR(VendLedgEntry."Vendor No." + '-' + VendLedgEntry."External Document No.",1,20);
+      GenJnlLine."Document Type" := GenJnlLine."Document Type"::Invoice;
+      GenJnlLine."Document No." := VendLedgEntry."Document No." + '-RF';
+      GenJnlLine."Bal. Account Type" := VendLedgEntry."Bal. Account Type"::"G/L Account";
+      GenJnlLine.VALIDATE("Bal. Account No.",PaymentSetup."RF Transfer Account");
+      VendLedgEntry.CALCFIELDS("Remaining Amount");
+      GenJnlLine.VALIDATE(Amount, Amount1 + Amount2);
+      GenJnlLine.VALIDATE("Payment Terms Code",Vendor."Payment Terms Code");
+      GenJnlLine."Source Code" := 'FIBUBUCHBL';
+      GenJnlLine."Orginial Vend. Ledger Entry No" := VendLedgEntry."Entry No.";
+      GenJnlLine.INSERT;
+
+      EXIT;
+    END;
+
+    PROCEDURE ExportEntries@1000000004();
+    VAR
+      rExportFilesL@1000000000 : Record 2000000022;
+      PmtSetUpL@1000000001 : Record 5001901;
+      FileL@1000000002 : File;
+    BEGIN
+      //H1340 09.08.14 nst +++++++++++++++++++++++++++++
+      REPORT.RUNMODAL(50207,FALSE);
+      //H1340 09.08.14 nst -----------------------------
+
+      //H2169 20.11.15 nst +++++++++++++++++++++++++++++
+      // Move Files from TEMP to Export.
+      PmtSetUpL.GET();
+
+      rExportFilesL.RESET;
+      rExportFilesL.SETCURRENTKEY(Path,"Is a file",Name);
+      rExportFilesL.SETRANGE(Path,PmtSetUpL."RF Temp File Path");
+      rExportFilesL.SETRANGE("Is a file", TRUE);
+      rExportFilesL.SETFILTER(Name,'*.csv');
+      IF rExportFilesL.FIND('-') THEN
+        REPEAT
+          RENAME(PmtSetUpL."RF Temp File Path" + rExportFilesL.Name, PmtSetUpL."RF File Path" + rExportFilesL.Name);
+        UNTIL rExportFilesL.NEXT = 0;
+
+
+      //H2169 20.11.15 nst -----------------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+
+      H699       26.04.14  nst       Object created,
+                                     CodeUnit creates General Journal Lines to transfer the
+                                     vendor ledger entries from the vendor to the R/F vendor
+      H1340      09.08.14  nst       Automatic posting of the general journal lines implemented.
+      H1458      04.09.14  nst       If payment discount possible for C/M then deduct the payment discount when transfering the
+                                     C/M to the reverse factorer.
+      H1650      19.11.14  MDO       Disabled Content of non used function ImportResponseFile
+      H2169      20.02.15  nst       Changed function flow in that way export files will not be created, if the journal lines can not be
+                                     posted.
+      H4063      22.04.15  nst       Added parameters to OnRun to split the export and the file creation.
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,284 @@
+OBJECT Codeunit 50217 Sales Blanket Order
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02.09.13;
+    Time=14:59:54;
+    Version List=HME0513;
+  }
+  PROPERTIES
+  {
+    Subtype=Test;
+    OnRun=BEGIN
+            isInitialized := FALSE;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Assert@1005 : Codeunit 50200;
+      LibrarySCM@1001 : Codeunit 50210;
+      LibraryFinance@1102601000 : Codeunit 50207;
+      isInitialized@1002 : Boolean;
+      VATAmountErrorMessage@1003 : TextConst 'ENU=VAT Amount must be %1 in %2.';
+      FieldError@1004 : TextConst 'ENU=%1 not updated correctly.';
+
+    [Normal]
+    LOCAL PROCEDURE Initialize@8();
+    VAR
+      BackupManagement@1001 : Codeunit 50201;
+    BEGIN
+      RANDOMIZE(1);  // Seed the RANDOM.
+
+      // Lazy Setup.
+      IF isInitialized THEN
+        EXIT;
+
+      BackupManagement.DefaultFixture;
+
+      LibraryFinance.InitializeGeneralPostingSetup;
+      LibraryFinance.InitializeVATPostingSetup;
+
+      isInitialized := TRUE;
+      COMMIT;
+    END;
+
+    [Test]
+    PROCEDURE SalesBlanketOrderCreation@12();
+    VAR
+      SalesHeader@1000 : Record 36;
+      SalesLine@1001 : Record 37;
+    BEGIN
+      // Test New Sales Blanket Order creation.
+
+      // Setup.
+      Initialize;
+      CreateSalesBlanketOrder(SalesHeader,SalesLine);
+
+      // Verify: Verify Blanket Sales Order created.
+      SalesHeader.GET(SalesHeader."Document Type",SalesHeader."No.");
+      SalesLine.GET(SalesLine."Document Type",SalesLine."Document No.",SalesLine."Line No.");
+
+      // Tear Down: Cleanup of Setup Done.
+      LibrarySCM.SetStockoutWarning(TRUE);
+    END;
+
+    [Test]
+    PROCEDURE VATAmountOnSalesBlanketOrder@4();
+    VAR
+      GeneralLedgerSetup@1008 : Record 98;
+      SalesHeader@1001 : Record 36;
+      SalesLine@1000 : Record 37;
+      VATAmountLine@1002 : Record 290;
+      QtyType@1003 : 'General,Invoicing,Shipping';
+      BaseAmount@1005 : Decimal;
+    BEGIN
+      // Test if the system calculates applicable VAT for a VAT Posting Group in Blanket Sales Order.
+
+      // Setup
+      Initialize;
+      CreateSalesBlanketOrder(SalesHeader,SalesLine);
+
+      // Calculate VAT Amount on Sales Blanket Order.
+      SalesLine.CalcVATAmountLines(QtyType::Invoicing,SalesHeader,SalesLine,VATAmountLine);
+
+      // Verify: Verify VAT Amount on Sales Blanket Order.
+      GeneralLedgerSetup.GET;
+      SalesLine.FINDSET;
+      REPEAT
+        BaseAmount += SalesLine."Line Amount";
+      UNTIL SalesLine.NEXT = 0;
+
+      Assert.AreNearlyEqual(
+        BaseAmount * SalesLine."VAT %" / 100,VATAmountLine."VAT Amount",GeneralLedgerSetup."Amount Rounding Precision",
+        STRSUBSTNO(VATAmountErrorMessage,BaseAmount * SalesLine."VAT %" / 100,VATAmountLine.TABLECAPTION));
+
+      // Tear Down: Cleanup of Setup Done.
+      LibrarySCM.SetStockoutWarning(TRUE);
+    END;
+
+    [Test]
+    PROCEDURE SalesBlanketOrderReport@3();
+    VAR
+      SalesHeader@1001 : Record 36;
+      SalesLine@1000 : Record 37;
+      BlanketSalesOrder@1002 : Report 210;
+      LibraryUtility@1004 : Codeunit 50206;
+      FilePath@1003 : Text[1024];
+    BEGIN
+      // Test if the system generates Blanket Sales Order report.
+
+      // Setup
+      Initialize;
+      CreateSalesBlanketOrder(SalesHeader,SalesLine);
+
+      // Exercise: Generate Report as external file for Sales Blanket Order.
+      SalesHeader.SETRANGE("Document Type",SalesHeader."Document Type"::"Blanket Order");
+      SalesHeader.SETRANGE("No.",SalesHeader."No.");
+      BlanketSalesOrder.SETTABLEVIEW(SalesHeader);
+      IF ISSERVICETIER THEN BEGIN
+        FilePath := TEMPORARYPATH + FORMAT(SalesHeader."Document Type") + SalesHeader."No." + '.xls';
+        BlanketSalesOrder.SAVEASEXCEL(FilePath)
+      END ELSE BEGIN
+        FilePath := TEMPORARYPATH + FORMAT(SalesHeader."Document Type") + SalesHeader."No." + '.xml';
+        BlanketSalesOrder.SAVEASXML(FilePath);
+      END;
+
+      // Verify: Verify that Saved files have some data.
+      LibraryUtility.CheckFileNotEmpty(FilePath);
+
+      // Tear Down: Cleanup of Setup Done.
+      LibrarySCM.SetStockoutWarning(TRUE);
+    END;
+
+    [Test]
+    PROCEDURE PartialShipSalesBlanketOrder@5();
+    VAR
+      SalesHeader@1001 : Record 36;
+      SalesLine@1000 : Record 37;
+      SalesHeader2@1003 : Record 36;
+      SalesLine2@1002 : Record 37;
+    BEGIN
+      // Test Create Sales Order from Blanket Order with Qty. to Ship less than Quantity. Post Sales Order and check Quantity Shipped
+      // getting updated in Sales Blanket Order.
+
+      // Setup: Set Stock out Warnings to No in Sales and Receivables Setup.
+      Initialize;
+      LibrarySCM.SetStockoutWarning(FALSE);
+
+      // Exercise: Create Blanket Sales Order with Minimum Quantity 2 to make partial shipment. Create Sales Order from
+      // Sales Blanket Order and Post Sales order.
+      LibrarySCM.CreateSalesHeader(SalesHeader,SalesHeader."Document Type"::"Blanket Order",CreateCustomer);
+      LibrarySCM.CreateSalesLine(SalesHeader,SalesLine,SalesLine.Type::Item,CreateItem,1 + RANDOM(10));
+      SalesLine.VALIDATE("Qty. to Ship",SalesLine.Quantity - 1);  // Qty to Ship always less than Quantity.
+      SalesLine.MODIFY(TRUE);
+      CODEUNIT.RUN(CODEUNIT::"Blanket Sales Order to Order",SalesHeader);
+      SalesLine2.SETRANGE("Blanket Order No.",SalesLine."Document No.");
+      SalesLine2.SETRANGE("Document Type",SalesHeader."Document Type"::Order);
+      SalesLine2.FINDFIRST;
+      SalesHeader2.GET(SalesLine2."Document Type",SalesLine2."Document No.");
+      LibrarySCM.PostSalesHeader(SalesHeader2,TRUE,TRUE);
+
+      // Verify: Verify Sales Blanket Order Quantity Shipped field.
+      SalesLine.GET(SalesLine."Document Type",SalesLine."Document No.",SalesLine."Line No.");
+      Assert.AreEqual(SalesLine.Quantity - 1,SalesLine."Quantity Shipped",
+        STRSUBSTNO(FieldError,SalesLine.FIELDCAPTION("Quantity Shipped")));
+
+      // Tear Down: Cleanup of Setup Done.
+      LibrarySCM.SetStockoutWarning(TRUE);
+    END;
+
+    [Test]
+    [HandlerFunctions(MessageHandler)]
+    PROCEDURE LocationOnSalesBlanketOrder@6();
+    VAR
+      Location@1002 : Record 14;
+      SalesHeader@1001 : Record 36;
+      SalesLine@1000 : Record 37;
+      SalesHeader2@1004 : Record 36;
+      SalesLine2@1003 : Record 37;
+    BEGIN
+      // Create the Sales Order from Blanket Order and check if change Location in Blanket Order has also being updated
+      // in Sales Order while creating.
+
+      // Setup
+      Initialize;
+      CreateSalesBlanketOrder(SalesHeader,SalesLine);
+
+      // Modify Location Code and Make Sales Order from Sales Blanket Order.
+      Location.SETRANGE("Use As In-Transit",FALSE);
+      Location.NEXT(RANDOM(Location.COUNT));
+      SalesHeader.VALIDATE("Location Code",Location.Code);
+      SalesHeader.MODIFY(TRUE);
+      CODEUNIT.RUN(CODEUNIT::"Blanket Sales Order to Order",SalesHeader);
+
+      // Verify: Verify New Sales Order have updated Location Code.
+      SalesLine2.SETRANGE("Blanket Order No.",SalesLine."Document No.");
+      SalesLine2.SETRANGE("Document Type",SalesLine2."Document Type"::Order);
+      SalesLine2.FINDFIRST;
+      SalesHeader2.GET(SalesLine2."Document Type",SalesLine2."Document No.");
+      Assert.AreEqual(SalesHeader2."Location Code",Location.Code,STRSUBSTNO(FieldError,SalesHeader2.FIELDCAPTION("Location Code")));
+
+      // Tear Down: Cleanup of Setup Done.
+      LibrarySCM.SetStockoutWarning(TRUE);
+    END;
+
+    LOCAL PROCEDURE CreateSalesBlanketOrder@10(VAR SalesHeader@1000 : Record 36;VAR SalesLine@1001 : Record 37);
+    VAR
+      Counter@1002 : Integer;
+    BEGIN
+      // Setup: Set Stock out Warnings to No in Sales and Receivables Setup.
+      LibrarySCM.SetStockoutWarning(FALSE);
+
+      // Exercise: Create Blanket Sales Order.
+      LibrarySCM.CreateSalesHeader(SalesHeader,SalesHeader."Document Type"::"Blanket Order",CreateCustomer);
+
+      // Create Random Sales Lines. Make sure that No. of Sales Lines always greater than 2.
+      FOR Counter := 1 TO 1 + RANDOM(8) DO BEGIN
+        LibrarySCM.CreateSalesLine(SalesHeader,SalesLine,SalesLine.Type::Item,CreateItem,RANDOM(10));
+      END
+    END;
+
+    LOCAL PROCEDURE CreateCustomer@1() : Code[20];
+    VAR
+      Customer@1001 : Record 18;
+      VATPostingSetup@1000 : Record 325;
+    BEGIN
+      FindVATPostingSetup(VATPostingSetup);
+      LibrarySCM.CreateCustomer(Customer);
+      Customer.VALIDATE("VAT Bus. Posting Group",VATPostingSetup."VAT Bus. Posting Group");
+      Customer.MODIFY(TRUE);
+      EXIT(Customer."No.");
+    END;
+
+    LOCAL PROCEDURE CreateItem@9() : Code[20];
+    VAR
+      Item@1000 : Record 27;
+      InventorySetup@1003 : Record 313;
+      VATPostingSetup@1002 : Record 325;
+      LibraryUtility@1004 : Codeunit 50206;
+      LibrarySCM@1001 : Codeunit 50210;
+    BEGIN
+      FindVATPostingSetup(VATPostingSetup);
+
+      // Modify Item No. Series in Inventory setup.
+      InventorySetup.GET;
+      InventorySetup.VALIDATE("Item Nos.",LibraryUtility.GetNoSeriesCode);
+      InventorySetup.MODIFY(TRUE);
+      LibrarySCM.CreateItem(Item);
+      Item.VALIDATE("VAT Prod. Posting Group",VATPostingSetup."VAT Prod. Posting Group");
+      Item.VALIDATE("Unit Price",RANDOM(100));
+      Item.MODIFY(TRUE);
+      EXIT(Item."No.");
+    END;
+
+    LOCAL PROCEDURE FindVATPostingSetup@13(VAR VATPostingSetup@1000 : Record 325);
+    BEGIN
+      VATPostingSetup.SETFILTER("VAT Bus. Posting Group",'<>''''');
+      VATPostingSetup.SETFILTER("VAT Prod. Posting Group",'<>''''');
+      VATPostingSetup.SETRANGE("VAT Calculation Type",VATPostingSetup."VAT Calculation Type"::"Normal VAT");
+      VATPostingSetup.SETFILTER("VAT %",'>0');
+      VATPostingSetup.FINDFIRST;
+    END;
+
+    [MessageHandler]
+    PROCEDURE MessageHandler@7(Message@1000 : Text[1024]);
+    BEGIN
+      // Message Handler.
+    END;
+
+    BEGIN
+    {
+      Check the functionalities of Blanket Sales Order.
+      1. Test if the system allows to create a New Sales Blanket Order for Customer.
+      2. Test if the system calculates applicable VAT in Blanket Sales Order.
+      3. Test if the system generates Blanket Sales Order report.
+      4. Test Create Sales Order from Blanket Order with Qty. to Ship less than Quantity.
+      5. Test Create the Sales Order from Blanket Order and check if change in Location in Blanket Order has also updated
+         in Sales Order while creating.
+    }
+    END.
+  }
+}
+

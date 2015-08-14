@@ -1,0 +1,280 @@
+OBJECT Codeunit 50247 RET - Return Warehouse Mngt
+{
+  OBJECT-PROPERTIES
+  {
+    Date=23.01.15;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=HME1992;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      WarehouseSetup@1000000001 : Record 5769;
+      NoSeriesManagement@1000000000 : Codeunit 396;
+      Window@1000000002 : Dialog;
+      HMEText001@1000000003 : TextConst 'ENU=You must specify %1.';
+      HMEText002@1000000004 : TextConst 'ENU=WEA successfully created.';
+      HMEText003@1000000005 : TextConst 'ENU=Are you sure you want to post negative adjustments for RET location?';
+
+    PROCEDURE CheckAvailableQuantity@1000000002(VAR ItemR@1000000004 : Record 27);
+    VAR
+      TransferOrderLineL@1000000000 : Record 5741;
+      ItemJournalLineL@1000000002 : Record 83;
+      ItemL@1000000005 : Record 27;
+      QuantityOnTransferOrdersL@1000000001 : Integer;
+      QtyOnItemDisposalJournalsL@1000000003 : Integer;
+      ERR_NO_INVENTORY@1000000006 : TextConst 'ENU="There is no enough inventory of %1 on location %2. "';
+    BEGIN
+      IF ItemR.FIND('-') THEN BEGIN
+        REPEAT
+          TransferOrderLineL.RESET;
+          TransferOrderLineL.SETCURRENTKEY("Transfer-from Code","Item No.");
+          TransferOrderLineL.SETRANGE("Transfer-from Code",WarehouseSetup."Return Warehouse Location Code");
+          TransferOrderLineL.SETRANGE("Item No.",ItemR."No.");
+          TransferOrderLineL.CALCSUMS(Quantity);
+          QuantityOnTransferOrdersL := TransferOrderLineL.Quantity;
+
+          ItemJournalLineL.RESET;
+          ItemJournalLineL.SETCURRENTKEY("Journal Template Name","Journal Batch Name","Entry Type");
+          ItemJournalLineL.SETRANGE("Entry Type",ItemJournalLineL."Entry Type"::"Negative Adjmt.");
+          ItemJournalLineL.SETRANGE("Journal Template Name",WarehouseSetup."Disposal Journal Template Name");
+          ItemJournalLineL.SETRANGE("Journal Batch Name",WarehouseSetup."Disposal Journal Batch Name");
+          ItemJournalLineL.CALCSUMS(Quantity);
+          QtyOnItemDisposalJournalsL := ItemJournalLineL.Quantity;
+
+          IF ItemL.GET(ItemR."No.") THEN ;
+          ItemL.SETRANGE("Location Filter",WarehouseSetup."Return Warehouse Location Code");
+          ItemL.CALCFIELDS(Inventory);
+
+          IF ((QuantityOnTransferOrdersL + QtyOnItemDisposalJournalsL) > ItemL.Inventory) THEN
+            ERROR(STRSUBSTNO(ItemR."No.",WarehouseSetup."Return Warehouse Location Code"));
+
+        UNTIL ItemR.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE PostTransferOrderShipment@1000000003(TransferHederV@1000000000 : Record 5740);
+    VAR
+      RhenusChangeLogL@1000000003 : Record 50070;
+      TransferLineL@1000000006 : Record 5741;
+      TransferOrderPostShipmentL@1000000001 : Codeunit 5704;
+      ReleaseTransferDocumentL@1000000002 : Codeunit 5708;
+      RHDPurchInterfaceMgtL@1000000005 : Codeunit 50156;
+      MessageTextL@1000000004 : Text[80];
+    BEGIN
+      //Release and post document
+      ReleaseTransferDocumentL.RUN(TransferHederV);
+      TransferOrderPostShipmentL.RUN(TransferHederV);
+
+      WarehouseSetup.GET;
+      IF TransferHederV."Transfer-to Code" = WarehouseSetup."RHD Location Code" THEN BEGIN
+        //Create WEA
+        RhenusChangeLogL.AddContainerLog(TransferHederV,'RHENUS',RhenusChangeLogL.Action::New);
+
+        TransferLineL.SETRANGE("Document No.",TransferHederV."No.");
+        TransferLineL.SETFILTER("Quantity Shipped",'<>0');
+        IF TransferLineL.FINDFIRST THEN BEGIN
+          REPEAT
+            MessageTextL := RHDPurchInterfaceMgtL.TriggerRhenusInterfaceTransfer(TransferLineL,0);  // 0 = new
+          UNTIL TransferLineL.NEXT = 0;
+          MESSAGE(MessageTextL);
+        END;
+      END ELSE BEGIN
+        TransferHederV.InitiateOrder2DDInterface(TransferHederV);
+        MESSAGE(HMEText002);
+      END;
+    END;
+
+    PROCEDURE CreateTransferOrder@1000000004(LocationCodeV@1000000000 : Code[20];VAR ReturnItemImportR@1000000003 : Record 50198);
+    VAR
+      TransferHeaderL@1000000001 : Record 5740;
+      TransferLineL@1000000004 : Record 5741;
+      NoSeriesMngtL@1000000002 : Codeunit 396;
+      LineNoL@1000000005 : Integer;
+      CountL@1000000006 : Integer;
+    BEGIN
+      WarehouseSetup.GET;
+
+      IF LocationCodeV = '' THEN
+        ERROR(STRSUBSTNO(HMEText001, TransferHeaderL.FIELDCAPTION("Transfer-to Code")));
+
+      IF WarehouseSetup."Return Warehouse Location Code" = '' THEN
+        ERROR(STRSUBSTNO(HMEText001, TransferHeaderL.FIELDCAPTION("Transfer-from Code")));
+
+      IF GUIALLOWED THEN
+        Window.OPEN('#1####### / #2#######');
+
+      IF GUIALLOWED THEN
+        Window.UPDATE(2,FORMAT(ReturnItemImportR.COUNT));
+
+      CountL := 1;
+      IF ReturnItemImportR.FIND('-') THEN BEGIN
+        REPEAT
+          IF GUIALLOWED THEN
+            Window.UPDATE(1,FORMAT(CountL));
+          //H1992 16.01.15 EHN ++++++++++++++++++++++++++
+          ReturnItemImportR.TESTFIELD("Posting Date");
+          //H1992 16.01.15 EHN --------------------------
+
+          IF LocationCodeV <> '' THEN BEGIN
+            TransferHeaderL.RESET;
+            TransferHeaderL.INIT;
+            TransferHeaderL.VALIDATE("No. Series",WarehouseSetup."Ret. Whse. Tran. Order Nos.");
+            TransferHeaderL.VALIDATE("No.",NoSeriesMngtL.GetNextNo(WarehouseSetup."Ret. Whse. Tran. Order Nos.",WORKDATE,TRUE));
+            TransferHeaderL.INSERT;
+            TransferHeaderL.VALIDATE("Transfer-from Code",WarehouseSetup."Return Warehouse Location Code");
+            TransferHeaderL.VALIDATE("Transfer-to Code",LocationCodeV);
+            TransferHeaderL.VALIDATE("In-Transit Code",WarehouseSetup."Ret. Transit Location Code");
+            //H1992 16.01.15 EHN ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            TransferHeaderL.VALIDATE("Posting Date",ReturnItemImportR."Posting Date");
+            TransferHeaderL.VALIDATE("Shipment Date",ReturnItemImportR."Posting Date");
+            //H1992 16.01.15 EHN --------------------------------------------------------------------
+            TransferHeaderL.MODIFY;
+          END;
+
+          LineNoL := 10000;
+
+          IF ReturnItemImportR.FIND('-') THEN BEGIN
+            REPEAT
+              TransferLineL.INIT;
+              TransferLineL."Document No." := TransferHeaderL."No.";
+              TransferLineL."Line No." := LineNoL;
+              LineNoL := LineNoL + 10000;
+              TransferLineL.VALIDATE("Item No.",ReturnItemImportR."Item No.");
+              TransferLineL.VALIDATE(Quantity,ReturnItemImportR."Imported Quantity");
+              TransferLineL.INSERT(TRUE);
+            UNTIL ReturnItemImportR.NEXT = 0;
+          END;
+
+          //ReturnItemImportR.DELETE;
+
+        UNTIL ReturnItemImportR.NEXT = 0;
+
+        //COMMIT;
+      END;
+
+      ReturnItemImportR.DELETEALL;
+
+      IF WarehouseSetup."Post Trans. Order / Create WEA" THEN
+        PostTransferOrderShipment(TransferHeaderL);
+
+      IF GUIALLOWED THEN
+        Window.CLOSE;
+    END;
+
+    PROCEDURE "*** H1033 ********************"@1000000001();
+    BEGIN
+    END;
+
+    PROCEDURE CreateNegativeAdjustments@1000000005(VAR ReturnItemImportR@1000000003 : Record 50198);
+    VAR
+      ItemJournalLineL@1000000001 : Record 83;
+      ItemJnlPostBatchL@1000000004 : Codeunit 23;
+      NoSeriesMngtL@1000000002 : Codeunit 396;
+      DocumentNoL@1000000000 : Code[20];
+      LineNoL@1000000005 : Integer;
+      CountL@1000000006 : Integer;
+    BEGIN
+      IF NOT CONFIRM(HMEText003) THEN
+        EXIT;
+
+      WarehouseSetup.GET;
+
+      IF GUIALLOWED THEN
+        Window.OPEN('#1####### / #2#######');
+
+      IF GUIALLOWED THEN
+        Window.UPDATE(2,FORMAT(ReturnItemImportR.COUNT));
+
+      CountL := 1;
+
+      ItemJournalLineL.RESET;
+      ItemJournalLineL.SETRANGE("Journal Template Name",WarehouseSetup."Disposal Journal Template Name");
+      ItemJournalLineL.SETRANGE("Journal Batch Name",WarehouseSetup."Disposal Journal Batch Name");
+      IF ItemJournalLineL.FINDLAST THEN
+        LineNoL := ItemJournalLineL."Line No." + 10000
+      ELSE
+        LineNoL := 10000;
+
+      IF ReturnItemImportR.FIND('-') THEN BEGIN
+        //H1148 19.05.2014 DMA +++++++++++++++++++++++++++
+        DocumentNoL := NoSeriesMngtL.GetNextNo(WarehouseSetup."Ret. Whse. Item Jnl. Nos.",WORKDATE,FALSE);
+        //H1148 19.05.2014 DMA ---------------------------
+        REPEAT
+          IF GUIALLOWED THEN
+            Window.UPDATE(1,FORMAT(CountL));
+          //H1992 16.01.15 EHN ++++++++++++++++++++++++++
+          ReturnItemImportR.TESTFIELD("Posting Date");
+          //H1992 16.01.15 EHN --------------------------
+
+          //TODO
+          ItemJournalLineL.INIT;
+          ItemJournalLineL.VALIDATE("Journal Template Name",WarehouseSetup."Disposal Journal Template Name");
+          ItemJournalLineL.VALIDATE("Journal Batch Name",WarehouseSetup."Disposal Journal Batch Name");
+          ItemJournalLineL.VALIDATE("Line No.",LineNoL);
+          LineNoL += 10000;
+          ItemJournalLineL.VALIDATE("Item No.",ReturnItemImportR."Item No.");
+          //H1992 16.01.2015 EHN +++++++++++++++++++++++++++++
+          ItemJournalLineL.VALIDATE("Posting Date",ReturnItemImportR."Posting Date");
+          //H1992 16.01.2015 EHN -----------------------------
+          ItemJournalLineL.VALIDATE("Entry Type",ItemJournalLineL."Entry Type"::"Negative Adjmt.");
+          IF WarehouseSetup."Ret. Whse. Item Jnl. Nos." <> '' THEN
+            //H1148 19.05.2014 DMA +++++++++++++++++++++++++++
+            ItemJournalLineL.VALIDATE("Document No.",DocumentNoL);
+            //H1148 19.05.2014 DMA ---------------------------
+          ItemJournalLineL.VALIDATE("Location Code",WarehouseSetup."Return Warehouse Location Code");
+          ItemJournalLineL.VALIDATE(Quantity,ReturnItemImportR."Imported Quantity");
+          ItemJournalLineL.INSERT(TRUE);
+
+        UNTIL ReturnItemImportR.NEXT = 0;
+
+        ReturnItemImportR.DELETEALL;
+
+        COMMIT;
+
+        IF WarehouseSetup."Post Negative Adjmts." THEN BEGIN
+          NoSeriesMngtL.GetNextNo(WarehouseSetup."Ret. Whse. Item Jnl. Nos.",WORKDATE,TRUE);
+          ItemJournalLineL.RESET;
+          ItemJournalLineL.SETRANGE("Journal Template Name",WarehouseSetup."Disposal Journal Template Name");
+          ItemJournalLineL.SETRANGE("Journal Batch Name",WarehouseSetup."Disposal Journal Batch Name");
+          IF ItemJournalLineL.FINDSET THEN BEGIN
+            ItemJnlPostBatchL.RUN(ItemJournalLineL);
+
+          END;
+        END;
+
+      END;
+
+      IF GUIALLOWED THEN
+        Window.CLOSE;
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+      H0918     21.03.2014  DMA      Created
+      H1033     01.04.2014  DMA      Function for create item journal added
+      H1062     13.05.2014  DMA      Code cleanup
+      H1063     12.05.2014  DMA      RWH: Create Security Rules/Checks FINDFIRST -> FIND('-') perfomance
+      H1148     19.05.2014  DMA      BUG: RWH: Process Negative Adjmt - wrong Document No., CODECHANGE
+      H1992     16.01.2015  EHN      BUG - Inventory has been posted to wrong month Return whs
+    }
+    END.
+  }
+}
+

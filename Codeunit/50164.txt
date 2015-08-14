@@ -1,0 +1,287 @@
+OBJECT Codeunit 50164 Start Services for Phys. Inv.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=29.05.15;
+    Time=10:36:08;
+    Modified=Yes;
+    Version List=HME4305;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=VAR
+            JobQueueEntryL@1000000000 : Record 472;
+            StartParameterL@1000000001 : Integer;
+          BEGIN
+            IF AutInvBatch.CheckCalender() THEN
+              EXIT;
+
+            //H4052 14.04.15 TST +++++++++++++++++++++++++++++
+            CLEARLASTERROR;
+            //H4052 14.04.15 TST -----------------------------
+
+
+            InvLogHeader.LOCKTABLE;
+
+            JobQueueEntryL.RESET;
+            JobQueueEntryL.SETRANGE("Object Type to Run",JobQueueEntryL."Object Type to Run"::Codeunit);
+            JobQueueEntryL.SETRANGE("Object ID to Run",50096);
+            JobQueueEntryL.FINDLAST;
+
+            InvLogHeader.RESET;
+            EVALUATE(StartParameterL,JobQueueEntryL."Parameter String");
+            InvLogHeader.GET(StartParameterL);
+
+            DeleteAdminMailQueueLogs(InvLogHeader."No.");
+
+            StartServices(InvLogHeader."No.");
+
+            StartJobQueueEntries(InvLogHeader."No.");
+
+            UpdateJobQueueEntry(InvLogHeader."No.");
+
+            SendEmail(InvLogHeader."No.");
+
+            //H4052 14.04.15 TST +++++++++++++++++++++++++++++
+            InvLogHeader.GET(StartParameterL);
+            IF GETLASTERRORTEXT <> '' THEN BEGIN
+              InvLogHeader.Status := InvLogHeader.Status::Error;
+              InvLogHeader.Errortext := GETLASTERRORTEXT;
+            END ELSE IF InvLogHeader.Errortext <> '' THEN
+              InvLogHeader.Status := InvLogHeader.Status::"Services Started";
+
+            InvLogHeader.MODIFY;
+            //H4052 14.04.15 TST -----------------------------
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      AutInvBatch@1000000000 : Codeunit 50096;
+      InvLogHeader@1000000001 : Record 50208;
+      HMEText001@1000000005 : TextConst 'ENU=Services startet for Phys. Inventory Log Header No. %1 at %2';
+      HMEText002@1000000006 : TextConst 'ENU=" by "';
+      HMEText003@1000000002 : TextConst 'ENU=Physical Inventory Skipped';
+
+    PROCEDURE SendEmail@1000000013(InvLogHeaderNoV@1000000003 : Integer);
+    VAR
+      PhysInvSetupL@1000000005 : Record 50336;
+      AdminMailQueueLogL@1000000000 : Record 50093;
+      AdminMailQueueLog2L@1000000001 : Record 50093;
+      AdminMaiQueueCodeL@1000000002 : Record 50118;
+      AdminMailQueueTextL@1000000004 : Record 50095;
+    BEGIN
+      PhysInvSetupL.GET;
+      AdminMaiQueueCodeL.GET(PhysInvSetupL."Inventory Order Mail Code");
+      AdminMailQueueLogL.INIT;
+      AdminMailQueueLogL."Creating Date/Time" := CURRENTDATETIME;
+      AdminMailQueueLogL."Mail Code" := AdminMaiQueueCodeL."Mail Code";
+      AdminMailQueueLogL."Mail Type" := AdminMaiQueueCodeL."Mail Type";
+      AdminMailQueueLogL.Sender := AdminMaiQueueCodeL."Mail Sender";
+      AdminMailQueueLogL.Subject := STRSUBSTNO(HMEText001,FORMAT(InvLogHeaderNoV));
+      AdminMailQueueLogL."Is HTML" := AdminMaiQueueCodeL."Mail HTML";
+
+      IF AdminMailQueueLog2L.FINDLAST THEN;
+      AdminMailQueueLogL."Entry No." := AdminMailQueueLog2L."Entry No." +1;
+      AdminMailQueueLogL.INSERT;
+
+      AdminMailQueueTextL.INIT;
+      AdminMailQueueTextL."Attached to Entry No." := AdminMailQueueLogL."Entry No.";
+      AdminMailQueueTextL."Line No." := 10000;
+      AdminMailQueueTextL.Textline := STRSUBSTNO(HMEText001,FORMAT(InvLogHeaderNoV),FORMAT(CURRENTDATETIME)) + '' + HMEText002 + USERID;
+      AdminMailQueueTextL.INSERT;
+
+      AdminMailQueueLogL.Status := AdminMailQueueLogL.Status::Unprocessed;
+      AdminMailQueueLogL.MODIFY;
+    END;
+
+    PROCEDURE StartServices@1000000002(InvLogHeaderNoV@1000000000 : Integer);
+    VAR
+      WebServiceL@1000000003 : Record 2000000076;
+      WebService2L@1000000002 : Record 2000000076;
+      InvLogLineStopL@1000000001 : Record 50209;
+      InvLogLineL@1000000004 : Record 50209;
+    BEGIN
+      InvLogLineStopL.RESET;
+      InvLogLineStopL.SETRANGE("Log Header No.",InvLogHeaderNoV);
+      InvLogLineStopL.SETRANGE("Process Type",InvLogLineStopL."Process Type"::"Stop Webservice");
+      IF InvLogLineStopL.FINDSET THEN
+        REPEAT
+          CASE InvLogLineStopL.Type OF
+            InvLogLineStopL.Type::Page:
+              BEGIN
+                WebServiceL.RESET;
+                WebServiceL.SETRANGE("Object Type",WebServiceL."Object Type"::Page);
+                WebServiceL.SETFILTER("Object ID",InvLogLineStopL.ID);
+                //H4050 17.04.15 TST +++++++++++++++++++++++++++++
+                WebServiceL.SETRANGE("Service Name",InvLogLineStopL."Service Name");
+                //H4050 17.04.15 TST -----------------------------
+                IF WebServiceL.FINDLAST THEN BEGIN
+                  IF AutInvBatch.CheckInvLogLine(InvLogLineL,InvLogLineL."Process Type"::"Start Webservice",InvLogHeaderNoV,
+                     FORMAT(WebServiceL."Object ID"),InvLogLineL.Type::Page,WebServiceL."Service Name") THEN BEGIN
+                    AutInvBatch.UpdateCreateInLogLine(InvLogLineL,InvLogLineL."Process Type"::"Start Webservice",
+                     FORMAT(WebServiceL."Object ID"), InvLogLineL.Type::Page,InvLogHeaderNoV,WebServiceL."Service Name");
+                    WebService2L := WebServiceL;
+                    WebService2L.Published := TRUE;
+                    WebService2L.MODIFY;
+                    InvLogLineL.Status := InvLogLineL.Status::Finished;
+                    InvLogLineL."Timestamp Stop" := CURRENTDATETIME;
+                    InvLogLineL.MODIFY;
+                  END;
+                END;
+              END;
+            InvLogLineStopL.Type::Codeunit:
+              BEGIN
+                WebServiceL.RESET;
+                WebServiceL.SETRANGE("Object Type",WebServiceL."Object Type"::Codeunit);
+                WebServiceL.SETFILTER("Object ID",InvLogLineStopL.ID);
+                //H4050 17.04.15 TST +++++++++++++++++++++++++++++
+                WebServiceL.SETRANGE("Service Name",InvLogLineStopL."Service Name");
+                //H4050 17.04.15 TST -----------------------------
+                IF WebServiceL.FINDLAST THEN BEGIN
+                  IF AutInvBatch.CheckInvLogLine(InvLogLineL,InvLogLineL."Process Type"::"Start Webservice",InvLogHeaderNoV,
+                     FORMAT(WebServiceL."Object ID"),InvLogLineL.Type::Codeunit,WebServiceL."Service Name") THEN BEGIN
+                    AutInvBatch.UpdateCreateInLogLine(InvLogLineL,InvLogLineL."Process Type"::"Start Webservice",
+                     FORMAT(WebServiceL."Object ID"), InvLogLineL.Type::Codeunit,InvLogHeaderNoV,WebServiceL."Service Name");
+                    WebService2L := WebServiceL;
+                    WebService2L.Published := TRUE;
+                    WebService2L.MODIFY;
+                    InvLogLineL.Status := InvLogLineL.Status::Finished;
+                    InvLogLineL."Timestamp Stop" := CURRENTDATETIME;
+                    InvLogLineL.MODIFY;
+                  END;
+                END;
+              END;
+          END;
+        UNTIL InvLogLineStopL.NEXT = 0;
+    END;
+
+    PROCEDURE StartJobQueueEntries@1000000005(InvLogHeaderNoV@1000000000 : Integer);
+    VAR
+      JobQueueEntryL@1000000004 : Record 472;
+      JobQueueEntry2L@1000000003 : Record 472;
+      InvLogLineL@1000000001 : Record 50209;
+      InvLogLineStopL@1000000002 : Record 50209;
+      JobQueueServiceSetupL@1000000005 : Record 50210;
+    BEGIN
+      JobQueueServiceSetupL.RESET;
+      JobQueueServiceSetupL.SETRANGE("Stop for Phys. Inventory",TRUE);
+      IF JobQueueServiceSetupL.FINDSET THEN REPEAT
+        JobQueueEntryL.RESET;
+        JobQueueEntryL.SETRANGE(Status,JobQueueEntryL.Status::"On Hold");
+        JobQueueEntryL.SETRANGE(Priority,JobQueueServiceSetupL."Minimum Priority",JobQueueServiceSetupL."Maximum Priority");
+
+        InvLogLineStopL.RESET;
+        InvLogLineStopL.SETRANGE("Log Header No.",InvLogHeaderNoV);
+        InvLogLineStopL.SETRANGE("Process Type",InvLogLineStopL."Process Type"::"Stop Job Queue Entry");
+        IF InvLogLineStopL.FINDSET THEN
+          REPEAT
+            CASE InvLogLineStopL.Type OF
+              InvLogLineStopL.Type::Report:
+                BEGIN
+                  JobQueueEntryL.SETRANGE("Object Type to Run",JobQueueEntryL."Object Type to Run"::Report);
+                  JobQueueEntryL.SETFILTER("Object ID to Run",InvLogLineStopL.ID);
+                  IF JobQueueEntryL.FINDLAST THEN BEGIN
+                    IF AutInvBatch.CheckInvLogLine(InvLogLineL,InvLogLineL."Process Type"::"Start Job Queue Entry",InvLogHeaderNoV,
+                       FORMAT(JobQueueEntryL."Object ID to Run"),InvLogLineL.Type::Report,JobQueueEntryL."Parameter String") THEN BEGIN
+                      AutInvBatch.UpdateCreateInLogLine(InvLogLineL,InvLogLineL."Process Type"::"Start Job Queue Entry",
+                       FORMAT(JobQueueEntryL."Object ID to Run"), InvLogLineL.Type::Report,InvLogHeaderNoV,
+                         JobQueueEntryL."Parameter String");
+                      JobQueueEntry2L := JobQueueEntryL;
+                      JobQueueEntry2L.Status := JobQueueEntry2L.Status::Ready;
+                      JobQueueEntry2L.MODIFY;
+                      InvLogLineL.Status := InvLogLineL.Status::Finished;
+                      InvLogLineL."Timestamp Stop" := CURRENTDATETIME;
+                      InvLogLineL.MODIFY;
+                    END;
+                  END;
+                END;
+              InvLogLineStopL.Type::Codeunit:
+                BEGIN
+                  JobQueueEntryL.SETRANGE("Object Type to Run",JobQueueEntryL."Object Type to Run"::Codeunit);
+                  JobQueueEntryL.SETFILTER("Object ID to Run",InvLogLineStopL.ID);
+                  IF JobQueueEntryL.FINDLAST THEN BEGIN
+                    IF AutInvBatch.CheckInvLogLine(InvLogLineL,InvLogLineL."Process Type"::"Start Job Queue Entry",InvLogHeaderNoV,
+                       FORMAT(JobQueueEntryL."Object ID to Run"),InvLogLineL.Type::Codeunit,JobQueueEntryL."Parameter String") THEN BEGIN
+                      AutInvBatch.UpdateCreateInLogLine(InvLogLineL,InvLogLineL."Process Type"::"Start Job Queue Entry",
+                       FORMAT(JobQueueEntryL."Object ID to Run"), InvLogLineL.Type::Codeunit,InvLogHeaderNoV,
+                         JobQueueEntryL."Parameter String");
+                      JobQueueEntry2L := JobQueueEntryL;
+                      JobQueueEntry2L.Status := JobQueueEntry2L.Status::Ready;
+                      JobQueueEntry2L.MODIFY;
+                      InvLogLineL.Status := InvLogLineL.Status::Finished;
+                      InvLogLineL."Timestamp Stop" := CURRENTDATETIME;
+                      InvLogLineL.MODIFY;
+                    END;
+                  END;
+                END;
+            END;
+          UNTIL InvLogLineStopL.NEXT = 0;
+      UNTIL JobQueueServiceSetupL.NEXT = 0;
+    END;
+
+    PROCEDURE UpdateJobQueueEntry@1000000006(InvLogHeaderNoV@1000000000 : Integer);
+    VAR
+      JobQueueEntryL@1000000001 : Record 472;
+    BEGIN
+      JobQueueEntryL.RESET;
+      JobQueueEntryL.SETRANGE("Object Type to Run",JobQueueEntryL."Object Type to Run"::Codeunit);
+      JobQueueEntryL.SETRANGE("Object ID to Run",50096);
+      JobQueueEntryL.FINDLAST;
+      JobQueueEntryL."Parameter String" := '';
+      JobQueueEntryL.MODIFY;
+
+      //H4062 17.04.15 TST +++++++++++++++++++++++++++++
+      JobQueueEntryL.RESET;
+      JobQueueEntryL.SETRANGE("Object Type to Run",JobQueueEntryL."Object Type to Run"::Codeunit);
+      JobQueueEntryL.SETRANGE("Object ID to Run",50162);
+      JobQueueEntryL.FINDLAST;
+      JobQueueEntryL."Parameter String" := '';
+      JobQueueEntryL.MODIFY;
+      //H4062 17.04.15 TST -----------------------------
+    END;
+
+    PROCEDURE DeleteAdminMailQueueLogs@1000000000(InvLogHeaderNoV@1000000000 : Integer);
+    VAR
+      InvLogHeaderL@1000000001 : Record 50208;
+      PhysInvSetupL@1000000004 : Record 50336;
+      AdminMailQueueLogL@1000000003 : Record 50093;
+      AdminMaiQueueCodeL@1000000002 : Record 50118;
+    BEGIN
+      PhysInvSetupL.GET;
+      InvLogHeaderL.GET(InvLogHeaderNoV);
+      AdminMaiQueueCodeL.GET(PhysInvSetupL."Inventory Order Mail Code");
+
+      AdminMailQueueLogL.RESET;
+      AdminMailQueueLogL.SETFILTER("Creating Date/Time",'>%1',CREATEDATETIME(InvLogHeaderL."Created on",InvLogHeaderL."Created at"));
+      AdminMailQueueLogL.SETFILTER("Mail Code",'<>%1', AdminMaiQueueCodeL."Mail Code");
+      AdminMailQueueLogL.SETFILTER(Status,'..%1',AdminMailQueueLogL.Status::Unprocessed);
+      IF NOT AdminMailQueueLogL.ISEMPTY THEN
+        AdminMailQueueLogL.DELETEALL(TRUE);
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+
+      H1794       03.02.15 TST       New codeunit
+      H4052       14.04.15 TST       New Status
+      H4050       17.04.15 TST       Filter name of Webservices
+      H4062       17.04.15 TST       Reset Parameter String in Job Queue Entry of Codeunit 50162
+      H4270       21.05.15 JM        BUG: In Admin Mail Queue the "entry no" must not be set in "auto increment"
+      H4305       29.06.15 ARI       Rollback of Project H4270
+    }
+    END.
+  }
+}
+

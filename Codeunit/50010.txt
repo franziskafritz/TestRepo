@@ -1,0 +1,3031 @@
+OBJECT Codeunit 50010 Export Framework Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=01.12.14;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=chrmu,HME1796;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=VAR
+            ProcessLog@1000000009 : Record 50034;
+            DocLog@1000000008 : Record 50015;
+            Files@1000000003 : Record 2000000022;
+            Window@1000000002 : Dialog;
+            FileRec@1000000001 : File;
+            ArchivFileName@1000000000 : Text[250];
+            FullArchiveName@1000000007 : Text[1024];
+            bigTxt@1000000004 : BigText;
+            StartText@1000000005 : Text[30];
+            i@1000000006 : Integer;
+          BEGIN
+            //PurchHeader.SETRANGE("Document Type",PurchHeader."Document Type"::Invoice);
+            //PurchHeader.FINDFIRST;
+            //ProcessPO(PurchHeader);
+            ProcessRhenus2;
+            //ProcessOrders;
+            {
+            CLEAR(FTPClient);
+            CREATE(FTPClient);
+            IF NOT FTPClient.UploadDirectory(
+                    'ftp.gustavsburg.iwanter.de',
+                    'FPCommerce',
+                    '4nSnx9oP2',
+                    'test',
+                    'C:\Temp\Rhenus\Import',
+                    FALSE,FALSE)
+            THEN MESSAGE(FTPClient.GetLastErrorText);
+
+            ProcessLog.RESET;
+            ProcessLog.SETRANGE(Complete,FALSE);
+            ProcessLog.SETRANGE("Import Framework Code",'R-BMA');
+            ProcessLog.SETRANGE(ProcessLog.Error,FALSE);
+            //ProcessLog.SETRANGE("Interface Code",'RHENUS');
+            //ProcessLog.SETRANGE(Action,ProcessLog.Action::New);
+            IF ProcessLog.FINDSET THEN
+              REPEAT
+                ProcessLog.Complete := TRUE;
+                ProcessLog.MODIFY;
+              UNTIL ProcessLog.NEXT = 0;
+            }
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      FileSysAutomation@1000000026 : Automation "{420B2830-E718-11CF-893D-00A0C9054228} 1.0:{0D43FE01-F093-11CF-8940-00A0C9054228}:'Microsoft Scripting Runtime'.FileSystemObject";
+      UTFWriter@1000000028 : Automation "{B691E011-1797-432E-907A-4D8C69339129} 6.0:{00000566-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 6.0 Library'.Stream";
+      IFSetup@1000000000 : Record 50012;
+      Text001@1000000002 : TextConst 'ENU=File %1 for the order %2 (%3 interface) is created.';
+      Text002@1000000003 : TextConst 'ENU=Import of file %1 is done.';
+      Text003@1000000004 : TextConst 'ENU=Text line "%1" is processed.';
+      Text004@1000000005 : TextConst 'ENU=File %1 cannot be opened.';
+      Text005@1000000006 : TextConst 'ENU=The export is done.';
+      Text006@1000000007 : TextConst 'ENU=The field %1 cannot have value %2.';
+      GLSetup@1000000022 : Record 98;
+      SalesSetup@1000000034 : Record 311;
+      ImportLog@1000000019 : Record 50013;
+      CompanyInfo@1000000018 : Record 79;
+      PurchHeader@1000000021 : Record 38;
+      IFProcessing@1000000008 : Codeunit 50010;
+      Text007@1000000009 : TextConst 'ENU=Processing error.';
+      Interface@1000000027 : Record 50014;
+      rr1@1000000015 : RecordRef;
+      rr2@1000000014 : RecordRef;
+      rr3@1000000013 : RecordRef;
+      rr4@1000000012 : RecordRef;
+      rr5@1000000011 : RecordRef;
+      btxt@1000000020 : BigText;
+      GlobalVar@1000000001 : ARRAY [5] OF Text[50];
+      Text008@1000000010 : TextConst 'ENU=Vendor %1 does not exist.';
+      txt@1000000016 : Text[1024];
+      Text009@1000000017 : TextConst 'ENU=Item %1 does not exist.';
+      ItemAccNo@1000000023 : Code[20];
+      ChargeAccNo@1000000024 : Code[20];
+      VendorNo@1000000025 : Code[20];
+      Text010@1000000029 : TextConst 'ENU=Cannot upload to FTP. Check FTP credentials.';
+      Text011@1000000030 : TextConst 'ENU=The Phone No. field cannot be empty.';
+      txtCRLF@1000000031 : Text[2];
+      Text012@1000000032 : TextConst 'ENU=The order %1 doesnot exist.';
+      Text013@1000000033 : TextConst 'ENU="The Country Code Rhenus for the country %1 is empty. "';
+      Text014@1170000000 : TextConst 'ENU=The field %1 for table %2 for %3 cannot be empty.';
+      Text015@1000000035 : TextConst 'ENU=Rhenus KAD file';
+      Text016@1000000036 : TextConst 'ENU=Rhenus WEA file';
+      Text017@1000000037 : TextConst 'ENU=Weitere Artikel werden separat angeliefert.';
+      Text018@1000000038 : TextConst 'ENU=!!!! Avisierung erst ab Status - Auftrag vollstÑndig im Standort !!!!';
+
+    PROCEDURE InsertLogEntry@1113800003(ImportFrmCode@1000000001 : Code[20];MsgText@1113800000 : Text[250];IsError@1113800002 : Boolean;NewImportNo@1113800003 : Boolean);
+    VAR
+      ErrorText@1113800004 : Text[1024];
+      LastImportNo@1000000000 : Integer;
+      intVar@1000000002 : Integer;
+    BEGIN
+      //H1006  14.04.14  MBY  ++++++++++++++++++++++++++++
+      IFSetup.GET;
+      IF NOT IFSetup."Disable Import Framework Log" THEN BEGIN
+      //H1006  14.04.14  MBY  ----------------------------
+        ImportLog.RESET;
+        IF ImportLog.FINDLAST THEN
+          LastImportNo := ImportLog."Import No."
+        ELSE
+          LastImportNo := 0;
+
+        IF NewImportNo THEN LastImportNo := LastImportNo + 1;
+
+        ImportLog.INIT;
+        ImportLog."Entry No." := 0;
+        ImportLog."Import No." := LastImportNo;
+        ImportLog.Date := TODAY;
+        ImportLog.Time := TIME;
+        IF rr1.NUMBER = 36 THEN
+          ImportLog."Source Type" := ImportLog."Source Type"::Sales
+        ELSE
+          ImportLog."Source Type" := ImportLog."Source Type"::Purchase;
+
+        ImportLog."Document No." := GlobalVar[2];
+
+        IF EVALUATE(intVar,GlobalVar[1]) THEN
+          ImportLog."Document Type" := intVar;
+        IF IsError THEN BEGIN
+          ImportLog.Type := ImportLog.Type::Error;
+        END ELSE
+          ImportLog.Type := ImportLog.Type::Message;
+
+        ImportLog.Interface := Interface.Code;
+        ImportLog."Import Framework Code" := ImportFrmCode;
+        ImportLog."Message Text" := MsgText;
+        ImportLog.INSERT;
+      //H1006  14.04.14  MBY  ++++++++++++++++++++++++++++
+      END;
+      //H1006  14.04.14  MBY  ----------------------------
+    END;
+
+    PROCEDURE GetFieldValue@1140000(ImportFrameworkLine@1140000 : Record 50011) : Text[1000];
+    VAR
+      exportvalue@1140009 : Text[1000];
+      FieldRef@1140010 : FieldRef;
+      Field@1140011 : Record 2000000041;
+      decVar@1140012 : Decimal;
+      intVar@1000000000 : Integer;
+      dateVar@1000000001 : Date;
+    BEGIN
+      WITH ImportFrameworkLine DO BEGIN
+        exportvalue := '';
+        IF "Table ID" = 0 THEN BEGIN
+          IF "Call Function" <> 0 THEN
+            FunctionCall(ImportFrameworkLine,exportvalue,FieldRef);
+          EXIT;
+        END;
+
+        IF "Fixed Value" <> '' THEN
+          exportvalue := "Fixed Value";
+
+        IF "Field ID" <> 0 THEN BEGIN
+          CASE RecordRef OF
+             RecordRef::"1": BEGIN FieldRef :=rr1.FIELD("Field ID");END;
+             RecordRef::"2": BEGIN FieldRef :=rr2.FIELD("Field ID");END;
+             RecordRef::"3": BEGIN FieldRef :=rr3.FIELD("Field ID");END;
+             RecordRef::"4": BEGIN FieldRef :=rr4.FIELD("Field ID");END;
+             RecordRef::"5": BEGIN FieldRef :=rr5.FIELD("Field ID");END;
+          END;
+          IF Field.GET("Table ID","Field ID") THEN
+            IF Field.Class = Field.Class::FlowField THEN
+              IF FieldRef.CALCFIELD THEN;
+
+          IF "Call Function" <> 0 THEN
+            FunctionCall(ImportFrameworkLine,exportvalue,FieldRef)
+          ELSE
+            exportvalue := FORMAT(FieldRef.VALUE);
+        END ELSE
+          IF "Call Function" <> 0 THEN
+            FunctionCall(ImportFrameworkLine,exportvalue,FieldRef);
+
+         GetFromGlobal(ImportFrameworkLine,exportvalue);
+      END;
+      IF STRLEN(exportvalue) > 250 THEN
+        EXIT(exportvalue);
+      EXIT(FormatTextField(exportvalue,ImportFrameworkLine.Length,0));
+    END;
+
+    PROCEDURE FunctionCall@1140001(ImportFrameworkLine@1140007 : Record 50011;VAR ExportedValue@1000000000 : Text[1000];VAR FieldRef@1000000001 : FieldRef) : Boolean;
+    VAR
+      SO@1000000013 : Record 36;
+      SOLine@1000000012 : Record 37;
+      PO@1000000017 : Record 38;
+      Location@1000000014 : Record 14;
+      Purchasing@1170000000 : Record 5721;
+      ShipAdd@1000000015 : Record 222;
+      POComments@1000000016 : Record 43;
+      SOComments@1000000022 : Record 44;
+      Vendor@1000000005 : Record 23;
+      Customer@1000000019 : Record 18;
+      CommentLine@1000000006 : Record 43;
+      POLine@1000000007 : Record 39;
+      Item@1000000009 : Record 27;
+      ItemCrossReference@1000000010 : Record 5717;
+      ItemUOM@1000000018 : Record 5404;
+      tempBText@1000000011 : BigText;
+      decVar@1000000004 : Decimal;
+      intVar@1000000003 : Integer;
+      dateVar@1000000002 : Date;
+      LastLineNo@1000000008 : Integer;
+      Country@1000000020 : Record 9;
+      Website@1000000021 : Record 50033;
+      DocLog@1170000001 : Record 50070;
+      bNAVBool@1000000023 : Boolean;
+      SalesLineGOB@1000000024 : Record 37;
+      RhenusKADExport@1000000025 : Codeunit 50071;
+      FPCGeneralSetup@1000000027 : Record 50055;
+      RhenusChangeLog@1000000028 : Record 50070;
+      RhenusChangeLog2@1000000029 : Record 50070;
+      LocText001@1000000030 : TextConst 'DEU="Montage fÅr: ";ENU="Montage fÅr: "';
+      LocDocNo@1000000031 : Code[20];
+    BEGIN
+      CASE ImportFrameworkLine."Call Function" OF
+        1 : BEGIN // document type ORDERS
+              CASE FORMAT(FieldRef.VALUE) OF
+                '1' : ExportedValue := '220';
+              END;
+            END;
+        2 : BEGIN // get difference between return and normal order
+              IF EVALUATE(intVar,FORMAT(FieldRef.VALUE)) THEN
+                IF intVar = 1 THEN ExportedValue := 'KAL'
+                ELSE ExportedValue := 'KAA';
+            END;
+        3 : BEGIN // Calc gross weight
+            END;
+        4 : BEGIN // get item quality from Location
+              IF Location.GET(FieldRef.VALUE) THEN
+                ExportedValue := Location."Item Quality Code";
+            END;
+        5 : BEGIN // get phone from ship address
+                //A/P0798
+                //IF ShipAdd.GET(FieldRef.VALUE) THEN
+                IF ShipAdd.GET(GlobalVar[2],FieldRef.VALUE) THEN
+                //E/P0798
+                  IF ShipAdd."Phone No." <> '' THEN
+                    ExportedValue := ShipAdd."Phone No.";
+                IF ExportedValue = '' THEN BEGIN
+                  IF rr3.NUMBER = 37 THEN BEGIN
+                    IF Customer.GET(GlobalVar[2]) THEN
+                      ExportedValue := Customer."Phone No.";
+                   END ELSE
+                    IF Vendor.GET(GlobalVar[2]) THEN
+                     ExportedValue := Vendor."Phone No.";
+
+                END;
+              IF ExportedValue = '' THEN BEGIN
+                InsertLogEntry(ImportFrameworkLine.Code, Text011, TRUE, FALSE);
+                ExportedValue := '999999';
+              END;
+
+
+            END;
+        6 : BEGIN // calc PO comments
+              rr1.SETTABLE(PO);
+              POComments.SETRANGE("Document Type",PO."Document Type");
+              POComments.SETRANGE("No.",PO."No.");
+              IF POComments.FINDSET THEN
+                REPEAT
+                  ExportedValue := ExportedValue + POComments.Comment;
+                UNTIL POComments.NEXT = 0;
+            END;
+        7 : BEGIN // format date to YYYYMMDD
+              ExportedValue := FORMAT(FieldRef.VALUE,0,'<Year4><Month,2><Day,2>');
+            END;
+        8 : BEGIN // format decimal - 3 digits
+              IF EVALUATE(decVar,FORMAT(FieldRef.VALUE)) THEN
+                ExportedValue := FORMAT(ROUND(decVar * 1000),0,'<Integer>');
+            END;
+        9 : BEGIN // format decimal - 4 digits
+              IF EVALUATE(decVar,FORMAT(FieldRef.VALUE)) THEN
+                ExportedValue := FORMAT(ROUND(decVar * 10000),0,'<Integer>');
+            END;
+        10 : BEGIN // get no. of packages
+              rr2.SETTABLE(DocLog);
+              //A/P0586
+              IF (DocLog."Source Type" = DocLog."Source Type"::Sales) AND
+                 (DocLog."Document Type" = DocLog."Document Type"::Order) AND
+                 (DocLog.Type = DocLog.Type::Item) AND
+                 SalesLineGOB.GET(DocLog."Document Type",DocLog."Document No.",DocLog."Line No.") AND
+                 (RhenusKADExport.GetItemParcels(SalesLineGOB) <> 0)
+              THEN
+                  ExportedValue := FORMAT(RhenusKADExport.GetItemParcels(SalesLineGOB),0,'<Integer>')
+              //E/P0586
+              ELSE
+              IF DocLog.Type = DocLog.Type::Item THEN BEGIN
+                IF Item.GET(DocLog."No.") THEN BEGIN
+                  Item.CALCFIELDS("Parcels Number");
+                  IF Item."Parcels Number" = 0 THEN
+                    ExportedValue := '1'
+                  ELSE
+                    ExportedValue := FORMAT(Item."Parcels Number",0,'<Integer>');
+                END;
+              END;
+            END;
+        11 : BEGIN // document type RHENUS
+              CASE FORMAT(FieldRef.VALUE) OF
+                '1' : ExportedValue := '1';
+                '5' : ExportedValue := '2';
+                '0' : ExportedValue := '15';
+              END;
+            END;
+        12 : BEGIN // weight
+                rr2.SETTABLE(DocLog);
+                IF Item.GET(DocLog."No.") THEN
+                  ExportedValue := FORMAT(ComRound(Item."Net Weight"),0,'<Integer>');
+            END;
+        13 : BEGIN // volume
+                rr2.SETTABLE(DocLog);
+                IF Item.GET(DocLog."No.") THEN
+                  // 1.00 B >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                  //original ExportedValue := FORMAT(ComRound(Item."Unit Volume"),0,'<Integer>');
+                  ExportedValue := FORMAT(ComRound(Item."Unit Volume" * 1000),0,'<Integer>');
+                  // 1.00 E <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+            END;
+        14 : BEGIN // format date to DD.MM.YYYY
+              ExportedValue := FORMAT(FieldRef.VALUE,0,'<Day,2>.<Month,2>.<Year4>');
+            END;
+        15 : BEGIN // format date to DD.MM.YYYY-HH:MM:SS
+              IF (FORMAT(FieldRef.VALUE) <> '') AND EVALUATE(dateVar,FORMAT(FieldRef.VALUE)) THEN
+                ExportedValue := FORMAT(CREATEDATETIME(dateVar,TIME),
+                0,'<Day,2>.<Month,2>.<Year4>-<Hours24,2>:<Minutes,2>:<Seconds,2>');
+            END;
+        16 : BEGIN // country/region
+             IF FORMAT(FieldRef.VALUE) = '' THEN
+                InsertLogEntry(ImportFrameworkLine.Code, STRSUBSTNO(Text013), TRUE, FALSE)
+              ELSE BEGIN
+
+              // FieldRef.TESTFIELD;
+              IF Country.GET(FieldRef.VALUE) THEN BEGIN
+                IF Country."Country Code Rhenus" = '' THEN
+                  InsertLogEntry(ImportFrameworkLine.Code, STRSUBSTNO(Text013,Country.Code), TRUE, FALSE)
+                ELSE
+                  //Country.TESTFIELD("Country Code Rhenus");
+                  ExportedValue := Country."Country Code Rhenus";
+              END;
+             END;
+            END;
+        17 : BEGIN // boolean
+              //A/GOB-MNO/ FIX
+              EVALUATE(bNAVBool,FORMAT(FieldRef.VALUE));
+              IF bNAVBool THEN
+                ExportedValue := '1'
+              ELSE
+                ExportedValue := '0';
+              //E/GOB-MNO/ FIX
+            END;
+        18 : BEGIN // money in cents
+              IF EVALUATE(decVar,FORMAT(FieldRef.VALUE)) THEN
+                ExportedValue := FORMAT(ROUND(decVar * 100),0,'<Integer>');
+            END;
+        19 : BEGIN // filiale
+              //29.08.12  nas fixed change channel func-ty  >>
+              //IF FieldRef.CALCFIELD THEN
+              //29.08.12  nas fixed change channel func-ty  <<
+                IF EVALUATE(intVar,FORMAT(FieldRef.VALUE)) THEN
+                  Website.RESET;
+                  Website.SETRANGE(Website."Website No.",intVar);
+                  IF Website.FINDFIRST THEN
+                    ExportedValue := FORMAT(Website."Rhenus Website No.");
+            END;
+        20 : BEGIN // salutation
+              ExportedValue := ParseSalutation(FORMAT(FieldRef.VALUE));
+            END;
+        21 : BEGIN // service
+              rr2.SETTABLE(DocLog);
+              //31.07.12  nas corrected assembly qty >>
+              SOLine.RESET;
+              SOLine.SETRANGE("Document Type",DocLog."Document Type");
+              SOLine.SETRANGE("Document No.",DocLog."Document No.");
+              SOLine.SETFILTER("Line No.",'<%1',DocLog."Line No.");
+              IF SOLine.FINDLAST THEN BEGIN
+                IF SOLine.Type = SOLine.Type::Item THEN
+                IF Item.GET(SOLine."No.") THEN
+                ExportedValue := FORMAT(Item."Assembly Service Amount" * DocLog.Quantity);
+                //ExportedValue := FORMAT(Item."Assembly Service Amount" * 10);
+              END;
+              //31.07.12  nas corrected assembly qty <<
+            END;
+        22 : BEGIN // cancelled quantity
+              rr2.SETTABLE(DocLog);
+              GetSOLine(DocLog,SOLine);
+              IF DocLog.Quantity > 0 THEN
+                ExportedValue := FORMAT(DocLog.Quantity)
+              ELSE
+                ExportedValue := FORMAT(DocLog."Cancellation Qty.");
+            END;
+        23 : BEGIN // get e-mail from ship address
+              //A/P0798
+              //IF ShipAdd.GET(FieldRef.VALUE) THEN
+              IF ShipAdd.GET(GlobalVar[2],FieldRef.VALUE) THEN
+              //E/P0798
+                IF ShipAdd."E-Mail" <> '' THEN
+                  ExportedValue := ShipAdd."E-Mail";
+              IF ExportedValue = '' THEN BEGIN
+                IF rr1.NUMBER = 36 THEN BEGIN
+                  IF Customer.GET(GlobalVar[2]) THEN
+                    ExportedValue := Customer."E-Mail";
+                 END ELSE
+                  IF Vendor.GET(GlobalVar[2]) THEN
+                    ExportedValue := Vendor."E-Mail";
+              END;
+            END;
+        24 : BEGIN // comments
+              rr1.SETTABLE(SO);
+              SOComments.SETRANGE("Document Type",SO."Document Type");
+              SOComments.SETRANGE("No.",SO."No.");
+              IF SOComments.FINDSET THEN
+                REPEAT
+                  ExportedValue := ExportedValue + SOComments.Comment;
+                UNTIL (SOComments.NEXT = 0) OR (STRLEN(ExportedValue) > 250);
+              ExportedValue := COPYSTR(ExportedValue,1,ImportFrameworkLine.Length);
+            END;
+        25 : BEGIN // get branch no
+              IF Location.GET(FieldRef.VALUE) THEN BEGIN
+                IF Location."Branch Code" = '' THEN
+                  InsertLogEntry(ImportFrameworkLine.Code,
+                    STRSUBSTNO(Text014,Location.FIELDCAPTION("Branch Code"),Location.TABLECAPTION,Location.Code), TRUE, FALSE)
+                ELSE
+                  ExportedValue := Location."Branch Code";
+              END;
+            END;
+        26 : BEGIN // get delivery type
+              ExportedValue := 'K';
+              rr1.SETTABLE(SO);
+              SOLine.RESET;
+              SOLine.SETRANGE("Document Type",SO."Document Type");
+              SOLine.SETRANGE("Document No.",SO."No.");
+              IF SOLine.FINDSET THEN REPEAT
+              IF Purchasing.GET(SOLine."Purchasing Code") THEN BEGIN
+                IF Purchasing."Delivery Type" = Purchasing."Delivery Type"::Selbstabholer THEN
+                  ExportedValue := 'S';
+              END;
+              UNTIL SOLine.NEXT = 0;
+            END;
+        //16.07.12  nas format post code for NL >>
+        27 : BEGIN // get delivery type
+              rr1.SETTABLE(SO);
+              ExportedValue := SO."Ship-to Post Code";
+              //A/gob-rste/12.09.12/P0316
+              //SO.CALCFIELDS("Website No.");
+              //E/gob-rste/12.09.12/P0316
+              IF SO."Website No." = 3 THEN
+                ExportedValue := formatNLPostCode(ExportedValue);
+            END;
+        //16.07.12  nas format post code for NL >>
+        //20.07.12  nas export remarks for 639 >>
+        28 : BEGIN // get delivery type
+              rr2.SETTABLE(DocLog);
+              //A/P0838
+              FPCGeneralSetup.GET;
+              FPCGeneralSetup.TESTFIELD("Branch Rhenus Grevenbroich");
+              //IF DocLog."Branch Code" = '639' THEN
+              IF DocLog."Branch Code" = FPCGeneralSetup."Branch Rhenus Grevenbroich" THEN
+              //E/P0838
+                ExportedValue := Text018
+              ELSE
+                ExportedValue := '';
+            END;
+        //20.07.12  nas export remarks for 639 >>
+        //A/P0905
+        29 : BEGIN
+          rr2.SETTABLE(RhenusChangeLog);
+          LocDocNo := '';
+          IF STRLEN(RhenusChangeLog."Document No.") > 4 THEN
+            LocDocNo := COPYSTR(RhenusChangeLog."Document No.",1,STRLEN(RhenusChangeLog."Document No.") - 3);
+          RhenusChangeLog2.RESET;
+          RhenusChangeLog2.SETRANGE("Source Type",RhenusChangeLog."Source Type");
+          RhenusChangeLog2.SETRANGE("Document Type",RhenusChangeLog."Document Type");
+          RhenusChangeLog2.SETRANGE("Document No.",LocDocNo);
+          RhenusChangeLog2.SETRANGE("Seq. Code",RhenusChangeLog."Seq. Code");
+          RhenusChangeLog2.SETRANGE(Type,RhenusChangeLog2.Type::Resource);
+          RhenusChangeLog2.SETFILTER("Parent Item No.",'<>%1','');
+          IF RhenusChangeLog2.FIND('-') THEN BEGIN
+            REPEAT
+              IF STRLEN(ExportedValue) <= 88 THEN BEGIN
+                IF ExportedValue = '' THEN
+                  ExportedValue := LocText001 + RhenusChangeLog2."Parent Item No."
+                ELSE
+                  ExportedValue := ExportedValue + ', ' + RhenusChangeLog2."Parent Item No.";
+              END;
+            UNTIL RhenusChangeLog2.NEXT = 0;
+          END;
+        END;
+        //E/P0905
+      END;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE ProcessLine@1000000000(TextLine@1000000003 : Text[1024]);
+    VAR
+      StartText@1000000002 : Text[30];
+      ImportFrm@1000000001 : Record 50010;
+      ImportFrmLine@1000000000 : Record 50011;
+      i@1000000005 : Integer;
+    BEGIN
+      IFSetup.GET;
+      //bigTextLine.GETSUBTEXT(TextLine,1,1024);
+      TextLine := DELCHR(TextLine,'<>',' ');
+      StartText := COPYSTR(TextLine,1,4);
+      ImportFrm.RESET;
+      ImportFrm.SETRANGE("Start Characters",StartText);
+      IF ImportFrm.FINDFIRST THEN BEGIN
+        //InsertLogEntry(ImportFrm.Code, STRSUBSTNO(Text003, ImportFrm."Start Characters"), FALSE, FALSE);
+        ImportFrmLine.RESET;
+        ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+        IF ImportFrmLine.FINDSET THEN
+          REPEAT
+            GetFieldValue(ImportFrmLine);
+          UNTIL ImportFrmLine.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE ConvertDate@1000000001(DateText@1000000003 : Text[10]) : Date;
+    VAR
+      YYYY@1000000002 : Integer;
+      MM@1000000001 : Integer;
+      DD@1000000000 : Integer;
+    BEGIN
+      IF NOT EVALUATE(YYYY,COPYSTR(DateText,1,4)) THEN
+        EXIT(WORKDATE);
+      IF YYYY < 100 THEN YYYY := 2000 + YYYY;
+      IF NOT EVALUATE(MM,COPYSTR(DateText,5,2)) THEN
+        EXIT(WORKDATE);
+      IF NOT EVALUATE(DD,COPYSTR(DateText,7,2)) THEN
+        EXIT(WORKDATE);
+      IF DD*MM*YYYY = 0 THEN
+        EXIT(WORKDATE);
+      EXIT(DMY2DATE(DD,MM,YYYY));
+    END;
+
+    PROCEDURE GetFromGlobal@1000000002(ImportFrameworkLine@1000000002 : Record 50011;VAR expvalue@1000000000 : Text[1000]);
+    BEGIN
+      IF ImportFrameworkLine."Global Variable" <> ImportFrameworkLine."Global Variable"::" " THEN
+        expvalue := GlobalVar[ImportFrameworkLine."Global Variable"];
+    END;
+
+    PROCEDURE GetBigIntFromText@1000000003(TextLine@1000000000 : Text[250]) : BigInteger;
+    VAR
+      i@1000000001 : Integer;
+      TextNumber@1000000003 : Text[30];
+      intVal@1000000002 : BigInteger;
+    BEGIN
+      i := 1;
+      WHILE i <= STRLEN(TextLine) DO BEGIN
+        IF TextLine[i] IN ['0'..'9'] THEN BEGIN
+          WHILE (TextLine[i] IN ['0'..'9']) AND (i <= STRLEN(TextLine)) DO BEGIN
+            TextNumber := TextNumber + FORMAT(TextLine[i]);
+            i := i + 1;
+          END;
+          EVALUATE(intVal,TextNumber);
+          EXIT(intVal);
+        END;
+        i := i + 1;
+      END;
+      EXIT(0);
+    END;
+
+    PROCEDURE FormatTextField@1000000005(VAR TextLine@1000000000 : Text[1000];NewSize@1000000001 : Integer;Type@1000000002 : 'Char,Number') : Text[1000];
+    VAR
+      Dif@1000000003 : Integer;
+      TempLine@1000000004 : Text[30];
+    BEGIN
+      TextLine := DELCHR(DELCHR(TextLine,'<>',' '),'=',txtCRLF);
+      IF Type = Type::Char THEN
+        EXIT(PADSTR(TextLine,NewSize,' '))
+      ELSE
+        EXIT(PADSTR('',NewSize - STRLEN(TextLine),'0') + TextLine);
+    END;
+
+    PROCEDURE ProcessRhenus@1000000010();
+    VAR
+      SO@1000000006 : Record 36;
+      SOLine@1000000007 : Record 37;
+      SOTempLine@1000000015 : TEMPORARY Record 37;
+      PO@1000000010 : Record 38;
+      POLine@1000000004 : Record 39;
+      Location@1000000008 : Record 14;
+      ImportFrm@1000000002 : Record 50010;
+      ImportFrmLine@1000000001 : Record 50011;
+      ProcessLog@1000000000 : Record 50015;
+      TextLine@1000000003 : Text[1024];
+      FileRec@1000000005 : File;
+      Mandant@1000000009 : Code[4];
+      bigTxt@1000000011 : BigText;
+      FileName@1000000012 : Text[1024];
+      IsParcelReturn@1000000014 : Boolean;
+      OrderExist@1000000013 : Boolean;
+      flag1@1000000016 : Boolean;
+      flag2@1000000017 : Boolean;
+    BEGIN
+      IFSetup.GET;
+      SalesSetup.GET;
+      Interface.GET('RHENUS');
+      Interface.TESTFIELD("Export Folder");
+
+      ProcessLog.RESET;
+      //ProcessLog.SETRANGE("Entry No.",65,67);
+      ProcessLog.SETRANGE(Processed,FALSE);
+      ProcessLog.SETRANGE("Interface Code",Interface.Code);
+      //ProcessLog.SETFILTER(Action,'%1|%2',ProcessLog.Action::New,ProcessLog.Action::Cancelation);
+      IF ProcessLog.FINDSET THEN
+        REPEAT
+          Mandant := ProcessLog.Mandant;
+          GlobalVar[1] := Mandant;
+          //CLEAR(FileRec);
+          //FileRec.TEXTMODE(TRUE);
+
+          CLEAR(UTFWriter);
+          CREATE(UTFWriter);
+          UTFWriter.Open;
+          UTFWriter.Charset('UTF-8');
+
+          txtCRLF := 'XX';  // define it as Text with size 2
+          txtCRLF[1] := 13;
+          txtCRLF[2] := 10;
+
+
+          rr1.CLOSE;
+          rr2.CLOSE;
+          rr3.CLOSE;
+          OrderExist := FALSE;
+
+          IF ProcessLog."Source Type" = ProcessLog."Source Type"::Sales THEN BEGIN
+            IF NOT IFSetup."Disable Sales Export" THEN BEGIN
+              {
+               IF ProcessLog.Action = ProcessLog.Action::Cancelation THEN BEGIN
+                 SO.INIT;
+                 IF ProcessLog."Document Type" = ProcessLog."Document Type"::Order THEN
+                   SO."Document Type" := SO."Document Type"::Order
+                 ELSE
+                   SO."Document Type" := SO."Document Type"::"Return Order";
+                 SO."No." := ProcessLog."Document No.";
+               END ELSE BEGIN
+               }
+              IF ProcessLog."Document Type" = ProcessLog."Document Type"::Order THEN BEGIN
+                IF SO.GET(SO."Document Type"::Order,ProcessLog."Document No.") THEN
+                  OrderExist := TRUE;
+              END ELSE BEGIN
+                IF SO.GET(SO."Document Type"::"Return Order",ProcessLog."Document No.") THEN
+                  OrderExist := TRUE;
+              END;
+              IF OrderNotCancelled(ProcessLog."Document No.") THEN        //remove later
+              IF OrderExist THEN BEGIN
+                IF SO.Kommissionierung AND
+                  (DT2DATE(SO."Order Release Date") <= CALCDATE(SalesSetup."NAV SO Overdue Period",SO."Order Date")) THEN BEGIN
+                  // >>>>>
+                  //IF DT2DATE(SO."Order Release Date") <= CALCDATE(SalesSetup."Due Date 1",SO."Order Date") THEN
+                    SO."Shipment Date" := 0D;
+
+                  IF SO.Status = SO.Status::"Pending Prepayment" THEN
+                  //IF (SO."Prepayment %" > 0) AND (ProcessLog.Action = ProcessLog.Action::New) THEN
+                    SO."Shipment Date" := 11112911D;
+                  // <<<
+                  GlobalVar[2] := SO."Sell-to Customer No.";
+                  GlobalVar[3] := FORMAT(ProcessLog.Action,0,9);
+                  GlobalVar[4] := SO."No.";
+
+                  rr1.OPEN(DATABASE::"Sales Header");
+                  rr1.GETTABLE(SO);
+
+                  rr2.OPEN(DATABASE::"Document Process Log");
+                  rr2.GETTABLE(ProcessLog);
+
+                  rr3.OPEN(DATABASE::"Sales Line");
+
+                  IsParcelReturn := FALSE;
+                  IF ProcessLog."Document Type" = ProcessLog."Document Type"::"Return Order" THEN BEGIN
+                    SOLine.SETRANGE("Document Type",SO."Document Type");
+                    SOLine.SETRANGE("Document No.",SO."No.");
+                    IF SOLine.FINDSET THEN
+                      REPEAT
+                        IF SOLine."Purchasing Code" = 'PAKET-LAG' THEN IsParcelReturn := TRUE;
+                      UNTIL (SOLine.NEXT = 0) OR IsParcelReturn;
+                  END;
+
+                  IF NOT IsParcelReturn THEN BEGIN
+                    // >  270412  chrmu group lines
+                    SOLine.SETRANGE("Document Type",SO."Document Type");
+                    SOLine.SETRANGE("Document No.",SO."No.");
+                    GroupLines(SOLine,SOTempLine);
+                    flag1 := FALSE;
+                    flag2 := FALSE;
+                    // < 270412  chrmu group lines
+
+                    IF (ProcessLog.Action = ProcessLog.Action::Change) AND
+                      (DT2DATE(SO."Order Release Date") >= CALCDATE(SalesSetup."Rhenus SO Overdue Period",SO."Order Date"))
+                    THEN BEGIN
+                      GlobalVar[3] := FORMAT(ProcessLog.Action::Cancelation,0,9);
+                      ImportFrm.RESET;
+                      ImportFrm.SETRANGE(Blocked,FALSE);
+                      ImportFrm.SETRANGE("Interface Code",Interface.Code);
+                      ImportFrm.SETRANGE("Import/Export",ImportFrm."Import/Export"::Export);
+                      ImportFrm.SETRANGE("Start Characters",'KAK');
+                      IF ImportFrm.FINDFIRST THEN BEGIN
+                        TextLine := '';
+                        ImportFrmLine.RESET;
+                        ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+                        IF ImportFrmLine.FINDSET THEN
+                          REPEAT
+                            TextLine := TextLine + GetFieldValue(ImportFrmLine);
+                          UNTIL ImportFrmLine.NEXT = 0;
+                        UTFWriter.WriteText(TextLine + txtCRLF);
+                      END;
+
+                      ImportFrm.SETRANGE("Start Characters",'KAL');
+                      IF ImportFrm.FINDFIRST THEN BEGIN
+                        TextLine := '';
+                        ImportFrmLine.RESET;
+                        ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+                        IF ImportFrmLine.FINDSET THEN
+                          REPEAT
+                            TextLine := TextLine + GetFieldValue(ImportFrmLine);
+                            //TextLine := TextLine + Ascii2Ansi(GetFieldValue(ImportFrmLine));
+                          UNTIL ImportFrmLine.NEXT = 0;
+                        UTFWriter.WriteText(TextLine + txtCRLF);
+
+                      END;
+
+                      SOTempLine.RESET;
+                      IF SOTempLine.FINDSET THEN
+                        REPEAT
+                          rr3.GETTABLE(SOTempLine);
+                          TextLine := '';
+                          IF IsRhenusLocation(SOTempLine."Location Code") THEN BEGIN
+                            IF SOTempLine.Type = SOTempLine.Type::Item THEN BEGIN
+                              CLEAR(bigTxt);
+                              ImportFrm.SETRANGE("Start Characters",'KAP');
+                              IF ImportFrm.FINDFIRST THEN BEGIN
+                                ImportFrmLine.RESET;
+                                ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+                                IF ImportFrmLine.FINDSET THEN
+                                  REPEAT
+                                    TextLine := TextLine + GetFieldValue(ImportFrmLine);
+                                  UNTIL ImportFrmLine.NEXT = 0;
+                                UTFWriter.WriteText(TextLine + txtCRLF);
+
+                              END;
+                            END;
+                            IF (SOTempLine.Type = SOTempLine.Type::Resource) AND
+                               (SOTempLine."Resource Type" = SOTempLine."Resource Type"::Assembly) THEN BEGIN
+                              CLEAR(bigTxt);
+                              TextLine := '';
+                              ImportFrm.SETRANGE("Start Characters",'KAS');
+                              IF ImportFrm.FINDFIRST THEN BEGIN
+                                ImportFrmLine.RESET;
+                                ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+                                IF ImportFrmLine.FINDSET THEN
+                                  REPEAT
+                                    TextLine := TextLine + GetFieldValue(ImportFrmLine);
+                                  UNTIL ImportFrmLine.NEXT = 0;
+                                UTFWriter.WriteText(TextLine + txtCRLF);
+
+                              END;
+                            END;
+                          END;
+                        UNTIL SOTempLine.NEXT = 0;
+
+                      GlobalVar[3] := FORMAT(ProcessLog.Action::New,0,9);
+                      GlobalVar[4] := SO."No." + '/1';
+                    END;
+
+                    //
+
+                    ImportFrm.RESET;
+                    ImportFrm.SETRANGE(Blocked,FALSE);
+                    ImportFrm.SETRANGE("Interface Code",Interface.Code);
+                    ImportFrm.SETRANGE("Import/Export",ImportFrm."Import/Export"::Export);
+                    ImportFrm.SETRANGE("Start Characters",'KAK');
+                    IF ImportFrm.FINDFIRST THEN BEGIN
+                      TextLine := '';
+                      ImportFrmLine.RESET;
+                      ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+                      IF ImportFrmLine.FINDSET THEN
+                        REPEAT
+                          TextLine := TextLine + GetFieldValue(ImportFrmLine);
+                        UNTIL ImportFrmLine.NEXT = 0;
+                      UTFWriter.WriteText(TextLine + txtCRLF);
+                    END;
+
+                  //IF ProcessLog.Action <> ProcessLog.Action::Cancelation THEN BEGIN
+                    ImportFrm.SETRANGE("Start Characters",'KAL');
+                    IF ImportFrm.FINDFIRST THEN BEGIN
+                      TextLine := '';
+                      ImportFrmLine.RESET;
+                      ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+                      IF ImportFrmLine.FINDSET THEN
+                        REPEAT
+                          TextLine := TextLine + GetFieldValue(ImportFrmLine);
+                          //TextLine := TextLine + Ascii2Ansi(GetFieldValue(ImportFrmLine));
+                        UNTIL ImportFrmLine.NEXT = 0;
+                      UTFWriter.WriteText(TextLine + txtCRLF);
+
+                    END;
+
+                    SOTempLine.RESET;
+                    IF SOTempLine.FINDSET THEN
+                      REPEAT
+                        IF (SOTempLine.Type = SOTempLine.Type::Item) THEN BEGIN
+                          IF (SOTempLine."Purchasing Code" = 'GER-1') OR (SOTempLine."Purchasing Code" = 'GER-10') THEN
+                            flag1 := TRUE
+                          ELSE flag2 := TRUE;
+                        END;
+                        rr3.GETTABLE(SOTempLine);
+                        TextLine := '';
+                        IF IsRhenusLocation(SOTempLine."Location Code") THEN BEGIN
+                          IF SOTempLine.Type = SOTempLine.Type::Item THEN BEGIN
+                            CLEAR(bigTxt);
+                            ImportFrm.SETRANGE("Start Characters",'KAP');
+                            IF ImportFrm.FINDFIRST THEN BEGIN
+                              ImportFrmLine.RESET;
+                              ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+                              IF ImportFrmLine.FINDSET THEN
+                                REPEAT
+                                  TextLine := TextLine + GetFieldValue(ImportFrmLine);
+                                UNTIL ImportFrmLine.NEXT = 0;
+                              UTFWriter.WriteText(TextLine + txtCRLF);
+
+                            END;
+                          END;
+                          IF (SOTempLine.Type = SOTempLine.Type::Resource) AND
+                             (SOTempLine."Resource Type" = SOTempLine."Resource Type"::Assembly) THEN BEGIN
+                            CLEAR(bigTxt);
+                            TextLine := '';
+                            ImportFrm.SETRANGE("Start Characters",'KAS');
+                            IF ImportFrm.FINDFIRST THEN BEGIN
+                              ImportFrmLine.RESET;
+                              ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+                              IF ImportFrmLine.FINDSET THEN
+                                REPEAT
+                                  TextLine := TextLine + GetFieldValue(ImportFrmLine);
+                                UNTIL ImportFrmLine.NEXT = 0;
+                              UTFWriter.WriteText(TextLine + txtCRLF);
+
+                            END;
+                          END;
+                        END;
+                      UNTIL SOTempLine.NEXT = 0;
+                    IF flag1 AND flag2 THEN BEGIN
+                      SOTempLine.INIT;
+                      SOTempLine."Document Type" := SO."Document Type";
+                      SOTempLine."Document No." := SO."No.";
+                      SOTempLine.Type := SOTempLine.Type::Item;
+                      SOTempLine."No." := 'Order-Info';
+                      SOTempLine.Description := Text017;
+                      SOTempLine.Quantity := 1;
+                      SOTempLine."Unit Price" := 0;
+                      TextLine := '';
+
+                      rr3.GETTABLE(SOTempLine);
+                      ImportFrm.SETRANGE("Start Characters",'KAP');
+                      IF ImportFrm.FINDFIRST THEN BEGIN
+                        ImportFrmLine.RESET;
+                        ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+                        IF ImportFrmLine.FINDSET THEN
+                          REPEAT
+                            TextLine := TextLine + GetFieldValue(ImportFrmLine);
+                          UNTIL ImportFrmLine.NEXT = 0;
+                        UTFWriter.WriteText(TextLine + txtCRLF);
+
+                      END;
+                    END;
+                    //END;
+                    FileName :=
+                      'KAD' + Mandant +
+                      FORMAT(CURRENTDATETIME,0,'<Year4><Month,2><Day,2><Hours24><Minutes,2><Seconds,2>') + '.txt';
+                  END ELSE BEGIN
+                    IF ImportFrm.GET('R-WEA') THEN BEGIN
+                      ImportFrmLine.RESET;
+                      ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+
+                      SOLine.SETRANGE("Document Type",SO."Document Type");
+                      SOLine.SETRANGE("Document No.",SO."No.");
+                      IF SOLine.FINDSET THEN
+                        REPEAT
+                          rr3.GETTABLE(SOLine);
+                          TextLine := '';
+                          IF (SOLine.Type = SOLine.Type::Item) AND
+                            IsRhenusLocation(SOLine."Location Code") THEN BEGIN
+                            CLEAR(bigTxt);
+                            IF ImportFrmLine.FINDSET THEN
+                              REPEAT
+                                TextLine := TextLine + GetFieldValue(ImportFrmLine);
+                              UNTIL ImportFrmLine.NEXT = 0;
+                            UTFWriter.WriteText(TextLine + txtCRLF);
+
+                          END;
+                        UNTIL SOLine.NEXT = 0;
+                    END;
+                    FileName := 'WEA' + Mandant +
+                    //S/P1160
+                    //FORMAT(CURRENTDATETIME,0,'<Year4><Month,2><Day,2><Hours24><Minutes,2><Seconds,2>') + '.txt';
+                    FORMAT(CURRENTDATETIME,0,'<Year4><Month,2><Day,2><Hours24><Minutes,2><Seconds,2><Thousands,3>') + '.txt';
+                    //E/P1160
+                  END;
+                  UTFWriter.SaveToFile(Interface."Export Folder" + FileName);
+                  UTFWriter.Close;
+                  //S/P1160
+                  IF STRPOS(FileName,'WEA') = 0 THEN
+                  //E/P1160
+                    SLEEP(1000);
+                  //UTFWriter.SaveToFile(Interface."Archive Root Folder" + FileName);
+                  //A/gob-rste/17.08.12/P0210
+                  IF EXISTS(Interface."Export Folder" + FileName) THEN
+                  //E/gob-rste/17.08.12/P0210
+                  IF FILE.COPY(Interface."Export Folder" + FileName,Interface."Archive Root Folder" + FileName) THEN
+                    SO.ADDLINK(IFSetup."Rhenus Archive Folder" + FileName,Text015);
+
+                  InsertLogEntry('',
+                    STRSUBSTNO(Text001,Interface."Export Folder" + FileName,ProcessLog."Document No.",Interface.Code),
+                    FALSE, FALSE);
+
+                  ProcessLog.Processed := TRUE;
+                  ProcessLog."Processing Date" := CURRENTDATETIME;
+                  //A/gob-rste/17.08.12/P0210
+                  IF EXISTS(Interface."Export Folder" + FileName) THEN
+                  //E/gob-rste/17.08.12/P0210
+                    ProcessLog."Export File Name" := FileName
+                  //A/gob-rste/17.08.12/P0210
+                  ELSE
+                    ProcessLog."Export File Name" := 'No file created. Cause: Cancelation.';
+                  //E/gob-rste/17.08.12/P0210
+                  ProcessLog.MODIFY;
+                END;
+              END ELSE
+                InsertLogEntry('',
+                  STRSUBSTNO(Text012,ProcessLog."Document No."),
+                  FALSE, FALSE);
+
+            END;
+          END ELSE BEGIN
+            IF NOT IFSetup."Disable Purchase Export" THEN BEGIN
+
+              IF ProcessLog.Action = ProcessLog.Action::Cancelation THEN BEGIN
+                PO.INIT;
+                IF ProcessLog."Document Type" = ProcessLog."Document Type"::Order THEN
+                  PO."Document Type" := PO."Document Type"::Order
+                ELSE
+                  PO."Document Type" := PO."Document Type"::"Return Order";
+                PO."No." := ProcessLog."Document No.";
+              END ELSE BEGIN
+                IF ProcessLog."Document Type" = ProcessLog."Document Type"::Order THEN BEGIN
+                  IF PO.GET(PO."Document Type"::Order,ProcessLog."Document No.") THEN
+                    OrderExist := TRUE;
+                END ELSE BEGIN
+                  IF PO.GET(PO."Document Type"::"Return Order",ProcessLog."Document No.") THEN
+                    OrderExist := TRUE;
+                END;
+              END;
+              IF OrderExist THEN BEGIN
+
+                GlobalVar[2] := PO."Buy-from Vendor No.";
+                GlobalVar[3] := '1';
+                GlobalVar[4] := PO."No.";
+
+                rr1.OPEN(DATABASE::"Purchase Header");
+                rr1.GETTABLE(PO);
+
+                rr2.OPEN(DATABASE::"Document Process Log");
+                rr2.GETTABLE(ProcessLog);
+
+                rr3.OPEN(DATABASE::"Purchase Line");
+                IF ProcessLog."Document Type" = ProcessLog."Document Type"::Order THEN BEGIN
+                  //ImportFrm.RESET;
+                  //ImportFrm.SETRANGE("Interface Code",Interface.Code);
+                  //ImportFrm.SETRANGE("Import/Export",ImportFrm."Import/Export"::Export);
+                  //ImportFrm.SETRANGE("Start Characters",'WEA');
+                  IF ImportFrm.GET('R-WEA') THEN BEGIN
+                  //IF ImportFrm.FINDFIRST THEN BEGIN
+                    ImportFrmLine.RESET;
+                    ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+
+                    POLine.SETRANGE("Document Type",PO."Document Type");
+                    POLine.SETRANGE("Document No.",PO."No.");
+                    IF ProcessLog.Action = ProcessLog.Action::Change THEN BEGIN
+                      GlobalVar[3] := '2';
+                      IF PO."Release Counter" > 2 THEN
+                        GlobalVar[4] := PO."No." + '/' + FORMAT(PO."Release Counter" - 2);
+
+                      IF POLine.FINDSET THEN
+                        REPEAT
+                          rr3.GETTABLE(POLine);
+                          TextLine := '';
+                          IF (POLine.Type = POLine.Type::Item) AND
+                             IsRhenusLocation(POLine."Location Code") THEN BEGIN
+                            CLEAR(bigTxt);
+                            IF ImportFrmLine.FINDSET THEN
+                              REPEAT
+                                TextLine := TextLine + GetFieldValue(ImportFrmLine);
+                                //TextLine := TextLine + Ascii2Ansi(GetFieldValue(ImportFrmLine));
+                              UNTIL ImportFrmLine.NEXT = 0;
+                            UTFWriter.WriteText(TextLine + txtCRLF);
+
+                          END;
+                        UNTIL POLine.NEXT = 0;
+                      GlobalVar[3] := '1';
+                      GlobalVar[4] := PO."No." + '/' + FORMAT(PO."Release Counter" - 1);
+                    END;
+
+                    IF POLine.FINDSET THEN
+                      REPEAT
+                        rr3.GETTABLE(POLine);
+                        TextLine := '';
+                        IF (POLine.Type = POLine.Type::Item) AND
+                           IsRhenusLocation(POLine."Location Code") THEN BEGIN
+                          CLEAR(bigTxt);
+                          IF ImportFrmLine.FINDSET THEN
+                            REPEAT
+                              TextLine := TextLine + GetFieldValue(ImportFrmLine);
+                              //TextLine := TextLine + Ascii2Ansi(GetFieldValue(ImportFrmLine));
+                            UNTIL ImportFrmLine.NEXT = 0;
+                          UTFWriter.WriteText(TextLine + txtCRLF);
+
+                        END;
+                      UNTIL POLine.NEXT = 0;
+
+                  END;
+                  FileName := 'WEA' + Mandant +
+                  //S/P1160
+                  //FORMAT(CURRENTDATETIME,0,'<Year4><Month,2><Day,2><Hours24><Minutes,2><Seconds,2>') + '.txt';
+                  FORMAT(CURRENTDATETIME,0,'<Year4><Month,2><Day,2><Hours24><Minutes,2><Seconds,2><Thousands,3>') + '.txt';
+                  //E/P1160
+                END ELSE BEGIN
+                  IF ImportFrm.GET('R-KAK-P') THEN BEGIN
+                    TextLine := '';
+                    ImportFrmLine.RESET;
+                    ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+                    IF ImportFrmLine.FINDSET THEN
+                      REPEAT
+                        TextLine := TextLine + GetFieldValue(ImportFrmLine);
+                      UNTIL ImportFrmLine.NEXT = 0;
+                    UTFWriter.WriteText(TextLine + txtCRLF);
+                  END;
+
+                  //IF ProcessLog.Action <> ProcessLog.Action::Cancelation THEN BEGIN
+                    IF ImportFrm.GET('R-KAL-P') THEN BEGIN
+                      TextLine := '';
+                      ImportFrmLine.RESET;
+                      ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+                      IF ImportFrmLine.FINDSET THEN
+                        REPEAT
+                          TextLine := TextLine + GetFieldValue(ImportFrmLine);
+                          //TextLine := TextLine + Ascii2Ansi(GetFieldValue(ImportFrmLine));
+                        UNTIL ImportFrmLine.NEXT = 0;
+                      UTFWriter.WriteText(TextLine + txtCRLF);
+
+                    END;
+
+                    POLine.SETRANGE("Document Type",PO."Document Type");
+                    POLine.SETRANGE("Document No.",PO."No.");
+                    IF POLine.FINDSET THEN
+                      REPEAT
+                        rr3.GETTABLE(POLine);
+                        TextLine := '';
+                        IF IsRhenusLocation(POLine."Location Code") THEN BEGIN
+                          IF POLine.Type = POLine.Type::Item THEN BEGIN
+                            CLEAR(bigTxt);
+                            IF ImportFrm.GET('R-KAP-P') THEN BEGIN
+                              ImportFrmLine.RESET;
+                              ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+                              IF ImportFrmLine.FINDSET THEN
+                                REPEAT
+                                  TextLine := TextLine + GetFieldValue(ImportFrmLine);
+                                UNTIL ImportFrmLine.NEXT = 0;
+                              UTFWriter.WriteText(TextLine + txtCRLF);
+
+                            END;
+                          END;
+                        END;
+                     UNTIL POLine.NEXT = 0;
+                  //END;
+                  FileName :=
+                    'KAD' + Mandant +
+                    FORMAT(CURRENTDATETIME,0,'<Year4><Month,2><Day,2><Hours24><Minutes,2><Seconds,2>') + '.txt';
+
+                END;
+                UTFWriter.SaveToFile(Interface."Export Folder" + FileName);
+                //UTFWriter.SaveToFile(Interface."Archive Root Folder" + FileName);
+                UTFWriter.Close;
+                //S/P1160
+                IF STRPOS(FileName,'WEA') = 0 THEN
+                //E/P1160
+                  SLEEP(1000);
+                //A/gob-rste/17.08.12/P0210
+                IF EXISTS(Interface."Export Folder" + FileName) THEN
+                //E/gob-rste/17.08.12/P0210
+                IF FILE.COPY(Interface."Export Folder" + FileName,Interface."Archive Root Folder" + FileName) THEN
+                    PO.ADDLINK(Interface."Archive Root Folder" + FileName,Text015);
+
+                InsertLogEntry('',
+                  STRSUBSTNO(Text001,Interface."Export Folder" + FileName,ProcessLog."Document No.",Interface.Code),
+                  FALSE, FALSE);
+
+                ProcessLog.Processed := TRUE;
+                ProcessLog."Processing Date" := CURRENTDATETIME;
+                ProcessLog."Export File Name" := FileName;
+                ProcessLog.MODIFY;
+              END ELSE
+                InsertLogEntry('',
+                  STRSUBSTNO(Text012,ProcessLog."Document No."),
+                  FALSE, FALSE);
+
+            END;
+
+          END;
+          COMMIT;
+        UNTIL ProcessLog.NEXT = 0;
+
+      IF Interface."Use FTP" THEN FTPUpload;
+      //MESSAGE(Text005);
+      InsertLogEntry('',Text005,FALSE, FALSE);
+    END;
+
+    PROCEDURE ProcessOrders@1000000006();
+    VAR
+      PO@1000000006 : Record 38;
+      POLine@1000000007 : Record 39;
+      Location@1000000008 : Record 14;
+      ImportFrm@1000000002 : Record 50010;
+      ImportFrmLine@1000000001 : Record 50011;
+      ProcessLog@1000000000 : Record 50015;
+      TextLine@1000000003 : Text[1024];
+      FileRec@1000000005 : File;
+      Mandant@1000000009 : Code[4];
+      bigTxt@1000000004 : BigText;
+    BEGIN
+      IFSetup.GET;
+      Interface.GET('ORDERS');
+      Interface.TESTFIELD("Export Folder");
+
+      ProcessLog.RESET;
+      ProcessLog.SETRANGE("Source Type",ProcessLog."Source Type"::Purchase);
+      ProcessLog.SETRANGE("Interface Code",Interface.Code);
+      ProcessLog.SETRANGE(Processed,FALSE);
+      IF ProcessLog.FINDSET THEN
+        REPEAT
+          Mandant := ProcessLog.Mandant;
+          GlobalVar[1] := Mandant;
+
+          IF ProcessLog.Action = ProcessLog.Action::Cancelation THEN BEGIN
+            PO.INIT;
+            IF ProcessLog."Document Type" = ProcessLog."Document Type"::Order THEN
+              PO."Document Type" := PO."Document Type"::Order
+            ELSE
+              PO."Document Type" := PO."Document Type"::"Return Order";
+            PO."No." := ProcessLog."Document No.";
+          END ELSE BEGIN
+            IF ProcessLog."Document Type" = ProcessLog."Document Type"::Order THEN
+              PO.GET(PO."Document Type"::Order,ProcessLog."Document No.")
+            ELSE
+              PO.GET(PO."Document Type"::"Return Order",ProcessLog."Document No.");
+          END;
+
+          CLEAR(bigTxt);
+          CLEAR(FileRec);
+          FileRec.TEXTMODE(TRUE);
+          FileRec.CREATE(Interface."Export Folder" +
+          'ORDERS' + Mandant + DELCHR(FORMAT(TODAY),'=','.') + DELCHR(FORMAT(TIME),'=',':') + '.txt');
+
+          rr1.CLOSE;
+          rr1.OPEN(DATABASE::"Purchase Header");
+          rr1.GETTABLE(PO);
+          rr2.CLOSE;
+          rr2.OPEN(DATABASE::"Document Process Log");
+          rr2.GETTABLE(ProcessLog);
+          rr3.CLOSE;
+          rr3.OPEN(DATABASE::"Purchase Line");
+          TextLine := '';
+
+          ImportFrm.RESET;
+          ImportFrm.SETRANGE("Interface Code",Interface.Code);
+          ImportFrm.SETRANGE("Import/Export",ImportFrm."Import/Export"::Export);
+          ImportFrm.SETRANGE("Start Characters",'HEAD');
+          IF ImportFrm.FINDFIRST THEN BEGIN
+
+            ImportFrmLine.RESET;
+            ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+            IF ImportFrmLine.FINDSET THEN
+              REPEAT
+                TextLine := Ascii2Ansi(GetFieldValue(ImportFrmLine));
+                bigTxt.ADDTEXT(TextLine);
+                //bigTxt.ADDTEXT(GetFieldValue(ImportFrmLine));
+                //TextLine := TextLine + GetFieldValue(ImportFrmLine);
+              UNTIL ImportFrmLine.NEXT = 0;
+            FileRec.WRITE(bigTxt);
+          END;
+
+          IF ProcessLog.Action <> ProcessLog.Action::Cancelation THEN BEGIN
+            TextLine := '';
+            CLEAR(bigTxt);
+            ImportFrm.SETRANGE("Start Characters",'HTXT');
+            IF ImportFrm.FINDFIRST THEN BEGIN
+
+              ImportFrmLine.RESET;
+              ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+              IF ImportFrmLine.FINDSET THEN
+                REPEAT
+                  TextLine := Ascii2Ansi(GetFieldValue(ImportFrmLine));
+                  bigTxt.ADDTEXT(TextLine);
+                  //bigTxt.ADDTEXT(GetFieldValue(ImportFrmLine));
+                  //TextLine := TextLine + GetFieldValue(ImportFrmLine);
+                UNTIL ImportFrmLine.NEXT = 0;
+              FileRec.WRITE(bigTxt);
+            END;
+
+            TextLine := '';
+            CLEAR(bigTxt);
+            ImportFrm.SETRANGE("Start Characters",'NAD');
+            IF ImportFrm.FINDFIRST THEN BEGIN
+
+              ImportFrmLine.RESET;
+              ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+              IF ImportFrmLine.FINDSET THEN
+                REPEAT
+                  TextLine := Ascii2Ansi(GetFieldValue(ImportFrmLine));
+                  bigTxt.ADDTEXT(TextLine);
+                  //bigTxt.ADDTEXT(GetFieldValue(ImportFrmLine));
+                  //TextLine := TextLine + GetFieldValue(ImportFrmLine);
+                UNTIL ImportFrmLine.NEXT = 0;
+              FileRec.WRITE(bigTxt);
+            END;
+
+            POLine.SETRANGE("Document Type",PO."Document Type");
+            POLine.SETRANGE("Document No.",PO."No.");
+            IF POLine.FINDSET THEN
+              REPEAT
+                rr3.GETTABLE(POLine);
+                IF POLine.Type = POLine.Type::Item THEN BEGIN
+                  TextLine := '';
+                  CLEAR(bigTxt);
+                  ImportFrm.SETRANGE("Start Characters",'LINE');
+                  IF ImportFrm.FINDFIRST THEN BEGIN
+                    ImportFrmLine.RESET;
+                    ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+                    IF ImportFrmLine.FINDSET THEN
+                      REPEAT
+                        TextLine := Ascii2Ansi(GetFieldValue(ImportFrmLine));
+                        bigTxt.ADDTEXT(TextLine);
+                        //bigTxt.ADDTEXT(GetFieldValue(ImportFrmLine));
+                        //TextLine := TextLine + GetFieldValue(ImportFrmLine);
+                      UNTIL ImportFrmLine.NEXT = 0;
+                    FileRec.WRITE(bigTxt);
+                  END;
+                END;
+             UNTIL POLine.NEXT = 0;
+          END;
+
+          TextLine := '';
+          CLEAR(bigTxt);
+          ImportFrm.SETRANGE("Start Characters",'FOOT');
+          IF ImportFrm.FINDFIRST THEN BEGIN
+
+            ImportFrmLine.RESET;
+            ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+            IF ImportFrmLine.FINDSET THEN
+              REPEAT
+                TextLine := Ascii2Ansi(GetFieldValue(ImportFrmLine));
+                bigTxt.ADDTEXT(TextLine);
+                //bigTxt.ADDTEXT(GetFieldValue(ImportFrmLine));
+                //TextLine := TextLine + GetFieldValue(ImportFrmLine);
+              UNTIL ImportFrmLine.NEXT = 0;
+            FileRec.WRITE(bigTxt);
+          END;
+
+          InsertLogEntry('', STRSUBSTNO(Text001, FileRec.NAME,ProcessLog."Document No.",Interface.Code), FALSE, FALSE);
+
+          FileRec.CLOSE;
+          ProcessLog.Processed := TRUE;
+          ProcessLog."Processing Date" := CURRENTDATETIME;
+          ProcessLog."Export File Name" := FileRec.NAME;
+          ProcessLog.MODIFY;
+        UNTIL ProcessLog.NEXT = 0;
+      //MESSAGE(Text005);
+    END;
+
+    PROCEDURE IsRhenusLocation@1000000004(LocationCodeV@1000000000 : Code[10]) : Boolean;
+    VAR
+      LocationL@1000000001 : Record 14;
+    BEGIN
+      //H1796 17.11.14 DMA ++++++++++++++++++++++++++
+      IF LocationL.GET(LocationCodeV) THEN
+        EXIT(LocationL."Rhenus Location");
+
+      EXIT(FALSE);
+      //H1796 17.11.14 DMA --------------------------
+    END;
+
+    PROCEDURE IsLFLocation@1000000016(LocationCodeV@1000000000 : Code[10]) : Boolean;
+    VAR
+      LocationL@1000000001 : Record 14;
+    BEGIN
+      //H1796,H1412 17.11.14 DMA ++++++++++++++++++++++
+      IF LocationL.GET(LocationCodeV) THEN
+        EXIT(LocationL."Is LF Whse.");
+
+      EXIT(FALSE);
+      //H1796,H1412 17.11.14 DMA ----------------------
+    END;
+
+    PROCEDURE GroupLines@1000000009(VAR SOLine@1000000001 : Record 37;VAR SOTempLine@1000000000 : TEMPORARY Record 37);
+    BEGIN
+      SOTempLine.DELETEALL;
+      IF SOLine.FINDSET THEN
+        REPEAT
+          SOTempLine.RESET;
+          SOTempLine.SETRANGE(Type,SOLine.Type);
+          SOTempLine.SETRANGE("No.",SOLine."No.");
+          SOTempLine.SETRANGE("Location Code",SOLine."Location Code");
+          SOTempLine.SETRANGE("Purchasing Code",SOLine."Purchasing Code");
+          IF SOTempLine.FINDFIRST THEN BEGIN
+            SOTempLine.Quantity := SOTempLine.Quantity + SOLine.Quantity;
+            SOTempLine.MODIFY;
+          END ELSE BEGIN
+          SOTempLine.INIT;
+          SOTempLine.TRANSFERFIELDS(SOLine);
+          SOTempLine.INSERT;
+          END;
+        UNTIL SOLine.NEXT = 0;
+    END;
+
+    PROCEDURE ParseSalutation@1000000007(Name@1000000000 : Text[250]) : Text[1];
+    BEGIN
+      IF STRPOS(Name,'Frau') = 1 THEN EXIT('2');
+      IF STRPOS(Name,'Herr') = 1 THEN EXIT('1');
+      EXIT('3');
+    END;
+
+    PROCEDURE Ansi2Ascii@10(_String@1150001 : Text[1024]) _Output@1150000 : Text[1024];
+    BEGIN
+      // Converts from ANSI to ASCII
+      EXIT(CONVERTSTR(_String,'«¸È‚‰‡ÂÁÍÎËÔÓÏƒ≈…Ê∆ÙˆÚ˚˘ˇ÷‹¯£ÿ◊É·ÌÛ˙Ò—™∫øÆ¡¬¿ À»ÕŒœÃ”ﬂ‘“⁄€Ÿ',
+                              'ÄÅÇÉÑÖÜáàâäãåçéèêëíìîïñóòôöõúùûü†°¢£§•¶ß®©µ∂∑“”‘÷◊ÿﬁ‡·‚„ÈÍÎ'));
+    END;
+
+    PROCEDURE Ascii2Ansi@1150001(_String@1150001 : Text[1024]) @1150000 : Text[1024];
+    BEGIN
+      // Converts from ASCII to ANSI
+      EXIT(CONVERTSTR(_String,'ÄÅÇÉÑÖÜáàâäãåçéèêëíìîïñóòôöõúùûü†°¢£§•¶ß®©µ∂∑“”‘÷◊ÿﬁ‡·‚„ÈÍÎ',
+                              '«¸È‚‰‡ÂÁÍÎËÔÓÏƒ≈…Ê∆ÙˆÚ˚˘ˇ÷‹¯£ÿ◊É·ÌÛ˙Ò—™∫øÆ¡¬¿ À»ÕŒœÃ”ﬂ‘“⁄€Ÿ'));
+    END;
+
+    PROCEDURE ComRound@1000000008(val@1000000000 : Decimal) : Decimal;
+    BEGIN
+      IF val = 0 THEN EXIT(0);
+      IF val < 1 THEN EXIT(1);
+      EXIT(ROUND(val,1));
+    END;
+
+    PROCEDURE FTPUpload@1000000014() : Boolean;
+    VAR
+      FTPClient@1000000000 : Automation "{42A8A505-1CD3-4CA4-A7EA-E6EBCC481DDC} 1.0:{B32A3669-654B-4CEF-980E-C7753F1FA524}:'FTPNav'.FTPNavClass";
+    BEGIN
+      //IF ISCLEAR(FTPClient) THEN CREATE(FTPClient);
+      CLEAR(FTPClient);
+      CREATE(FTPClient);
+      IF NOT FTPClient.UploadDirectory(
+              Interface."FTP Export Address",
+              Interface."FTP Export User",
+              Interface."FTP Export Password",
+              Interface."FTP Export Folder",
+              Interface."Export Folder",
+              TRUE,FALSE,FALSE)
+      THEN BEGIN
+        InsertLogEntry('',Text010, TRUE, FALSE);
+        //InsertLogEntry('',FTPClient.GetLastErrorText, TRUE, FALSE);
+        EXIT(FALSE);
+      END;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE UpdateKAD@1170000000();
+    VAR
+      SONo@1170000001 : Code[100];
+      SO@1170000017 : Record 36;
+      SOLine@1170000016 : Record 37;
+      SOTempLine@1170000015 : TEMPORARY Record 37;
+      PO@1170000014 : Record 38;
+      POLine@1170000013 : Record 39;
+      Location@1170000012 : Record 14;
+      ImportFrm@1170000011 : Record 50010;
+      ImportFrmLine@1170000010 : Record 50011;
+      ProcessLog@1170000009 : Record 50015;
+      TextLine@1170000008 : Text[1024];
+      FileRec@1170000007 : File;
+      Mandant@1170000006 : Code[4];
+      bigTxt@1170000005 : BigText;
+      FileName@1170000004 : Text[1024];
+      IsParcelReturn@1170000003 : Boolean;
+      OrderExist@1170000002 : Boolean;
+    BEGIN
+      CLEAR(FileRec);
+      FileRec.TEXTMODE(TRUE);
+      FileRec.OPEN('C:\temp\KAD_Cancell.txt');
+
+      IFSetup.GET;
+      SalesSetup.GET;
+      Interface.GET('RHENUS');
+      Interface.TESTFIELD("Export Folder");
+      ProcessLog.FINDFIRST;
+
+      Mandant := 'FPCO';
+      GlobalVar[1] := Mandant;
+
+      CLEAR(UTFWriter);
+      CREATE(UTFWriter);
+      UTFWriter.Open;
+      UTFWriter.Charset('UTF-8');
+
+      txtCRLF := 'XX';  // define it as Text with size 2
+      txtCRLF[1] := 13;
+      txtCRLF[2] := 10;
+
+
+      REPEAT
+        FileRec.READ(SONo);
+
+        rr1.CLOSE;
+        rr2.CLOSE;
+        rr3.CLOSE;
+
+
+        IF SO.GET(SO."Document Type"::Order,SONo) THEN
+          OrderExist := TRUE;
+
+        IF OrderExist THEN BEGIN
+            GlobalVar[2] := SO."Sell-to Customer No.";
+            GlobalVar[3] := '3';
+            GlobalVar[4] := SO."No.";
+
+            rr1.OPEN(DATABASE::"Sales Header");
+            rr1.GETTABLE(SO);
+
+            rr2.OPEN(DATABASE::"Document Process Log");
+            rr2.GETTABLE(ProcessLog);
+
+            rr3.OPEN(DATABASE::"Sales Line");
+
+           // >  270412  chrmu group lines
+           SOLine.SETRANGE("Document Type",SO."Document Type");
+           SOLine.SETRANGE("Document No.",SO."No.");
+           GroupLines(SOLine,SOTempLine);
+           // < 270412  chrmu group lines
+
+
+           ImportFrm.RESET;
+           ImportFrm.SETRANGE(Blocked,FALSE);
+           ImportFrm.SETRANGE("Interface Code",Interface.Code);
+           ImportFrm.SETRANGE("Import/Export",ImportFrm."Import/Export"::Export);
+           ImportFrm.SETRANGE("Start Characters",'KAK');
+           IF ImportFrm.FINDFIRST THEN BEGIN
+             TextLine := '';
+             ImportFrmLine.RESET;
+             ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+             IF ImportFrmLine.FINDSET THEN
+               REPEAT
+                 TextLine := TextLine + GetFieldValue(ImportFrmLine);
+               UNTIL ImportFrmLine.NEXT = 0;
+             UTFWriter.WriteText(TextLine + txtCRLF);
+           END;
+
+         //IF ProcessLog.Action <> ProcessLog.Action::Cancelation THEN BEGIN
+           ImportFrm.SETRANGE("Start Characters",'KAL');
+           IF ImportFrm.FINDFIRST THEN BEGIN
+             TextLine := '';
+             ImportFrmLine.RESET;
+             ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+             IF ImportFrmLine.FINDSET THEN
+               REPEAT
+                 TextLine := TextLine + GetFieldValue(ImportFrmLine);
+                 //TextLine := TextLine + Ascii2Ansi(GetFieldValue(ImportFrmLine));
+               UNTIL ImportFrmLine.NEXT = 0;
+             UTFWriter.WriteText(TextLine + txtCRLF);
+
+           END;
+
+           SOTempLine.RESET;
+           IF SOTempLine.FINDSET THEN
+             REPEAT
+               rr3.GETTABLE(SOTempLine);
+               TextLine := '';
+               IF IsRhenusLocation(SOTempLine."Location Code") THEN BEGIN
+                 IF SOTempLine.Type = SOTempLine.Type::Item THEN BEGIN
+                   CLEAR(bigTxt);
+                   ImportFrm.SETRANGE("Start Characters",'KAP');
+                   IF ImportFrm.FINDFIRST THEN BEGIN
+                     ImportFrmLine.RESET;
+                     ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+                     IF ImportFrmLine.FINDSET THEN
+                       REPEAT
+                         TextLine := TextLine + GetFieldValue(ImportFrmLine);
+                       UNTIL ImportFrmLine.NEXT = 0;
+                     UTFWriter.WriteText(TextLine + txtCRLF);
+
+                   END;
+                 END;
+                 IF (SOTempLine.Type = SOTempLine.Type::Resource) AND
+                    (SOTempLine."Resource Type" = SOTempLine."Resource Type"::Assembly) THEN BEGIN
+                   CLEAR(bigTxt);
+                   TextLine := '';
+                   ImportFrm.SETRANGE("Start Characters",'KAS');
+                   IF ImportFrm.FINDFIRST THEN BEGIN
+                     ImportFrmLine.RESET;
+                     ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+                     IF ImportFrmLine.FINDSET THEN
+                       REPEAT
+                         TextLine := TextLine + GetFieldValue(ImportFrmLine);
+                       UNTIL ImportFrmLine.NEXT = 0;
+                     UTFWriter.WriteText(TextLine + txtCRLF);
+
+                   END;
+                 END;
+               END;
+             UNTIL SOTempLine.NEXT = 0;
+           END;
+
+      UNTIL (FileRec.POS = FileRec.LEN);
+
+      FileName :=
+        '\KAD' + Mandant +
+        FORMAT(CURRENTDATETIME,0,'<Year4><Month,2><Day,2><Hours24><Minutes,2><Seconds,2>') + '.txt';
+
+       UTFWriter.SaveToFile('c:\temp\'+ FileName);
+       UTFWriter.Close;
+       //S/P1160
+       IF STRPOS(FileName,'WEA') = 0 THEN
+       //E/P1160
+         SLEEP(1000);
+       //UTFWriter.SaveToFile(Interface."Archive Root Folder" + FileName);
+      //A/gob-rste/17.08.12/P0210
+      IF EXISTS(Interface."Export Folder" + FileName) THEN
+      //E/gob-rste/17.08.12/P0210
+       IF FILE.COPY(Interface."Export Folder" + FileName,Interface."Archive Root Folder" + FileName) THEN;
+    END;
+
+    PROCEDURE OrderNotCancelled@1000000011(SONo@1000000000 : Code[20]) : Boolean;
+    BEGIN
+      IF SONo = '10101000083103' THEN EXIT(FALSE);
+      IF SONo = '10101000083244' THEN EXIT(FALSE);
+      IF SONo = '10101000083248' THEN EXIT(FALSE);
+      IF SONo = '10101000083281' THEN EXIT(FALSE);
+      IF SONo = '10101000083291' THEN EXIT(FALSE);
+      IF SONo = '10101000083305' THEN EXIT(FALSE);
+      IF SONo = '10101000083324' THEN EXIT(FALSE);
+      IF SONo = '10101000083344' THEN EXIT(FALSE);
+      IF SONo = '10101000083357' THEN EXIT(FALSE);
+      IF SONo = '10101000083366' THEN EXIT(FALSE);
+      IF SONo = '10101000083424' THEN EXIT(FALSE);
+      IF SONo = '10101000083435' THEN EXIT(FALSE);
+      IF SONo = '10101000083437' THEN EXIT(FALSE);
+      IF SONo = '10101000083451' THEN EXIT(FALSE);
+      IF SONo = '10101000083481' THEN EXIT(FALSE);
+      IF SONo = '10101000083490' THEN EXIT(FALSE);
+      IF SONo = '10101000083495' THEN EXIT(FALSE);
+      IF SONo = '10101000083500' THEN EXIT(FALSE);
+      IF SONo = '10101000083524' THEN EXIT(FALSE);
+      IF SONo = '10101000083573' THEN EXIT(FALSE);
+      IF SONo = '10101000083580' THEN EXIT(FALSE);
+      IF SONo = '10101000083594' THEN EXIT(FALSE);
+      IF SONo = '10101000083603' THEN EXIT(FALSE);
+      IF SONo = '10101000083681' THEN EXIT(FALSE);
+      IF SONo = '10101000083684' THEN EXIT(FALSE);
+      IF SONo = '10101000083692' THEN EXIT(FALSE);
+      IF SONo = '10101000083710' THEN EXIT(FALSE);
+      IF SONo = '10101000083715' THEN EXIT(FALSE);
+      IF SONo = '10101000083745' THEN EXIT(FALSE);
+      IF SONo = '10101000083754' THEN EXIT(FALSE);
+      IF SONo = '10101000083774' THEN EXIT(FALSE);
+      IF SONo = '10101000083791' THEN EXIT(FALSE);
+      IF SONo = '10101000083837' THEN EXIT(FALSE);
+      IF SONo = '10101000083884' THEN EXIT(FALSE);
+      IF SONo = '10101000083889' THEN EXIT(FALSE);
+      IF SONo = '10101000083909' THEN EXIT(FALSE);
+      IF SONo = '10101000083981' THEN EXIT(FALSE);
+      IF SONo = '10101000083984' THEN EXIT(FALSE);
+      IF SONo = '10101000083997' THEN EXIT(FALSE);
+      IF SONo = '10101000084041' THEN EXIT(FALSE);
+      IF SONo = '10101000084051' THEN EXIT(FALSE);
+      IF SONo = '10101000084055' THEN EXIT(FALSE);
+      IF SONo = '10101000084098' THEN EXIT(FALSE);
+      IF SONo = '10101000084116' THEN EXIT(FALSE);
+      IF SONo = '10101000084125' THEN EXIT(FALSE);
+      IF SONo = '10101000084137' THEN EXIT(FALSE);
+      IF SONo = '10101000084151' THEN EXIT(FALSE);
+      IF SONo = '10101000084176' THEN EXIT(FALSE);
+      IF SONo = '10101000084200' THEN EXIT(FALSE);
+      IF SONo = '10101000084240' THEN EXIT(FALSE);
+      IF SONo = '10101000084249' THEN EXIT(FALSE);
+      IF SONo = '10101000084251' THEN EXIT(FALSE);
+      IF SONo = '10101000084304' THEN EXIT(FALSE);
+      IF SONo = '10101000084315' THEN EXIT(FALSE);
+      IF SONo = '10101000084324' THEN EXIT(FALSE);
+      IF SONo = '10101000084330' THEN EXIT(FALSE);
+      IF SONo = '10101000084357' THEN EXIT(FALSE);
+      IF SONo = '10101000084360' THEN EXIT(FALSE);
+      IF SONo = '10101000084369' THEN EXIT(FALSE);
+      IF SONo = '10101000084387' THEN EXIT(FALSE);
+      IF SONo = '10101000084395' THEN EXIT(FALSE);
+      IF SONo = '10101000084440' THEN EXIT(FALSE);
+      IF SONo = '10101000084449' THEN EXIT(FALSE);
+      IF SONo = '10101000084489' THEN EXIT(FALSE);
+      IF SONo = '10101000084522' THEN EXIT(FALSE);
+      IF SONo = '10101000084537' THEN EXIT(FALSE);
+      IF SONo = '10101000084554' THEN EXIT(FALSE);
+      IF SONo = '10101000084565' THEN EXIT(FALSE);
+      IF SONo = '10101000084590' THEN EXIT(FALSE);
+      IF SONo = '10101000084595' THEN EXIT(FALSE);
+      IF SONo = '10101000084648' THEN EXIT(FALSE);
+      IF SONo = '10101000084654' THEN EXIT(FALSE);
+      IF SONo = '10101000084674' THEN EXIT(FALSE);
+      IF SONo = '10101000084725' THEN EXIT(FALSE);
+      IF SONo = '10101000084732' THEN EXIT(FALSE);
+      IF SONo = '10101000084736' THEN EXIT(FALSE);
+      IF SONo = '10101000084762' THEN EXIT(FALSE);
+      IF SONo = '10101000084763' THEN EXIT(FALSE);
+      IF SONo = '10101000084791' THEN EXIT(FALSE);
+      IF SONo = '10101000084813' THEN EXIT(FALSE);
+      IF SONo = '10101000084822' THEN EXIT(FALSE);
+      IF SONo = '10101000084870' THEN EXIT(FALSE);
+      IF SONo = '10101000084874' THEN EXIT(FALSE);
+      IF SONo = '10101000084893' THEN EXIT(FALSE);
+      IF SONo = '10101000084929' THEN EXIT(FALSE);
+      IF SONo = '10101000084935' THEN EXIT(FALSE);
+      IF SONo = '10101000084947' THEN EXIT(FALSE);
+      IF SONo = '10101000085022' THEN EXIT(FALSE);
+      IF SONo = '10101000085023' THEN EXIT(FALSE);
+      IF SONo = '10101000085040' THEN EXIT(FALSE);
+      IF SONo = '10101000085050' THEN EXIT(FALSE);
+      IF SONo = '10101000085057' THEN EXIT(FALSE);
+      IF SONo = '10101000085064' THEN EXIT(FALSE);
+      IF SONo = '10101000085094' THEN EXIT(FALSE);
+      IF SONo = '10101000085099' THEN EXIT(FALSE);
+      IF SONo = '10101000085102' THEN EXIT(FALSE);
+      IF SONo = '10101000085123' THEN EXIT(FALSE);
+      IF SONo = '10101000085153' THEN EXIT(FALSE);
+      IF SONo = '10101000085171' THEN EXIT(FALSE);
+      IF SONo = '10101000085176' THEN EXIT(FALSE);
+      IF SONo = '10101000085180' THEN EXIT(FALSE);
+      IF SONo = '10101000085208' THEN EXIT(FALSE);
+      IF SONo = '10101000085209' THEN EXIT(FALSE);
+      IF SONo = '10101000085224' THEN EXIT(FALSE);
+      IF SONo = '10101000085266' THEN EXIT(FALSE);
+      IF SONo = '10101000085294' THEN EXIT(FALSE);
+      IF SONo = '10101000085295' THEN EXIT(FALSE);
+      IF SONo = '10101000085318' THEN EXIT(FALSE);
+      IF SONo = '10101000085338' THEN EXIT(FALSE);
+      IF SONo = '10101000085346' THEN EXIT(FALSE);
+      IF SONo = '10101000085353' THEN EXIT(FALSE);
+      IF SONo = '10101000085374' THEN EXIT(FALSE);
+      IF SONo = '10101000085377' THEN EXIT(FALSE);
+      IF SONo = '10101000085395' THEN EXIT(FALSE);
+      IF SONo = '10101000085397' THEN EXIT(FALSE);
+      IF SONo = '10101000085411' THEN EXIT(FALSE);
+      IF SONo = '10101000085437' THEN EXIT(FALSE);
+      IF SONo = '10101000085473' THEN EXIT(FALSE);
+      IF SONo = '10101000085489' THEN EXIT(FALSE);
+      IF SONo = '10101000085516' THEN EXIT(FALSE);
+      IF SONo = '10101000085583' THEN EXIT(FALSE);
+      IF SONo = '10101000085586' THEN EXIT(FALSE);
+      IF SONo = '10101000085596' THEN EXIT(FALSE);
+      IF SONo = '10101000085607' THEN EXIT(FALSE);
+      IF SONo = '10101000085655' THEN EXIT(FALSE);
+      IF SONo = '10105000083091' THEN EXIT(FALSE);
+      IF SONo = '10105000083238' THEN EXIT(FALSE);
+      IF SONo = '10105000083254' THEN EXIT(FALSE);
+      IF SONo = '10105000083258' THEN EXIT(FALSE);
+      IF SONo = '10105000083267' THEN EXIT(FALSE);
+      IF SONo = '10105000083282' THEN EXIT(FALSE);
+      IF SONo = '10105000083299' THEN EXIT(FALSE);
+      IF SONo = '10105000083309' THEN EXIT(FALSE);
+      IF SONo = '10105000083332' THEN EXIT(FALSE);
+      IF SONo = '10105000083337' THEN EXIT(FALSE);
+      IF SONo = '10105000083358' THEN EXIT(FALSE);
+      IF SONo = '10105000083361' THEN EXIT(FALSE);
+      IF SONo = '10105000083389' THEN EXIT(FALSE);
+      IF SONo = '10105000083404' THEN EXIT(FALSE);
+      IF SONo = '10105000083409' THEN EXIT(FALSE);
+      IF SONo = '10105000083410' THEN EXIT(FALSE);
+      IF SONo = '10105000083412' THEN EXIT(FALSE);
+      IF SONo = '10105000083444' THEN EXIT(FALSE);
+      IF SONo = '10105000083446' THEN EXIT(FALSE);
+      IF SONo = '10105000083447' THEN EXIT(FALSE);
+      IF SONo = '10105000083457' THEN EXIT(FALSE);
+      IF SONo = '10105000083458' THEN EXIT(FALSE);
+      IF SONo = '10105000083461' THEN EXIT(FALSE);
+      IF SONo = '10105000083479' THEN EXIT(FALSE);
+      IF SONo = '10105000083486' THEN EXIT(FALSE);
+      IF SONo = '10105000083488' THEN EXIT(FALSE);
+      IF SONo = '10105000083506' THEN EXIT(FALSE);
+      IF SONo = '10105000083509' THEN EXIT(FALSE);
+      IF SONo = '10105000083514' THEN EXIT(FALSE);
+      IF SONo = '10105000083517' THEN EXIT(FALSE);
+      IF SONo = '10105000083531' THEN EXIT(FALSE);
+      IF SONo = '10105000083548' THEN EXIT(FALSE);
+      IF SONo = '10105000083550' THEN EXIT(FALSE);
+      IF SONo = '10105000083554' THEN EXIT(FALSE);
+      IF SONo = '10105000083562' THEN EXIT(FALSE);
+      IF SONo = '10105000083571' THEN EXIT(FALSE);
+      IF SONo = '10105000083582' THEN EXIT(FALSE);
+      IF SONo = '10105000083662' THEN EXIT(FALSE);
+      IF SONo = '10105000083702' THEN EXIT(FALSE);
+      IF SONo = '10105000083724' THEN EXIT(FALSE);
+      IF SONo = '10105000083740' THEN EXIT(FALSE);
+      IF SONo = '10105000083746' THEN EXIT(FALSE);
+      IF SONo = '10105000083759' THEN EXIT(FALSE);
+      IF SONo = '10105000083772' THEN EXIT(FALSE);
+      IF SONo = '10105000083792' THEN EXIT(FALSE);
+      IF SONo = '10105000083794' THEN EXIT(FALSE);
+      IF SONo = '10105000083798' THEN EXIT(FALSE);
+      IF SONo = '10105000083809' THEN EXIT(FALSE);
+      IF SONo = '10105000083810' THEN EXIT(FALSE);
+      IF SONo = '10105000083821' THEN EXIT(FALSE);
+      IF SONo = '10105000083848' THEN EXIT(FALSE);
+      IF SONo = '10105000083860' THEN EXIT(FALSE);
+      IF SONo = '10105000083869' THEN EXIT(FALSE);
+      IF SONo = '10105000083901' THEN EXIT(FALSE);
+      IF SONo = '10105000083902' THEN EXIT(FALSE);
+      IF SONo = '10105000083903' THEN EXIT(FALSE);
+      IF SONo = '10105000083918' THEN EXIT(FALSE);
+      IF SONo = '10105000083933' THEN EXIT(FALSE);
+      IF SONo = '10105000083941' THEN EXIT(FALSE);
+      IF SONo = '10105000083957' THEN EXIT(FALSE);
+      IF SONo = '10105000083969' THEN EXIT(FALSE);
+      IF SONo = '10105000083979' THEN EXIT(FALSE);
+      IF SONo = '10105000083994' THEN EXIT(FALSE);
+      IF SONo = '10105000084004' THEN EXIT(FALSE);
+      IF SONo = '10105000084022' THEN EXIT(FALSE);
+      IF SONo = '10105000084023' THEN EXIT(FALSE);
+      IF SONo = '10105000084024' THEN EXIT(FALSE);
+      IF SONo = '10105000084031' THEN EXIT(FALSE);
+      IF SONo = '10105000084045' THEN EXIT(FALSE);
+      IF SONo = '10105000084060' THEN EXIT(FALSE);
+      IF SONo = '10105000084066' THEN EXIT(FALSE);
+      IF SONo = '10105000084074' THEN EXIT(FALSE);
+      IF SONo = '10105000084076' THEN EXIT(FALSE);
+      IF SONo = '10105000084082' THEN EXIT(FALSE);
+      IF SONo = '10105000084086' THEN EXIT(FALSE);
+      IF SONo = '10105000084103' THEN EXIT(FALSE);
+      IF SONo = '10105000084119' THEN EXIT(FALSE);
+      IF SONo = '10105000084127' THEN EXIT(FALSE);
+      IF SONo = '10105000084145' THEN EXIT(FALSE);
+      IF SONo = '10105000084153' THEN EXIT(FALSE);
+      IF SONo = '10105000084165' THEN EXIT(FALSE);
+      IF SONo = '10105000084175' THEN EXIT(FALSE);
+      IF SONo = '10105000084197' THEN EXIT(FALSE);
+      IF SONo = '10105000084228' THEN EXIT(FALSE);
+      IF SONo = '10105000084243' THEN EXIT(FALSE);
+      IF SONo = '10105000084252' THEN EXIT(FALSE);
+      IF SONo = '10105000084266' THEN EXIT(FALSE);
+      IF SONo = '10105000084267' THEN EXIT(FALSE);
+      IF SONo = '10105000084269' THEN EXIT(FALSE);
+      IF SONo = '10105000084275' THEN EXIT(FALSE);
+      IF SONo = '10105000084281' THEN EXIT(FALSE);
+      IF SONo = '10105000084289' THEN EXIT(FALSE);
+      IF SONo = '10105000084300' THEN EXIT(FALSE);
+      IF SONo = '10105000084307' THEN EXIT(FALSE);
+      IF SONo = '10105000084312' THEN EXIT(FALSE);
+      IF SONo = '10105000084319' THEN EXIT(FALSE);
+      IF SONo = '10105000084337' THEN EXIT(FALSE);
+      IF SONo = '10105000084352' THEN EXIT(FALSE);
+      IF SONo = '10105000084362' THEN EXIT(FALSE);
+      IF SONo = '10105000084373' THEN EXIT(FALSE);
+      IF SONo = '10105000084396' THEN EXIT(FALSE);
+      IF SONo = '10105000084414' THEN EXIT(FALSE);
+      IF SONo = '10105000084422' THEN EXIT(FALSE);
+      IF SONo = '10105000084436' THEN EXIT(FALSE);
+      IF SONo = '10105000084454' THEN EXIT(FALSE);
+      IF SONo = '10105000084485' THEN EXIT(FALSE);
+      IF SONo = '10105000084500' THEN EXIT(FALSE);
+      IF SONo = '10105000084508' THEN EXIT(FALSE);
+      IF SONo = '10105000084511' THEN EXIT(FALSE);
+      IF SONo = '10105000084516' THEN EXIT(FALSE);
+      IF SONo = '10105000084518' THEN EXIT(FALSE);
+      IF SONo = '10105000084535' THEN EXIT(FALSE);
+      IF SONo = '10105000084556' THEN EXIT(FALSE);
+      IF SONo = '10105000084587' THEN EXIT(FALSE);
+      IF SONo = '10105000084589' THEN EXIT(FALSE);
+      IF SONo = '10105000084628' THEN EXIT(FALSE);
+      IF SONo = '10105000084653' THEN EXIT(FALSE);
+      IF SONo = '10105000084655' THEN EXIT(FALSE);
+      IF SONo = '10105000084657' THEN EXIT(FALSE);
+      IF SONo = '10105000084689' THEN EXIT(FALSE);
+      IF SONo = '10105000084704' THEN EXIT(FALSE);
+      IF SONo = '10105000084713' THEN EXIT(FALSE);
+      IF SONo = '10105000084731' THEN EXIT(FALSE);
+      IF SONo = '10105000084739' THEN EXIT(FALSE);
+      IF SONo = '10105000084741' THEN EXIT(FALSE);
+      IF SONo = '10105000084760' THEN EXIT(FALSE);
+      IF SONo = '10105000084765' THEN EXIT(FALSE);
+      IF SONo = '10105000084786' THEN EXIT(FALSE);
+      IF SONo = '10105000084808' THEN EXIT(FALSE);
+      IF SONo = '10105000084811' THEN EXIT(FALSE);
+      IF SONo = '10105000084823' THEN EXIT(FALSE);
+      IF SONo = '10105000084832' THEN EXIT(FALSE);
+      IF SONo = '10105000084848' THEN EXIT(FALSE);
+      IF SONo = '10105000084908' THEN EXIT(FALSE);
+      IF SONo = '10105000084919' THEN EXIT(FALSE);
+      IF SONo = '10105000084930' THEN EXIT(FALSE);
+      IF SONo = '10105000084937' THEN EXIT(FALSE);
+      IF SONo = '10105000084946' THEN EXIT(FALSE);
+      IF SONo = '10105000084955' THEN EXIT(FALSE);
+      IF SONo = '10105000084964' THEN EXIT(FALSE);
+      IF SONo = '10105000084974' THEN EXIT(FALSE);
+      IF SONo = '10105000085000' THEN EXIT(FALSE);
+      IF SONo = '10105000085024' THEN EXIT(FALSE);
+      IF SONo = '10105000085025' THEN EXIT(FALSE);
+      IF SONo = '10105000085028' THEN EXIT(FALSE);
+      IF SONo = '10105000085032' THEN EXIT(FALSE);
+      IF SONo = '10105000085075' THEN EXIT(FALSE);
+      IF SONo = '10105000085078' THEN EXIT(FALSE);
+      IF SONo = '10105000085089' THEN EXIT(FALSE);
+      IF SONo = '10105000085098' THEN EXIT(FALSE);
+      IF SONo = '10105000085114' THEN EXIT(FALSE);
+      IF SONo = '10105000085119' THEN EXIT(FALSE);
+      IF SONo = '10105000085134' THEN EXIT(FALSE);
+      IF SONo = '10105000085145' THEN EXIT(FALSE);
+      IF SONo = '10105000085150' THEN EXIT(FALSE);
+      IF SONo = '10105000085163' THEN EXIT(FALSE);
+      IF SONo = '10105000085181' THEN EXIT(FALSE);
+      IF SONo = '10105000085196' THEN EXIT(FALSE);
+      IF SONo = '10105000085203' THEN EXIT(FALSE);
+      IF SONo = '10105000085206' THEN EXIT(FALSE);
+      IF SONo = '10105000085213' THEN EXIT(FALSE);
+      IF SONo = '10105000085215' THEN EXIT(FALSE);
+      IF SONo = '10105000085228' THEN EXIT(FALSE);
+      IF SONo = '10105000085274' THEN EXIT(FALSE);
+      IF SONo = '10105000085308' THEN EXIT(FALSE);
+      IF SONo = '10105000085310' THEN EXIT(FALSE);
+      IF SONo = '10105000085327' THEN EXIT(FALSE);
+      IF SONo = '10105000085339' THEN EXIT(FALSE);
+      IF SONo = '10105000085350' THEN EXIT(FALSE);
+      IF SONo = '10105000085371' THEN EXIT(FALSE);
+      IF SONo = '10105000085394' THEN EXIT(FALSE);
+      IF SONo = '10105000085402' THEN EXIT(FALSE);
+      IF SONo = '10105000085426' THEN EXIT(FALSE);
+      IF SONo = '10105000085444' THEN EXIT(FALSE);
+      IF SONo = '10105000085451' THEN EXIT(FALSE);
+      IF SONo = '10105000085478' THEN EXIT(FALSE);
+      IF SONo = '10105000085490' THEN EXIT(FALSE);
+      IF SONo = '10105000085503' THEN EXIT(FALSE);
+      IF SONo = '10105000085515' THEN EXIT(FALSE);
+      IF SONo = '10105000085539' THEN EXIT(FALSE);
+      IF SONo = '10105000085546' THEN EXIT(FALSE);
+      IF SONo = '10105000085556' THEN EXIT(FALSE);
+      IF SONo = '10105000085564' THEN EXIT(FALSE);
+      IF SONo = '10105000085565' THEN EXIT(FALSE);
+      IF SONo = '10105000085569' THEN EXIT(FALSE);
+      IF SONo = '10105000085573' THEN EXIT(FALSE);
+      IF SONo = '10105000085574' THEN EXIT(FALSE);
+      IF SONo = '10105000085584' THEN EXIT(FALSE);
+      IF SONo = '10105000085628' THEN EXIT(FALSE);
+      IF SONo = '10105000085659' THEN EXIT(FALSE);
+      IF SONo = '10105000085663' THEN EXIT(FALSE);
+      IF SONo = '10106000081689' THEN EXIT(FALSE);
+      IF SONo = '10106000081696' THEN EXIT(FALSE);
+      IF SONo = '10106000082259' THEN EXIT(FALSE);
+      IF SONo = '10106000082361' THEN EXIT(FALSE);
+      IF SONo = '10106000082933' THEN EXIT(FALSE);
+      IF SONo = '10106000082951' THEN EXIT(FALSE);
+      IF SONo = '10106000083231' THEN EXIT(FALSE);
+      IF SONo = '10106000083241' THEN EXIT(FALSE);
+      IF SONo = '10106000083256' THEN EXIT(FALSE);
+      IF SONo = '10106000083275' THEN EXIT(FALSE);
+      IF SONo = '10106000083283' THEN EXIT(FALSE);
+      IF SONo = '10106000083292' THEN EXIT(FALSE);
+      IF SONo = '10106000083294' THEN EXIT(FALSE);
+      IF SONo = '10106000083295' THEN EXIT(FALSE);
+      IF SONo = '10106000083296' THEN EXIT(FALSE);
+      IF SONo = '10106000083307' THEN EXIT(FALSE);
+      IF SONo = '10106000083314' THEN EXIT(FALSE);
+      IF SONo = '10106000083339' THEN EXIT(FALSE);
+      IF SONo = '10106000083348' THEN EXIT(FALSE);
+      IF SONo = '10106000083375' THEN EXIT(FALSE);
+      IF SONo = '10106000083377' THEN EXIT(FALSE);
+      IF SONo = '10106000083379' THEN EXIT(FALSE);
+      IF SONo = '10106000083385' THEN EXIT(FALSE);
+      IF SONo = '10106000083386' THEN EXIT(FALSE);
+      IF SONo = '10106000083395' THEN EXIT(FALSE);
+      IF SONo = '10106000083396' THEN EXIT(FALSE);
+      IF SONo = '10106000083397' THEN EXIT(FALSE);
+      IF SONo = '10106000083398' THEN EXIT(FALSE);
+      IF SONo = '10106000083408' THEN EXIT(FALSE);
+      IF SONo = '10106000083430' THEN EXIT(FALSE);
+      IF SONo = '10106000083431' THEN EXIT(FALSE);
+      IF SONo = '10106000083434' THEN EXIT(FALSE);
+      IF SONo = '10106000083445' THEN EXIT(FALSE);
+      IF SONo = '10106000083450' THEN EXIT(FALSE);
+      IF SONo = '10106000083464' THEN EXIT(FALSE);
+      IF SONo = '10106000083468' THEN EXIT(FALSE);
+      IF SONo = '10106000083470' THEN EXIT(FALSE);
+      IF SONo = '10106000083472' THEN EXIT(FALSE);
+      IF SONo = '10106000083480' THEN EXIT(FALSE);
+      IF SONo = '10106000083493' THEN EXIT(FALSE);
+      IF SONo = '10106000083508' THEN EXIT(FALSE);
+      IF SONo = '10106000083516' THEN EXIT(FALSE);
+      IF SONo = '10106000083518' THEN EXIT(FALSE);
+      IF SONo = '10106000083535' THEN EXIT(FALSE);
+      IF SONo = '10106000083536' THEN EXIT(FALSE);
+      IF SONo = '10106000083537' THEN EXIT(FALSE);
+      IF SONo = '10106000083547' THEN EXIT(FALSE);
+      IF SONo = '10106000083553' THEN EXIT(FALSE);
+      IF SONo = '10106000083556' THEN EXIT(FALSE);
+      IF SONo = '10106000083569' THEN EXIT(FALSE);
+      IF SONo = '10106000083576' THEN EXIT(FALSE);
+      IF SONo = '10106000083592' THEN EXIT(FALSE);
+      IF SONo = '10106000083640' THEN EXIT(FALSE);
+      IF SONo = '10106000083644' THEN EXIT(FALSE);
+      IF SONo = '10106000083654' THEN EXIT(FALSE);
+      IF SONo = '10106000083663' THEN EXIT(FALSE);
+      IF SONo = '10106000083665' THEN EXIT(FALSE);
+      IF SONo = '10106000083667' THEN EXIT(FALSE);
+      IF SONo = '10106000083687' THEN EXIT(FALSE);
+      IF SONo = '10106000083689' THEN EXIT(FALSE);
+      IF SONo = '10106000083701' THEN EXIT(FALSE);
+      IF SONo = '10106000083717' THEN EXIT(FALSE);
+      IF SONo = '10106000083719' THEN EXIT(FALSE);
+      IF SONo = '10106000083720' THEN EXIT(FALSE);
+      IF SONo = '10106000083743' THEN EXIT(FALSE);
+      IF SONo = '10106000083753' THEN EXIT(FALSE);
+      IF SONo = '10106000083763' THEN EXIT(FALSE);
+      IF SONo = '10106000083765' THEN EXIT(FALSE);
+      IF SONo = '10106000083767' THEN EXIT(FALSE);
+      IF SONo = '10106000083776' THEN EXIT(FALSE);
+      IF SONo = '10106000083787' THEN EXIT(FALSE);
+      IF SONo = '10106000083822' THEN EXIT(FALSE);
+      IF SONo = '10106000083824' THEN EXIT(FALSE);
+      IF SONo = '10106000083831' THEN EXIT(FALSE);
+      IF SONo = '10106000083836' THEN EXIT(FALSE);
+      IF SONo = '10106000083850' THEN EXIT(FALSE);
+      IF SONo = '10106000083871' THEN EXIT(FALSE);
+      IF SONo = '10106000083882' THEN EXIT(FALSE);
+      IF SONo = '10106000083885' THEN EXIT(FALSE);
+      IF SONo = '10106000083891' THEN EXIT(FALSE);
+      IF SONo = '10106000083892' THEN EXIT(FALSE);
+      IF SONo = '10106000083894' THEN EXIT(FALSE);
+      IF SONo = '10106000083906' THEN EXIT(FALSE);
+      IF SONo = '10106000083935' THEN EXIT(FALSE);
+      IF SONo = '10106000083938' THEN EXIT(FALSE);
+      IF SONo = '10106000083970' THEN EXIT(FALSE);
+      IF SONo = '10106000083973' THEN EXIT(FALSE);
+      IF SONo = '10106000083976' THEN EXIT(FALSE);
+      IF SONo = '10106000083993' THEN EXIT(FALSE);
+      IF SONo = '10106000084003' THEN EXIT(FALSE);
+      IF SONo = '10106000084012' THEN EXIT(FALSE);
+      IF SONo = '10106000084016' THEN EXIT(FALSE);
+      IF SONo = '10106000084019' THEN EXIT(FALSE);
+      IF SONo = '10106000084025' THEN EXIT(FALSE);
+      IF SONo = '10106000084027' THEN EXIT(FALSE);
+      IF SONo = '10106000084037' THEN EXIT(FALSE);
+      IF SONo = '10106000084050' THEN EXIT(FALSE);
+      IF SONo = '10106000084053' THEN EXIT(FALSE);
+      IF SONo = '10106000084063' THEN EXIT(FALSE);
+      IF SONo = '10106000084064' THEN EXIT(FALSE);
+      IF SONo = '10106000084072' THEN EXIT(FALSE);
+      IF SONo = '10106000084081' THEN EXIT(FALSE);
+      IF SONo = '10106000084084' THEN EXIT(FALSE);
+      IF SONo = '10106000084091' THEN EXIT(FALSE);
+      IF SONo = '10106000084094' THEN EXIT(FALSE);
+      IF SONo = '10106000084095' THEN EXIT(FALSE);
+      IF SONo = '10106000084097' THEN EXIT(FALSE);
+      IF SONo = '10106000084100' THEN EXIT(FALSE);
+      IF SONo = '10106000084120' THEN EXIT(FALSE);
+      IF SONo = '10106000084128' THEN EXIT(FALSE);
+      IF SONo = '10106000084133' THEN EXIT(FALSE);
+      IF SONo = '10106000084140' THEN EXIT(FALSE);
+      IF SONo = '10106000084148' THEN EXIT(FALSE);
+      IF SONo = '10106000084164' THEN EXIT(FALSE);
+      IF SONo = '10106000084168' THEN EXIT(FALSE);
+      IF SONo = '10106000084169' THEN EXIT(FALSE);
+      IF SONo = '10106000084170' THEN EXIT(FALSE);
+      IF SONo = '10106000084185' THEN EXIT(FALSE);
+      IF SONo = '10106000084188' THEN EXIT(FALSE);
+      IF SONo = '10106000084198' THEN EXIT(FALSE);
+      IF SONo = '10106000084199' THEN EXIT(FALSE);
+      IF SONo = '10106000084203' THEN EXIT(FALSE);
+      IF SONo = '10106000084213' THEN EXIT(FALSE);
+      IF SONo = '10106000084218' THEN EXIT(FALSE);
+      IF SONo = '10106000084231' THEN EXIT(FALSE);
+      IF SONo = '10106000084235' THEN EXIT(FALSE);
+      IF SONo = '10106000084241' THEN EXIT(FALSE);
+      IF SONo = '10106000084274' THEN EXIT(FALSE);
+      IF SONo = '10106000084294' THEN EXIT(FALSE);
+      IF SONo = '10106000084296' THEN EXIT(FALSE);
+      IF SONo = '10106000084298' THEN EXIT(FALSE);
+      IF SONo = '10106000084301' THEN EXIT(FALSE);
+      IF SONo = '10106000084303' THEN EXIT(FALSE);
+      IF SONo = '10106000084305' THEN EXIT(FALSE);
+      IF SONo = '10106000084314' THEN EXIT(FALSE);
+      IF SONo = '10106000084338' THEN EXIT(FALSE);
+      IF SONo = '10106000084340' THEN EXIT(FALSE);
+      IF SONo = '10106000084341' THEN EXIT(FALSE);
+      IF SONo = '10106000084343' THEN EXIT(FALSE);
+      IF SONo = '10106000084349' THEN EXIT(FALSE);
+      IF SONo = '10106000084350' THEN EXIT(FALSE);
+      IF SONo = '10106000084363' THEN EXIT(FALSE);
+      IF SONo = '10106000084389' THEN EXIT(FALSE);
+      IF SONo = '10106000084397' THEN EXIT(FALSE);
+      IF SONo = '10106000084412' THEN EXIT(FALSE);
+      IF SONo = '10106000084421' THEN EXIT(FALSE);
+      IF SONo = '10106000084424' THEN EXIT(FALSE);
+      IF SONo = '10106000084426' THEN EXIT(FALSE);
+      IF SONo = '10106000084431' THEN EXIT(FALSE);
+      IF SONo = '10106000084438' THEN EXIT(FALSE);
+      IF SONo = '10106000084444' THEN EXIT(FALSE);
+      IF SONo = '10106000084465' THEN EXIT(FALSE);
+      IF SONo = '10106000084480' THEN EXIT(FALSE);
+      IF SONo = '10106000084482' THEN EXIT(FALSE);
+      IF SONo = '10106000084486' THEN EXIT(FALSE);
+      IF SONo = '10106000084501' THEN EXIT(FALSE);
+      IF SONo = '10106000084507' THEN EXIT(FALSE);
+      IF SONo = '10106000084514' THEN EXIT(FALSE);
+      IF SONo = '10106000084567' THEN EXIT(FALSE);
+      IF SONo = '10106000084568' THEN EXIT(FALSE);
+      IF SONo = '10106000084583' THEN EXIT(FALSE);
+      IF SONo = '10106000084592' THEN EXIT(FALSE);
+      IF SONo = '10106000084593' THEN EXIT(FALSE);
+      IF SONo = '10106000084626' THEN EXIT(FALSE);
+      IF SONo = '10106000084636' THEN EXIT(FALSE);
+      IF SONo = '10106000084638' THEN EXIT(FALSE);
+      IF SONo = '10106000084641' THEN EXIT(FALSE);
+      IF SONo = '10106000084646' THEN EXIT(FALSE);
+      IF SONo = '10106000084661' THEN EXIT(FALSE);
+      IF SONo = '10106000084665' THEN EXIT(FALSE);
+      IF SONo = '10106000084668' THEN EXIT(FALSE);
+      IF SONo = '10106000084678' THEN EXIT(FALSE);
+      IF SONo = '10106000084681' THEN EXIT(FALSE);
+      IF SONo = '10106000084682' THEN EXIT(FALSE);
+      IF SONo = '10106000084685' THEN EXIT(FALSE);
+      IF SONo = '10106000084693' THEN EXIT(FALSE);
+      IF SONo = '10106000084708' THEN EXIT(FALSE);
+      IF SONo = '10106000084714' THEN EXIT(FALSE);
+      IF SONo = '10106000084718' THEN EXIT(FALSE);
+      IF SONo = '10106000084726' THEN EXIT(FALSE);
+      IF SONo = '10106000084728' THEN EXIT(FALSE);
+      IF SONo = '10106000084747' THEN EXIT(FALSE);
+      IF SONo = '10106000084749' THEN EXIT(FALSE);
+      IF SONo = '10106000084752' THEN EXIT(FALSE);
+      IF SONo = '10106000084788' THEN EXIT(FALSE);
+      IF SONo = '10106000084792' THEN EXIT(FALSE);
+      IF SONo = '10106000084793' THEN EXIT(FALSE);
+      IF SONo = '10106000084794' THEN EXIT(FALSE);
+      IF SONo = '10106000084804' THEN EXIT(FALSE);
+      IF SONo = '10106000084817' THEN EXIT(FALSE);
+      IF SONo = '10106000084819' THEN EXIT(FALSE);
+      IF SONo = '10106000084825' THEN EXIT(FALSE);
+      IF SONo = '10106000084847' THEN EXIT(FALSE);
+      IF SONo = '10106000084849' THEN EXIT(FALSE);
+      IF SONo = '10106000084851' THEN EXIT(FALSE);
+      IF SONo = '10106000084852' THEN EXIT(FALSE);
+      IF SONo = '10106000084854' THEN EXIT(FALSE);
+      IF SONo = '10106000084856' THEN EXIT(FALSE);
+      IF SONo = '10106000084859' THEN EXIT(FALSE);
+      IF SONo = '10106000084860' THEN EXIT(FALSE);
+      IF SONo = '10106000084861' THEN EXIT(FALSE);
+      IF SONo = '10106000084873' THEN EXIT(FALSE);
+      IF SONo = '10106000084878' THEN EXIT(FALSE);
+      IF SONo = '10106000084879' THEN EXIT(FALSE);
+      IF SONo = '10106000084880' THEN EXIT(FALSE);
+      IF SONo = '10106000084897' THEN EXIT(FALSE);
+      IF SONo = '10106000084903' THEN EXIT(FALSE);
+      IF SONo = '10106000084905' THEN EXIT(FALSE);
+      IF SONo = '10106000084924' THEN EXIT(FALSE);
+      IF SONo = '10106000084926' THEN EXIT(FALSE);
+      IF SONo = '10106000084940' THEN EXIT(FALSE);
+      IF SONo = '10106000084948' THEN EXIT(FALSE);
+      IF SONo = '10106000084951' THEN EXIT(FALSE);
+      IF SONo = '10106000084962' THEN EXIT(FALSE);
+      IF SONo = '10106000084971' THEN EXIT(FALSE);
+      IF SONo = '10106000085019' THEN EXIT(FALSE);
+      IF SONo = '10106000085026' THEN EXIT(FALSE);
+      IF SONo = '10106000085029' THEN EXIT(FALSE);
+      IF SONo = '10106000085052' THEN EXIT(FALSE);
+      IF SONo = '10106000085054' THEN EXIT(FALSE);
+      IF SONo = '10106000085068' THEN EXIT(FALSE);
+      IF SONo = '10106000085070' THEN EXIT(FALSE);
+      IF SONo = '10106000085072' THEN EXIT(FALSE);
+      IF SONo = '10106000085080' THEN EXIT(FALSE);
+      IF SONo = '10106000085096' THEN EXIT(FALSE);
+      IF SONo = '10106000085097' THEN EXIT(FALSE);
+      IF SONo = '10106000085128' THEN EXIT(FALSE);
+      IF SONo = '10106000085130' THEN EXIT(FALSE);
+      IF SONo = '10106000085147' THEN EXIT(FALSE);
+      IF SONo = '10106000085151' THEN EXIT(FALSE);
+      IF SONo = '10106000085155' THEN EXIT(FALSE);
+      IF SONo = '10106000085166' THEN EXIT(FALSE);
+      IF SONo = '10106000085217' THEN EXIT(FALSE);
+      IF SONo = '10106000085235' THEN EXIT(FALSE);
+      IF SONo = '10106000085255' THEN EXIT(FALSE);
+      IF SONo = '10106000085261' THEN EXIT(FALSE);
+      IF SONo = '10106000085271' THEN EXIT(FALSE);
+      IF SONo = '10106000085272' THEN EXIT(FALSE);
+      IF SONo = '10106000085301' THEN EXIT(FALSE);
+      IF SONo = '10106000085309' THEN EXIT(FALSE);
+      IF SONo = '10106000085314' THEN EXIT(FALSE);
+      IF SONo = '10106000085319' THEN EXIT(FALSE);
+      IF SONo = '10106000085322' THEN EXIT(FALSE);
+      IF SONo = '10106000085336' THEN EXIT(FALSE);
+      IF SONo = '10106000085341' THEN EXIT(FALSE);
+      IF SONo = '10106000085348' THEN EXIT(FALSE);
+      IF SONo = '10106000085355' THEN EXIT(FALSE);
+      IF SONo = '10106000085364' THEN EXIT(FALSE);
+      IF SONo = '10106000085380' THEN EXIT(FALSE);
+      IF SONo = '10106000085384' THEN EXIT(FALSE);
+      IF SONo = '10106000085398' THEN EXIT(FALSE);
+      IF SONo = '10106000085401' THEN EXIT(FALSE);
+      IF SONo = '10106000085409' THEN EXIT(FALSE);
+      IF SONo = '10106000085424' THEN EXIT(FALSE);
+      IF SONo = '10106000085433' THEN EXIT(FALSE);
+      IF SONo = '10106000085438' THEN EXIT(FALSE);
+      IF SONo = '10106000085441' THEN EXIT(FALSE);
+      IF SONo = '10106000085464' THEN EXIT(FALSE);
+      IF SONo = '10106000085467' THEN EXIT(FALSE);
+      IF SONo = '10106000085484' THEN EXIT(FALSE);
+      IF SONo = '10106000085485' THEN EXIT(FALSE);
+      IF SONo = '10106000085495' THEN EXIT(FALSE);
+      IF SONo = '10106000085496' THEN EXIT(FALSE);
+      IF SONo = '10106000085500' THEN EXIT(FALSE);
+      IF SONo = '10106000085523' THEN EXIT(FALSE);
+      IF SONo = '10106000085530' THEN EXIT(FALSE);
+      IF SONo = '10106000085534' THEN EXIT(FALSE);
+      IF SONo = '10106000085535' THEN EXIT(FALSE);
+      IF SONo = '10106000085540' THEN EXIT(FALSE);
+      IF SONo = '10106000085551' THEN EXIT(FALSE);
+      IF SONo = '10106000085552' THEN EXIT(FALSE);
+      IF SONo = '10106000085558' THEN EXIT(FALSE);
+      IF SONo = '10106000085568' THEN EXIT(FALSE);
+      IF SONo = '10106000085570' THEN EXIT(FALSE);
+      IF SONo = '10106000085576' THEN EXIT(FALSE);
+      IF SONo = '10106000085591' THEN EXIT(FALSE);
+      IF SONo = '10106000085592' THEN EXIT(FALSE);
+      IF SONo = '10106000085593' THEN EXIT(FALSE);
+      IF SONo = '10106000085612' THEN EXIT(FALSE);
+      IF SONo = '10106000085616' THEN EXIT(FALSE);
+      IF SONo = '10106000085644' THEN EXIT(FALSE);
+      IF SONo = '10106000085662' THEN EXIT(FALSE);
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE ProcessRhenus2@1170000001();
+    VAR
+      SO@1000000006 : Record 36;
+      SOLine@1000000007 : Record 37;
+      SOTempLine@1000000015 : TEMPORARY Record 37;
+      PO@1000000010 : Record 38;
+      POLine@1000000004 : Record 39;
+      Location@1000000008 : Record 14;
+      ProcessLog@1000000000 : Record 50070;
+      ProcessLog2@1170000000 : Record 50070;
+      TextLine@1000000003 : Text[1024];
+      FileRec@1000000005 : File;
+      Mandant@1000000009 : Code[4];
+      FileName@1000000012 : Text[1024];
+      IsParcelReturn@1000000014 : Boolean;
+      OrderExist@1000000013 : Boolean;
+      i@1000000001 : Integer;
+      FPCGeneralSetup@1000000002 : Record 50055;
+      TH@1000000011 : Record 5740;
+    BEGIN
+      IFSetup.GET;
+      SalesSetup.GET;
+      Interface.GET('RHENUS');
+      Interface.TESTFIELD("Export Folder");
+      //A/gob-rste/23.08.12/P0214
+      FPCGeneralSetup.GET;
+      //E/gob-rste/23.08.12/P0214
+      ProcessLog.RESET;
+      //31.08.12  nas fix key for Log table >>
+      //ProcessLog.SETCURRENTKEY("Creation Datetime",Processed);  //P0207
+      ProcessLog.SETCURRENTKEY(Processed,"Interface Code","Creation Datetime","Document Type","Document No.","Seq. Code","Branch Code");
+      //31.08.12  nas fix key for Log table >>
+      //ProcessLog.SETRANGE("Entry No.",65,67);
+      ProcessLog.SETRANGE(Processed,FALSE);
+      ProcessLog.SETRANGE("Interface Code",Interface.Code);
+      //A/gob-adb/08.07.13
+      //IF ProcessLog.FINDSET(TRUE,TRUE) THEN
+      IF ProcessLog.FIND('-') THEN
+      //E/gob-adb/08.07.13
+        REPEAT
+          //31.08.12  nas fix key for Log table >>
+          ProcessLog.SETRANGE("Creation Datetime",ProcessLog."Creation Datetime");
+          //31.08.12  nas fix key for Log table <<
+          ProcessLog.SETRANGE("Document Type",ProcessLog."Document Type");
+          ProcessLog.SETRANGE("Document No.",ProcessLog."Document No.");
+          ProcessLog.SETRANGE("Seq. Code",ProcessLog."Seq. Code");
+          ProcessLog.SETRANGE("Branch Code",ProcessLog."Branch Code");
+          //A/gob-adb/08.07.13
+          //ProcessLog.FINDSET(TRUE,TRUE);
+          ProcessLog.FIND('-');
+          //E/gob-adb/08.07.13
+          GlobalVar[1] := 'FPCO';
+          Mandant := 'FPCO';
+
+          CLEAR(UTFWriter);
+          CREATE(UTFWriter);
+          UTFWriter.Open;
+          UTFWriter.Charset('UTF-8');
+
+          txtCRLF := 'XX';  // define it as Text with size 2
+          txtCRLF[1] := 13;
+          txtCRLF[2] := 10;
+
+
+          rr1.CLOSE;
+          rr2.CLOSE;
+          rr3.CLOSE;
+          OrderExist := FALSE;
+          //A/gob-rste/22.08.12/P2014
+            IF ProcessLog."Source Type" = ProcessLog."Source Type"::Sales THEN BEGIN
+              IF NOT FPCGeneralSetup."Use New KAD Mgt." THEN BEGIN
+                IF NOT IFSetup."Disable Sales Export" THEN BEGIN
+                  IF ProcessLog."Document Type" = ProcessLog."Document Type"::Order THEN BEGIN
+                    IF SO.GET(SO."Document Type"::Order,ProcessLog."Document No.") THEN
+                      OrderExist := TRUE;
+                  END ELSE BEGIN
+                    IF SO.GET(SO."Document Type"::"Return Order",ProcessLog."Document No.") THEN
+                      OrderExist := TRUE;
+                  END;
+                  IF OrderExist THEN BEGIN
+                    IF SO.Kommissionierung THEN BEGIN
+                    //  (DT2DATE(SO."Order Release Date") <= CALCDATE(SalesSetup."NAV SO Overdue Period",SO."Order Date")) THEN BEGIN
+                      // >>>>>
+                      //IF DT2DATE(SO."Order Release Date") <= CALCDATE(SalesSetup."Due Date 1",SO."Order Date") THEN
+                        ProcessLog."Shipment Date" := 0D;
+
+                      IF SO.Status = SO.Status::"Pending Prepayment" THEN
+                      //IF (SO."Prepayment %" > 0) AND (ProcessLog.Action = ProcessLog.Action::New) THEN
+                        ProcessLog."Shipment Date" := 11112911D;
+                      // <<<
+                      GlobalVar[2] := SO."Sell-to Customer No.";
+                      GlobalVar[3] := FORMAT(ProcessLog.Action,0,9);
+                      GlobalVar[4] := ProcessLog."Document No." + ProcessLog."Seq. Code";;
+
+                      rr1.OPEN(DATABASE::"Sales Header");
+                      rr1.GETTABLE(SO);
+
+                      rr2.OPEN(DATABASE::"Rhenus Change Log");
+                      rr2.GETTABLE(ProcessLog);
+
+                      rr3.OPEN(DATABASE::"Sales Line");
+
+                      IsParcelReturn := FALSE;
+                      IF ProcessLog."Document Type" = ProcessLog."Document Type"::"Return Order" THEN BEGIN
+                        SOLine.SETRANGE("Document Type",SO."Document Type");
+                        SOLine.SETRANGE("Document No.",SO."No.");
+                        IF SOLine.FINDSET THEN
+                          REPEAT
+                            IF SOLine."Purchasing Code" = 'PAKET-LAG' THEN IsParcelReturn := TRUE;
+                          UNTIL (SOLine.NEXT = 0) OR IsParcelReturn;
+                      END;
+
+                      IF NOT IsParcelReturn THEN BEGIN
+                        //04.09.12  nas >>
+                        //IF GetPreviousLog(ProcessLog,ProcessLog2) THEN
+                        //  CreateKAD(ProcessLog2,ProcessLog.Action::Cancelation);
+                        //IF (ProcessLog."Line No." > 0) AND (ProcessLog.Action <> ProcessLog.Action::Cancelation)  THEN
+                          //20.07.12  nas skip date changes >>
+                          IF ProcessLog.Action <> ProcessLog.Action::Cancelation THEN
+                          CreateKAD(ProcessLog,ProcessLog.Action)
+                          ELSE BEGIN
+                            IF GetPreviousLog(ProcessLog,ProcessLog2) THEN
+                              CreateKAD(ProcessLog2,ProcessLog.Action::Cancelation);
+                          END;
+
+                          //20.07.12  nas skip date changes >>
+                        //IF (ProcessLog."Line No." > 0) AND (ProcessLog.Action = ProcessLog.Action::Cancelation)  THEN
+                        //  CreateKAD(ProcessLog,ProcessLog.Action::Cancelation);
+                        //04.09.12  nas <<
+
+
+                        FileName :=
+                          'KAD' + Mandant +
+                          FORMAT(CURRENTDATETIME,0,'<Year4><Month,2><Day,2><Hours24><Minutes,2><Seconds,2>') + '.txt';
+                      END ELSE BEGIN
+                        IF GetPreviousLog(ProcessLog,ProcessLog2) THEN
+                          CreateWEA(ProcessLog2,ProcessLog.Action::Cancelation);
+                        CreateWEA(ProcessLog,ProcessLog.Action);
+                        FileName := 'WEA' + Mandant +
+                          //S/P1160
+                          //FORMAT(CURRENTDATETIME,0,'<Year4><Month,2><Day,2><Hours24><Minutes,2><Seconds,2>') + '.txt';
+                          FORMAT(CURRENTDATETIME,0,'<Year4><Month,2><Day,2><Hours24><Minutes,2><Seconds,2><Thousands,3>') + '.txt';
+                          //E/P1160
+                      END;
+                      //24.07.12  nas do not export empty files >>
+                      //DYN0009 08.08.12  nas skip not assembly >>
+                      IF NOT ISCLEAR(UTFWriter) THEN BEGIN
+                      //DYN0009 08.08.12  nas skip not assembly <<
+                        i := UTFWriter.Size;
+                        IF i > 0 THEN BEGIN
+                        //24.07.12  nas do not export empty files <<
+                          UTFWriter.SaveToFile(Interface."Export Folder" + FileName);
+                          UTFWriter.Close;
+                          //S/P1160
+                          IF STRPOS(FileName,'WEA') = 0 THEN
+                          //E/P1160
+                            SLEEP(1000);
+                        END;
+                      END;
+                      //UTFWriter.SaveToFile(Interface."Archive Root Folder" + FileName);
+                      //A/gob-rste/17.08.12/P0210
+                      IF EXISTS(Interface."Export Folder" + FileName) THEN
+                      //E/gob-rste/17.08.12/P0210
+                      IF FILE.COPY(Interface."Export Folder" + FileName,Interface."Archive Root Folder" + FileName) THEN
+                        SO.ADDLINK(IFSetup."Rhenus Archive Folder" + FileName,Text015);
+
+                      InsertLogEntry('',
+                        STRSUBSTNO(Text001,Interface."Export Folder" + FileName,ProcessLog."Document No.",Interface.Code),
+                        FALSE, FALSE);
+
+                      ProcessLog2.COPYFILTERS(ProcessLog);
+                      ProcessLog2.MODIFYALL("Processing Date",CURRENTDATETIME);
+                      ProcessLog2.MODIFYALL("Export File Name",FileName);
+                    ProcessLog2.MODIFYALL(Processed,TRUE);
+                    END;
+                  END ELSE
+                    InsertLogEntry('',
+                      STRSUBSTNO(Text012,ProcessLog."Document No."),
+                      FALSE, FALSE);
+
+                END;
+          //A/gob-rste/22.08.12/P0214
+              END;
+          //E/gob-rste/22.08.12/P0214
+          END ELSE BEGIN
+            IFSetup.TESTFIELD("Disable Purchase Export Time"); //P0450/gob-sfe/17.10.12
+            IF NOT IFSetup."Disable Purchase Export"
+                AND (IFSetup."Disable Purchase Export Time"<ProcessLog."Creation Datetime") //P0450/gob-sfe/17.10.12
+              THEN BEGIN
+              IF ProcessLog.Action = ProcessLog.Action::Cancelation THEN BEGIN
+                PO.INIT;
+                IF ProcessLog."Document Type" = ProcessLog."Document Type"::Order THEN
+                  PO."Document Type" := PO."Document Type"::Order
+                ELSE
+                  PO."Document Type" := PO."Document Type"::"Return Order";
+                PO."No." := ProcessLog."Document No.";
+              END ELSE BEGIN
+                IF ProcessLog."Document Type" = ProcessLog."Document Type"::Order THEN BEGIN
+                  IF PO.GET(PO."Document Type"::Order,ProcessLog."Document No.") THEN
+                    OrderExist := TRUE;
+                  // S/P0575
+                  IF ProcessLog."Source Type" = ProcessLog."Source Type" :: Transfer THEN
+                    IF TH.GET(ProcessLog."Transfer No.") THEN
+                      OrderExist := TRUE;
+                  // E/P0575
+
+                END ELSE BEGIN
+                  IF PO.GET(PO."Document Type"::"Return Order",ProcessLog."Document No.") THEN
+                    OrderExist := TRUE;
+                END;
+              END;
+
+              //a/P0424/gob-sfe/10.10.12
+              //IF OrderExist THEN BEGIN
+              //e/P0424/gob-sfe/10.10.12
+                GlobalVar[2] := ProcessLog."Sell-to Customer No.";
+                GlobalVar[4] := ProcessLog."Document No." + ProcessLog."Seq. Code";
+
+                rr1.OPEN(DATABASE::"Purchase Header");
+                rr1.GETTABLE(PO);
+
+                rr2.OPEN(DATABASE::"Rhenus Change Log");
+                rr2.GETTABLE(ProcessLog);
+
+                rr3.OPEN(DATABASE::"Purchase Line");
+                IF ProcessLog."Document Type" = ProcessLog."Document Type"::Order THEN BEGIN
+                  IF GetPreviousLog(ProcessLog,ProcessLog2) THEN
+                    CreateWEA(ProcessLog2,ProcessLog.Action::Cancelation);
+                  IF OrderExist THEN //P0424/gob-sfe/10.10.12
+                    CreateWEA(ProcessLog,ProcessLog.Action);
+
+                  FileName := 'WEA' + Mandant +
+                  //S/P1160
+                  //FORMAT(CURRENTDATETIME,0,'<Year4><Month,2><Day,2><Hours24><Minutes,2><Seconds,2>') + '.txt';
+                  FORMAT(CURRENTDATETIME,0,'<Year4><Month,2><Day,2><Hours24><Minutes,2><Seconds,2><Thousands,3>') + '.txt';
+                  //E/P1160
+                END ELSE BEGIN
+                //A/gob-rste/22.08.12/P0214
+                {*********************************
+                  IF GetPreviousLog(ProcessLog,ProcessLog2) THEN
+                    CreateKAD(ProcessLog2,ProcessLog.Action::Cancelation);
+                  CreateKAD(ProcessLog,ProcessLog.Action);
+                  FileName :=
+                    'KAD' + Mandant +
+                    FORMAT(CURRENTDATETIME,0,'<Year4><Month,2><Day,2><Hours24><Minutes,2><Seconds,2>') + '.txt';
+                **********************************}
+                //E/gob-rste/22.08.12/P0214
+                END;
+                //24.07.12  nas do not export empty files >>
+                i := UTFWriter.Size;
+                IF i > 0 THEN
+                //24.07.12  nas do not export empty files <<
+                UTFWriter.SaveToFile(Interface."Export Folder" + FileName);
+                //UTFWriter.SaveToFile(Interface."Archive Root Folder" + FileName);
+                UTFWriter.Close;
+                //S/P1160
+                IF STRPOS(FileName,'WEA') = 0 THEN
+                //E/P1160
+                  SLEEP(1000);
+                //A/gob-rste/17.08.12/P0210
+                IF EXISTS(Interface."Export Folder" + FileName) THEN
+                //E/gob-rste/17.08.12/P0210
+                IF FILE.COPY(Interface."Export Folder" + FileName,Interface."Archive Root Folder" + FileName) THEN
+                    PO.ADDLINK(Interface."Archive Root Folder" + FileName,Text015);
+
+                InsertLogEntry('',
+                  STRSUBSTNO(Text001,Interface."Export Folder" + FileName,ProcessLog."Document No.",Interface.Code),
+                  FALSE, FALSE);
+
+                ProcessLog2.COPYFILTERS(ProcessLog);
+                ProcessLog2.MODIFYALL("Processing Date",CURRENTDATETIME);
+                ProcessLog2.MODIFYALL("Export File Name",FileName);
+                ProcessLog2.MODIFYALL(Processed,TRUE);
+              //a/P0424/gob-sfe/10.10.12
+              //END ELSE
+              //  InsertLogEntry('',
+              //    STRSUBSTNO(Text012,ProcessLog."Document No."),
+              //    FALSE, FALSE);
+              //e/P0424/gob-sfe/10.10.12
+
+
+            END;
+
+          END;
+          IF ProcessLog.FINDLAST THEN;
+          //31.08.12  nas fix key for Log table >>
+          ProcessLog.SETRANGE("Branch Code");
+          ProcessLog.SETRANGE("Seq. Code");
+          ProcessLog.SETRANGE("Document No.");
+          ProcessLog.SETRANGE("Document Type");
+          ProcessLog.SETRANGE("Creation Datetime");
+          //31.08.12  nas fix key for Log table <<
+          COMMIT;
+
+        UNTIL ProcessLog.NEXT = 0;
+
+      IF Interface."Use FTP" THEN FTPUpload;
+      //MESSAGE(Text005);
+      InsertLogEntry('',Text005,FALSE, FALSE);
+    END;
+
+    PROCEDURE GroupLogLines@1170000002(VAR Log@1000000001 : Record 50070;VAR GroupLog@1000000000 : TEMPORARY Record 50070);
+    BEGIN
+      GroupLog.DELETEALL;
+      WITH Log DO
+        IF Log.FINDSET THEN
+          REPEAT
+            GroupLog.RESET;
+            GroupLog.SETRANGE(Type,Type);
+            GroupLog.SETRANGE("No.","No.");
+            GroupLog.SETRANGE("Location Code","Location Code");
+            GroupLog.SETRANGE("Purchasing Code","Purchasing Code");
+            //31.08.12  nas group by parent item no. >>
+            GroupLog.SETRANGE("Parent Item No.","Parent Item No.");
+            //31.08.12  nas group by parent Item No. <<
+
+            IF GroupLog.FINDFIRST THEN BEGIN
+              GroupLog.Quantity += Quantity;
+              GroupLog."Cancellation Qty." += "Cancellation Qty.";
+              GroupLog.MODIFY;
+            END ELSE BEGIN
+              GroupLog.INIT;
+              GroupLog.TRANSFERFIELDS(Log);
+              GroupLog.INSERT;
+            END;
+          UNTIL NEXT = 0;
+      GroupLog.RESET;
+      GroupLog.FINDSET;
+    END;
+
+    PROCEDURE GetSOLine@1170000003(VAR Log@1170000000 : Record 50070;VAR SOLine@1170000001 : Record 37);
+    BEGIN
+      SOLine.RESET;
+      SOLine.SETRANGE(SOLine."Document Type",Log."Document Type");
+      SOLine.SETRANGE(SOLine."Document No.",Log."Document No.");
+      SOLine.SETRANGE(SOLine."Line No.",Log."Line No.");
+      IF NOT SOLine.FINDFIRST THEN SOLine.INIT;
+    END;
+
+    PROCEDURE CreateWEA@1170000005(VAR ProcessLog@1170000001 : Record 50070;Action@1170000000 : ',New,Change,Cancelation');
+    VAR
+      TextLine@1170000006 : Text[1024];
+      ImportFrm@1170000003 : Record 50010;
+      ImportFrmLine@1170000002 : Record 50011;
+    BEGIN
+      ProcessLog."Document No." := ProcessLog."Document No." + ProcessLog."Seq. Code";
+      //a/gob-se/P0360/20.09.2012
+      IF Action=Action::Cancelation THEN
+        GlobalVar[3] := '2'
+      ELSE
+      //e/gob-se/P0360/20.09.2012
+      GlobalVar[3] := FORMAT(Action,0,9);
+
+      GlobalVar[4] := ProcessLog."Document No.";
+
+      IF ImportFrm.GET('R-WEA-N') THEN BEGIN
+        ImportFrmLine.RESET;
+        ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+
+        IF ProcessLog.FINDSET THEN
+          REPEAT
+            rr2.GETTABLE(ProcessLog);
+            TextLine := '';
+            IF (ProcessLog.Type = ProcessLog.Type::Item) AND
+              IsRhenusLocation(ProcessLog."Location Code") THEN BEGIN
+              IF ImportFrmLine.FINDSET THEN
+                REPEAT
+                  TextLine := TextLine + GetFieldValue(ImportFrmLine);
+                UNTIL ImportFrmLine.NEXT = 0;
+              UTFWriter.WriteText(TextLine + txtCRLF);
+
+            END;
+          UNTIL ProcessLog.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE CreateKAD@1170000006(VAR ProcessLog@1170000000 : Record 50070;Action@1170000008 : ',New,Change,Cancelation');
+    VAR
+      TempProcessLog@1170000002 : TEMPORARY Record 50070;
+      TextLine@1170000001 : Text[1024];
+      flag1@1170000004 : Boolean;
+      flag2@1170000003 : Boolean;
+      ImportFrm@1170000006 : Record 50010;
+      ImportFrmLine@1170000005 : Record 50011;
+      SOLine@1170000007 : Record 37;
+      SO@1000000000 : Record 36;
+      SeqCode@1000000001 : Code[10];
+    BEGIN
+      // 27.07.12 nas fix for change status >>
+      SeqCode := ProcessLog."Seq. Code";
+      // 27.07.12 nas fix for change status <<
+      GroupLogLines(ProcessLog,TempProcessLog);
+
+      TempProcessLog."Shipment Date" := 0D;
+      IF SO.GET(SO."Document Type"::Order,TempProcessLog."Document No.") THEN
+        IF SO.Status = SO.Status::"Pending Prepayment" THEN
+          TempProcessLog."Shipment Date" := 11112911D;
+
+      // 27.07.12 nas fix for change status >>
+      TempProcessLog."Document No." := TempProcessLog."Document No." + SeqCode;
+      // 27.07.12 nas fix for change status <<
+      GlobalVar[3] := FORMAT(Action,0,9);
+      GlobalVar[4] := TempProcessLog."Document No.";
+
+      rr2.GETTABLE(TempProcessLog);
+      flag1 := FALSE;
+      flag2 := FALSE;
+
+      IF ImportFrm.GET('R-KAK-N') THEN BEGIN
+        TextLine := '';
+        ImportFrmLine.RESET;
+        ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+        IF ImportFrmLine.FINDSET THEN
+          REPEAT
+            TextLine := TextLine + GetFieldValue(ImportFrmLine);
+          UNTIL ImportFrmLine.NEXT = 0;
+        UTFWriter.WriteText(TextLine + txtCRLF);
+      END;
+
+      IF ImportFrm.GET('R-KAL-N') THEN BEGIN
+        TextLine := '';
+        ImportFrmLine.RESET;
+        ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+        IF ImportFrmLine.FINDSET THEN
+          REPEAT
+            TextLine := TextLine + GetFieldValue(ImportFrmLine);
+          UNTIL ImportFrmLine.NEXT = 0;
+        UTFWriter.WriteText(TextLine + txtCRLF);
+
+      END;
+      TextLine := '';
+
+      IF TempProcessLog.FINDSET THEN BEGIN
+        REPEAT
+          rr2.GETTABLE(TempProcessLog);
+          IF IsRhenusLocation(TempProcessLog."Location Code") THEN BEGIN
+            IF TempProcessLog.Type = TempProcessLog.Type::Item THEN BEGIN
+              IF (TempProcessLog."Purchasing Code" = 'GER-1') OR (TempProcessLog."Purchasing Code" = 'GER-10') THEN
+                flag1 := TRUE
+              ELSE flag2 := TRUE;
+
+              TextLine := '';
+              IF ImportFrm.GET('R-KAP-N') THEN BEGIN
+                ImportFrmLine.RESET;
+                ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+                IF ImportFrmLine.FINDSET THEN
+                  REPEAT
+                    TextLine := TextLine + GetFieldValue(ImportFrmLine);
+                  UNTIL ImportFrmLine.NEXT = 0;
+                UTFWriter.WriteText(TextLine + txtCRLF);
+
+              END;
+            END;
+            IF (TempProcessLog.Type = TempProcessLog.Type::Resource) THEN BEGIN
+              GetSOLine(TempProcessLog,SOLine);
+              //DYN0005 06.08.12 nas  >>>
+              IF (SOLine."Resource Type" = SOLine."Resource Type"::Assembly) AND isParentRhenus(SOLine)THEN BEGIN
+              //DYN0005 06.08.12 nas  <<<
+                TextLine := '';
+                IF ImportFrm.GET('R-KAS-N') THEN BEGIN
+                  ImportFrmLine.RESET;
+                  ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+                  IF ImportFrmLine.FINDSET THEN
+                    REPEAT
+                      TextLine := TextLine + GetFieldValue(ImportFrmLine);
+                    UNTIL ImportFrmLine.NEXT = 0;
+                  UTFWriter.WriteText(TextLine + txtCRLF);
+
+                END;
+              END;
+            END;
+          END;
+        UNTIL TempProcessLog.NEXT = 0;
+
+        //DYN0009 08.08.12  nas skip not assembly >>
+        IF TextLine = '' THEN BEGIN
+          CLEAR(UTFWriter);
+          EXIT;
+        END;
+        //DYN0009 08.08.12  nas skip not assembly <<
+
+        IF isPartialDelivery(ProcessLog) AND (TempProcessLog.Action <> TempProcessLog.Action::Cancelation) THEN BEGIN
+          TempProcessLog.INIT;
+          TempProcessLog."Document Type" := ProcessLog."Document Type"::Quote;
+          TempProcessLog."Document No." := ProcessLog."No.";
+          TempProcessLog.Type := TempProcessLog.Type::Item;
+          TempProcessLog."No." := 'ORDER-INFO';
+          TempProcessLog.Description := Text017;
+          TempProcessLog.Quantity := 1;
+          TempProcessLog."Seq. No." := ProcessLog."Seq. No.";
+
+          TextLine := '';
+          rr2.GETTABLE(TempProcessLog);
+          IF ImportFrm.GET('R-KAP-N') THEN BEGIN
+            ImportFrmLine.RESET;
+            ImportFrmLine.SETRANGE(Code,ImportFrm.Code);
+            IF ImportFrmLine.FINDSET THEN
+              REPEAT
+                TextLine := TextLine + GetFieldValue(ImportFrmLine);
+              UNTIL ImportFrmLine.NEXT = 0;
+            UTFWriter.WriteText(TextLine + txtCRLF);
+
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE GetPreviousLog@1170000004(VAR Log@1170000001 : Record 50070;VAR Log2@1170000000 : Record 50070) : Boolean;
+    BEGIN
+      //29.08.12  nas fixed change channel func-ty  >>
+      //IF Log.Action = Log.Action::Cancelation THEN EXIT(FALSE);
+      //29.08.12  nas fixed change channel func-ty  >>
+      Log2.RESET;
+      Log2.SETRANGE("Source Type",Log."Source Type");
+      Log2.SETRANGE("Document Type",Log."Document Type");
+      //S/p0575/16.11.
+      IF Log."Source Type" = Log."Source Type" :: Transfer THEN
+        Log2.SETRANGE("Transfer No.",Log."Transfer No.");
+      //E/p0575/16.11.
+      Log2.SETRANGE("Document No.",Log."Document No.");
+      //a/P0419/gob-sfe/09.10.12
+      IF Log."Source Type"=Log."Source Type"::Sales THEN
+      //e/P0419/gob-sfe/09.10.12
+        Log2.SETRANGE("Branch Code",Log."Branch Code");
+      Log2.SETRANGE(Processed,TRUE);
+      IF Log2.FINDLAST THEN BEGIN
+        Log2.SETRANGE("Seq. Code",Log2."Seq. Code");
+        //29.08.12  nas fixed change channel func-ty  >>
+        Log2.SETRANGE(Action,Log2.Action);
+        //29.08.12  nas fixed change channel func-ty  <<
+        Log2.FINDSET;
+        IF Log2."Line No." = 0 THEN EXIT(FALSE);
+        //20.07.12  nas skip date changes >>
+        //29.08.12  nas fixed change channel func-ty  >>
+        //04.09.12  nas >>
+        //IF (Log2."Shipment Date" <> Log."Shipment Date") AND (Log.Action <> Log.Action::Cancelation) THEN BEGIN
+        //29.08.12  nas fixed change channel func-ty  <<
+          //Log.Action := Log.Action::Change;
+          //25.07.12  nas change for old number >>
+          //Log."Seq. Code" := Log2."Seq. Code";
+          //25.07.12  nas change for old number <<
+          //EXIT(FALSE);
+        //END;
+        //04.09.12  nas <<
+        //20.07.12  nas skip date changes <<
+
+        EXIT(TRUE);
+      END;
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE formatNLPostCode@1000000012(NLPostCode@1170000000 : Text[30]) : Text[30];
+    VAR
+      i@1170000002 : Integer;
+      Ce@1170000001 : Text[1];
+    BEGIN
+      IF NLPostCode = '' THEN EXIT('');
+      NLPostCode := DELCHR(NLPostCode,'=',' ');
+      FOR i := 1 TO STRLEN(NLPostCode) DO BEGIN
+          Ce := COPYSTR(NLPostCode,i,1);
+          IF NOT ((Ce >= '0') AND (Ce <= '9')) THEN
+            EXIT(COPYSTR(NLPostCode,1,i-1) + ' ' + COPYSTR(NLPostCode,i,STRLEN(NLPostCode) - i + 1));
+      END;
+      EXIT(NLPostCode);
+    END;
+
+    PROCEDURE isPartialDelivery@1000000013(VAR DocLog@1000000000 : Record 50070) : Boolean;
+    VAR
+      SOLine@1000000001 : Record 37;
+      flag1@1000000003 : Boolean;
+      flag2@1000000002 : Boolean;
+      SeqNo@1000000004 : Integer;
+    BEGIN
+      //20.07.12  nas isParcelDelivery >>>
+      flag1 := FALSE;
+      flag2 := FALSE;
+      SOLine.RESET;
+      SOLine.SETRANGE(SOLine."Document Type",DocLog."Document Type");
+      SOLine.SETRANGE(SOLine."Document No.",DocLog."Document No.");
+      SOLine.SETRANGE(SOLine.Type,SOLine.Type::Item);
+      IF SOLine.FINDSET THEN REPEAT
+        IF IsRhenusLocation(SOLine."Location Code") THEN flag1 := TRUE
+        ELSE BEGIN
+          flag2 := TRUE;
+          DocLog."Seq. No." := SOLine."Seq. No.";
+        END;
+      UNTIL SOLine.NEXT = 0;
+      EXIT(flag1 AND flag2);
+
+      //20.07.12  nas isParcelDelivery <<<
+    END;
+
+    PROCEDURE isParentRhenus@1000000015(VAR SOLine@1000000005 : Record 37) : Boolean;
+    VAR
+      ParentSOLine@1000000001 : Record 37;
+    BEGIN
+      //DYN0005 06.08.12 nas  >>>
+      ParentSOLine.RESET;
+      ParentSOLine.SETRANGE("Document Type",SOLine."Document Type");
+      ParentSOLine.SETRANGE("Document No.",SOLine."Document No.");
+      ParentSOLine.SETRANGE(ID,SOLine."Parent ID");
+      IF ParentSOLine.FINDFIRST THEN
+        IF IsRhenusLocation(ParentSOLine."Location Code") THEN
+          EXIT(TRUE);
+      EXIT(FALSE);
+      //DYN0005 06.08.12 nas  <<<
+    END;
+
+    PROCEDURE FixResource@1000000017(SONo@1000000002 : Code[20]);
+    VAR
+      SO@1000000006 : Record 36;
+      SOLine@1000000007 : Record 37;
+      SOTempLine@1000000015 : TEMPORARY Record 37;
+      PO@1000000010 : Record 38;
+      POLine@1000000004 : Record 39;
+      Location@1000000008 : Record 14;
+      ProcessLog@1000000000 : Record 50070;
+      ProcessLog2@1170000000 : Record 50070;
+      TextLine@1000000003 : Text[1024];
+      FileRec@1000000005 : File;
+      Mandant@1000000009 : Code[4];
+      FileName@1000000012 : Text[1024];
+      IsParcelReturn@1000000014 : Boolean;
+      OrderExist@1000000013 : Boolean;
+      i@1000000001 : Integer;
+      FPCGeneralSetup@1000000011 : Record 50055;
+    BEGIN
+      IFSetup.GET;
+      SalesSetup.GET;
+      Interface.GET('RHENUS');
+
+      ProcessLog.SETRANGE("Interface Code",'RHENUS');
+      ProcessLog.SETRANGE("Document No.",SONo);
+      //A/P0838
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Branch Rhenus Freienbrink");
+      //ProcessLog.SETRANGE("Branch Code",'ZL');
+      ProcessLog.SETRANGE("Branch Code",FPCGeneralSetup."Branch Rhenus Freienbrink");
+      //E/P0838
+      ProcessLog.FINDSET(TRUE,TRUE);
+      GlobalVar[1] := 'FPCO';
+      Mandant := 'FPCO';
+
+      CLEAR(UTFWriter);
+      CREATE(UTFWriter);
+      UTFWriter.Open;
+      UTFWriter.Charset('UTF-8');
+
+      txtCRLF := 'XX';  // define it as Text with size 2
+      txtCRLF[1] := 13;
+      txtCRLF[2] := 10;
+
+
+      rr1.CLOSE;
+      rr2.CLOSE;
+      rr3.CLOSE;
+      OrderExist := FALSE;
+
+      IF SO.GET(SO."Document Type"::Order,ProcessLog."Document No.") THEN BEGIN
+        ProcessLog."Shipment Date" := 0D;
+
+        IF SO.Status = SO.Status::"Pending Prepayment" THEN
+          ProcessLog."Shipment Date" := 11112911D;
+
+        GlobalVar[2] := SO."Sell-to Customer No.";
+        GlobalVar[3] := FORMAT(ProcessLog.Action,0,9);
+        GlobalVar[4] := ProcessLog."Document No." + ProcessLog."Seq. Code";;
+
+        rr1.OPEN(DATABASE::"Sales Header");
+        rr1.GETTABLE(SO);
+
+        rr2.OPEN(DATABASE::"Rhenus Change Log");
+        rr2.GETTABLE(ProcessLog);
+
+        rr3.OPEN(DATABASE::"Sales Line");
+
+        CreateKAD(ProcessLog,ProcessLog.Action::Change);
+
+        FileName :=
+          'c:\temp\15\KAD' + Mandant +
+          FORMAT(CURRENTDATETIME,0,'<Year4><Month,2><Day,2><Hours24><Minutes,2><Seconds,2>') + '.txt';
+        UTFWriter.SaveToFile(FileName);
+        UTFWriter.Close;
+        //S/P1160
+        IF STRPOS(FileName,'WEA') = 0 THEN
+        //E/P1160
+          SLEEP(1000);
+      END;
+    END;
+
+    PROCEDURE FixResources@1000000018();
+    BEGIN
+      FixResource('10106000103993');
+      FixResource('10106000104016');
+      FixResource('10101000104300');
+      FixResource('10104000104238');
+      FixResource('10101000104209');
+      FixResource('10104000104395');
+      FixResource('10105000104282');
+      FixResource('10104000104462');
+      FixResource('10101000104459');
+      FixResource('10104000104569');
+      FixResource('10101000104716');
+      FixResource('10104000104735');
+      FixResource('10106000104579');
+      FixResource('10101000104835');
+      FixResource('10104000104915');
+      FixResource('10106000104929');
+      FixResource('10104000105085');
+      FixResource('10104000105125');
+      FixResource('10104000105159');
+      FixResource('10104000105191');
+      FixResource('10105000105122');
+      FixResource('10106000105028');
+      FixResource('10105000105204');
+      FixResource('10106000105337');
+      FixResource('10106000105361');
+      FixResource('10105000105479');
+      FixResource('10101000105600');
+      FixResource('10101000105872');
+      FixResource('10106000105606');
+      FixResource('10101000105772');
+      FixResource('10101000106078');
+      FixResource('10104000105651');
+      FixResource('10104000105752');
+      FixResource('10104000105839');
+      FixResource('10104000105800');
+      FixResource('10104000105952');
+      FixResource('10104000105916');
+      FixResource('10104000105939');
+      FixResource('10104000105971');
+      FixResource('10104000106036');
+      FixResource('10104000106091');
+      FixResource('10105000105499');
+      FixResource('10105000106122');
+      FixResource('10106000105559');
+      FixResource('10106000105771');
+      FixResource('10106000105909');
+      FixResource('10106000105903');
+      FixResource('10106000105814');
+      FixResource('10106000106005');
+      FixResource('10106000106143');
+      FixResource('10106000106165');
+      FixResource('10106000106163');
+      FixResource('10104000106281');
+      FixResource('10106000106487');
+      FixResource('10104000106486');
+      FixResource('10101000106627');
+      FixResource('10104000106302');
+      FixResource('10104000106313');
+      FixResource('10104000106317');
+      FixResource('10104000106349');
+      FixResource('10104000106516');
+      FixResource('10104000106580');
+      FixResource('10104000106577');
+      FixResource('10105000106607');
+      FixResource('10106000106340');
+      FixResource('10106000106714');
+      FixResource('10101000106724');
+      FixResource('10104000106797');
+      FixResource('10101000106975');
+      FixResource('10105000106951');
+      FixResource('10101000107059');
+      FixResource('10104000107145');
+      FixResource('10105000107072');
+      FixResource('10105000107102');
+      FixResource('10106000107052');
+      FixResource('10106000107109');
+      FixResource('10101000107313');
+      FixResource('10106000107274');
+      FixResource('10106000107342');
+      FixResource('10104000107446');
+      FixResource('10104000107560');
+      FixResource('10106000107348');
+      FixResource('10106000107431');
+      FixResource('10106000107510');
+      FixResource('10101000107591');
+      FixResource('10106000107618');
+      FixResource('10105000107695');
+      FixResource('10104000107660');
+      FixResource('10101000108084');
+      FixResource('10104000108427');
+      FixResource('10104000108451');
+      FixResource('10106000107135');
+      FixResource('10106000107339');
+      FixResource('10106000108304');
+      FixResource('10106000107611');
+      FixResource('10101000109241');
+      FixResource('10104000109206');
+      FixResource('10104000109317');
+      FixResource('10109000109237');
+      FixResource('10104000109680');
+      FixResource('10104000109693');
+      FixResource('10104000109836');
+      FixResource('10101000109871');
+      FixResource('10104000109840');
+      FixResource('10104000109985');
+      FixResource('10104000110022');
+      FixResource('10104000110081');
+      FixResource('10104000110373');
+      FixResource('10104000110481');
+      FixResource('10109000110484');
+      FixResource('10104000109675');
+      FixResource('10109000109709');
+      FixResource('10109000110947');
+      FixResource('10103000110128');
+      FixResource('10101000111118');
+      FixResource('10104000109637');
+      FixResource('10104000110146');
+      FixResource('10104000110530');
+      FixResource('10104000110602');
+      FixResource('10104000110565');
+      FixResource('10104000110924');
+      FixResource('10104000111130');
+      FixResource('10106000107549');
+      FixResource('10106000107802');
+      FixResource('10106000108292');
+      FixResource('10106000108265');
+      FixResource('10106000108486');
+      FixResource('10106000109002');
+      FixResource('10104000111208');
+      FixResource('10104000109911');
+      FixResource('10104000111284');
+      FixResource('10101000108681');
+      FixResource('10104000109848');
+      FixResource('10104000110574');
+    END;
+
+    BEGIN
+    {
+      1.00 eich
+      28.03.12  chrmu handle repeated release
+      16.07.12  nas format post code for NL
+      20.07.12  nas skip date changes
+      20.07.12  nas export remarks for 639
+      24.07.12  nas do not export empty files
+                    changed parameters in function GetSOLine
+      25.07.12  nas change for old number
+      27.07.12 nas fix for change status
+      31.07.12  nas corrected assembly qty
+      DYN0005  06.08.12  nas  Assembly service
+      GOB-MNO Objektfix
+      DYN0009 08.08.12  nas skip not assembly
+      P0207   gob-sfe   Bugfix Rhenus Export
+      P0210   gob-rste  Bugfixes 0 Byte KAD
+      P0214   gob-rste  New Export for KAD's
+      29.08.12  nas fixed change channel func-ty
+      31.08.12  nas group by parent Item No.
+      31.08.12  nas fix key for Log table
+      04.09.12  nas add Cancel entry to Log table
+      P0316  12.09.12  gob-rste    Change Webshop Nr fro  Flowfield to Integer
+      P0360  20.09.12  gob-sfe  Bugfix WEA Cancelation
+      P0419  09.10.12  gob-sfe  Bugfix WEA
+      P0424  10.10.12  KomplettStorno RHE
+      P0450  17.10.12  Sperre fÅr WEA Export ab Creation Date xxxx
+      P0575  14.11.12  gob-mab  Anpassungen fÅr Container Orders (Purch.)
+      P0586  23.11.12  Items Parcels per Order
+      P0798  07.02.13  Fix ShipAddr.GET fpr Phone No and E-Mail
+      P0838  28.02.13  Get Branch Code From FPC General Setup
+      P0905  06.05.13  Fill Assembly Text for KAD
+      P1160  30.12.13  Create more than One WEA per Second
+
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut Description
+      _____________________________________________
+      H1006       14.04.14  MBY      Stop Filling Import Framework Log
+      H1412       28.08.14  EHN      Functional adjustment to the Whs LF Interface
+      H1796       17.11.14  DMA      BUG: Prevent WEA Creation for Lines where Branch Code is not equal to the used function,Func.redesign
+    }
+    END.
+  }
+}
+

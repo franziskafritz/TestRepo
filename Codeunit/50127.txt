@@ -1,0 +1,458 @@
+OBJECT Codeunit 50127 SII Job Queue Services
+{
+  OBJECT-PROPERTIES
+  {
+    Date=16.01.15;
+    Time=10:58:26;
+    Modified=Yes;
+    Version List=SII,HME2006;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=BEGIN
+            SIISetup.GET;
+            SIISetup.TESTFIELD("JQ Parameter Fill Log");
+            SIISetup.TESTFIELD("JQ Parameter Process Log");
+            SIISetup.TESTFIELD("JQ Param. Mon. Fill Statistic");
+            SIISetup.TESTFIELD("Days to Compare Trend Monitor");
+
+            CASE "Parameter String" OF
+              SIISetup."JQ Parameter Fill Log":
+                BEGIN
+                  FillLog;
+                END;
+              SIISetup."JQ Parameter Process Log":
+                BEGIN
+                  ProcessLog;
+                END;
+              SIISetup."JQ Param. Mon. Fill Statistic":
+                BEGIN
+                  MonitorPeriodicStatistic;
+                END;
+              //S/P0923
+              SIISetup."JQ Param. Mon. Statistic Mail":
+                BEGIN
+                  IF SIISetup."Send E-Mails Statistic" THEN
+                    SendMonitoringStatisticMail;
+                END;
+              //E/P0923
+              //S/P0982
+              SIISetup."JQ Param. Process Update Rec" :
+                BEGIN
+                  UpdateFieldValues;
+                END;
+              //E/P0982
+              //S/P1137
+              SIISetup."JQ Param. Report Finish Orders":
+                BEGIN
+                  FinishOrdersWithReport;
+                END;
+              //E/P1137
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      SIISetup@1000000000 : Record 50140;
+
+    PROCEDURE FillLog@1000000003();
+    VAR
+      SIIFillLog@1000000000 : Codeunit 50123;
+      SIIMessage@1000000001 : Record 50141;
+      ErrorText@1000000002 : Text[1024];
+      SIIProcessLog@1000000003 : Record 50139;
+    BEGIN
+      CLEARLASTERROR;
+      ErrorText := '';
+      SIIMessage.RESET;
+      SIIMessage.SETFILTER(Mode,'<>%1',SIIMessage.Mode::Inactive);
+      //S/P1010
+      SIIMessage.SETFILTER("Processing by",'%1|%2',
+        SIIMessage."Processing by"::"Job Queue",
+        SIIMessage."Processing by"::Both);
+      //E/P1010
+      SIIMessage.SETCURRENTKEY(Priority);
+      //S/P0923
+      //SIIMessage.ASCENDING := FALSE;
+      //E/P0923
+      IF SIIMessage.FINDSET THEN BEGIN
+        REPEAT
+          //S/P0923
+          CLEARLASTERROR;
+          //E/P0923
+          CLEAR(SIIFillLog);
+          SIIFillLog.InitOnRunTrigger(SIIMessage);
+          IF NOT SIIFillLog.RUN THEN BEGIN
+            SIIProcessLog.RESET;
+            SIIProcessLog."Entry No." := SIIProcessLog.GetNextEntryNo(TRUE);
+            SIIProcessLog."Entry Type" := SIIProcessLog."Entry Type"::Error;
+            SIIProcessLog."Log Type" := SIIProcessLog."Log Type"::FillLog;
+            SIIProcessLog.Timestamp := CURRENTDATETIME;
+            SIIProcessLog."Error Text 1" := COPYSTR(GETLASTERRORTEXT,1,250);
+            SIIProcessLog."Error Text 2" := COPYSTR(GETLASTERRORTEXT,251,500);
+            SIIProcessLog."Error Text 3" := COPYSTR(GETLASTERRORTEXT,501,750);
+            SIIProcessLog."Error Text 4" := COPYSTR(GETLASTERRORTEXT,751,1000);
+            SIIProcessLog.INSERT;
+          END ELSE BEGIN
+            SIIProcessLog.RESET;
+            SIIProcessLog."Entry No." := SIIProcessLog.GetNextEntryNo(TRUE);
+            SIIProcessLog."Entry Type" := SIIProcessLog."Entry Type"::Succes;
+            SIIProcessLog."Log Type" := SIIProcessLog."Log Type"::FillLog;
+            SIIProcessLog.Timestamp := CURRENTDATETIME;
+            SIIProcessLog.INSERT;
+          END;
+          COMMIT;
+        UNTIL SIIMessage.NEXT = 0;
+        IF ErrorText <> '' THEN BEGIN
+        END;
+      END;
+
+      //S/P1010
+      SIISetup.GET;
+      IF SIISetup."Autom. Transfer Manual Log" THEN
+        SIIFillLog.ShiftManualTrMsgToNormalLog;
+      //E/P1010
+    END;
+
+    PROCEDURE ProcessLog@1000000004();
+    VAR
+      SIILogL@1000000000 : Record 50146;
+      SIIMessageL@1000000001 : Record 50141;
+      SIIFillLogL@1000000002 : Codeunit 50123;
+    BEGIN
+      // Process Active Messages by Message-Priotity
+      //H2006  16.01.15  MBY  +++++++++++++++++++++++++++
+      SIISetup.GET;
+      IF SIISetup."Autom. Transfer Manual Log" THEN
+        SIIFillLogL.ShiftManualTrMsgToNormalLog;
+      COMMIT;
+      //H2006  16.01.15  MBY  ---------------------------
+      SIIMessageL.RESET;
+      SIIMessageL.SETRANGE(Mode,SIIMessageL.Mode::Active);
+      SIIMessageL.SETCURRENTKEY(Priority);
+      //S/P0923
+      //SIIMessage.ASCENDING := FALSE;
+      //E/P0923
+      IF SIIMessageL.FINDSET THEN BEGIN
+        REPEAT
+          SIILogL.RESET;
+          SIILogL.SETCURRENTKEY(MessageMode,Status,"Message Code NAV","Message Code Shop");
+          SIILogL.SETRANGE(MessageMode,SIILogL.MessageMode::Active);
+          SIILogL.SETRANGE(Status,SIILogL.Status::Unprocessed);
+          SIILogL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+          SIILogL.SETRANGE("Message Code Shop",SIIMessageL."Message Code Shop");
+          IF NOT SIILogL.ISEMPTY THEN
+            ProcessFilteredLog(SIILogL);
+        UNTIL SIIMessageL.NEXT = 0;
+      END;
+
+      // Process other Active Messages
+      SIILogL.RESET;
+      SIILogL.SETCURRENTKEY(MessageMode,Status,"Message Code NAV","Message Code Shop");
+      SIILogL.SETRANGE(MessageMode,SIILogL.MessageMode::Active);
+      SIILogL.SETRANGE(Status,SIILogL.Status::Unprocessed);
+      IF NOT SIILogL.ISEMPTY THEN
+        ProcessFilteredLog(SIILogL);
+
+      // Process Test Online Messages by Message-Priotity
+      SIIMessageL.RESET;
+      SIIMessageL.SETRANGE(Mode,SIIMessageL.Mode::"Test Online");
+      SIIMessageL.SETCURRENTKEY(Priority);
+      //S/P0923
+      //SIIMessage.ASCENDING := FALSE;
+      //E/P0923
+      IF SIIMessageL.FINDSET THEN BEGIN
+        REPEAT
+          SIILogL.RESET;
+          SIILogL.SETCURRENTKEY(MessageMode,Status,"Message Code NAV","Message Code Shop");
+          SIILogL.SETRANGE(MessageMode,SIILogL.MessageMode::"Test Online");
+          SIILogL.SETRANGE(Status,SIILogL.Status::Unprocessed);
+          SIILogL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+          SIILogL.SETRANGE("Message Code Shop",SIIMessageL."Message Code Shop");
+          IF NOT SIILogL.ISEMPTY THEN
+            ProcessFilteredLog(SIILogL);
+        UNTIL SIIMessageL.NEXT = 0;
+      END;
+
+      // Process other Test Online Messages
+      SIILogL.RESET;
+      SIILogL.SETCURRENTKEY(MessageMode,Status,"Message Code NAV","Message Code Shop");
+      SIILogL.SETRANGE(MessageMode,SIILogL.MessageMode::"Test Online");
+      SIILogL.SETRANGE(Status,SIILogL.Status::Unprocessed);
+      IF NOT SIILogL.ISEMPTY THEN
+        ProcessFilteredLog(SIILogL);
+
+      // Process Test Offline Messages by Message-Priotity
+      SIIMessageL.RESET;
+      SIIMessageL.SETRANGE(Mode,SIIMessageL.Mode::"Test Offline");
+      SIIMessageL.SETCURRENTKEY(Priority);
+      //S/P0923
+      //SIIMessage.ASCENDING := FALSE;
+      //E/P0923
+      IF SIIMessageL.FINDSET THEN BEGIN
+        REPEAT
+          SIILogL.RESET;
+          SIILogL.SETCURRENTKEY(MessageMode,Status,"Message Code NAV","Message Code Shop");
+          SIILogL.SETRANGE(MessageMode,SIILogL.MessageMode::"Test Offline");
+          SIILogL.SETRANGE(Status,SIILogL.Status::Unprocessed);
+          SIILogL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+          SIILogL.SETRANGE("Message Code Shop",SIIMessageL."Message Code Shop");
+          IF NOT SIILogL.ISEMPTY THEN
+            ProcessFilteredLog(SIILogL);
+        UNTIL SIIMessageL.NEXT = 0;
+      END;
+
+      // Process other Test Offline Messages
+      SIILogL.RESET;
+      SIILogL.SETCURRENTKEY(MessageMode,Status,"Message Code NAV","Message Code Shop");
+      SIILogL.SETRANGE(MessageMode,SIILogL.MessageMode::"Test Offline");
+      SIILogL.SETRANGE(Status,SIILogL.Status::Unprocessed);
+      IF NOT SIILogL.ISEMPTY THEN
+        ProcessFilteredLog(SIILogL);
+
+      // Reprocess Errors
+      SIISetup.GET;
+      IF SIISetup."Autom. Reprocess Errors" THEN BEGIN
+        SIILogL.RESET;
+        SIILogL.SETCURRENTKEY(MessageMode,Status,"Message Code NAV","Message Code Shop");
+        SIILogL.SETRANGE(MessageMode,SIILogL.MessageMode::"Test Offline",SIILogL.MessageMode::Active);
+        SIILogL.SETRANGE(Status,SIILogL.Status::Error);
+        SIILogL.SETFILTER("Error Counter",'<%1',SIISetup."No of Tries Reprocess Errors");
+        IF NOT SIILogL.ISEMPTY THEN
+          ProcessFilteredLog(SIILogL);
+      END;
+    END;
+
+    PROCEDURE ProcessFilteredLog@1000000008(VAR p_SIILog_Var@1000000003 : Record 50146);
+    VAR
+      SIIProcessLog@1000000002 : Codeunit 50124;
+      SIILog2@1000000001 : Record 50146;
+      SIIProcessLogRec@1000000000 : Record 50139;
+    BEGIN
+      //S/P1056
+      //IF p_SIILog.FINDSET THEN BEGIN
+      IF p_SIILog_Var.FINDSET THEN BEGIN
+      //E/P1056
+        REPEAT
+          CLEAR(SIIProcessLog);
+          //S/P0923
+          CLEARLASTERROR;
+          //E/P0923
+          //S/P1056
+          //SIIProcessLog.InitProcessLog(p_SIILog."Entry No.");
+          SIIProcessLog.InitProcessLog(p_SIILog_Var."Entry No.");
+          //E/P1056
+          IF NOT SIIProcessLog.RUN THEN BEGIN
+            //S/P1056
+            //SIILog2.GET(p_SIILog."Entry No.");
+            SIILog2.GET(p_SIILog_Var."Entry No.");
+            //E/P1056
+            SIILog2.Status := SIILog2.Status::Error;
+            SIILog2."Error Text 1" := COPYSTR(GETLASTERRORTEXT,1,250);
+            SIILog2."Error Text 2" := COPYSTR(GETLASTERRORTEXT,251,500);
+            SIILog2."Error Text 3" := COPYSTR(GETLASTERRORTEXT,501,750);
+            SIILog2."Error Text 4" := COPYSTR(GETLASTERRORTEXT,751,1000);
+            IF SIIProcessLog.GetErrorSource <> '' THEN
+              SIILog2."Error Source Code" := SIIProcessLog.GetErrorSource
+            ELSE
+              SIILog2."Error Source Code" := 'UNKNOWN';
+            SIILog2."Error Counter" := SIILog2."Error Counter" + 1;
+            SIILog2.MODIFY;
+            SIIProcessLogRec.RESET;
+            SIIProcessLogRec."Entry No." := SIIProcessLogRec.GetNextEntryNo(TRUE);
+            SIIProcessLogRec."Entry Type" := SIIProcessLogRec."Entry Type"::Error;
+            SIIProcessLogRec."Log Type" := SIIProcessLogRec."Log Type"::ProcessLog;
+            //S/P1056
+            //SIIProcessLogRec."Attached to Log Entry No." := p_SIILog."Entry No.";
+            SIIProcessLogRec."Attached to Log Entry No." := p_SIILog_Var."Entry No.";
+            //E/P1056
+            SIIProcessLogRec.Timestamp := CURRENTDATETIME;
+            SIIProcessLogRec."Error Text 1" := COPYSTR(GETLASTERRORTEXT,1,250);
+            SIIProcessLogRec."Error Text 2" := COPYSTR(GETLASTERRORTEXT,251,500);
+            SIIProcessLogRec."Error Text 3" := COPYSTR(GETLASTERRORTEXT,501,750);
+            SIIProcessLogRec."Error Text 4" := COPYSTR(GETLASTERRORTEXT,751,1000);
+            SIIProcessLogRec.INSERT;
+          END;
+          COMMIT;
+        //S/P1056
+        //UNTIL p_SIILog.NEXT = 0;
+        UNTIL p_SIILog_Var.NEXT = 0;
+        //E/P1056
+      END;
+    END;
+
+    PROCEDURE ProcessSingleLog@1000000000(SIILogV@1000000003 : Record 50146);
+    VAR
+      SIIProcessLog@1000000001 : Codeunit 50124;
+      SIILog2@1000000002 : Record 50146;
+    BEGIN
+      CLEARLASTERROR;
+      CLEAR(SIIProcessLog);
+      SIIProcessLog.InitProcessLog(SIILogV."Entry No.");
+      IF NOT SIIProcessLog.RUN THEN BEGIN
+        SIILog2.GET(SIILogV."Entry No.");
+        SIILog2.Status := SIILog2.Status::Error;
+        SIILog2."Error Text 1" := COPYSTR(GETLASTERRORTEXT,1,250);
+        SIILog2."Error Text 2" := COPYSTR(GETLASTERRORTEXT,251,500);
+        SIILog2."Error Text 3" := COPYSTR(GETLASTERRORTEXT,501,750);
+        SIILog2."Error Text 4" := COPYSTR(GETLASTERRORTEXT,751,1000);
+        IF SIIProcessLog.GetErrorSource <> '' THEN
+          SIILog2."Error Source Code" := SIIProcessLog.GetErrorSource
+        ELSE
+          SIILog2."Error Source Code" := 'UNKNOWN';
+        SIILog2."Error Counter" := SIILog2."Error Counter" + 1;
+        SIILog2.MODIFY;
+      END;
+    END;
+
+    PROCEDURE MonitorPeriodicStatistic@1000000001();
+    VAR
+      SIIMessage@1000000000 : Record 50141;
+      SIIMonitoring@1000000002 : Record 50151;
+      SIIMonitoringServices@1000000001 : Codeunit 50126;
+    BEGIN
+      CLEARLASTERROR;
+
+      //S/P0923
+      SIISetup.GET;
+      IF SIISetup."Delete Monitor older n days" > 0 THEN
+        SIIMonitoringServices.DeleteOldEntriesMonitor;
+      //E/P0923
+
+      //H0365  30.05.13  ABR  ++++++++++++++++++++++++++++++++++++++
+      COMMIT;
+      //H0365  30.05.13  ABR  --------------------------------------
+
+      SIIMessage.RESET;
+      SIIMessage.SETFILTER(Mode,'<>%1',SIIMessage.Mode::Inactive);
+      IF NOT SIIMessage.ISEMPTY THEN BEGIN
+        SIIMessage.FINDSET;
+        REPEAT
+          //S/P0923
+          CLEARLASTERROR;
+          //E/P0923
+          SIIMonitoringServices.InitOnRunTrigger(SIIMessage);
+          IF NOT SIIMonitoringServices.RUN THEN BEGIN
+            SIIMonitoringServices.CreateErrorEntry(
+              SIIMessage,
+              COPYSTR(GETLASTERRORTEXT,1,250),
+              COPYSTR(GETLASTERRORTEXT,251,500),
+              COPYSTR(GETLASTERRORTEXT,501,750),
+              COPYSTR(GETLASTERRORTEXT,751,1000));
+          END;
+          COMMIT;
+        UNTIL SIIMessage.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE SendMonitoringStatisticMail@1000000002();
+    VAR
+      SIIMonitoringServices@1000000000 : Codeunit 50126;
+    BEGIN
+      //S/P0923
+      SIIMonitoringServices.SendStatisticMail;
+      //E/P0923
+
+      //S/P0975
+      SIIMonitoringServices.InitGetDurationProcess;
+      //E/P0975
+    END;
+
+    PROCEDURE UpdateFieldValues@1000000006();
+    VAR
+      SIIUpdateFieldValues@1000000000 : Record 50130;
+      SIIUpdateFieldValuesCU@1000000001 : Codeunit 50130;
+    BEGIN
+      SIIUpdateFieldValues.RESET;
+      SIIUpdateFieldValues.SETRANGE(Status,SIIUpdateFieldValues.Status::Unprocessed);
+      IF SIIUpdateFieldValues.FINDSET THEN BEGIN
+        REPEAT
+          CLEAR(SIIUpdateFieldValuesCU);
+          CLEARLASTERROR;
+          SIIUpdateFieldValuesCU.InitProcessUpdateRec(SIIUpdateFieldValues."Entry No.");
+          IF NOT SIIUpdateFieldValuesCU.RUN THEN BEGIN
+            SIIUpdateFieldValues.Status := SIIUpdateFieldValues.Status::Error;
+            SIIUpdateFieldValues."Process Timestamp" := CURRENTDATETIME;
+            SIIUpdateFieldValues."Process User" := USERID;
+            SIIUpdateFieldValues."Error Text 1" := COPYSTR(GETLASTERRORTEXT,1,250);
+            SIIUpdateFieldValues."Error Text 2" := COPYSTR(GETLASTERRORTEXT,251,500);
+            SIIUpdateFieldValues."Error Text 3" := COPYSTR(GETLASTERRORTEXT,501,750);
+            SIIUpdateFieldValues."Error Text 4" := COPYSTR(GETLASTERRORTEXT,751,1000);
+            SIIUpdateFieldValues.MODIFY(TRUE);
+          END;
+          COMMIT; //!!
+        UNTIL SIIUpdateFieldValues.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE FinishOrdersWithReport@1000000005();
+    VAR
+      SalesHeader@1000000003 : Record 36;
+      SIIFinishOrders@1000000000 : Report 50168;
+      StartDateSH@1000000001 : Date;
+      StartDateSHA@1000000002 : Date;
+    BEGIN
+      //S/P1137
+      CLEAR(SIIFinishOrders);
+
+      StartDateSH := 010113D;
+      StartDateSHA := StartDateSH;
+
+      SIIFinishOrders.SetJQFilter(
+        TRUE,                         // p_IsJQRun
+        300,                          // p_CommitCounter
+        FORMAT(StartDateSH) + '..',   // p_SH_OrderDate
+        '<>9',                        // p_SH_SIIStatus:: ,,,,,,,,,Completed
+        '<>SR*&<>SO*',                // p_SH_DocNo
+        FORMAT(StartDateSHA) + '..',  // p_SHA_OrderDate
+        '<>9',                        // p_SHA_SIIStatus:: ,,,,,,,,,Completed
+        '<>SR*&<>SO*');               // p_SHA_DocNo
+
+      SIIFinishOrders.USEREQUESTFORM(FALSE);
+      SIIFinishOrders.RUN;
+      //E/P1137
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation GOB & Home24 NAV Team      |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+
+      P0879       08.04.13  gob-mlan  Object Created
+      P0923       21.05.13  gob-rste  CLEARLASTERROR
+                            gob-mlan  Send Periodic Monitoring Statistic Mail
+                                      Delete Old Monitoring Entries
+      P0923       23.05.13  gob-rste  Message Sorting Priority ASCENDING = FALSE
+      P0975       18.06.13  gob-mlan  E-Mail for SII Log-Inactive Messages
+      P0982       19.06.13  gob-rste  Process Update Rec
+      P1010       19.07.13  gob-mlan  FTTC Phase 2
+      P1056       30.07.13  gob-rste  ProcessFilteredLog Changed to Var Parameter
+      P1137       28.10.13  gob-mlan  Report "Finish Orders" in JQ
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+
+      H0365       30.05.13 ABR       Insert Commit to avoid an error
+      H2006       16.01.15 MBY       Transfer Entries of "SII Log Manual Trigger" to "SII Log" at beginning of PROCESSLOG
+    }
+    END.
+  }
+}
+

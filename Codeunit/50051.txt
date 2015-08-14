@@ -1,0 +1,3275 @@
+OBJECT Codeunit 50051 DD Interface Outbound
+{
+  OBJECT-PROPERTIES
+  {
+    Date=11.11.14;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=DD1.01,GOB,HME1575;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=BEGIN
+            //IF GUIALLOWED THEN
+            //  IF CONFIRM('startoutbound',TRUE) THEN;
+
+            StartOutbound;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Error0000@1014 : TextConst 'DEU=2000: The environment variable %1 is not defined.;ENU=2000: The environment variable %1 is not defined.';
+      DDSetup@1000000012 : Record 50060;
+      LMHeader@1000000011 : Record 50061;
+      LMHeaderTemp@1000000013 : TEMPORARY Record 50061;
+      LMLine@1000000015 : Record 50062;
+      LMLineTemp@1000000016 : TEMPORARY Record 50062;
+      DDMat@1012 : Record 50059;
+      DDSupplier@1000000024 : Record 50064;
+      Item@1032 : Record 27;
+      SalesSetup@1002 : Record 311;
+      Window@1000 : Dialog;
+      Data@1011 : Text[1024];
+      FlatFile@1003 : Text[250];
+      SynFile@1000000020 : Text[250];
+      TransNo@1004 : Code[20];
+      NoSeriesMgt@1005 : Codeunit 396;
+      counter@1006 : Integer;
+      ArrayOfFields@1008 : Text[250];
+      Filler@1009 : Char;
+      NO_HDR_RECORDS@1010 : Integer;
+      Error0001@1013 : TextConst 'DEU=2001: SKU Action should not be blank.;ENU=2001: SKU Action should not be blank.';
+      NO_DETAIL_RECORDS@1018 : Integer;
+      NO_DETAIL_RECORDS_IN_FILE@1027 : Integer;
+      NO_LINE_ITEMS@1023 : Integer;
+      TRANSACTION_ID@1026 : Code[20];
+      TOTAL_LINES_FILE@1000000019 : Integer;
+      RecordView@1015 : Text[1024];
+      Error0002@1016 : TextConst 'DEU=2002: Value required in %1  %2  %3  %4;ENU=2002: Value required in %1  %2  %3  %4';
+      Error0003@1017 : TextConst 'DEU=2003: Value required in Table  %1  Field %2  (%3);ENU=2003: Value required in Table  %1  Field %2  (%3)';
+      Error0004@1019 : TextConst 'DEU=2004: Record Reference  required in %1  %2  %3  %4;ENU=2004: Record Reference  required in %1  %2  %3  %4';
+      Error0005@1020 : TextConst 'DEU=2005: Field Reference  required in %1  %2  %3  %4;ENU=2005: Field Reference  required in %1  %2  %3  %4';
+      LastFieldInRecord@1021 : Integer;
+      ArrayOfErrorVar@1022 : ARRAY [100] OF Text[1024];
+      GlobalRecRef@1028 : RecordRef;
+      Error0006@1029 : TextConst 'DEU=2006: Unknown Fileextension %1.;ENU=2006: Unknown Fileextension %1.';
+      LineCounter@1030 : Integer;
+      TempPath@1031 : Text[1024];
+      TempPath2@1000000007 : Text[1024];
+      HandleErrors@1033 : Boolean;
+      Error0007@1000000004 : TextConst 'DEU=2007: Error in Lines No. of Lines %1 - Detailed Records %2;ENU=2007: No. of Lines %1 - Detailed Records %2';
+      Error0008@1000000005 : TextConst 'DEU=2008: No Lines for order;ENU=2008: No Lines for order';
+      Error0009@1000000006 : TextConst 'DEU="2009: Unknown Company Shortcut ";ENU="2009: Unknown Company Shortcut "';
+      Text000@1034 : TextConst 'DEU=&SKU,&ORD,&CCC,&WAC,&POR,&RCC;ENU=&SKU,&ORD,&CCC,&WAC,&POR,&RCC';
+      Selection@1035 : Integer;
+      FlatFileArr@1043 : ARRAY [100] OF Text[1024];
+      FlatFileArr2@1000000000 : ARRAY [100] OF Text[1024];
+      SynFileArr@1000000023 : ARRAY [100] OF Text[1024];
+      SynFileArr2@1000000022 : ARRAY [100] OF Text[1024];
+      Loop@1042 : Integer;
+      FileCounter@1041 : Integer;
+      SynFileCounter@1000000021 : Integer;
+      WriteCache@1000000001 : ARRAY [15000] OF Text[1024];
+      CacheNo@1000000002 : Integer;
+      NoLinesInOrder@1000000003 : Integer;
+      NoLinesInOrderORDH@1000000014 : ARRAY [5000] OF Integer;
+      TotalNoLines@1000000010 : Integer;
+      k@1000000009 : Integer;
+      Error017@1000000008 : TextConst 'DEU=%1 darf nicht "%2" in %3 %4 %5 %6 %7.;ENU=%1 should no be "%2" in %3 %4 %5 %6 %7.';
+      WshFileSystem@1000000018 : Automation "{F935DC20-1CF0-11D0-ADB9-00C04FD58A0B} 1.0:{0D43FE01-F093-11CF-8940-00A0C9054228}:'Windows Script Host Object Model'.FileSystemObject";
+      WshFolder@1000000017 : Automation "{F935DC20-1CF0-11D0-ADB9-00C04FD58A0B} 1.0:{C7C3F5B3-88A3-11D0-ABCB-00A0C90FFFC0}:'Windows Script Host Object Model'.Folder";
+      DDLog@1000000025 : Record 50066;
+      OrderStatusLog@1000000026 : Record 50069;
+      "*HME**************************"@1000000027 : Integer;
+      InterfaceProcessMgt@1000000028 : Codeunit 50087;
+
+    PROCEDURE StartOutbound@1000000026();
+    BEGIN
+      DDSetup.GET;
+      IF NOT DDSetup."DD Interface active" THEN
+        EXIT;
+
+      // 1 : Sales Order
+      // 2 : Material
+      // 3 : Purchase Order
+      // 4 : Suppliers
+
+      //a/P0476/gob-sfe/23.10.2012
+      IF DDSetup."Oubound Interface Mode"=DDSetup."Oubound Interface Mode"::"Multipe Orders per File" THEN BEGIN
+        IF InitInterface(1) THEN BEGIN
+          ORDH;
+          TempORDH;
+          EndInterface;//P0161
+        END;
+      END ELSE BEGIN
+        WHILE InitInterface(1) DO BEGIN
+          ORDH;
+          TempORDH;
+          EndInterface;
+          SLEEP(1000);
+        END;
+      END;
+      //e/P0476/gob-sfe/23.10.2012
+
+      IF InitInterface(2) THEN BEGIN
+        Material;
+        EndInterface;//P0161
+      END;
+
+      IF InitInterface(4) THEN BEGIN
+        Supplier;
+        EndInterface;//P0161
+      END;
+
+      IF InitInterface(3) THEN BEGIN
+        PORH;
+        TempPORH;
+        EndInterface;//P0161
+      END;
+    END;
+
+    PROCEDURE InitInterface@18(FileExtension@1000 : Integer) : Boolean;
+    VAR
+      CompFilter@1000000000 : ARRAY [2] OF Text[250];
+    BEGIN
+      //DDSetup.GET;
+      //DDSetup.TESTFIELD("Interface Trans. No.");
+      //DDSetup.TESTFIELD("Interface Folder (Out)");
+
+      CASE FileExtension OF
+      1:
+        WITH LMHeader DO BEGIN
+          RESET;
+          SETCURRENTKEY("Document Entry Type","DD Status",Direction);
+          SETRANGE("Document Entry Type","Document Entry Type"::Sales);
+          SETRANGE("DD Status","DD Status"::new);
+          SETRANGE(Direction,Direction::out);
+          IF NOT FIND('-') THEN
+            EXIT(FALSE);
+        END;
+      2:
+        WITH DDMat DO BEGIN
+          RESET;
+          //A/gob-adb/17.04.13
+          SETCURRENTKEY("Trans. Status",Direction);
+          //E/gob-adb/17.04.13
+          SETRANGE("Trans. Status","Trans. Status"::new);
+          SETRANGE(Direction,Direction::out);
+          IF NOT FINDLAST THEN
+            EXIT(FALSE);
+        END;
+      3:
+        WITH LMHeader DO BEGIN
+          RESET;
+          SETCURRENTKEY("Document Entry Type","DD Status",Direction);
+          SETRANGE("Document Entry Type","Document Entry Type"::Purchase);
+          SETRANGE("DD Status","DD Status"::new);
+          SETRANGE(Direction,Direction::out);
+          IF NOT FIND('-') THEN
+            EXIT(FALSE);
+        END;
+      4:
+        WITH DDSupplier DO BEGIN
+          RESET;
+          SETCURRENTKEY("No.","Trans. Status");
+          SETRANGE("Trans. Status",DDSupplier."Trans. Status"::new);
+          SETRANGE(Direction,Direction::out);
+          IF NOT FIND('-') THEN
+            EXIT(FALSE);
+        END;
+      END;
+
+      //TransNo := NoSeriesMgt.GetNextNo(DDSetup."Interface Trans. No.",WORKDATE,TRUE);
+      TransNo := FORMATTIMESTAMP;
+      COMMIT;
+
+      //Filler := 32;
+
+      EXIT(TRUE)
+    END;
+
+    PROCEDURE EndInterface@1000000018();
+    VAR
+      fehler@1000000000 : Boolean;
+      LMHeaderORDH@1000000001 : Record 50061;
+    BEGIN
+      //a/gob-sfe/P0086
+      //FTPUpload;
+      FTPUploadTmp;
+      //e/gob-sfe/P0086
+      CLEARALL;
+    END;
+
+    PROCEDURE Material@12();
+    VAR
+      Item@1108200000 : Record 27;
+      LMItem@1002 : Record 50059;
+      LMDataElement@1000 : Record 50058;
+      i@1001 : Integer;
+      FldRef@1003 : FieldRef;
+      FldRef2@1004 : FieldRef;
+      FldRef3@1005 : FieldRef;
+      FldRef4@1006 : FieldRef;
+      recCompany@1000000000 : Record 2000000006;
+      DDMat2@1000000001 : Record 50059;
+    BEGIN
+      WITH DDMat DO BEGIN
+        RESET;
+        //A/gob-adb/17.04.13
+        SETCURRENTKEY("Trans. Status",Direction);
+        //E/gob-adb/17.04.13
+        SETRANGE("Trans. Status","Trans. Status"::new);
+        SETRANGE(Direction,Direction::out);
+        IF NOT FINDFIRST THEN
+          EXIT;
+      END;
+
+      HandleErrors := TRUE;
+      CacheNo := 0;
+      CLEAR(WriteCache);
+
+      GetFlatFileName(53);//Dateinamen ermitteln
+      //CreateSynFile2(2);//SYN Dateinamen ermitteln
+
+      WITH DDMat DO BEGIN
+        RESET;
+        //A/gob-adb/17.04.13
+        SETCURRENTKEY("Trans. Status",Direction);
+        //E/gob-adb/17.04.13
+        LOCKTABLE(TRUE); //a/P0610/gob-sfe/27.11.12
+        SETRANGE("Trans. Status","Trans. Status"::new);
+        SETRANGE(Direction,Direction::out);
+        IF FIND('-') THEN BEGIN
+          //MESSAGE('Item %1 found.',"No.");
+          //CreateLogEntry('20',STRSUBSTNO('Sending %1 to LM',"No."));
+          //CREATESPECIALTRANS('BOF');
+          TOTAL_LINES_FILE:=TOTAL_LINES_FILE+1;
+          REPEAT
+            LineCounter += 1;
+            NO_DETAIL_RECORDS += 1;
+            NO_DETAIL_RECORDS_IN_FILE += 1;
+
+            LMItem.RESET;
+            LMItem.SETRANGE("Entry No.",DDMat."Entry No.");
+            LMItem.SETRANGE("Trans. Status",LMItem."Trans. Status"::new);
+            LMItem.SETRANGE(Direction,LMItem.Direction::out);
+            RecordView := LMItem.GETVIEW;
+            //A/11.09.09/gob-mar/1.06
+            GlobalRecRef.CLOSE;
+            //E/11.09.09/gob-mar/1.06
+            GlobalRecRef.OPEN(DATABASE::"DD Material");
+            GlobalRecRef.SETVIEW(RecordView);
+            IF GlobalRecRef.FIND('-') THEN;
+
+            WITH LMDataElement DO BEGIN
+              RESET;
+              SETCURRENTKEY("Table ID","Field Index");
+              SETRANGE("Table ID",LMDataElement."Table ID"::"53");
+              IF FIND('+') THEN BEGIN
+              LastFieldInRecord := "Field Index";
+                FOR i := 1 TO "Field Index" DO BEGIN
+                  CREATETRANSDATA(LMDataElement,i);
+                END;
+
+              CacheNo += 1;
+              WriteCache[CacheNo] := Data;
+
+              CLEAR(Data);
+              END;
+            END;
+
+           //A/gob-adb/17.04.13
+           {
+           DDMat.FIND('=');
+           DDMat."File Name"     := GETFILENAME;
+           DDMat."File Position" := LineCounter;
+           DDMat."Record ID"     := '53';
+           DDMat."Trans. No."    := TransNo;
+           DDMat."Trans. Status" := DDMat."Trans. Status"::transmitted;
+           DDMat."Trans. Date" := TODAY;
+           DDMat."Trans. Time" := TIME;
+           DDMat.MODIFY;
+           }
+
+           DDMat2.GET("Entry No.");
+           DDMat2."File Name"     := GETFILENAME;
+           DDMat2."File Position" := LineCounter;
+           DDMat2."Record ID"     := '53';
+           DDMat2."Trans. No."    := TransNo;
+           DDMat2."Trans. Status" := DDMat2."Trans. Status"::transmitted;
+           DDMat2."Trans. Date" := TODAY;
+           DDMat2."Trans. Time" := TIME;
+           DDMat2.MODIFY;
+           //E/gob-adb/17.04.13
+
+           TOTAL_LINES_FILE:=TOTAL_LINES_FILE+1;
+          UNTIL NEXT=0;;
+          NO_LINE_ITEMS:=LineCounter;
+          TOTAL_LINES_FILE:=TOTAL_LINES_FILE+1;
+          //CREATESPECIALTRANS('EOF');
+        END;
+      END;
+
+      IF NO_DETAIL_RECORDS_IN_FILE = 0 THEN BEGIN
+        CLEAR(FlatFileArr);
+        CLEAR(FlatFileArr2);
+        DeleteFile(FlatFile);
+      END ELSE BEGIN
+        CreateFlatFile(53);
+        //WriteFlatFile2;
+        WriteUTF8File; //gob-sfe/P0810/19.02.13
+        CreateBackupFile(GETFILENAME,FALSE);
+        CopyFileTemp2Outbox(GETFILENAME,FALSE);
+        DeleteFile(FlatFile);
+        //CreateSynFile(2);
+      END;
+    END;
+
+    PROCEDURE Supplier@1000000016();
+    VAR
+      Vendor@1108200000 : Record 23;
+      DDSupplier@1002 : Record 50064;
+      DDSupplier2@1000000001 : Record 50064;
+      DDDataElement@1000 : Record 50058;
+      i@1001 : Integer;
+      FldRef@1003 : FieldRef;
+      FldRef2@1004 : FieldRef;
+      FldRef3@1005 : FieldRef;
+      FldRef4@1006 : FieldRef;
+      recCompany@1000000000 : Record 2000000006;
+    BEGIN
+      WITH DDSupplier DO BEGIN
+        RESET;
+        SETCURRENTKEY("No.","Trans. Status");
+        SETRANGE("Trans. Status","Trans. Status"::new);
+        SETRANGE(Direction,Direction::out);
+        IF NOT  FINDFIRST THEN
+          EXIT;
+      END;
+
+      HandleErrors := TRUE;
+      CacheNo := 0;
+      CLEAR(WriteCache);
+
+      GetFlatFileName(70);//Dateinamen ermitteln
+
+      WITH DDSupplier DO BEGIN
+        RESET;
+        LOCKTABLE(TRUE); //a/P0610/gob-sfe/27.11.12
+        SETRANGE("Trans. Status","Trans. Status"::new);
+        SETRANGE(Direction,Direction::out);
+        IF FIND('-') THEN BEGIN
+          TOTAL_LINES_FILE:=TOTAL_LINES_FILE+1;
+          REPEAT
+            LineCounter += 1;
+            NO_DETAIL_RECORDS += 1;
+            NO_DETAIL_RECORDS_IN_FILE += 1;
+
+            //DDSupplier2.RESET;
+            //SETRANGE("Entry No.",DDSupplier."Entry No.");
+            //SETRANGE("Trans. Status",DDSupplier."Trans. Status"::new);
+            //SETRANGE(Direction,DDSupplier.Direction::out);
+            RecordView := DDSupplier.GETVIEW;
+            GlobalRecRef.CLOSE;
+            GlobalRecRef.OPEN(DATABASE::"DD Supplier");
+            GlobalRecRef.SETVIEW(RecordView);
+            IF GlobalRecRef.FIND('-') THEN;
+
+            WITH DDDataElement DO BEGIN
+              RESET;
+              SETCURRENTKEY("Table ID","Field Index");
+              SETRANGE("Table ID",DDDataElement."Table ID"::"70");
+              IF FIND('+') THEN BEGIN
+                LastFieldInRecord := "Field Index";
+                FOR i := 1 TO "Field Index" DO BEGIN
+                  CREATETRANSDATA(DDDataElement,i);
+                END;
+
+              CacheNo += 1;
+              WriteCache[CacheNo] := Data;
+
+              CLEAR(Data);
+              END;
+            END;
+
+           FIND('=');
+           "File Name"     := GETFILENAME;
+           "File Position" := LineCounter;
+           "Record ID"     := '70';
+           "Trans. No."    := TransNo;
+           "Trans. Status" := DDMat."Trans. Status"::transmitted;
+           "Trans. Date" := TODAY;
+           "Trans. Time" := TIME;
+           MODIFY;
+           TOTAL_LINES_FILE:=TOTAL_LINES_FILE+1;
+          UNTIL NEXT=0;;
+          NO_LINE_ITEMS:=LineCounter;
+          TOTAL_LINES_FILE:=TOTAL_LINES_FILE+1;
+          //CREATESPECIALTRANS('EOF');
+        END;
+      END;
+
+      IF NO_DETAIL_RECORDS_IN_FILE = 0 THEN BEGIN
+        CLEAR(FlatFileArr);
+        CLEAR(FlatFileArr2);
+        DeleteFile(FlatFile);
+      END ELSE BEGIN
+        CreateFlatFile(70);
+        //WriteFlatFile2;
+        WriteUTF8File; //gob-sfe/P0810/19.02.13
+        CreateBackupFile(GETFILENAME,FALSE);
+        CopyFileTemp2Outbox(GETFILENAME,FALSE);
+        DeleteFile(FlatFile);
+        //CreateSynFile(2);
+      END;
+    END;
+
+    PROCEDURE ORDH@2();
+    VAR
+      recCompany@1000000000 : Record 2000000006;
+      HeaderLineNo@1000000001 : Integer;
+      rDDHeader@1000000002 : Record 50061;
+    BEGIN
+      HandleErrors := TRUE;
+      counter := 0;
+      CLEAR(NoLinesInOrder);
+
+      WITH LMHeader DO BEGIN
+        //A,gob-dst,26.09.2012,P0367
+        RESET;
+        //a/P0476/gob-sfe/23.10.2012
+        //SETCURRENTKEY("Document Entry Type","DD Status",Direction);
+        SETCURRENTKEY("Document Entry Type","Document Type","No.","DD Status",Direction,"Entry No.");
+        //e/P0476/gob-sfe/23.10.2012
+        SETRANGE("Document Entry Type","Document Entry Type"::Sales);
+        SETRANGE("Document Type","Document Type"::Order); //a/P0476/gob-sfe/23.10.2012
+        SETRANGE("DD Status","DD Status"::new);
+        SETRANGE(Direction,Direction::out);
+        LOCKTABLE(TRUE); //a/P0610/gob-sfe/27.11.12
+        //A/gob-adb/16.05.13
+        //IF FINDSET THEN BEGIN
+        IF FIND('-') THEN BEGIN
+        //E/gob-adb/16.05.13
+          REPEAT
+            LMHeader.CALCFIELDS("No. of Line Items");
+            IF LMHeader."No. of Line Items" = 0 THEN BEGIN
+              rDDHeader.GET("Entry No.");
+              rDDHeader."DD Status" := "DD Status"::error;
+              rDDHeader."Error Code" := '2008';
+              rDDHeader."Error Description" := 'No Lines for order';
+              rDDHeader.MODIFY;
+            END;
+          UNTIL NEXT = 0;
+        END;
+        //E,gob-dst,26.09.2012,P0367
+
+        //A/gob-adb/16.05.13
+        COMMIT;
+        //E/gob-adb/16.05.13
+
+        RESET;
+        //a/P0476/gob-sfe/23.10.2012
+        //SETCURRENTKEY("Document Entry Type","DD Status",Direction);
+        SETCURRENTKEY("Document Entry Type","Document Type","No.","DD Status",Direction,"Entry No.");
+        //e/P0476/gob-sfe/23.10.2012
+        SETRANGE("Document Entry Type","Document Entry Type"::Sales);
+        SETRANGE("Document Type","Document Type"::Order); //a/P0476/gob-sfe/23.10.2012
+        SETRANGE("DD Status","DD Status"::new);
+        SETRANGE(Direction,Direction::out);
+        LOCKTABLE(TRUE); //a/P0610/gob-sfe/27.11.12
+        //A/gob-adb/16.05.13
+        //IF FINDSET THEN BEGIN
+        IF FIND('-') THEN BEGIN
+        //E/gob-adb/16.05.13
+          //a/P0476/gob-sfe/23.10.2012
+          IF DDSetup."Oubound Interface Mode"=DDSetup."Oubound Interface Mode"::"Single Order per File" THEN
+            SETRANGE("No.","No.");
+          //e/P0476/gob-sfe/23.10.2012
+          LMHeaderTemp.RESET;
+          LMHeaderTemp.SETCURRENTKEY("Document Entry Type","DD Status",Direction);
+          LMHeaderTemp.COPYFILTERS(LMHeader);
+          LMHeaderTemp.DELETEALL;
+          GetFlatFileName(51);//Dateinamen ermitteln
+          REPEAT
+            IF (NoTtT >= DDSetup."No of Tries to Transmit") THEN BEGIN
+                //A/gob-adb/16.05.13
+                {
+                "DD Status" := "DD Status"::error;
+                "Error Code" := '2009';
+                "Error Description" := 'Max. NoTtT reached';
+                MODIFY;
+                }
+
+                rDDHeader.GET("Entry No.");
+                rDDHeader."DD Status" := rDDHeader."DD Status"::error;
+                rDDHeader."Error Code" := '2009';
+                rDDHeader."Error Description" := 'Max. NoTtT reached';
+                rDDHeader.MODIFY;
+                //E/gob-adb/16.05.13
+            END ELSE BEGIN
+              counter +=1;
+              CALCFIELDS("No. of Line Items");
+              NoLinesInOrderORDH[counter] := LMHeader."No. of Line Items";
+              NO_LINE_ITEMS:=LMHeader."No. of Line Items";
+              IF NoLinesInOrderORDH[counter] > 0
+              //     ("MARCInterfaceTable[ORDH]"."MARC Action" <> "MARCInterfaceTable[ORDH]"."MARC Action"::d) )
+              //   OR  ("MARCInterfaceTable[ORDH]"."MARC Action" = "MARCInterfaceTable[ORDH]"."MARC Action"::d)
+              THEN BEGIN
+                {P0472/22.10.2012/gob-sfe
+                //A,gob-dst,02.10.2012,P0402
+                LMHeaderTemp.SETRANGE("Order No. Navision","Order No. Navision");
+                IF LMHeaderTemp.ISEMPTY THEN BEGIN
+                  LMHeaderTemp.SETRANGE("Order No. Navision");
+                //E,gob-dst,02.10.2012,P0402
+                }//P0472/22.10.2012/gob-sfe
+                  LMHeaderTemp.COPY(LMHeader);
+                  LMHeaderTemp.INSERT;
+                  LMLine.RESET;
+                  LMLine.SETCURRENTKEY("Document Entry Type","Header Entry No.",
+                    "Document Type","Document No.","Line No.","DD Status",Direction,"Entry No.");
+                  LMLine.SETRANGE("Document Entry Type","Document Entry Type");
+                  LMLine.SETRANGE("Header Entry No.","Entry No.");
+                  LMLine.SETRANGE("Document Type","Document Type");
+                  LMLine.SETRANGE("Document No.","No.");
+                  LMLine.SETRANGE("DD Status","DD Status"::new);
+                  LMLine.SETRANGE(Direction,LMHeader.Direction::out);
+                  //A/gob-adb/16.05.13
+                  //LMLine.LOCKTABLE(TRUE); //a/P0610/gob-sfe/27.11.12
+                  //E/gob-adb/16.05.13
+                  IF LMLine.FIND('-') THEN  BEGIN
+                    LMLineTemp.RESET;
+                    LMLineTemp.SETCURRENTKEY("Document Entry Type","Header Entry No.",
+                      "Document Type","Document No.","Line No.","DD Status",Direction,"Entry No.");
+                    LMLineTemp.COPYFILTERS(LMLine);
+                    LMLineTemp.DELETEALL;
+                    REPEAT
+                      LMLineTemp.COPY(LMLine);
+                      LMLineTemp.INSERT;
+                    UNTIL LMLine.NEXT = 0;
+                  END;
+                //A,gob-dst,02.10.2012,P0402
+                //END;  //P0472/22.10.2012/gob-sfe
+                //E,gob-dst,02.10.2012,P0402
+              END ELSE BEGIN
+                //MESSAGE('ORDH: No Lines Found');
+
+                //A/gob-adb/16.05.13
+                {
+                "DD Status" := "DD Status"::error;
+                "Error Code" := '2008';
+                "Error Description" := 'No Lines for order';
+                MODIFY;
+                }
+
+                rDDHeader.GET("Entry No.");
+                rDDHeader."DD Status" := rDDHeader."DD Status"::error;
+                rDDHeader."Error Code" := '2008';
+                rDDHeader."Error Description" := 'No Lines for order';
+                rDDHeader.MODIFY;
+                //E/gob-adb/16.05.13
+
+                counter-=1;
+              END;
+            END;
+            //a/P0476/gob-sfe/23.10.2012
+            IF DDSetup."Oubound Interface Mode"=DDSetup."Oubound Interface Mode"::"Single Order per File" THEN
+              FINDLAST;
+            //e/P0476/gob-sfe/23.10.2012
+          UNTIL NEXT = 0;
+        END ELSE
+          EXIT;  //When no new orders found
+      END;  //With
+    END;
+
+    PROCEDURE TempORDH@11();
+    VAR
+      LMHeaderLocTemp@1000 : TEMPORARY Record 50061;
+      LMDataElement@1001 : Record 50058;
+      i@1002 : Integer;
+      FldREf@1004 : FieldRef;
+      FldREf2@1003 : FieldRef;
+      FldREf3@1005 : FieldRef;
+      FldREf4@1006 : FieldRef;
+      FldREf5@1000000003 : FieldRef;
+      recCompany@1000000000 : Record 2000000006;
+      j@1000000001 : Integer;
+      OK@1000000002 : Boolean;
+      HeaderLineNo@1000000004 : Integer;
+      LMHeaderORDHLoc@1000000005 : Record 50061;
+      LMLineORDHLoc@1000000006 : Record 50062;
+      anzahlHeader@1000000007 : Integer;
+      FldRef6@1000000008 : FieldRef;
+    BEGIN
+      //Schleife ber tempor„re Tabelle, da bei Aufruf ber Single-Instance sonst Schleife nicht abgearbeitet
+      NO_HDR_RECORDS := 0;
+      NO_DETAIL_RECORDS_IN_FILE := 0;
+      counter:=0;
+      CacheNo := 0;
+      CLEAR(WriteCache);
+      CLEAR(TOTAL_LINES_FILE);
+
+      WITH LMHeaderTemp DO BEGIN
+        RESET;
+        anzahlHeader := COUNT();
+        //IF (anzahlHeader<>0) AND NOT GUIALLOWED THEN BEGIN
+        //  MESSAGE('count new headers to transmit %1',anzahlHeader);
+        //CreateLogEntry('20',STRSUBSTNO('count new headers to transmit %1',anzahlHeader));
+        //END;
+        SETCURRENTKEY("Document Entry Type","DD Status",Direction);
+        SETRANGE("Document Entry Type","Document Entry Type"::Sales);
+        SETRANGE("DD Status",LMHeaderTemp."DD Status"::new);
+        SETRANGE(Direction,LMHeaderTemp.Direction::out);
+        IF FIND('-') THEN BEGIN
+
+          //TOTAL_LINES_FILE:=TOTAL_LINES_FILE+1;
+
+            REPEAT
+              counter+=1;
+              IF recCompany.GET(Company) THEN;
+
+              LMHeader.GET("Entry No.");
+              LineCounter += 1;
+              HeaderLineNo := LineCounter;
+              NO_HDR_RECORDS += 1;
+              TOTAL_LINES_FILE := TOTAL_LINES_FILE+1;
+              TRANSACTION_ID := LMHeaderTemp."No.";
+              //**RecordView fr Type::Reference
+              LMHeaderLocTemp.RESET;
+              //a/P0472/gob-sfe/22.10.2012
+              //A,gob-dst,02.10.2012,P0402
+              LMHeaderLocTemp.SETCURRENTKEY("Document Entry Type","DD Status",Direction);
+              LMHeaderLocTemp.COPYFILTERS(LMHeaderTemp);
+              LMHeaderLocTemp.SETRANGE(LMHeaderLocTemp."No.","No.");
+              LMHeaderLocTemp.SETRANGE(LMHeaderLocTemp."Document Type","Document Type");
+              //LMHeaderLocTemp.SETRANGE("Entry No.","Entry No."); //P0472
+              //E,gob-dst,02.10.2012,P0402
+              //e/P0472/gob-sfe/22.10.2012
+              RecordView := LMHeaderLocTemp.GETVIEW;
+              GlobalRecRef.CLOSE;
+
+              GlobalRecRef.OPEN(DATABASE::"DD Header");
+              GlobalRecRef.SETVIEW(RecordView);
+              IF GlobalRecRef.FIND('-') THEN;
+              WITH LMDataElement DO BEGIN
+                RESET;
+                SETCURRENTKEY("Table ID","Field Index");
+                SETRANGE("Table ID",LMDataElement."Table ID"::"51");
+                IF FIND('+') THEN BEGIN
+                  LastFieldInRecord := "Field Index";
+                  FOR i := 1 TO "Field Index" DO
+                    CREATETRANSDATA(LMDataElement,i);
+                  CacheNo += 1;
+                  WriteCache[CacheNo] := Data;
+                  CLEAR(Data);
+                END;
+                OK:= FALSE;
+                FldREf := GlobalRecRef.FIELD(79507); //"Error Code";
+                FldRef6:= GlobalRecRef.FIELD(79511); //"Error Description";
+                IF NOT HASVALUE(FldREf.VALUE) THEN BEGIN
+                  OK := TempORDL(LMHeaderTemp);
+                END ELSE BEGIN
+                  LMHeader."Error Code" := FldREf.VALUE;
+                  LMHeader."Error Description" :=FldRef6.VALUE;
+                  LMHeader."DD Status":=LMHeader."DD Status"::error;
+                END;
+                IF OK THEN BEGIN
+                  LMHeader."File Position" := HeaderLineNo;
+                  LMHeader.MODIFY;
+                END ELSE BEGIN
+                  FldREf := GlobalRecRef.FIELD(79507); //"Error Code";
+                  FldRef6:= GlobalRecRef.FIELD(79511); //"Error Description";
+                  IF (LMHeader."Error Code"='') AND NOT HASVALUE(FldREf) THEN BEGIN
+                    LMHeader."Error Code" := '2007';
+                    LMHeader."Error Description" :=
+                      STRSUBSTNO(Error0007,NoLinesInOrderORDH[counter],NO_DETAIL_RECORDS);
+                  END;
+                  LMHeader.NoTtT += 1;
+                  LMHeader.MODIFY;
+                  ResetLines(LMHeader);
+                  //MESSAGE('NO_HDR_RECORDS auf Null gesetzt');
+                  NO_HDR_RECORDS := 0;
+                  NO_DETAIL_RECORDS_IN_FILE := 0;
+                END;
+                //CREATESPECIALTRANS('F');
+              END; //MARC Element
+            UNTIL NEXT = 0;
+            //TOTAL_LINES_FILE:=TOTAL_LINES_FILE+1;
+            //CREATESPECIALTRANS('EOF');
+        END ELSE
+          DeleteFile(FlatFile);
+        TotalNoLines := 0;
+        FOR k := 1 TO anzahlHeader DO
+          TotalNoLines += NoLinesInOrderORDH[k];
+
+        IF (NO_HDR_RECORDS <> 0)           AND
+           (NO_DETAIL_RECORDS_IN_FILE <> 0)
+      //     AND (TotalNoLines = CHECKCACHE)
+        THEN BEGIN
+          CreateFlatFile(51);//Datei anlegen
+          //WriteFlatFile2;
+          WriteUTF8File; //gob-sfe/P0810/19.02.13
+          CreateBackupFile(GETFILENAME,FALSE);
+          CopyFileTemp2Outbox(GETFILENAME,FALSE);
+          DeleteFile(FlatFile);
+
+          //a/P0476/gob-sfe/23.10.2012
+          LMHeaderTemp.SETCURRENTKEY("Entry No.");
+          IF LMHeaderTemp.FINDSET THEN BEGIN
+            REPEAT
+              LMHeaderORDHLoc.GET(LMHeaderTemp."Entry No.");
+              LMHeaderORDHLoc."File Name" := GETFILENAME;
+              LMHeaderORDHLoc."Record ID" := '51';
+              // S/P1214
+              //LMHeaderORDHLoc."Trans. No." := TransNo;
+              LMHeaderORDHLoc."Trans. No." :=
+                COPYSTR(LMHeaderORDHLoc."File Name",3,STRLEN(LMHeaderORDHLoc."File Name") -
+                        (STRLEN(LMHeaderORDHLoc."File Name") - STRPOS(LMHeaderORDHLoc."File Name",'.') + 3));
+                        // +3: 2 Zeichen vorne abschneiden und 1 Zeichen vor dem Punkt enden
+              // E/P1214
+              LMHeaderORDHLoc."DD Status" := LMHeaderORDHLoc."DD Status"::transmitted;
+              LMHeaderORDHLoc."Error Description" := '';
+              LMHeaderORDHLoc.NoTtT += 1;
+              LMHeaderORDHLoc."Trans. Date" := TODAY;
+              LMHeaderORDHLoc."Trans. Time" := TIME;
+              LMHeaderORDHLoc.MODIFY;
+            UNTIL LMHeaderTemp.NEXT = 0;
+          //e/P0476/gob-sfe/23.10.2012
+            //P0472
+            {
+            //a/gob-sfe/22.10.2012/P0472
+            CLEAR(LMHeaderORDHLoc);
+            LMHeaderORDHLoc.COPY(LMHeaderTemp);
+            LMHeaderORDHLoc.SETCURRENTKEY("Entry No.");
+            IF LMHeaderORDHLoc.FINDSET THEN BEGIN
+              REPEAT
+                LMHeaderORDHLoc."File Name"         := GETFILENAME;
+                LMHeaderORDHLoc."Record ID"         := '51';
+                LMHeaderORDHLoc."Trans. No."        := TransNo;
+                LMHeaderORDHLoc."DD Status"     := LMHeaderORDHLoc."DD Status"::transmitted;
+                LMHeaderORDHLoc."Error Description" := '';
+                LMHeaderORDHLoc.NoTtT += 1;
+                LMHeaderORDHLoc."Trans. Date" := TODAY;
+                LMHeaderORDHLoc."Trans. Time" := TIME;
+                LMHeaderORDHLoc.MODIFY;
+              UNTIL LMHeaderORDHLoc.NEXT = 0;
+            //e/gob-sfe/22.10.2012/P0472
+            }
+          END;
+        END ELSE BEGIN
+          CLEAR(FlatFileArr);
+          CLEAR(FlatFileArr2);
+          DeleteFile(FlatFile);
+          CLEAR(LMHeaderORDHLoc);
+        END;
+      END;
+    END;
+
+    PROCEDURE TempORDL@36(LMHeader@1003 : Record 50061) : Boolean;
+    VAR
+      LMLineLoc@1002 : Record 50062;
+      DDDataElement@1001 : Record 50058;
+      i@1000 : Integer;
+      FldREf@1005 : FieldRef;
+      FldREf2@1004 : FieldRef;
+      FldREf3@1006 : FieldRef;
+      FldREf4@1007 : FieldRef;
+      FldREf5@1000000000 : FieldRef;
+    BEGIN
+      //MESSAGE('tempORDL');
+
+      WITH LMLineTemp DO BEGIN
+        NO_DETAIL_RECORDS := 0;
+        RESET;
+        SETCURRENTKEY("Document Entry Type","Header Entry No.");
+        SETRANGE("Document Entry Type",LMHeader."Document Entry Type");
+        SETRANGE("Header Entry No.",LMHeader."Entry No.");
+        //SETRANGE("Document Type",LMHeader."Document Type");
+        //SETRANGE("Document No.",LMHeader."No.");
+        //SETRANGE("Trans. Status","Trans. Status"::new);
+        //SETRANGE(Direction,LMHeader.Direction::out);
+        IF FIND('-') THEN BEGIN
+          //MESSAGE('temp lmzeilen zum export gefunden: %1 %2',"Document No.",COUNT);
+          REPEAT
+            //MESSAGE('Line Entry No. %1',"Entry No.");
+            LineCounter += 1;
+            NO_DETAIL_RECORDS += 1;
+            NO_DETAIL_RECORDS_IN_FILE += 1;
+            LMLineLoc.RESET;
+            LMLineLoc.SETCURRENTKEY("Document Entry Type","Header Entry No.");
+            LMLineLoc.COPYFILTERS(LMLineTemp);
+            LMLineLoc.SETRANGE("Line No.",LMLineTemp."Line No.");
+            RecordView := LMLineLoc.GETVIEW;
+
+            GlobalRecRef.CLOSE;
+            GlobalRecRef.OPEN(DATABASE::"DD Line");
+            GlobalRecRef.SETVIEW(RecordView);
+            IF GlobalRecRef.FIND('-') THEN;
+            WITH DDDataElement DO BEGIN
+              RESET;
+              SETCURRENTKEY("Table ID","Field Index");
+              IF Type = LMLineTemp.Type::Item THEN
+                SETRANGE("Table ID",DDDataElement."Table ID"::"51_L");
+              IF FIND('+') THEN BEGIN
+                LastFieldInRecord := "Field Index";
+                FOR i := 1 TO "Field Index" DO
+                  CREATETRANSDATA(DDDataElement,i);
+                CacheNo += 1;
+                WriteCache[CacheNo] := Data;
+                CLEAR(Data);
+              END;
+            END;
+            FldREf := GlobalRecRef.FIELD(79507); //"Error Code";
+            IF NOT HASVALUE(FldREf.VALUE) THEN BEGIN
+              LMLine.GET("Entry No.");
+              LMLine."Qty. to Ship" := 0;
+              LMLine."Qty. to Ship (Base)" := 0;
+              LMLine."File Position" := LineCounter;
+              LMLine."File Name" := GETFILENAME;
+              LMLine."Record ID" := '51_L';
+              // S/P1214
+              //LMLine."Trans. No." := TransNo;
+              LMLine."Trans. No." :=
+                COPYSTR(LMLine."File Name",3,STRLEN(LMLine."File Name") -
+                        (STRLEN(LMLine."File Name") - STRPOS(LMLine."File Name",'.') + 3));
+                        // +3: 2 Zeichen vorne abschneiden und 1 Zeichen vor dem Punkt enden
+              // E/P1214
+              LMLine."DD Status" := LMLine."DD Status"::transmitted;
+              LMLine."Trans. Date" := TODAY;
+              LMLine."Trans. Time" := TIME;
+              IF LMLine.MODIFY THEN BEGIN
+                OrderStatusLog.SetDirectionOfInformation(2); // p_Direction::" ",Incoming,Outgoing
+                //a/P0804/gob-sfe/12.02.13
+                //OrderStatusLog.CreateOrderStatus(0,LMLine."Document No.",LMLine."Line No.",'14','Transferred to WHS');
+                OrderStatusLog.CreateOrderStatus(0,LMLine."Order No. Navision",LMLine."Line No.",'14','Transferred to WHS');
+                //e/P0804/gob-sfe/12.02.13
+              END;
+
+            END;
+            TOTAL_LINES_FILE := TOTAL_LINES_FILE + 1;
+          UNTIL NEXT = 0;
+          //MESSAGE('Alles OK in Zeilen? %1 = %2 ',NO_DETAIL_RECORDS , NoLinesInOrderORDH[counter]);
+          EXIT(NO_DETAIL_RECORDS = NoLinesInOrderORDH[counter]);
+
+        END ELSE BEGIN
+          //MESSAGE('Zeile: LM Header."No.": '+FORMAT(LMHeader."No.")+'Keine Zeilen!');
+          EXIT(FALSE);
+        END;
+      END;
+    END;
+
+    PROCEDURE PORH@43();
+    VAR
+      recCompany@1000000000 : Record 2000000006;
+    BEGIN
+      HandleErrors := TRUE;
+      counter := 0;
+      counter := 0;
+      NoLinesInOrder := 0;
+      CLEAR(TOTAL_LINES_FILE);
+
+      WITH LMHeader DO BEGIN
+        RESET;
+        SETCURRENTKEY("Document Entry Type","DD Status",Direction);
+        SETRANGE("Document Entry Type","Document Entry Type"::Purchase);
+        SETRANGE("DD Status","DD Status"::new);
+        SETRANGE(Direction,Direction::out);
+        LOCKTABLE(TRUE); //a/P0610/gob-sfe/27.11.12
+        IF FIND('-') THEN BEGIN
+          //a/P0152/gob-sfe/08.08.12
+          LMHeaderTemp.RESET;
+          LMHeaderTemp.SETCURRENTKEY("Document Entry Type","DD Status",Direction);
+          LMHeaderTemp.COPYFILTERS(LMHeader);
+          LMHeaderTemp.DELETEALL;
+          GetFlatFileName(60);//Dateinamen ermitteln
+          //e/P0152/gob-sfe/08.08.12
+
+          REPEAT //P0152/gob-sfe/08.08.12
+            {
+            IF DDSetup."No of Tries to Transmit" <> 0 THEN BEGIN
+              IF NoTtT = DDSetup."No of Tries to Transmit" THEN BEGIN
+                "DD Status" := "DD Status"::error;
+                "Error Code" := '2009';
+                "Error Description" := 'Max. NoTtT';
+                MODIFY;
+                EXIT;
+              END;
+            END;
+            }
+              IF LMHeader.CALCFIELDS("No. of Line Items") THEN
+                NoLinesInOrder := LMHeader."No. of Line Items";
+
+              IF ((LMHeader."No. of Line Items" > 0)  AND
+                 (LMHeader."DD Action" <> LMHeader."DD Action"::"4")) OR
+                 (LMHeader."DD Action" = LMHeader."DD Action"::"4")
+              THEN BEGIN
+
+                LMHeaderTemp.COPY(LMHeader);
+                LMHeaderTemp.INSERT;
+                LMLine.RESET;
+                LMLine.SETCURRENTKEY("Document Entry Type","Header Entry No.",
+                   "Document Type","Document No.","Line No.","DD Status",Direction,"Entry No.");
+                LMLine.SETRANGE("Document Entry Type","Document Entry Type");
+                LMLine.SETRANGE("Header Entry No.","Entry No.");
+                LMLine.SETRANGE("Document Type","Document Type");
+                LMLine.SETRANGE("Document No.","No.");
+                LMLine.SETRANGE("DD Status","DD Status"::new);
+                LMLine.SETRANGE(Direction,LMLine.Direction::out);
+                IF LMLine.FIND('-') THEN BEGIN
+
+                  LMLineTemp.RESET;
+                  LMLineTemp.SETCURRENTKEY("Document Entry Type","Header Entry No.",
+                    "Document Type","Document No.","Line No.","DD Status",Direction,"Entry No.");
+                  LMLineTemp.COPYFILTERS(LMLine);
+                  //LMLineTemp.DELETEALL;
+
+                  REPEAT
+                    LMLineTemp.COPY(LMLine);
+                    LMLineTemp.INSERT;
+                  UNTIL LMLine.NEXT = 0;
+
+                END;
+
+              END ELSE BEGIN
+                LMHeader."DD Status" := LMHeader."DD Status"::error;
+                LMHeader."Error Code" := '2008';
+                LMHeader."Error Description" := 'No Lines for order';
+                LMHeader.MODIFY;
+              END;
+          UNTIL LMHeader.NEXT=0 //e/P0152/gob-sfe/08.08.12
+        END ELSE
+          EXIT;
+      END;
+    END;
+
+    PROCEDURE TempPORH@46();
+    VAR
+      LMHeaderLoc@1000 : TEMPORARY Record 50061;
+      LMDataElement@1001 : Record 50058;
+      i@1002 : Integer;
+      FldREf@1004 : FieldRef;
+      FldREf2@1003 : FieldRef;
+      FldREf3@1005 : FieldRef;
+      FldREf4@1006 : FieldRef;
+      recCompany@1000000000 : Record 2000000006;
+      HeaderLineNo@1000000001 : Integer;
+      OK@1000000002 : Boolean;
+    BEGIN
+      //Schleife ber tempor„re Tabelle, da bei Aufruf ber Single-Instance sonst Schleife nicht abgearbeitet
+      NO_HDR_RECORDS := 0;
+      NO_DETAIL_RECORDS_IN_FILE := 0;
+      CLEAR(TOTAL_LINES_FILE);
+      CacheNo := 0;
+      CLEAR(WriteCache);
+
+      WITH LMHeaderTemp DO BEGIN
+        RESET;
+        SETCURRENTKEY("Document Entry Type","DD Status",Direction);
+        SETRANGE("Document Entry Type","Document Entry Type"::Purchase);
+        SETRANGE("DD Status",LMHeaderLoc."DD Status"::new);
+        SETRANGE(Direction,LMHeaderLoc.Direction::out);
+        IF FIND('-') THEN BEGIN
+
+          //CREATESPECIALTRANS('BOF');
+          //TOTAL_LINES_FILE:=TOTAL_LINES_FILE+1;
+
+          REPEAT
+
+            LineCounter += 1;
+            HeaderLineNo := LineCounter;
+            NO_HDR_RECORDS += 1;
+            TRANSACTION_ID := LMHeaderTemp."No.";
+            //**RecordView fr Type::Reference
+            LMHeaderLoc.RESET;
+            LMHeaderLoc.SETCURRENTKEY("Document Entry Type","DD Status",Direction);
+            LMHeaderLoc.COPYFILTERS(LMHeaderTemp);
+            LMHeaderLoc.SETRANGE(LMHeaderLoc."No.","No.");
+            LMHeaderLoc.SETRANGE(LMHeaderLoc."Document Type","Document Type");
+            RecordView := LMHeader.GETVIEW;
+            GlobalRecRef.CLOSE;
+
+            GlobalRecRef.OPEN(DATABASE::"DD Header");
+            GlobalRecRef.SETVIEW(RecordView);
+            IF GlobalRecRef.FIND('-') THEN;
+
+            WITH LMDataElement DO BEGIN
+              { //kein Header Record erstellen
+              RESET;
+              SETCURRENTKEY("Table ID","Field Index");
+              SETRANGE("Table ID",LMDataElement."Table ID"::"dd header");
+              IF FIND('+') THEN BEGIN
+                LastFieldInRecord := "Field Index";
+                FOR i := 1 TO "Field Index" DO BEGIN
+                  CREATETRANSDATA(DDDataElement,i);
+                END;
+                CacheNo += 1;
+                WriteCache[CacheNo] := Data;
+                CLEAR(Data);
+              END;
+              }
+
+              FldREf := GlobalRecRef.FIELD(79507); //"Error Code";
+
+              //Einfgen der Zeilen!!!!
+              IF NOT HASVALUE(FldREf.VALUE) THEN
+                OK := TempPORL(LMHeaderTemp);
+              //Einfgen der Zeilen!!!!
+
+              IF OK THEN BEGIN
+                LMHeader.RESET;
+                LMHeader.GET(LMHeaderTemp."Entry No.");
+                LMHeader."File Name"     := GETFILENAME;
+                LMHeader."File Position" := HeaderLineNo;
+                LMHeader."Record ID"     := '60';
+                LMHeader."Trans. No."    := TransNo;
+                LMHeader."DD Status" := LMHeader."DD Status"::transmitted;
+                LMHeader.NoTtT += 1;
+                LMHeader."Trans. Date" := TODAY;
+                LMHeader."Trans. Time" := TIME;
+                LMHeader.MODIFY;
+              END ELSE BEGIN
+                LMHeader.RESET;
+                LMHeader.GET(LMHeaderTemp."Entry No.");
+                LMHeader."Error Code" := '2007';
+                LMHeader."Error Description" :=
+                   COPYSTR(
+                     STRSUBSTNO(
+                        Error0007,
+                        NoLinesInOrder,
+                        NO_DETAIL_RECORDS),
+                     STRPOS(Error0007,':'),
+                     STRLEN(LMHeader."Error Description"));
+                LMHeader.NoTtT += 1;
+                LMHeader.MODIFY;
+                 ResetLines(LMHeader);
+                 NO_HDR_RECORDS := 0;
+                 NO_DETAIL_RECORDS_IN_FILE := 0;
+              END;
+
+              //CREATESPECIALTRANS('ENDT');
+            END;
+
+          UNTIL NEXT = 0;
+          TOTAL_LINES_FILE:=TOTAL_LINES_FILE+1;
+          //CREATESPECIALTRANS('EOF');
+        END ELSE
+          DeleteFile(FlatFile)
+      END;
+
+      IF (NO_HDR_RECORDS <> 0)           AND
+         (TOTAL_LINES_FILE <> 0)
+      THEN BEGIN
+         CreateFlatFile(60);//Datei anlegen
+         //WriteFlatFile2;
+         WriteUTF8File; //gob-sfe/P0810/19.02.13
+         CreateBackupFile(GETFILENAME,FALSE);
+         CopyFileTemp2Outbox(GETFILENAME,FALSE);
+         DeleteFile(FlatFile);
+         //CreateSynFile(1);//SYN Datei anlegen
+      END ELSE BEGIN
+        CLEAR(FlatFileArr);
+        CLEAR(FlatFileArr2);
+        DeleteFile(FlatFile);
+        CLEAR(SynFileArr);
+        CLEAR(SynFileArr2);
+        DeleteFile(SynFile)
+      END;
+    END;
+
+    PROCEDURE TempPORL@45(LMHeader@1003 : Record 50061) : Boolean;
+    VAR
+      LMLineLoc@1002 : Record 50062;
+      LMDataElement@1001 : Record 50058;
+      i@1000 : Integer;
+      FldREf@1005 : FieldRef;
+      FldREf2@1004 : FieldRef;
+      FldREf3@1006 : FieldRef;
+      FldREf4@1007 : FieldRef;
+    BEGIN
+      WITH LMLineTemp DO BEGIN
+        NO_DETAIL_RECORDS := 0;
+        RESET;
+        SETCURRENTKEY("Document Entry Type","Header Entry No.",
+          "Document Type","Document No.","Line No.","DD Status",Direction,"Entry No.");
+        SETRANGE("Document Entry Type",LMHeader."Document Entry Type");
+        //SETRANGE("Header Entry No.",LMHeader."Entry No.");
+        SETRANGE("Document Type",LMHeader."Document Type");
+        //SETRANGE("Document No.",LMHeader."No.");
+        SETRANGE("DD Status","DD Status"::new);
+        SETRANGE(Direction,LMHeader.Direction::out);
+        IF FIND('-') THEN BEGIN
+          //IF GUIALLOWED THEN MESSAGE('%1',COUNT());
+          REPEAT
+
+            LineCounter += 1;
+
+            NO_DETAIL_RECORDS += 1;
+            NO_DETAIL_RECORDS_IN_FILE += 1;
+            //**RecordView fr Type::Reference
+            LMLineLoc.RESET;
+            LMLineLoc.SETCURRENTKEY("Document Entry Type","Header Entry No.",
+              "Document Type","Document No.","Line No.","DD Status",Direction,"Entry No.");
+            LMLineLoc.COPYFILTERS(LMLineTemp);
+            //A,gob-dst,05.09.2012,P0280
+            //LMLineLoc.SETRANGE("Line No.",LMLineTemp."Line No.");
+            LMLineLoc.SETRANGE("Entry No.",LMLineTemp."Entry No.");
+            //E,gob-dst,05.09.2012,P0280
+            RecordView := LMLineLoc.GETVIEW;
+            GlobalRecRef.CLOSE;
+            GlobalRecRef.OPEN(DATABASE::"DD Line");
+            GlobalRecRef.SETVIEW(RecordView);
+            IF GlobalRecRef.FIND('-') THEN;
+            WITH LMDataElement DO BEGIN
+              RESET;
+              SETCURRENTKEY("Table ID","Field Index");
+              SETRANGE("Table ID",LMDataElement."Table ID"::"60");
+              IF FIND('+') THEN BEGIN
+                LastFieldInRecord := "Field Index";
+                FOR i := 1 TO "Field Index" DO BEGIN
+                  CREATETRANSDATA(LMDataElement,i);
+                END;
+                CacheNo += 1;
+                WriteCache[CacheNo] := Data;
+                CLEAR(Data);
+              END;
+            END;
+
+            FldREf := GlobalRecRef.FIELD(79507); //"Error Code";
+            IF NOT HASVALUE(FldREf.VALUE) THEN BEGIN
+              LMLine.GET("Entry No.");
+              LMLine."Qty. to Ship" := 0;
+              LMLine."Qty. to Ship (Base)" := 0;
+              LMLine."File Name"     := GETFILENAME;
+              LMLine."File Position" :=FileCounter;
+              LMLine."Record ID"     := '60';
+              LMLine."Trans. No."    := TransNo;
+              LMLine."DD Status" := LMHeader."DD Status"::transmitted;
+              LMLine."Trans. Date" := TODAY;
+              LMLine."Trans. Time" := TIME;
+              IF LMLine.MODIFY THEN;
+            END;
+            TOTAL_LINES_FILE:=TOTAL_LINES_FILE+1;
+          UNTIL NEXT = 0;
+          //EXIT(NO_DETAIL_RECORDS = NoLinesInOrder);
+          EXIT(TRUE);
+        END ELSE
+          EXIT(FALSE);
+      END;
+    END;
+
+    PROCEDURE CreateFlatFile@3(FileExtension@1000 : Integer);
+    VAR
+      Ord@1001 : File;
+      sku@1002 : File;
+      ccc@1003 : File;
+      wac@1004 : File;
+      por@1005 : File;
+      rcc@1006 : File;
+      cpr@1000000000 : File;
+    BEGIN
+      CASE FileExtension OF
+        51://Sales Order
+            BEGIN
+              IF EXISTS(FlatFile) THEN
+                ERASE(FlatFile);
+              Ord.CREATE(FlatFile);
+            END;
+        53://Article Update
+            BEGIN
+              IF EXISTS(FlatFile) THEN
+                ERASE(FlatFile);
+              sku.CREATE(FlatFile);
+            END;
+        60://Purchase Orders
+            BEGIN
+              IF EXISTS(FlatFile) THEN
+                ERASE(FlatFile);
+              por.CREATE(FlatFile);
+            END;
+        70://Suppliers
+            BEGIN
+              IF EXISTS(FlatFile) THEN
+                ERASE(FlatFile);
+              cpr.CREATE(FlatFile);
+            END;
+      END;
+
+      FileCounter += 1;
+      FlatFileArr[FileCounter] := FlatFile;
+      FlatFileArr2[FileCounter] := GETFILENAME;
+    END;
+
+    PROCEDURE CreateSynFile@1000000024(FileExtension@1000 : Integer);
+    VAR
+      Ord@1001 : File;
+      sku@1002 : File;
+      ccc@1003 : File;
+      wac@1004 : File;
+      por@1005 : File;
+      rcc@1006 : File;
+      cpr@1000000000 : File;
+    BEGIN
+      CASE FileExtension OF
+        1://OPS
+            BEGIN
+              IF EXISTS(SynFile) THEN
+                ERASE(SynFile);
+              Ord.CREATE(SynFile);
+            END;
+        2://RAE
+            BEGIN
+              IF EXISTS(SynFile) THEN
+                ERASE(SynFile);
+              sku.CREATE(SynFile);
+            END;
+        3://REC
+            BEGIN
+              IF EXISTS(SynFile) THEN
+                ERASE(SynFile);
+              por.CREATE(SynFile);
+            END;
+        4://CPR
+            BEGIN
+              IF EXISTS(SynFile) THEN
+                ERASE(SynFile);
+              cpr.CREATE(SynFile);
+            END;
+      END;
+
+      SynFileCounter += 1;
+      SynFileArr[SynFileCounter] := SynFile;
+      SynFileArr2[SynFileCounter] := GETFILENAME;
+    END;
+
+    PROCEDURE GetFlatFileName@1000000014(FileExtension@1000 : Integer);
+    VAR
+      Ord@1001 : File;
+      sku@1002 : File;
+      ccc@1003 : File;
+      wac@1004 : File;
+      por@1005 : File;
+      rcc@1006 : File;
+    BEGIN
+      IF DDSetup.ISEMPTY THEN DDSetup.GET;
+      SetTempPath2;
+
+      CASE FileExtension OF
+        51://Sales Order
+            BEGIN
+              FlatFile := STRSUBSTNO('%1%2%3',
+                TempPath2,'\',CREATEFILENAME(FileExtension));
+            END;
+        53://Article Update /53
+            BEGIN
+              FlatFile := STRSUBSTNO('%1%2%3',
+                TempPath2,'\',CREATEFILENAME(FileExtension));
+            END;
+        60://Purchase Order
+            BEGIN
+              FlatFile := STRSUBSTNO('%1%2%3',
+                TempPath2,'\',CREATEFILENAME(FileExtension));
+            END;
+        70://Suppliers
+            BEGIN
+              FlatFile := STRSUBSTNO('%1%2%3',
+                TempPath2,'\',CREATEFILENAME(FileExtension));
+            END;
+
+      END;
+    END;
+
+    PROCEDURE CreateSynFile2@1000000017(FileExtension@1000 : Integer);
+    VAR
+      Ord@1001 : File;
+      sku@1002 : File;
+      ccc@1003 : File;
+      wac@1004 : File;
+      por@1005 : File;
+      rcc@1006 : File;
+    BEGIN
+      IF DDSetup.ISEMPTY THEN DDSetup.GET;
+      SetTempPath2;
+
+      CASE FileExtension OF
+        1://OPS
+            BEGIN
+              SynFile := STRSUBSTNO('%1%2%3',
+                TempPath2,'\',CREATESYNFILENAME(FileExtension));
+            END;
+        2://Material /ART
+            BEGIN
+              SynFile := STRSUBSTNO('%1%2%3',
+                TempPath2,'\',CREATESYNFILENAME(FileExtension));
+            END;
+        3://Receipt  //REC
+            BEGIN
+              SynFile := STRSUBSTNO('%1%2%3',
+                TempPath2,'\',CREATESYNFILENAME(FileExtension));
+            END;
+        4://pdf print  //CPR
+            BEGIN
+              SynFile := STRSUBSTNO('%1%2%3',
+                TempPath2,'\',CREATESYNFILENAME(FileExtension));
+            END;
+
+      END;
+    END;
+
+    PROCEDURE WriteFlatFile@13(ASCII@1003 : Text[1024];bool@1002 : Boolean);
+    VAR
+      f@1000 : File;
+      Pointer@1001 : Integer;
+      FldRef@1004 : FieldRef;
+    BEGIN
+
+      IF bool THEN BEGIN
+        IF NOT NOERRORS THEN BEGIN
+          FldRef := GlobalRecRef.FIELD(79503); //"Trans. Status";
+          FldRef.VALUE := 4;                   //Transmitted
+          IF GlobalRecRef.MODIFY THEN;
+          EXIT;
+        END;
+      END;
+
+      IF bool THEN BEGIN
+        FldRef := GlobalRecRef.FIELD(79503); //"Trans. Status";
+        FldRef.VALUE := 1;                   //Transmitted
+        IF GlobalRecRef.MODIFY THEN;
+      END;
+
+      IF EXISTS(FlatFile) THEN BEGIN
+        f.TEXTMODE(TRUE);
+        f.WRITEMODE(TRUE);
+        f.OPEN(FlatFile);
+        Pointer := f.LEN;
+        f.SEEK(Pointer);
+        f.TRUNC;
+        f.WRITE(CharToANSI(ASCII));
+        f.CLOSE;
+      END;
+    END;
+
+    PROCEDURE WriteFlatFile2@1000000008();
+    VAR
+      f@1000 : File;
+      Pointer@1001 : Integer;
+      FldRef@1004 : FieldRef;
+      i@1000000000 : Integer;
+      LF@1000000001 : Char;
+      CR@1000000002 : Char;
+    BEGIN
+      IF EXISTS(FlatFile) THEN BEGIN
+        CR:=13;
+        LF:=10;
+        f.TEXTMODE(FALSE);
+        f.WRITEMODE(TRUE);
+        f.OPEN(FlatFile);
+
+        FOR i := 1 TO ARRAYLEN(WriteCache) DO BEGIN
+          IF WriteCache[i] <> '' THEN BEGIN
+            f.WRITE(CharToANSI(WriteCache[i]));
+            Pointer := f.POS;
+            f.SEEK(Pointer-1);
+            f.WRITE(CR);
+            f.WRITE(LF);
+          END;
+        END;
+        f.CLOSE;
+      END;
+    END;
+
+    PROCEDURE WriteUTF8File@1000000023();
+    VAR
+      UTFStream@1000000000 : Automation "{2A75196C-D9EB-4129-B803-931327F72D5C} 2.8:{00000566-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.8 Library'.Stream";
+      ReadWithBOMStream@1000000002 : Automation "{2A75196C-D9EB-4129-B803-931327F72D5C} 2.8:{00000566-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.8 Library'.Stream";
+      WriteWithoutBOMStream@1000000003 : Automation "{2A75196C-D9EB-4129-B803-931327F72D5C} 2.8:{00000566-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.8 Library'.Stream";
+      i@1000000001 : Integer;
+    BEGIN
+      //a/gob-fuchs/P0154/08.08.12
+      // Converts from ANSI to UTF-8
+      IF NOT CREATE(UTFStream) THEN BEGIN
+        WriteFlatFile2;
+        EXIT;
+      END;
+
+      IF EXISTS(FlatFile) THEN BEGIN
+
+        UTFStream.Open;
+        UTFStream.Charset('UTF-8');
+        UTFStream.LineSeparator := 10; //Nur LF, UNIX
+        FOR i := 1 TO ARRAYLEN(WriteCache) DO
+          IF WriteCache[i] <> '' THEN
+            UTFStream.WriteText(WriteCache[i],1);
+
+
+        ERASE(FlatFile);
+        UTFStream.SaveToFile(FlatFile);
+        UTFStream.Close;
+
+        //Remove Byte Order Mark
+        CREATE(ReadWithBOMStream);
+        CREATE(WriteWithoutBOMStream);
+
+        ReadWithBOMStream.Open();
+        ReadWithBOMStream.LoadFromFile(FlatFile);
+
+        WriteWithoutBOMStream.Mode := 3;
+        WriteWithoutBOMStream.Type := 1;
+        WriteWithoutBOMStream.Open();
+        ReadWithBOMStream.Position := 5;
+        ReadWithBOMStream.CopyTo(WriteWithoutBOMStream,-1);
+        WriteWithoutBOMStream.SaveToFile(FlatFile,2);
+      END;
+    END;
+
+    PROCEDURE CREATEFILENAME@1(FileExtension@1108200000 : Integer) : Text[30];
+    VAR
+      Record_ID@1108200001 : Text[3];
+    BEGIN
+      EXIT(
+          STRSUBSTNO('%1%2.dat',
+            FORMAT(FileExtension),FORMATTIMESTAMP
+            ));
+    END;
+
+    PROCEDURE CREATESYNFILENAME@1000000021(FileExtension@1108200000 : Integer) : Text[30];
+    VAR
+      Record_ID@1108200001 : Text[3];
+    BEGIN
+      CASE FileExtension OF
+        1:// Orders
+            BEGIN
+              Record_ID := 'OPS';
+            END;
+        2:// Material
+            BEGIN
+              Record_ID := 'ART';
+            END;
+        3:// Receipt
+            BEGIN
+              Record_ID := 'REC';
+            END;
+        4:// pdf print
+            BEGIN
+              Record_ID := 'CPR';
+            END;
+
+      END;
+
+      EXIT(
+        UPPERCASE(
+          STRSUBSTNO('SYN%1%2',
+            Record_ID,
+            TransNo)));
+    END;
+
+    PROCEDURE CREATESPECIALTRANS@38(Record_ID@1000 : Text[30]);
+    VAR
+      DDDataElement@1003 : Record 50058;
+      DDDataElement2@1002 : Record 50058;
+      i@1001 : Integer;
+    BEGIN
+      LineCounter += 1;
+
+      WITH DDDataElement DO BEGIN
+        RESET;
+        SETCURRENTKEY("Table ID","Field Index");
+        CASE Record_ID OF
+          'BOF':
+             SETRANGE("Table ID",DDDataElement."Table ID"::"11");
+          'EOF':
+             SETRANGE("Table ID",DDDataElement."Table ID"::"15");
+        END;
+        IF FIND('+') THEN BEGIN
+          LastFieldInRecord := "Field Index";
+          FOR i := 1 TO "Field Index" DO BEGIN
+            CREATETRANSDATA(DDDataElement,i);
+          END;
+        END;
+      END;
+
+      //CheckFile;
+      CacheNo += 1;
+      WriteCache[CacheNo] := Data;
+
+      CLEAR(Data);
+    END;
+
+    PROCEDURE CREATETRANSDATA@20(LMDataElement@1005 : Record 50058;i@1004 : Integer);
+    VAR
+      LMDataElement2@1000 : Record 50058;
+      TransDate@1002 : Date;
+      TransTime@1001 : Time;
+      RecRef@1003 : RecordRef;
+      FldRef@1006 : FieldRef;
+      cuChangeLogMgt@1007 : Codeunit 423;
+      "**** HME *********************"@1000000000 : Integer;
+      SalesHeaderL@1000000003 : Record 36;
+      FieldReferenceL@1000000001 : FieldRef;
+      FormatedValueL@1000000002 : Text[250];
+      OrderNumberL@1000000004 : Text[250];
+    BEGIN
+      WITH LMDataElement DO BEGIN
+
+            LMDataElement2.GET("Table ID",i);
+            CASE LMDataElement2.Type OF
+              LMDataElement2.Type::const:
+                BEGIN
+                  IF i <> LastFieldInRecord THEN
+                    Data +=
+                      PADVALUE(LMDataElement2.Value,LMDataElement2) +
+                      FORMAT(Filler)
+                  ELSE
+                    Data +=
+                      PADVALUE(LMDataElement2.Value,LMDataElement2);
+                END;
+              LMDataElement2.Type::"var":
+                BEGIN
+                  IF CHECKENVIRONVAR(LMDataElement2.Value) THEN BEGIN
+                    IF i <> LastFieldInRecord THEN
+                       Data +=
+                        PADVALUE(
+                          GETENVIRONVAR(LMDataElement2.Value,LMDataElement2),LMDataElement2) +
+                        FORMAT(Filler)
+                    ELSE
+                      Data +=
+                        PADVALUE(
+                          GETENVIRONVAR(LMDataElement2.Value,LMDataElement2),LMDataElement2);
+                  END;
+                END;
+              LMDataElement2.Type::Reference:
+                BEGIN
+                  CheckReference(LMDataElement2);
+                  IF CHECKFIELD(LMDataElement2."Record Reference",LMDataElement2."Field Reference") THEN BEGIN
+                    IF LMDataElement2.Value = '' THEN BEGIN
+                      RecRef.OPEN(LMDataElement2."Record Reference");
+                      RecRef.SETVIEW(RecordView);
+                      RecRef.FIND('-');
+                    END ELSE
+                      RecRef.GET(LMDataElement2."Rec ID");
+
+                        IF RecRef.FIELDEXIST(LMDataElement2."Field Reference") THEN BEGIN
+                          FldRef := RecRef.FIELD(LMDataElement2."Field Reference");
+                            IF ISFLOWFIELD(RecRef.NUMBER,FldRef.NUMBER) THEN
+                              FldRef.CALCFIELD;
+
+                        //H1575,H1466 23.12.14 DMA ++++++++++++++++++++++++++++++++++++++++++++++
+                          FormatedValueL := FORMATVALUE(FldRef, RecRef.NUMBER, LMDataElement2.Length, RecRef, LMDataElement2);
+
+                            IF (LMDataElement2."Table ID" = LMDataElement2."Table ID"::"51") AND
+                              (LMDataElement2."Field Reference" = 6211) AND
+                              (LMDataElement2."Record Reference" = 50061) AND
+                              ((DELCHR(FormatedValueL, '=', ' ') = '6') OR (DELCHR(FormatedValueL, '=', ' ') = '7'))
+                              THEN BEGIN
+                               FieldReferenceL := RecRef.FIELD(79518);
+                               OrderNumberL := FORMAT(FieldReferenceL.VALUE);
+                               SalesHeaderL.RESET;
+                               SalesHeaderL.SETRANGE("Document Type", SalesHeaderL."Document Type"::Order);
+                               SalesHeaderL.SETRANGE("No.", OrderNumberL);
+                               IF SalesHeaderL.GET(SalesHeaderL."Document Type"::Order, OrderNumberL) THEN BEGIN
+                                 IF SalesHeaderL."Language Code" = 'NLB' THEN
+                                   FormatedValueL := '7'
+                                 ELSE IF SalesHeaderL."Language Code" = 'FRB' THEN
+                                   FormatedValueL := '8'
+                                 ELSE IF SalesHeaderL."Language Code" = 'ITA' THEN
+                                   FormatedValueL := '9'
+                               END;
+                            END;
+
+                            IF i <> LastFieldInRecord THEN
+                              Data += PADVALUE(FormatedValueL + FORMAT(Filler),LMDataElement2)
+                            ELSE
+                              Data += PADVALUE(FormatedValueL,LMDataElement2);
+
+                            {
+                            IF i <> LastFieldInRecord THEN
+                              Data +=
+                                PADVALUE(
+                                  FORMATVALUE(
+                                    FldRef,
+                                    RecRef.NUMBER,
+                                    LMDataElement2.Length,
+                                    RecRef,
+                                    LMDataElement2),
+                                  LMDataElement2) +
+                                FORMAT(Filler)
+                            ELSE
+                              Data +=
+                                PADVALUE(
+                                  FORMATVALUE(
+                                    FldRef,
+                                    RecRef.NUMBER,
+                                    LMDataElement2.Length,
+                                    RecRef,
+                                    LMDataElement2),
+                                  LMDataElement2);
+                            }
+                        //H1575,H1466 23.12.14 DMA ----------------------------------------------
+
+                        END; //(RecRef.FIELDEXIST)
+                      RecRef.CLOSE;
+                  END; //(CHECKFIELD)
+                END;
+              LMDataElement2.Type::Time:
+                BEGIN
+                    TransTime := TIME;
+                    IF i <> LastFieldInRecord THEN
+                      Data += FORMATTIME(TransTime) + FORMAT(Filler)
+                    ELSE
+                      Data += FORMATTIME(TransTime);
+                END;
+              LMDataElement2.Type::Date:
+                BEGIN
+                    CASE DELCHR(UPPERCASE(LMDataElement2.Value),'=','%') OF
+                      'TODAY':
+                         TransDate := TODAY;
+                      'WORKDATE':
+                         TransDate := WORKDATE;
+                       '':
+                         BEGIN
+                           IF CheckValue(LMDataElement2) THEN BEGIN
+                              ArrayOfErrorVar[1] := LMDataElement2.TABLECAPTION;
+                              ArrayOfErrorVar[2] := FORMAT(LMDataElement2."Table ID");
+                              ArrayOfErrorVar[3] := LMDataElement2.FIELDCAPTION("Field ID");
+                              ArrayOfErrorVar[4] := LMDataElement2."Field ID";
+                              ErrorHandler(2002)
+                           END;
+                         END;
+                    END;
+                    IF i <> LastFieldInRecord THEN
+                      Data += FORMATDATE(TransDate) + FORMAT(Filler)
+                    ELSE
+                      Data += FORMATDATE(TransDate);
+                END;
+              LMDataElement2.Type::Filler:
+                BEGIN
+                  CASE LMDataElement2."Data Type" OF
+                    LMDataElement2."Data Type"::DATE:
+                      BEGIN
+                        IF i <> LastFieldInRecord THEN
+                          Data +=
+                            PADVALUE('0',LMDataElement2) +
+                            FORMAT(Filler)
+                        ELSE
+                          Data +=
+                            PADVALUE('0',LMDataElement2);
+                      END;
+
+                    LMDataElement2."Data Type"::CHAR: //mit Leerzeichen auffllen
+                      BEGIN
+                        IF i <> LastFieldInRecord THEN
+                          Data +=
+                            PADVALUE('',LMDataElement2) +
+                            FORMAT(Filler)
+                        ELSE
+                          Data +=
+                            PADVALUE('',LMDataElement2);
+                      END;
+                    LMDataElement2."Data Type"::NUMBER:
+                      BEGIN
+                        IF i <> LastFieldInRecord THEN
+                          Data +=
+                            PADVALUE(LMDataElement2.Value,LMDataElement2) +
+                            FORMAT(Filler)
+                        ELSE
+                          Data +=
+                            PADVALUE(LMDataElement2.Value,LMDataElement2);
+                      END;
+                    LMDataElement2."Data Type"::DECIMAL:
+                      BEGIN
+                        IF i <> LastFieldInRecord THEN
+                          Data +=
+                            PADVALUE(LMDataElement2.Value,LMDataElement2) +
+                            FORMAT(Filler)
+                        ELSE
+                          Data +=
+                            PADVALUE(LMDataElement2.Value,LMDataElement2);
+                      END;
+
+                  END;
+                END;
+              LMDataElement2.Type::" ": //fr Ausgabe leerer Felder
+                BEGIN
+                  CASE LMDataElement2."Data Type" OF
+                    LMDataElement2."Data Type"::DATE:
+                      BEGIN
+                        IF i <> LastFieldInRecord THEN
+                          Data +=
+                            PADVALUE('0',LMDataElement2) +
+                            FORMAT(Filler)
+                        ELSE
+                          Data +=
+                            PADVALUE('0',LMDataElement2);
+                      END;
+
+                    LMDataElement2."Data Type"::CHAR: //mit Leerzeichen auffllen
+                      BEGIN
+                        IF i <> LastFieldInRecord THEN
+                          Data +=
+                            PADVALUE('',LMDataElement2) +
+                            FORMAT(Filler)
+                        ELSE
+                          Data +=
+                            PADVALUE('',LMDataElement2);
+                      END;
+                    LMDataElement2."Data Type"::NUMBER:
+                      BEGIN
+                        IF i <> LastFieldInRecord THEN
+                          Data +=
+                            PADVALUE(LMDataElement2.Value,LMDataElement2) +
+                            FORMAT(Filler)
+                        ELSE
+                          Data +=
+                            PADVALUE(LMDataElement2.Value,LMDataElement2);
+                      END;
+                  END;
+                END
+            END;
+      END;
+    END;
+
+    PROCEDURE FORMATDATE@6(Date@1000 : Date) : Text[30];
+    VAR
+      txtDATE@1001 : Text[30];
+    BEGIN
+      EXIT(
+        DELCHR(
+          FORMAT(Date,0,'<year4><month,2><day,2>'),'=','.'));
+    END;
+
+    PROCEDURE FORMATTIME@7(Time@1000 : Time) : Text[30];
+    VAR
+      txtTIME@1001 : Text[30];
+    BEGIN
+      EXIT( FORMAT(Time,0,'<Hours24,2><Minutes,2><Seconds,2>'));
+    END;
+
+    PROCEDURE FORMATTIMESTAMP@1000000000() : Text[30];
+    VAR
+      txtTIME@1001 : Text[30];
+    BEGIN
+      EXIT( FORMAT(CURRENTDATETIME,0,'<Year,4><Month,2><Day,2><Hours24,2><Minutes,2><Seconds,2>'));
+    END;
+
+    LOCAL PROCEDURE FORMATVALUE@19(VAR FldRef@1000 : FieldRef;TableNumber@1005 : Integer;Length@1006 : Integer;RecRef@1009 : RecordRef;LMDataElement@1008 : Record 50058) : Text[250];
+    VAR
+      Field@1004 : Record 2000000041;
+      OptionNo@1001 : Integer;
+      OptionStr@1002 : Text[1024];
+      i@1003 : Integer;
+      Test@1000000000 : Text[50];
+    BEGIN
+      IF (NOT HASVALUE(FldRef)) AND CheckRecRefValue(LMDataElement,RecRef,FldRef) THEN BEGIN
+          ArrayOfErrorVar[1] := RecRef.CAPTION;
+          ArrayOfErrorVar[2] := FldRef.CAPTION;
+          ArrayOfErrorVar[3] := RecordView;
+          ErrorHandler(2003);
+      END;
+
+      GETFIELD(TableNumber,FldRef.NUMBER,Field);
+      IF Field.Type = Field.Type::Option THEN BEGIN
+        EVALUATE(OptionNo,FORMAT(FldRef.VALUE));
+        OptionStr := FORMAT(FldRef.OPTIONCAPTION);
+        FOR i := 1 TO OptionNo DO
+          OptionStr := COPYSTR(OptionStr,STRPOS(OptionStr,',') + 1);
+        IF STRPOS(OptionStr,',') > 0 THEN
+          IF STRPOS(OptionStr,',') = 1 THEN
+            OptionStr := ''
+          ELSE
+            OptionStr := COPYSTR(OptionStr,1,STRPOS(OptionStr,',') - 1);
+            OptionStr := CharToANSI(OptionStr);
+        EXIT(UPPERCASE(OptionStr));
+      END ELSE
+        IF Field.Type IN [Field.Type::Code,Field.Type::Text] THEN BEGIN
+          EXIT(UPPERCASE(FORMAT(FldRef.VALUE)));
+      END ELSE
+        IF Field.Type = Field.Type::Date THEN BEGIN
+          IF LMDataElement."Data Type"=LMDataElement."Data Type"::DATE THEN
+            EXIT(UPPERCASE(FORMAT(FldRef.VALUE,0,'<year4><month,2><day,2>')))
+          ELSE IF LMDataElement."Data Type"=LMDataElement."Data Type"::DATETIME THEN
+            EXIT(UPPERCASE(FORMAT(FldRef.VALUE,0,'<year4><month,2><day,2>00000000')));
+      END ELSE
+        IF Field.Type = Field.Type::Time THEN BEGIN
+          EXIT(UPPERCASE(FORMAT(FldRef.VALUE,0,'<Hours24,2>:<Minutes,2>')));
+      END ELSE
+        IF Field.Type = Field.Type::Decimal THEN BEGIN
+          IF LMDataElement."Data Type"=LMDataElement."Data Type"::DECIMAL THEN
+            EXIT(UPPERCASE(FORMAT(FldRef.VALUE,0,'<Precision,2:2><Integer><Decimals>')));
+            //EXIT(REVSTR(PADSTR(REVSTR(DELCHR(FORMAT(FldRef.VALUE,8,'<Precision,2:2><Standard Format,2>'),'=','. ')),8,'0')));
+            //EXIT(REVSTR(PADSTR(REVSTR(DELCHR(FORMAT(FldRef.VALUE,8,'<Integer>'),'=','. ')),8,'0')));
+          IF LMDataElement."Data Type"=LMDataElement."Data Type"::NUMBER THEN
+            //EXIT(REVSTR(PADSTR(REVSTR(DELCHR(FORMAT(FldRef.VALUE,0,'<Precision,2:2><Standard Format,2>'),'=','. ')),8,'0')));
+            EXIT(UPPERCASE(FORMAT(FldRef.VALUE,0,'<Standard Format,2>')));
+        END
+      ELSE
+        IF Field.Type = Field.Type::Boolean THEN BEGIN
+          //A/01.07.2009/gob-mar/LM1.05 - P00002
+          IF HASVALUE(FldRef.VALUE) THEN
+            EXIT('2')
+          ELSE
+            EXIT('0');
+          //E/01.07.2009/gob-mar/LM1.05 - P00002
+      END ELSE
+        EXIT(UPPERCASE(CharToANSI(FORMAT(FldRef.VALUE))));
+    END;
+
+    PROCEDURE CHECKENVIRONVAR@8(Value@1000 : Text[30]) : Boolean;
+    BEGIN
+      CASE Value OF
+
+        '%DATA_TYPE%',
+        '%TRAN_NO%',
+        '%NO_DETAIL_RECORDS%',
+        '%NO_DETAIL_RECORDS%',
+        '%NO_HDR_RECORDS%',
+        '%NO_LINE_ITEMS%',
+        '%PROD_STAT%',
+        '%FILENAME%',
+        '%TRANSACTION_ID%',
+        //A/08.07.11/gob-mar/V1.07
+        '%FIXORDERDATE%',
+        //E/08.07.11/gob-mar/V1.07
+        '%TOTAL_LINES_FILE%':
+           EXIT(TRUE);
+        ELSE BEGIN
+          ArrayOfErrorVar[1] := Value;
+          ErrorHandler(2000)
+        END;
+
+      END;
+    END;
+
+    PROCEDURE GETENVIRONVAR@9(Value@1000 : Text[30];LMDataElement@1001 : Record 50058) : Text[250];
+    VAR
+      No@1002 : Code[20];
+    BEGIN
+      CASE Value OF
+
+        '%DATA_TYPE%'        : EXIT(GETFILEEXTENSION);
+        '%TRAN_NO%'          : EXIT(TransNo);
+        '%NO_HDR_RECORDS%'   : EXIT(FORMAT(NO_HDR_RECORDS));
+        '%NO_DETAIL_RECORDS%':
+          CASE LMDataElement."Table ID" OF
+            LMDataElement."Table ID"::"17":
+              EXIT(FORMAT(NO_DETAIL_RECORDS));
+            LMDataElement."Table ID"::"18":
+              EXIT(FORMAT(NO_DETAIL_RECORDS_IN_FILE+2));  //GOB-SFE/22.10.07
+            ELSE
+              EXIT(FORMAT(NO_DETAIL_RECORDS_IN_FILE+3));  //GOB-SFE/24.09.07
+          END;
+        '%NO_LINE_ITEMS%'    : EXIT(FORMAT(NO_LINE_ITEMS));
+        '%TRANSACTION_ID%'   : EXIT(TRANSACTION_ID);
+        '%FILENAME%'         : EXIT(GETFILENAME);
+        '%TOTAL_LINES_FILE%' : EXIT(FORMAT(TOTAL_LINES_FILE));
+        //A/08.07.11/gob-mar/V1.07
+        '%FIXORDERDATE%'     : EXIT(SetFixOrderDate);
+        //E/08.07.11/gob-mar/V1.07
+
+      END;
+    END;
+
+    PROCEDURE GETFILENAME@41() : Text[50];
+    BEGIN
+      EXIT(
+        REVSTR(
+          COPYSTR(
+            REVSTR(FlatFile),1,STRPOS(REVSTR(FlatFile),'\')-1)));
+    END;
+
+    PROCEDURE GETFILEEXTENSION@15() Extension : Text[3];
+    VAR
+      Text@1000 : Text[30];
+    BEGIN
+      //1. Dateinamen ermitteln
+      Text := REVSTR(
+                COPYSTR(
+                   REVSTR(FlatFile),1,STRPOS(REVSTR(FlatFile),'\')-1));
+
+      //2. Dateiendung ermitteln
+      Extension := DELSTR(Text,1,STRPOS(Text,'.'));
+
+      IF STRLEN(Extension) > 3 THEN BEGIN
+        ArrayOfErrorVar[1] := Extension;
+        ErrorHandler(2006);
+      END;
+
+      EXIT(Extension);
+    END;
+
+    PROCEDURE REVSTR@35(paString@1108300000 : Text[1024]) : Text[1024];
+    VAR
+      Length@1108300001 : Integer;
+      i@1108300002 : Integer;
+      Code@1108300003 : Text[1024];
+      RevCode@1108300004 : Text[1024];
+      OK@1000 : Boolean;
+    BEGIN
+      //Text wird gedreht
+
+      Code := paString;
+      OK := TRUE;
+      FOR i := 1 TO STRLEN(paString) DO BEGIN
+        IF  OK THEN BEGIN
+          RevCode := RevCode + COPYSTR(Code,STRLEN(Code),1);
+          Code := DELSTR(Code,STRLEN(Code),1);
+          IF STRLEN(Code) = 0 THEN
+            OK := FALSE;
+        END;
+      END;
+      EXIT(RevCode);
+    END;
+
+    PROCEDURE PADVALUE@14(Text@1000 : Text[250];DDDataElement@1001 : Record 50058) : Text[250];
+    VAR
+      ValueLength@1002 : Integer;
+    BEGIN
+      //auf feste oder variable Feldl„nge formatieren
+      DDSetup.GET;
+
+      IF DDSetup."Data Element file format"=DDSetup."Data Element file format"::Fix THEN BEGIN
+        WITH DDDataElement DO BEGIN
+
+          IF (STRLEN(Text) = 0) AND (CheckValue(DDDataElement)) THEN BEGIN
+            ArrayOfErrorVar[1] := DDDataElement.TABLECAPTION;
+            ArrayOfErrorVar[2] := FORMAT(DDDataElement."Table ID");
+            ArrayOfErrorVar[3] := DDDataElement.FIELDCAPTION("Field ID");
+            ArrayOfErrorVar[4] := DDDataElement."Field ID";
+            ErrorHandler(2002);
+          END;
+
+          IF STRLEN(Text) <> DDDataElement.Length THEN BEGIN
+
+            CASE "Data Type" OF
+
+              "Data Type"::NUMBER:
+                 BEGIN
+                   Value := REVSTR(
+                              PADSTR(
+                                 REVSTR(Text),DDDataElement.Length,'0'));
+                 END;
+              "Data Type"::CHAR:
+                 BEGIN
+                   //Value := PADSTR(Text,DDDataElement.Length,FORMAT(Filler));
+                   Value := PADSTR(Text,DDDataElement.Length,FORMAT(' '));
+                 END;
+
+              "Data Type"::DATE:
+                 BEGIN
+                   Value := PADSTR(Text,DDDataElement.Length,FORMAT('0'));
+                 END;
+              "Data Type"::DATETIME:
+                 BEGIN
+                   Value := PADSTR(Text,DDDataElement.Length,FORMAT('0'));
+                 END;
+
+            END;
+            //ValueLength := STRLEN(Value);
+
+            EXIT(UPPERCASE(Value));
+          END ELSE BEGIN
+            //ValueLength := STRLEN(Text);
+            EXIT(UPPERCASE(Text));
+          END;
+
+        END;
+      END ELSE IF DDSetup."Data Element file format"=DDSetup."Data Element file format"::Variable THEN BEGIN
+        IF DDDataElement."Field Index"=1 THEN
+          EXIT(UPPERCASE(DDSetup.FieldStartDelimeter+Text+DDSetup.FieldEndDelimeter))
+        ELSE
+          EXIT(UPPERCASE(DDSetup.Separator+DDSetup.FieldStartDelimeter+Text+DDSetup.FieldEndDelimeter));
+      END;
+    END;
+
+    PROCEDURE CHECKNUMBER@21(Number@1001 : Text[30]) : Boolean;
+    VAR
+      Value@1000 : Decimal;
+    BEGIN
+      IF EVALUATE(Value,Number) THEN
+        EXIT(TRUE)
+      ELSE
+        EXIT(FALSE);
+    END;
+
+    LOCAL PROCEDURE CHECKFIELD@26(TableNumber@1001 : Integer;FieldNumber@1002 : Integer) : Boolean;
+    VAR
+      Field@1000 : Record 2000000041;
+    BEGIN
+      IF Field.GET(TableNumber,FieldNumber) THEN
+        EXIT(TRUE)
+      ELSE
+        EXIT(FALSE);
+    END;
+
+    LOCAL PROCEDURE ISNORMALFIELD@33(TableNumber@1001 : Integer;FieldNumber@1002 : Integer) : Boolean;
+    VAR
+      Field@1000 : Record 2000000041;
+    BEGIN
+      GETFIELD(TableNumber,FieldNumber,Field);
+      EXIT(Field.Class = Field.Class::Normal);
+    END;
+
+    PROCEDURE ISFLOWFIELD@28(TableNumber@1001 : Integer;FieldNumber@1000 : Integer) : Boolean;
+    VAR
+      Field@1002 : Record 2000000041;
+    BEGIN
+      GETFIELD(TableNumber,FieldNumber,Field);
+      EXIT(Field.Class = Field.Class::FlowField);
+    END;
+
+    LOCAL PROCEDURE HASVALUE@32(Value@1000 : Variant) : Boolean;
+    VAR
+      HasValue@1001 : Boolean;
+      Int@1002 : Integer;
+      Dec@1003 : Decimal;
+      D@1007 : Date;
+      T@1008 : Time;
+    BEGIN
+      CASE TRUE OF
+        Value.ISBOOLEAN :
+          HasValue := Value;
+        Value.ISOPTION :
+          HasValue := TRUE;
+        Value.ISINTEGER :
+          BEGIN
+            Int := Value;
+            HasValue := Int <> 0;
+          END;
+        Value.ISDECIMAL :
+          BEGIN
+            Dec := Value;
+            HasValue := Dec <> 0;
+          END;
+        Value.ISDATE :
+          BEGIN
+            D := Value;
+            HasValue := D <> 0D;
+          END;
+        Value.ISTIME :
+          BEGIN
+            T := Value;
+            HasValue := T <> 0T;
+          END;
+        Value.ISBINARY :
+          HasValue := FALSE;
+        ELSE
+          HasValue := FORMAT(Value) <> '';
+      END;
+      EXIT(HasValue);
+    END;
+
+    LOCAL PROCEDURE GETFIELD@34(TableNumber@1001 : Integer;FieldNumber@1002 : Integer;VAR Field2@1003 : Record 2000000041);
+    VAR
+      Field@1000 : Record 2000000041;
+    BEGIN
+      IF Field.GET(TableNumber,FieldNumber) THEN
+        Field2 := Field;
+    END;
+
+    PROCEDURE SKUHandle@5(Action@1000 : ' ,insert/update,insert,update,delete';Item@1001 : Record 27);
+    VAR
+      LMItem@1002 : Record 50059;
+      LMItem2@1004 : Record 50059;
+      LocalRecRef@1003 : RecordRef;
+    BEGIN
+      IF Action = Action::" " THEN
+        ErrorHandler(2001);
+
+      IF Action = Action::update THEN BEGIN
+        LMItem.RESET;
+        LMItem.SETCURRENTKEY("No.","Action Code","Trans. Status");
+        LMItem.SETRANGE("No.",Item."No.");
+        LMItem.SETFILTER("Action Code",'%1|%2',LMItem."Action Code"::S,LMItem."Action Code"::M);
+        LMItem.SETRANGE("Trans. Status",LMItem."Trans. Status"::new);
+        IF LMItem.FIND('-') THEN BEGIN
+          LMItem.INIT;
+          LMItem.TRANSFERFIELDS(Item);
+          LMItem."Action Code" := LMItem."Action Code"::M;
+          LMItem."Entry Date" := WORKDATE;
+          LMItem.Company      := COMPANYNAME;
+          LMItem."Entry Time" := TIME;
+          IF LMItem.MODIFY THEN;
+          EXIT;
+        END;
+      END;
+
+      LMItem.RESET;
+      LMItem.INIT;
+      LMItem.TRANSFERFIELDS(Item);
+      LMItem."Entry No."  := GETSKUENTRYNO;
+      LMItem."Entry Date" := WORKDATE;
+      LMItem."Entry Time" := TIME;
+      LMItem.Company      := COMPANYNAME;
+      LMItem."Trans. Status" := LMItem."Trans. Status"::new;
+      LMItem.Direction := LMItem.Direction::out;
+      LMItem."Record ID" := 'SKU';
+      CASE Action OF
+        Action::"insert/update":
+          BEGIN
+            LMItem."Action Code" := LMItem."Action Code"::M
+          END;
+        Action::insert:
+          BEGIN
+            LMItem."Action Code" := LMItem."Action Code"::S
+          END;
+        Action::update:
+          BEGIN
+            LMItem."Action Code" := LMItem."Action Code"::"3"
+          END;
+        Action::delete:
+          BEGIN
+            LMItem."Action Code" := LMItem."Action Code"::"4"
+          END;
+      END;
+
+      IF LMItem.INSERT THEN;
+    END;
+
+    PROCEDURE GETSKUENTRYNO@17() : Integer;
+    VAR
+      MARCItem@1000 : Record 50059;
+    BEGIN
+      MARCItem.LOCKTABLE(TRUE); //a/P0610/gob-sfe/27.11.12
+      //A/gob-adb/16.05.13
+      //IF MARCItem.FIND('+') THEN
+      IF MARCItem.FINDLAST THEN
+      //E/gob-adb/16.05.13
+        EXIT(MARCItem."Entry No." + 1)
+      ELSE
+        EXIT(1);
+    END;
+
+    PROCEDURE GETORDHENTRYNO@4() : Integer;
+    VAR
+      LMHeader@1000 : Record 50061;
+    BEGIN
+      LMHeader.LOCKTABLE(TRUE); //a/P0610/gob-sfe/27.11.12
+      //A/gob-adb/16.05.13
+      //IF LMHeader.FIND('+') THEN
+      IF LMHeader.FINDLAST THEN
+      //E/gob-adb/16.05.13
+        EXIT(LMHeader."Entry No." + 1)
+      ELSE
+        EXIT(1);
+    END;
+
+    PROCEDURE GETORDLENTRYNO@10() : Integer;
+    VAR
+      LMLine@1000 : Record 50062;
+    BEGIN
+      LMLine.LOCKTABLE(TRUE); //a/P0610/gob-sfe/27.11.12
+      //A/gob-adb/16.05.13
+      //IF LMLine.FIND('+') THEN
+      IF LMLine.FINDLAST THEN
+      //E/gob-adb/16.05.13
+        EXIT(LMLine."Entry No." + 1)
+      ELSE
+        EXIT(1);
+    END;
+
+    PROCEDURE CharToANSI@23(Text@1000 : Text[1024]) : Text[1024];
+    VAR
+      Position@1001 : Integer;
+      Char@1002 : ARRAY [2,10] OF Char;
+      i@1003 : Integer;
+    BEGIN
+      CharDef(Char);
+      FOR Position := 1 TO STRLEN(Text) DO
+        FOR i := 1 TO 7 DO
+          IF Text[Position] = Char[2,i] THEN
+            Text[Position] := Char[1,i];
+      EXIT(Text)
+    END;
+
+    PROCEDURE CharToOEM@22(Text@1000 : Text[1024]) : Text[1024];
+    VAR
+      Position@1001 : Integer;
+      Char@1002 : ARRAY [2,10] OF Char;
+      i@1003 : Integer;
+    BEGIN
+      CharDef(Char);
+      FOR Position := 1 TO STRLEN(Text) DO
+        FOR i := 1 TO 7 DO
+          IF Text[Position] = Char[1,i] THEN
+            Text[Position] := Char[2,i];
+      EXIT(Text)
+    END;
+
+    PROCEDURE CharDef@16(VAR Char@1000 : ARRAY [2,10] OF Char);
+    BEGIN
+      Char[1,1] := 196;
+      Char[1,2] := 214;
+      Char[1,3] := 220;
+      Char[1,4] := 223;
+      Char[1,5] := 228;
+      Char[1,6] := 246;
+      Char[1,7] := 252;
+
+      Char[2,1] := 142;
+      Char[2,2] := 153;
+      Char[2,3] := 154;
+      Char[2,4] := 225;
+      Char[2,5] := 132;
+      Char[2,6] := 148;
+      Char[2,7] := 129;
+    END;
+
+    PROCEDURE CheckValue@25(DDDataElement@1000 : Record 50058) : Boolean;
+    BEGIN
+      EXIT((DDDataElement.Value = '') AND (DDDataElement.Status = DDDataElement.Status::RQ));
+    END;
+
+    PROCEDURE CheckRecRefValue@39(DDDataElement@1000 : Record 50058;RecRef@1002 : RecordRef;FldRef@1001 : FieldRef) : Boolean;
+    BEGIN
+      EXIT((NOT HASVALUE(FldRef.VALUE))  AND (DDDataElement.Status = DDDataElement.Status::RQ));
+    END;
+
+    PROCEDURE CheckReference@27(DDDataElement@1000 : Record 50058);
+    BEGIN
+      IF DDDataElement."Record Reference" = 0 THEN BEGIN
+        ArrayOfErrorVar[1] := DDDataElement.TABLECAPTION;
+        ArrayOfErrorVar[2] := FORMAT(DDDataElement."Table ID");
+        ArrayOfErrorVar[3] := DDDataElement.FIELDCAPTION("Field ID");
+        ArrayOfErrorVar[4] := DDDataElement."Field ID";
+        ErrorHandler(2004)
+      END;
+
+      IF DDDataElement."Field Reference" = 0 THEN BEGIN
+        ArrayOfErrorVar[1] := DDDataElement.TABLECAPTION;
+        ArrayOfErrorVar[2] := FORMAT(DDDataElement."Table ID");
+        ArrayOfErrorVar[3] := DDDataElement.FIELDCAPTION("Field ID");
+        ArrayOfErrorVar[4] := DDDataElement."Field ID";
+        ErrorHandler(2005)
+      END;
+    END;
+
+    PROCEDURE ErrorHandler@29(ErrorNo@1000 : Integer);
+    VAR
+      FldREf@1001 : FieldRef;
+      FldREf2@1002 : FieldRef;
+    BEGIN
+      IF HandleErrors THEN BEGIN
+
+      FldREf := GlobalRecRef.FIELD(79507); //"Error Code";
+      FldREf.VALUE := FORMAT(ErrorNo);
+
+      FldREf2 := GlobalRecRef.FIELD(79511); //"Error Description";
+
+      CASE ErrorNo OF
+        2000:
+          FldREf2.VALUE :=
+            COPYSTR(
+              STRSUBSTNO(
+                Error0000,
+                ArrayOfErrorVar[1]),
+            STRPOS(Error0000,':')+1,
+            FldREf2.LENGTH);
+        2001:
+          FldREf2.VALUE :=
+            Error0001;
+        2002:
+          FldREf2.VALUE :=
+            COPYSTR(
+              STRSUBSTNO(
+                Error0002,
+                ArrayOfErrorVar[1],
+                ArrayOfErrorVar[2],
+                ArrayOfErrorVar[3],
+                ArrayOfErrorVar[4]),
+            STRPOS(Error0002,':')+1,
+            FldREf2.LENGTH);
+        2003:
+          FldREf2.VALUE :=
+            COPYSTR(
+              STRSUBSTNO(
+                Error0003,
+                ArrayOfErrorVar[1],
+                ArrayOfErrorVar[2],
+                ArrayOfErrorVar[3]),
+            STRPOS(Error0003,':')+1,
+            FldREf2.LENGTH);
+        2004:
+          FldREf2.VALUE :=
+            COPYSTR(
+              STRSUBSTNO(
+                Error0004,
+                ArrayOfErrorVar[1],
+                ArrayOfErrorVar[2],
+                ArrayOfErrorVar[3],
+                ArrayOfErrorVar[4]),
+            STRPOS(Error0004,':')+1,
+            FldREf2.LENGTH);
+        2005:
+          FldREf2.VALUE :=
+            COPYSTR(
+              STRSUBSTNO(Error0005,ArrayOfErrorVar[1],ArrayOfErrorVar[2],ArrayOfErrorVar[3],ArrayOfErrorVar[4]),
+                STRPOS(Error0005,':')+1,FldREf2.LENGTH);
+        2006:
+          FldREf2.VALUE :=
+            COPYSTR(
+              STRSUBSTNO(
+                Error0006,
+                ArrayOfErrorVar[1]),
+            STRPOS(Error0006,':')+1,
+            FldREf2.LENGTH);
+
+      END;
+
+      IF GlobalRecRef.MODIFY THEN;
+
+      END ELSE BEGIN
+
+      CASE ErrorNo OF
+        2000:
+          ERROR(
+            Error0000,
+            ArrayOfErrorVar[1]);
+        2001:
+          ERROR(Error0001);
+        2002:
+          ERROR(
+            Error0002,
+            ArrayOfErrorVar[1],
+            ArrayOfErrorVar[2],
+            ArrayOfErrorVar[3],
+            ArrayOfErrorVar[4]);
+        2003:
+          ERROR(
+            Error0003,
+            ArrayOfErrorVar[1],
+            ArrayOfErrorVar[2],
+            ArrayOfErrorVar[3]);
+        2004:
+          ERROR(
+            Error0004,
+            ArrayOfErrorVar[1],
+            ArrayOfErrorVar[2],
+            ArrayOfErrorVar[3],
+            ArrayOfErrorVar[4]);
+        2005:
+          ERROR(
+            Error0005,
+            ArrayOfErrorVar[1],
+            ArrayOfErrorVar[2],
+            ArrayOfErrorVar[3],
+            ArrayOfErrorVar[4]);
+        2006:
+          ERROR(
+            Error0006,
+            ArrayOfErrorVar[1]);
+      END;
+
+      END;
+      CLEAR(ArrayOfErrorVar);
+
+      SendMail(FORMAT(FldREf2.VALUE));
+    END;
+
+    PROCEDURE NOERRORS@30() : Boolean;
+    VAR
+      FldREf@1000 : FieldRef;
+    BEGIN
+      FldREf := GlobalRecRef.FIELD(79507); //"Error Code";
+      EXIT
+       (NOT HASVALUE(FldREf.VALUE));
+    END;
+
+    PROCEDURE DeleteFile@31(FileName@1001 : Text[1024]);
+    BEGIN
+      IF EXISTS(FileName) THEN
+        ERASE(FileName);
+    END;
+
+    PROCEDURE CreateBackupFile@37(File@1000 : Text[1024];Temp@1008 : Boolean) : Text[1024];
+    VAR
+      SalesSetup@1009 : Record 311;
+      fIn@1001 : File;
+      fOut@1003 : File;
+      Text@1002 : Text[1024];
+      Pointer@1004 : Integer;
+      LineNo@1005 : Integer;
+      BackUpFile@1006 : Text[1024];
+      FileName@1007 : Text[1024];
+    BEGIN
+      IF File = '' THEN
+        EXIT;
+
+      IF DDSetup.ISEMPTY THEN DDSetup.GET;
+
+      IF DDSetup."Interface Backup Folder" = '' THEN
+        EXIT;
+
+      IF Temp THEN BEGIN
+        SetTempPath;
+        SetTempPath2;
+        FileName := TempPath + '\' + File + '.tmp';
+        File := DDSetup."Interface Backup Folder" + '\' + File + '.bak';
+      END ELSE BEGIN
+        FileName := DDSetup."Interface Backup Folder" + '\' + File + '.bak';
+        File     := TempPath2 + '\' + File;
+      END;
+
+      DDSetup.GET;
+      CREATE(WshFileSystem);
+      //WshFolder:=WshFileSystem.GetFolder(DDSetup."Printout Folder");
+      //IF FORMAT(WshFolder.Size)<>'0' THEN BEGIN
+      WshFileSystem.CopyFile(File,FileName,TRUE);
+      //WshFileSystem.DeleteFile(File,TRUE);
+      CLEAR(WshFileSystem);
+
+      EXIT(FileName)
+    END;
+
+    PROCEDURE CopyFileTemp2Outbox@1000000001(File@1000 : Text[1024];Temp@1008 : Boolean) : Text[1024];
+    VAR
+      SalesSetup@1009 : Record 311;
+      fIn@1001 : File;
+      fOut@1003 : File;
+      Text@1002 : Text[1024];
+      Pointer@1004 : Integer;
+      LineNo@1005 : Integer;
+      BackUpFile@1006 : Text[1024];
+      FileName@1007 : Text[1024];
+    BEGIN
+      IF File = '' THEN
+        EXIT;
+
+      IF DDSetup.ISEMPTY THEN DDSetup.GET;
+
+      IF DDSetup."Interface Backup Folder" = '' THEN
+        EXIT;
+
+      IF Temp THEN BEGIN
+        SetTempPath;
+        SetTempPath2;
+        FileName := TempPath + '\' + File + '.tmp';
+        File := DDSetup."Interface Folder (Out)" + '\' + File;
+      END ELSE BEGIN
+        FileName := DDSetup."Interface Folder (Out)" + '\' + File;
+        File     := TempPath2 + '\' + File;
+      END;
+
+      DDSetup.GET;
+      CREATE(WshFileSystem);
+      //WshFolder:=WshFileSystem.GetFolder(DDSetup."Printout Folder");
+      //IF FORMAT(WshFolder.Size)<>'0' THEN BEGIN
+      WshFileSystem.CopyFile(File,FileName,TRUE);
+      //WshFileSystem.DeleteFile(File,TRUE);
+      CLEAR(WshFileSystem);
+
+      EXIT(FileName)
+    END;
+
+    PROCEDURE SetTempPath@40();
+    BEGIN
+
+      DDSetup.GET;
+      TempPath := DDSetup."Interface Tmp Folder";
+
+      {
+      TempPath := ENVIRON('tmp');
+      IF TempPath = '' THEN
+        TempPath := ENVIRON('temp');
+      IF TempPath = '' THEN
+        TempPath := 'c:\temp';
+      }
+    END;
+
+    PROCEDURE SendMail@70701(ErrorText@1000 : Text[100]);
+    VAR
+      Mail@1001 : Codeunit 397;
+      MailSend@1002 : Boolean;
+      Text000@1006 : TextConst 'DEU=Ihr Mailclient lieferte die folgende Fehlermeldung.\;ENU=Your mail client has returned the following error.\';
+    BEGIN
+      { //SFE
+      IF NOT SalesSetup."MARC send E-Mail" THEN
+        EXIT;
+      IF NOT CREATE(olApp) THEN
+        EXIT;
+      IF NOT CREATE(oSafeMailItem) THEN
+        EXIT;
+
+
+      olMailItem := olApp.Session.GetDefaultFolder(5).Items.Add;
+      olMailItem.Subject(ErrorText);
+      olMailItem.Attachments.Add(SalesSetup."MARC Interface Folder (In)"+'\'+FlatFileArr[FileCounter]);
+      oSafeMailItem.Item := olMailItem;
+      oSafeMailItem.AuthKey := 'GOB';
+      oSafeMailItem.Recipients.Add(SalesSetup."MARC Mail Recipient");
+      oSafeMailItem.Send;
+      EXIT;
+      }  //SFE
+    END;
+
+    PROCEDURE CheckFile@49();
+    BEGIN
+      //MESSAGE('Data: %1 - L„nge %2',Data,STRLEN(Data));
+    END;
+
+    PROCEDURE FTPUpload@1000000025() : Boolean;
+    VAR
+      FTPClient@1000000000 : Automation "{42A8A505-1CD3-4CA4-A7EA-E6EBCC481DDC} 1.0:{B32A3669-654B-4CEF-980E-C7753F1FA524}:'FTPNav'.FTPNavClass";
+    BEGIN
+      //IF ISCLEAR(FTPClient) THEN CREATE(FTPClient);
+      DDSetup.GET;
+      IF NOT DDSetup."FTP Active" THEN
+        EXIT;
+
+      CLEAR(FTPClient);
+      CREATE(FTPClient);
+      IF NOT FTPClient.UploadDirectory(
+              DDSetup."ftp server",
+              DDSetup."ftp login",
+              DDSetup."ftp password",
+              DDSetup.ReceptionDir,
+              DDSetup."Interface Folder (Out)",
+              TRUE,FALSE,FALSE)
+      THEN BEGIN
+        DDLog.InsertLog(0,1,0,'FTP',STRSUBSTNO('FTP Upload not successfull: %1',FTPClient.GetLastErrorText));
+        EXIT(FALSE);
+      END;
+      DDLog.InsertLog(0,0,0,'FTP',STRSUBSTNO('FTP Upload successfull',''));
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE FTPUploadTmp@1000000022() : Boolean;
+    VAR
+      FTPClient@1000000000 : Automation "{42A8A505-1CD3-4CA4-A7EA-E6EBCC481DDC} 1.0:{B32A3669-654B-4CEF-980E-C7753F1FA524}:'FTPNav'.FTPNavClass";
+    BEGIN
+      //a/gob-sfe/P0086
+      DDSetup.GET;
+      IF NOT DDSetup."FTP Active" THEN
+        EXIT;
+
+      CLEAR(FTPClient);
+      CREATE(FTPClient);
+      IF NOT FTPClient.UploadTempFilesFromDirectory(
+              DDSetup."ftp server",
+              DDSetup."ftp login",
+              DDSetup."ftp password",
+              DDSetup.ReceptionDir,
+              DDSetup."Interface Folder (Out)",
+              TRUE,FALSE,FALSE)
+      THEN BEGIN
+        DDLog.InsertLog(0,1,0,'FTP',STRSUBSTNO('FTP Upload not successfull: %1',FTPClient.GetLastErrorText));
+        EXIT(FALSE);
+      END;
+      DDLog.InsertLog(0,0,0,'FTP',STRSUBSTNO('FTP Upload successfull',''));
+      //e/gob-sfe/P0086
+    END;
+
+    PROCEDURE SetOrderNoHeader@1000000004(VAR LMHeader@1000000000 : Record 50061);
+    VAR
+      recCompany@1000000002 : Record 2000000006;
+      CompShortCut@1000000001 : Code[10];
+    BEGIN
+      WITH LMHeader DO BEGIN
+        IF "No." = '' THEN
+          EXIT;
+        //recCompany.GET(COMPANYNAME);
+        //recCompany.TESTFIELD(recCompany."MARC Identifier");
+        "No." := "No."
+      END;
+    END;
+
+    PROCEDURE SetOrderNoLine@1000000005(VAR LMLine@1000000000 : Record 50062);
+    VAR
+      CompShortCut@1000000001 : Code[10];
+      recCompany@1000000002 : Record 2000000006;
+    BEGIN
+      WITH LMLine DO BEGIN
+        IF "Document No." = '' THEN
+          EXIT;
+        "Document No." := "Document No.";
+      END;
+    END;
+
+    PROCEDURE SetTestComp@1000000006() : Boolean;
+    VAR
+      GLSetup@1000000000 : Record 98;
+    BEGIN
+
+      //GLSetup.GET;
+      //EXIT(GLSetup."Test Customer");
+    END;
+
+    PROCEDURE GetCompanyFilter@1000000007(VAR CompFilter@1000000004 : ARRAY [2] OF Text[250]) : Boolean;
+    VAR
+      recCompany@1000000000 : Record 2000000006;
+      FilterText@1000000001 : Text[250];
+      FilterText1@1000000002 : Text[30];
+      i@1000000003 : Integer;
+    BEGIN
+      {
+      recCompany.RESET;
+      recCompany.SETCURRENTKEY(IT);
+      recCompany.SETRANGE(IT,TRUE);
+      IF recCompany.FIND('-') THEN
+        REPEAT
+          i += 1;
+          FilterText += recCompany.Name;
+          FilterText += ',';
+          FilterText1 += '%'+FORMAT(i);
+          FilterText1 += '&';
+        UNTIL recCompany.NEXT = 0;
+
+      IF FilterText1 <> '' THEN
+        CompFilter[1] := '<>' + COPYSTR(FilterText1,1,STRLEN(FilterText1)-1);
+
+      IF FilterText <> '' THEN
+        CompFilter[2] := COPYSTR(FilterText,1,STRLEN(FilterText)-1);
+      }
+    END;
+
+    PROCEDURE ResetLines@1000000010(LMHeader@1000000001 : Record 50061);
+    VAR
+      LMLine@1000000000 : Record 50062;
+    BEGIN
+      WITH LMLine DO BEGIN
+        RESET;
+        SETCURRENTKEY("Document Entry Type","Header Entry No.",
+          "Document Type","Document No.","Line No.","DD Status",Direction,Company);
+        SETRANGE("Document Entry Type",LMHeader."Document Entry Type");
+        SETRANGE("Header Entry No.",LMHeader."Entry No.");
+        SETRANGE("Document Type",LMHeader."Document Type");
+        SETRANGE("Document No.",LMHeader."No.");
+        SETRANGE(Direction,Direction::out);
+        IF FIND('-') THEN
+          REPEAT
+            "File Name"     := '';
+            "File Position" := 0;
+            "Record ID"     := '';
+            "Trans. No."    := '';
+            "DD Status" := LMHeader."DD Status"::new;
+            MODIFY;
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE CHECKCACHE@1000000011() NoLInesInCache : Integer;
+    VAR
+      i@1000000000 : Integer;
+    BEGIN
+        FOR i := 1 TO ARRAYLEN(WriteCache) DO BEGIN
+          IF COPYSTR(WriteCache[i],1,3) = 'ROL' THEN BEGIN
+            NoLInesInCache +=1;
+          END;
+        END;
+    END;
+
+    PROCEDURE SetTempPath2@1000000009();
+    BEGIN
+
+      DDSetup.GET;
+      TempPath2 := DDSetup."Interface Tmp Folder";
+    END;
+
+    PROCEDURE CheckFlatfile@1000000012(LMHeaderORDH@1000000002 : Record 50061) OK : Boolean;
+    VAR
+      LMLine@1000000000 : Record 50062;
+      ExitRepeat@1000000001 : Boolean;
+    BEGIN
+      LMLine.RESET;
+      LMLine.SETCURRENTKEY("Header Entry No.");
+      LMLine.SETRANGE("Header Entry No.",LMHeaderORDH."Entry No.");
+      IF NOT LMLine.FIND('-') THEN BEGIN
+        MESSAGE('checkflatfile: NO LM line found: %1',FORMAT(LMHeaderORDH));
+        EXIT(FALSE);
+      END ELSE BEGIN
+        REPEAT
+          IF  LMLine."DD Status" <> LMHeaderORDH."DD Status" THEN BEGIN
+            MESSAGE('checkflatfile: LM line transstatus not matching with header: %1',FORMAT(LMLine));
+            EXIT(FALSE);
+          END;
+          IF  LMLine."File Name" <> LMHeaderORDH."File Name" THEN BEGIN
+            MESSAGE('checkflatfile: LM line filename not matching with header: %1',FORMAT(LMLine));
+            EXIT(FALSE);
+          END;
+        UNTIL (LMLine.NEXT = 0) OR (ExitRepeat = TRUE);
+      END;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE ResetLMHeader@1000000013(LMHeaderOrig@1000000000 : Record 50061);
+    VAR
+      LMHeader@1000000002 : Record 50061;
+      LMLine@1000000001 : Record 50062;
+    BEGIN
+      //A/20.04.04/GOB-SFE/V2.04
+
+      DDSetup.GET;
+      LMHeader.COPY(LMHeaderOrig);
+      LMLine.RESET;
+      LMLine.SETCURRENTKEY("Header Entry No.");
+      LMLine.SETRANGE("Header Entry No.",LMHeader."Entry No.");
+      IF LMLine.FIND('-') THEN BEGIN
+        IF LMHeader.NoTtT>DDSetup."No of Tries to Transmit" THEN BEGIN
+          LMLine.MODIFYALL("DD Status",LMLine."DD Status"::error);
+          LMLine.MODIFYALL("Record ID",'');
+          LMHeader."DD Status":=LMHeader."DD Status"::error;
+          LMHeader."Record ID":='';
+          LMHeader.MODIFY;
+        END ELSE BEGIN
+          LMLine.MODIFYALL("DD Status",LMLine."DD Status"::new);
+          LMLine.MODIFYALL("Record ID",'');
+          LMHeader."DD Status":=LMHeader."DD Status"::new;
+          LMHeader."Record ID":='';
+          LMHeader."Error Code":='';
+          LMHeader."Error Description":='';
+          LMHeader.MODIFY;
+        END;
+      END;
+
+      //E/20.04.04/GOB-SFE/V2.04
+    END;
+
+    PROCEDURE CheckMARCInterface@1000000015();
+    VAR
+      MarcHeader@1000000000 : Record 50061;
+      MarcLine@1000000001 : Record 50062;
+    BEGIN
+      {
+      //A/07.05.04/GOB-SFE/V2.05
+
+      //MESSAGE('CheckMarcInterface Start');
+      {  im Moment kein zus„tzlich Buchungsversuche...GOB-SFE/28.12.04
+      MarcHeader.SETCURRENTKEY(Buchungsstatus,Kommissionierstatus,Company,"Entry No.");
+      MarcHeader.SETRANGE(Kommissionierstatus,MarcHeader.Kommissionierstatus::erledigt);
+      MarcHeader.SETRANGE(Buchungsstatus,MarcHeader.Buchungsstatus::FEHLER);
+
+      IF MarcHeader.FIND('-') THEN
+      REPEAT
+        IF MarcHeader."Error Description"<>'Buchungsfehler' THEN BEGIN
+          //IF MarcHeader."Trans. Status" IN [MarcHeader."Trans. Status"::confirmed,MarcHeader."Trans. Status"::canceled] THEN
+          IF MarcHeader."Trans. Status" =MarcHeader."Trans. Status"::canceled THEN
+            MarcHeader.Buchungsstatus:=MarcHeader.Buchungsstatus::erledigt
+          ELSE IF (MarcHeader."Trans. Status"=MarcHeader."Trans. Status"::"no changes") OR
+                  (MarcHeader."Trans. Status"=MarcHeader."Trans. Status"::confirmed) THEN BEGIN
+            MarcHeader.Buchungsstatus:=MarcHeader.Buchungsstatus::" ";
+            MarcHeader."Error Description":='Buchungsfehler';
+          END;
+          MarcHeader.MODIFY;
+        END;
+      UNTIL MarcHeader.NEXT=0;
+        im Moment kein zus„tzlich Buchungsversuche...GOB-SFE/28.12.04 }
+      //E/07.05.04/GOB-SFE/V2.05
+
+      //A/21.05.04/GOB-SFE/V2.07
+
+      MarcHeader.RESET;
+      MarcHeader.SETCURRENTKEY("Record ID","Trans. Status","Document Entry Type","Document Type","No.",Direction,Company);
+      MarcHeader.SETRANGE("Record ID",'');
+      MarcHeader.SETRANGE("Trans. Status",MarcHeader."Trans. Status"::"4");
+      MarcHeader.SETRANGE("Document Entry Type",MarcHeader."Document Entry Type"::"0");
+      MarcHeader.SETRANGE("Document Type",MarcHeader."Document Type"::"1");
+      MarcHeader.SETRANGE(Direction,MarcHeader.Direction::"0");
+      //MarcHeader.SETFILTER(Company,'<>%1','KCI');
+      MarcHeader.SETRANGE("MARC Action",MarcHeader."MARC Action"::"1");
+      IF MarcHeader.FIND('-') THEN BEGIN
+        REPEAT
+          IF MarcHeader."Error Description"<>'FTP Transfer Error' THEN
+            IF MarcHeader."Error Code"='2009' THEN BEGIN
+              MarcLine.RESET;
+              MarcLine.SETCURRENTKEY("Document Type","Document No.","Line No.");
+              MarcLine.SETRANGE("Document No.",MarcHeader."No.");
+              MarcLine.MODIFYALL("Trans. Status",MarcLine."Trans. Status"::"0");
+              MarcHeader.NoTtT:=1;
+              MarcHeader."Error Code":='';
+              MarcHeader."Trans. Status":=MarcHeader."Trans. Status"::"0";
+              MarcHeader."Error Description":='FTP Transfer Error';
+              MarcHeader.MODIFY;
+            END
+        UNTIL MarcHeader.NEXT=0;
+      END;
+      //E/21.05.04/GOB-SFE/V2.07
+      }
+    END;
+
+    PROCEDURE CopyFiles@1140000(SourceFolder@1140000 : Text[255];DestFolder@1140001 : Text[255];Filefilter@1140004 : Text[30]) : Integer;
+    VAR
+      WshFileSystem@1140015 : Automation "{F935DC20-1CF0-11D0-ADB9-00C04FD58A0B} 1.0:{0D43FE01-F093-11CF-8940-00A0C9054228}:'Windows Script Host Object Model'.FileSystemObject";
+      WshFolder@1140014 : Automation "{F935DC20-1CF0-11D0-ADB9-00C04FD58A0B} 1.0:{C7C3F5B3-88A3-11D0-ABCB-00A0C90FFFC0}:'Windows Script Host Object Model'.Folder";
+      WshNetwork@1140013 : Automation "{F935DC20-1CF0-11D0-ADB9-00C04FD58A0B} 1.0:{093FF999-1EA0-4079-9525-9614C3504B74}:'Windows Script Host Object Model'.WshNetwork";
+      WshDestFolder@1140012 : Automation "{F935DC20-1CF0-11D0-ADB9-00C04FD58A0B} 1.0:{C7C3F5B3-88A3-11D0-ABCB-00A0C90FFFC0}:'Windows Script Host Object Model'.Folder";
+      DummyBool@1140009 : Boolean;
+      Files@1140008 : Record 2000000022;
+      Drive@1140006 : Text[30];
+      Filename@1140005 : Text[255];
+      LMSetup@1000000000 : Record 50060;
+    BEGIN
+      //A/GOB-SPI/13.06.08/V1.04
+      //kopiert die Dateien per SMB-Freigabe und dem Windows Script Host
+      //aus dem Sourcefolder in den DestFolder, die dem FileFilter gengen.
+      //Automation Variablentypen:
+      //WshFileSystem : 'Windows Script Host Object Model'.FileSystemObject
+      //WshFolder : 'Windows Script Host Object Model'.Folder
+      //WshNetwork : 'Windows Script Host Object Model'.WshNetwork
+      //WshDestFolder : 'Windows Script Host Object Model'.Folder
+
+      {
+      CREATE(WshFileSystem);
+      DDSetup.GET;
+
+      CREATE(WshNetwork);
+      Drive :=DDSetup."SMB SMB Network Drive" ;
+      DummyBool := FALSE;
+      IF WshFileSystem.FolderExists(Drive) THEN BEGIN
+        IF NOT WshFileSystem.FolderExists(Drive + DestFolder) THEN BEGIN
+          DummyBool := TRUE;
+          WshNetwork.RemoveNetworkDrive(Drive,DummyBool);
+          DummyBool := FALSE;
+          WshNetwork.MapNetworkDrive(Drive,
+                                     '\\' + DDSetup."ftp server" + '\' + DDSetup."SMB Remote DIR",
+                                     DummyBool,
+                                     DDSetup."SMB Login",
+                                     DDSetup."SMB Password");
+
+        END;
+      END ELSE
+        WshNetwork.MapNetworkDrive(Drive,
+                                   '\\' + DDSetup."ftp server" + '\' + DDSetup."SMB Remote DIR",
+                                    DummyBool,
+                                   DDSetup."SMB Login",
+                                   DDSetup."SMB Password");
+
+      Filename := '\' + Filefilter;
+      IF WshFileSystem.FolderExists(Drive + DestFolder) THEN BEGIN
+        WshDestFolder := WshFileSystem.GetFolder(Drive + DestFolder);
+        WshFileSystem.CopyFile(SourceFolder + Filename,
+                               WshDestFolder.Path + '\',
+                               TRUE);
+
+      END ELSE BEGIN
+        CLEAR(WshNetwork);
+        CLEAR(WshFileSystem);
+        EXIT(1);
+      END;
+
+      //WshNetwork.RemoveNetworkDrive(Drive);
+      CLEAR(WshNetwork);
+      CLEAR(WshFileSystem);
+      EXIT(0);
+      //E/GOB-SPI/13.06.08/V1.04
+      }
+    END;
+
+    PROCEDURE CreateLogEntry@1115500004(MsgCode@1115500001 : Code[10];MsgText@1115500000 : Text[50]);
+    VAR
+      JobQueueEntry@1115500004 : Record 472;
+      Msg@1115500003 : Text[50];
+      JobDispatcher@1115500002 : Codeunit 448;
+    BEGIN
+      //gob-sfe/21.12.10 deaktiviert
+      //JobDispatcher.InsertLogEntryGOB(JobQueueEntry,MsgCode,MsgText);
+    END;
+
+    PROCEDURE SetFixOrderDate@1108200000() : Text[1];
+    VAR
+      FldRef@1108200000 : FieldRef;
+    BEGIN
+      //A/08.07.11/gob-mar/V1.07
+      FldRef := GlobalRecRef.FIELD(82904); //Fix Order
+      IF HASVALUE(FldRef.VALUE) THEN
+        EXIT('1')
+      ELSE
+        EXIT('0');
+      //E/08.07.11/gob-mar/V1.07
+    END;
+
+    PROCEDURE HandleSupplier@1000000003(Vendor@1001 : Record 23);
+    VAR
+      DDSupplierLoc@1002 : Record 50064;
+      DDSupplier2@1004 : Record 50064;
+      LocalRecRef@1003 : RecordRef;
+      cFPCManagement@1000000000 : Codeunit 50003;
+    BEGIN
+      DDSupplier2.RESET;
+      DDSupplier2.SETCURRENTKEY("No.","Trans. Status");
+      DDSupplier2.SETRANGE("No.",Vendor."No.");
+      DDSupplier2.SETFILTER("Trans. Status",'%1|%2',DDSupplier2."Trans. Status"::new,DDSupplier2."Trans. Status"::transmitted);
+      IF DDSupplier2.FIND('-') THEN BEGIN
+        DDSupplier2.LOCKTABLE(TRUE); //a/P0610/gob-sfe/27.11.12
+        DDSupplier2.MODIFYALL(DDSupplier2."Trans. Status",DDSupplier2."Trans. Status"::canceled);
+      END;
+
+      CLEAR(DDSupplierLoc);
+      DDSupplierLoc.INIT;
+      DDSupplierLoc.TRANSFERFIELDS(Vendor);
+      //A,gob-dst,16.10.2012,P0454
+      //A,gob-dst,09.04.2013,P0884
+      //DDSupplierLoc.Name := cFPCManagement.DeleteCRLF(DDSupplierLoc.Name);
+      //DDSupplierLoc.Name := CONVERTSTR(DDSupplierLoc.Name,'"|',''' ');
+      //DDSupplierLoc.Address := cFPCManagement.DeleteCRLF(DDSupplierLoc.Address);
+      //DDSupplierLoc.Address := CONVERTSTR(DDSupplierLoc.Address,'"|',''' ');
+      //DDSupplierLoc."Post Code" := cFPCManagement.DeleteCRLF(DDSupplierLoc."Post Code");
+      //DDSupplierLoc."Post Code" := CONVERTSTR(DDSupplierLoc."Post Code",'"|',''' ');
+      //DDSupplierLoc.City := cFPCManagement.DeleteCRLF(DDSupplierLoc.City);
+      //DDSupplierLoc.City := CONVERTSTR(DDSupplierLoc.City,'"|',''' ');
+      //DDSupplierLoc."Phone No." := cFPCManagement.DeleteCRLF(DDSupplierLoc."Phone No.");
+      //DDSupplierLoc."Phone No." := CONVERTSTR(DDSupplierLoc."Phone No.",'"|',''' ');
+      //DDSupplierLoc."Telex No." := cFPCManagement.DeleteCRLF(DDSupplierLoc."Telex No.");
+      //DDSupplierLoc."Telex No." := CONVERTSTR(DDSupplierLoc."Telex No.",'"|',''' ');
+      //DDSupplierLoc.Contact := cFPCManagement.DeleteCRLF(DDSupplierLoc.Contact);
+      //DDSupplierLoc.Contact := CONVERTSTR(DDSupplierLoc.Contact,'"|',''' ');
+
+      DDSupplierLoc.Name := cFPCManagement.DeleteCRLF(DDSupplierLoc.Name,TRUE);
+      DDSupplierLoc.Name := CONVERTSTR(DDSupplierLoc.Name,'"|',''' ');
+      DDSupplierLoc.Address := cFPCManagement.DeleteCRLF(DDSupplierLoc.Address,TRUE);
+      DDSupplierLoc.Address := CONVERTSTR(DDSupplierLoc.Address,'"|',''' ');
+      DDSupplierLoc."Post Code" := cFPCManagement.DeleteCRLF(DDSupplierLoc."Post Code",TRUE);
+      DDSupplierLoc."Post Code" := CONVERTSTR(DDSupplierLoc."Post Code",'"|',''' ');
+      DDSupplierLoc.City := cFPCManagement.DeleteCRLF(DDSupplierLoc.City,TRUE);
+      DDSupplierLoc.City := CONVERTSTR(DDSupplierLoc.City,'"|',''' ');
+      DDSupplierLoc."Phone No." := cFPCManagement.DeleteCRLF(DDSupplierLoc."Phone No.",TRUE);
+      DDSupplierLoc."Phone No." := CONVERTSTR(DDSupplierLoc."Phone No.",'"|',''' ');
+      DDSupplierLoc."Telex No." := cFPCManagement.DeleteCRLF(DDSupplierLoc."Telex No.",TRUE);
+      DDSupplierLoc."Telex No." := CONVERTSTR(DDSupplierLoc."Telex No.",'"|',''' ');
+      DDSupplierLoc.Contact := cFPCManagement.DeleteCRLF(DDSupplierLoc.Contact,TRUE);
+      DDSupplierLoc.Contact := CONVERTSTR(DDSupplierLoc.Contact,'"|',''' ');
+      //E,gob-dst,09.04.2013,P0884
+      //E,gob-dst,16.10.2012,P0454
+      IF Vendor."Country/Region Code"='' THEN
+        DDSupplierLoc."Country/Region Code":='DE';
+      IF Vendor."Phone No."='' THEN
+        DDSupplierLoc."Phone No.":='123456';
+      IF Vendor."Telex No."='' THEN
+        DDSupplierLoc."Telex No.":='123456';
+      IF Vendor.City='' THEN
+        DDSupplierLoc.City:='Dummy Stadt';
+      IF Vendor."Post Code"='' THEN
+        DDSupplierLoc."Post Code":='0000';
+      IF Vendor.Address='' THEN
+        DDSupplierLoc.Address:='Dummy Address';
+      DDSupplierLoc."Entry Date" := WORKDATE;
+      DDSupplierLoc."Entry Time" := TIME;
+      DDSupplierLoc.Company      := COMPANYNAME;
+      DDSupplierLoc."Trans. Status" := DDSupplier."Trans. Status"::new;
+      DDSupplierLoc.Direction := DDSupplier.Direction::out;
+      DDSupplierLoc."Record ID" := '70';
+      IF DDSupplierLoc.INSERT THEN;
+    END;
+
+    PROCEDURE CheckUpdateAllowed@1000000002(SalesLine@1000000000 : Record 37) : Boolean;
+    VAR
+      DDLine@1000000002 : Record 50062;
+    BEGIN
+      //a/P0328/P0310/gob-sfe/12.09.12
+      IF SalesLine."DD Entry No."<>0 THEN
+        IF NOT DDLine.GET(SalesLine."DD Entry No.") THEN
+          EXIT(TRUE);
+
+      IF (DDLine."DD Status"=DDLine."DD Status"::manifest) OR (DDLine."DD Status"=DDLine."DD Status"::shipment) THEN
+        EXIT(FALSE);
+
+      IF DDLine."DD Status"=DDLine."DD Status"::"status change" THEN BEGIN
+        IF DDLine."Import Result Message"='Picklist created' THEN
+          EXIT(FALSE)
+      END;
+
+      EXIT(TRUE);
+      //e/P0328/P0310/gob-sfe/12.09.12
+    END;
+
+    PROCEDURE SendErrorMail@1000000020(Msg@1000000000 : Text[250]);
+    VAR
+      LT_MailITSetup@1000000001 : Record 75402;
+      MailIT@1000000002 : OCX "{C8C4804C-89BA-4291-AB58-4C6050B65175}:'ExpandIT.MailIT2'";
+      DDSetup@1000000003 : Record 50060;
+      L_Port@1000000004 : Integer;
+    BEGIN
+      //a/gob-sfe/07.08.12/P0140
+      DDSetup.GET;
+      IF (DDSetup."Error E-Mail Activation") THEN BEGIN
+
+
+        LT_MailITSetup.GET;
+        LT_MailITSetup.TESTFIELD("User Name (General)");
+        LT_MailITSetup.TESTFIELD("Password (General)");
+        LT_MailITSetup.TESTFIELD("Mail Server");
+
+        // Initialize the email
+        MailIT.SetService('SMTP');
+
+        MailIT.SetFrom(LT_MailITSetup."Purchase E-Mail BCC (Location)");
+
+        MailIT.AddRecipient(DDSetup."Mail Recipient 1",DDSetup."Mail Recipient 1");
+        MailIT.AddRecipient(DDSetup."Mail Recipient 2",DDSetup."Mail Recipient 2");
+
+        MailIT.SetSubject(Msg);
+
+        MailIT.SetServer(LT_MailITSetup."Mail Server");
+        IF LT_MailITSetup."Server Port" = '' THEN
+          L_Port := 25
+        ELSE
+          EVALUATE(L_Port,LT_MailITSetup."Server Port");
+        MailIT.SetPort(L_Port);
+        MailIT.SetLogin(LT_MailITSetup."User Name (Location)");
+        MailIT.SetPassword(LT_MailITSetup."Password (Location)");
+        MailIT.Send();
+      END;
+      //e/gob-sfe/07.08.12/P0140
+    END;
+
+    PROCEDURE CheckIfOrderHasChanged@1000000019(p_SalesHeader@1000000000 : Record 36;CalledFromCancel@1000000008 : Boolean) : Code[10];
+    VAR
+      DDHeader@1000000001 : Record 50061;
+      SalesLine@1000000002 : Record 37;
+      DDLine@1000000003 : Record 50062;
+      PurchasesPayablesSetup@1000000004 : Record 312;
+      SalesLineCheck@1000000005 : Record 37;
+      HasNoDD@1000000006 : Boolean;
+      HadNoDD@1000000007 : Boolean;
+      Customer@1000000009 : Record 18;
+      "**** HME *********************"@1000000010 : Integer;
+      SalesLineL@1000000011 : Record 37;
+    BEGIN
+      // CheckIfOrderHasChanged
+
+      //A/gob-rste/20.11.12/P0599
+      //A/gob-sfe/20.11.12/P0668
+      PurchasesPayablesSetup.GET;
+      IF p_SalesHeader."Document Type" <> p_SalesHeader."Document Type"::Order THEN
+        EXIT('FALSE');
+
+      //A,gob-dst,15.04.2013,P0888
+      p_SalesHeader.CALCFIELDS("DD Completely Shipped");
+      //H1277 18.09.14 DMA +++++++++++++++++++++++++++++
+      {
+      //H1277 18.09.14 DMA -----------------------------
+      IF p_SalesHeader."DD Completely Shipped" THEN
+      //H1277 18.09.14 DMA +++++++++++++++++++++++++++++
+      }
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type", p_SalesHeader."Document Type");
+      SalesLineL.SETRANGE("Document No.", p_SalesHeader."No.");
+      SalesLineL.SETRANGE("Purchasing Code", '*-9');
+      IF p_SalesHeader."DD Completely Shipped" AND NOT SalesLineL.ISEMPTY THEN
+      //H1277 18.09.14 DMA -----------------------------
+        EXIT('FALSE');
+      //E,gob-dst,15.04.2013,P0888
+
+      HasNoDD := FALSE;
+      HadNoDD := FALSE;
+
+      SalesLineCheck.RESET;
+      SalesLineCheck.SETRANGE("Document Type",p_SalesHeader."Document Type");
+      SalesLineCheck.SETRANGE("Document No.",p_SalesHeader."No.");
+      SalesLineCheck.SETRANGE(Type,SalesLineCheck.Type::Item);
+      SalesLineCheck.SETFILTER("Purchasing Code",'*-9');
+      IF SalesLineCheck.ISEMPTY THEN
+        HasNoDD :=TRUE
+      ELSE
+        HasNoDD := FALSE;
+
+      SalesLineCheck.RESET;
+      SalesLineCheck.SETRANGE("Document Type",p_SalesHeader."Document Type");
+      SalesLineCheck.SETRANGE("Document No.",p_SalesHeader."No.");
+      SalesLineCheck.SETRANGE(Type,SalesLineCheck.Type::Item);
+      SalesLineCheck.SETFILTER("Old Purchasing Code",'*-9');
+      IF SalesLineCheck.ISEMPTY THEN
+        HadNoDD := TRUE
+      ELSE
+        HadNoDD := FALSE;
+
+      IF HasNoDD AND HadNoDD THEN
+        EXIT('FALSE');
+
+      IF p_SalesHeader."DD Entry No." = 0 THEN
+        EXIT('TRUE');
+
+      IF DDHeader.GET(p_SalesHeader."DD Entry No.") THEN BEGIN
+        IF NOT IsLastHeaderEntryForSo(p_SalesHeader) THEN
+          EXIT('TRUE1');
+
+        //S/P1230
+        Customer.GET(p_SalesHeader."Sell-to Customer No.");
+        //E/P1230
+        IF (DDHeader."Sell-to Customer No." <> p_SalesHeader."Sell-to Customer No.") OR
+           (DDHeader."No." <> p_SalesHeader."No." + p_SalesHeader."DD Active Version No.") OR
+           (DDHeader."Ship-to Code" <> p_SalesHeader."Ship-to Code") OR
+           (UPPERCASE(DDHeader."Ship-to Name") <> UPPERCASE(p_SalesHeader."Ship-to Name")) OR
+           (UPPERCASE(DDHeader."Ship-to Name 2") <> UPPERCASE(p_SalesHeader."Ship-to Name 2")) OR
+           (UPPERCASE(DDHeader."Ship-to Address") <> UPPERCASE(p_SalesHeader."Ship-to Address")) OR
+           (UPPERCASE(DDHeader."Ship-to Address 2") <> UPPERCASE(p_SalesHeader."Ship-to Address 2")) OR
+           (UPPERCASE(DDHeader."Ship-to City") <> UPPERCASE(p_SalesHeader."Ship-to City")) OR
+           (UPPERCASE(DDHeader."Ship-to Contact") <> UPPERCASE(p_SalesHeader."Ship-to Contact")) OR
+           (DDHeader."Ship-to Post Code" <> p_SalesHeader."Ship-to Post Code") OR
+           (UPPERCASE(DDHeader."Ship-to County") <> UPPERCASE(p_SalesHeader."Ship-to County")) OR
+           (DDHeader."Ship-to Country Code" <> p_SalesHeader."Ship-to Country/Region Code") OR
+           (DDHeader."Order No. Navision" <> p_SalesHeader."No.") OR
+           (DDHeader."Order Date" <> p_SalesHeader."Order Date") OR
+           //S/P1230
+           (DDHeader."E-Mail" <> Customer."E-Mail") OR
+           (DDHeader."Phone No." <> Customer."Phone No.") OR
+           //E/P1230
+           (DDHeader."Web Site Code" <> FORMAT(p_SalesHeader."Website No."))
+        THEN
+          EXIT('HDR_CHANGE');
+        SalesLine.RESET;
+        SalesLine.SETRANGE("Document Type",p_SalesHeader."Document Type");
+        SalesLine.SETRANGE("Document No.",p_SalesHeader."No.");
+        SalesLine.SETRANGE(Type,SalesLine.Type::Item);
+        IF SalesLine.FINDSET(FALSE,FALSE) THEN BEGIN
+          REPEAT
+            IF IsDDLocation(SalesLine)
+            THEN BEGIN
+              IF ((SalesLine."DD Entry No." = 0) AND (SalesLine.Quantity <> 0))  THEN
+                EXIT('NEW_ORDER');
+              IF (SalesLine.Quantity = 0) AND (CalledFromCancel) THEN
+                //EXIT('FALSE');
+                EXIT('TRUE2'); // MangentoCancel
+              IF  (SalesLine."DD Entry No." <> 0) AND (NOT DDLine.GET(SalesLine."DD Entry No.")) THEN
+                EXIT('TRUE3');
+              IF (DDLine."Entry No." <> 0) THEN BEGIN
+
+                //H0587 28.04.14 HCN +++++++++++++++++++++++++++++
+                IF InterfaceProcessMgt.ExistsCancellationIPL(SalesLine) THEN BEGIN
+                  EXIT('L_CHANGE');
+                END;
+                //H0587 28.04.14 HCN -----------------------------
+
+                IF (DDLine."Document Type" <> SalesLine."Document Type") OR
+                  (DDLine."Sell-to Customer No." <> SalesLine."Sell-to Customer No.") OR
+                  (DDLine."Line No." <> SalesLine."Line No.") OR
+                  (DDLine.Type <> SalesLine.Type) OR
+                  (DDLine."No." <> SalesLine."No.") OR
+                  (DDLine.Quantity <> SalesLine.Quantity) OR
+                  // add line for "Interface Quantity"
+                  (DDLine."Purchasing Code" <> SalesLine."Purchasing Code")
+                THEN
+                  EXIT('L_CHANGE');
+              END;
+            END;
+            IF SalesLine."Old Purchasing Code" IN ['GER-9','FRA-9','NL-9'] THEN
+              EXIT('TRUE');
+          UNTIL SalesLine.NEXT = 0;
+          EXIT('NOL_CHANGE')
+        END;
+      END ELSE
+        EXIT('TRUE4');
+
+      EXIT('FALSE');
+      //E/gob-sfe/20.11.12/P0668
+      //E/gob-rste/20.11.12/P0599
+    END;
+
+    PROCEDURE IsLastHeaderEntryForSo@1000000029(p_SalesHeader@1000000000 : Record 36) : Boolean;
+    VAR
+      DDHeader@1000000001 : Record 50061;
+    BEGIN
+      //A/gob-rste/20.11.12/P0599
+      DDHeader.RESET;
+      // Key?
+      DDHeader.SETRANGE("Order No. Navision",p_SalesHeader."No.");
+      DDHeader.SETRANGE("Document Type",DDHeader."Document Type"::Order);
+      DDHeader.SETRANGE("Document Entry Type",DDHeader."Document Entry Type"::Sales);
+      DDHeader.SETRANGE(Direction,DDHeader.Direction::out);
+      IF DDHeader.FINDLAST THEN BEGIN
+        IF p_SalesHeader."DD Entry No." = DDHeader."Entry No." THEN
+          EXIT(TRUE)
+        ELSE
+          EXIT(FALSE);
+      END ELSE
+        EXIT(FALSE);
+      //E/gob-rste/20.11.12/P0599
+    END;
+
+    PROCEDURE IsDDLocation@1000000036(p_SalesLine@1000000000 : Record 37) : Boolean;
+    VAR
+      Location@1000000001 : Record 14;
+    BEGIN
+      IF p_SalesLine.Type = p_SalesLine.Type::Item THEN BEGIN
+        Location.RESET;
+        IF Location.GET(p_SalesLine."Location Code") THEN
+          EXIT(Location."Docdata Location");
+      END;
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE IsCancelLineInDDOrder@1000000027(pSalesLineNo@1000000000 : Integer;pLongSalesHeaderNo@1000000001 : Code[20]) : Boolean;
+    VAR
+      rDDLine@1000000002 : Record 50062;
+    BEGIN
+      // IsCancelLineInDDOrder
+      //gob-dst,15.04.2013,P0888
+      rDDLine.SETRANGE("Document Type",rDDLine."Document Type"::Order);
+      rDDLine.SETRANGE("Document No.",pLongSalesHeaderNo);
+      rDDLine.SETRANGE("Line No.",pSalesLineNo);
+      //H1406 24.07.14 HCN +++++++++++++++++++++++++++++
+      {
+      rDDLine.SETFILTER("Record ID",'51*');
+      }
+      //H1406 24.07.14 HCN -----------------------------
+      rDDLine.SETRANGE(Direction,rDDLine.Direction::out);
+      rDDLine.SETRANGE("Document Entry Type",rDDLine."Document Entry Type"::Sales);
+      IF rDDLine.ISEMPTY THEN
+        EXIT(FALSE);
+
+      EXIT(TRUE);
+    END;
+
+    BEGIN
+    {
+      +-----------------------------------------------+
+      | GOB Software & Systeme                        |
+      +-----------------------------------------------+
+      | Programming                                   |
+      | FP Commerce                                   |
+      +-----------------------------------------------+
+
+      Version Bemerkung
+      ------------------------------------------------
+      V1.00  P0086  25.07.2012  gob-sfe    FTP Upload
+      V1.01  P0140  07.08.2012  gob-sfe    Email Versand
+      V1.02  P0152  08.08.2012  gob-sfe    Create multipe POs in one file
+      V1.03  P0154  08.08.2012  gob-Fuchs  Create UTF-8 File
+      V1.04  P0161  08.08.2012  gob-sfe    EndInterface
+      V1.05  P0280  05.09.2012  gob-dst    Bugfix mehrere POs in einer Datei
+      V1.06  P0367  26.09.2012  gob-dst    Bugfix SO Export
+      V1.07  P0402  02.10.2012  gob-dst    Keine doppelten Belegnummern in einer Datei
+      V1.09  P0472  22.10.2012  gob-sfe    Rcknahme P0402
+      V1.10  P0476  23.10.2012  gob-sfe    Dateierstellung
+      V1.08  P0454  16.10.2012  gob-dst    DD Supplier: CRLF aus Adressfeldern entfernen
+      V1.09  P0599  20.11.2012  gob-rste   New Function CheckIfOrderHasChanged
+      V1.10  P0610  27.11.2012  gob-sfe    locktable(true)
+      V1.11  P0662  11.12.2012  gob-rste   Don't check Location
+      V1.12  P0668  11.12.2012  gob-sfe    DD Storno Bugfix
+      V1.13  P0804  12.02.2012  gob-sfe    Orderstatus Order nav number
+      V1.14  P0810  19.02.2013  gob-sfe    UTF 8 Writing
+      V1.15  P0884  09.04.2013  gob-dst    Anpassung Aufruf Funktion CRLF
+      V1.16  P0888  15.04.2013  gob-dst    DD Order Bugfix
+      V1.17  P0890  17.04.2013  gob-adb    SETCURRENTKEY added
+      V1.18  P0914  17.05.2013  gob-adb    Performance
+      V1.19  P1230  09.04.2014  gob-rste   Add E-mail and Phone No
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation GOB & Home24 NAV Team      |
+      |                                            |
+      +--------------------------------------------+
+
+      Project   Date        Shortcut  Description
+      ----------------------------------------------
+      P1170     19.12.2013  gob-mlan  - "Redesign DHL Parcel Status History - No. 4
+      P1214     05.03.2014  gob-dst   Fix Time Stamp in 51er Export ("Trans. No" = Dateiname)
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+
+      H0587       11.04.14 HCN       Redesign Cancellation: function CheckIfOrderHasChanged adjusted
+      H1406       24.07.14 HCN       Prevent double commissioning
+      H1466       15.08.14 DMA       BugFix for Belgium!!!
+      H1575       23.10.14 DMA       Italy - Order identification creation and commissioning _MASTER
+    }
+    END.
+  }
+}
+

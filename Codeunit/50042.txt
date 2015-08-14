@@ -1,0 +1,276 @@
+OBJECT Codeunit 50042 EasyLog Import 2
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18.02.14;
+    Time=17:20:03;
+    Modified=Yes;
+    Version List=chrmu,GOB.HME0875;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+            ReadFolder;
+            MESSAGE('The import is done.');
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      FPCInterface@1000000003 : Record 50014;
+      DHLSetup@1000000002 : Record 50022;
+      i@1000000000 : Integer;
+      DHLShipment@1000000001 : Text[50];
+      CUParcelStatusHistoryMgmt@1000000004 : Codeunit 80011;
+      FPCGeneralSetup@1000000005 : Record 50055;
+
+    PROCEDURE ReadFolder@1000000000();
+    VAR
+      FileRec@1000000000 : Record 2000000022;
+    BEGIN
+      DHLSetup.GET;
+      FPCInterface.GET('EASYLOG3');
+      FileRec.RESET;
+      FileRec.SETRANGE(Path,FPCInterface."Import Folder");
+      FileRec.SETRANGE("Is a file",TRUE);
+      IF FileRec.FINDSET THEN
+        REPEAT
+          ReadFile(FPCInterface."Import Folder" + FileRec.Name);
+          FILE.RENAME(FPCInterface."Import Folder" + FileRec.Name,
+                  FPCInterface."Archive Root Folder" + FileRec.Name);
+        UNTIL FileRec.NEXT = 0;
+    END;
+
+    PROCEDURE ReadFile@1000000001(FileName@1000000001 : Text[250]);
+    VAR
+      ELFile@1000000000 : File;
+      TextLine@1000000002 : Text[1024];
+      NewLine@1000000003 : Text[1024];
+    BEGIN
+      ELFile.TEXTMODE(TRUE);
+      i := 1;
+      IF ELFile.OPEN(FileName) THEN BEGIN
+        TextLine := '';
+        REPEAT
+          ELFile.READ(NewLine);
+          IF STRPOS(NewLine,';') = 0 THEN
+            TextLine := TextLine + NewLine
+          ELSE BEGIN
+            TextLine := NewLine;
+            ProcessLine(TextLine);
+          END;
+        UNTIL ELFile.POS = ELFile.LEN;
+      END;
+    END;
+
+    PROCEDURE ProcessLine@1000000003(TextLine@1000000000 : Text[1024]);
+    VAR
+      SO@1000000008 : Record 36;
+      SOLine@1000000005 : Record 37;
+      ParcelStatusDHL@1000000006 : Record 50021;
+      SalesOrderStatusDHL@1000000002 : Record 50020;
+      DHLStatusCode@1000000011 : Record 50028;
+      SONo@1000000007 : Code[20];
+      LineNo@1000000004 : Integer;
+      ShipDate@1000000003 : Date;
+      Token@1000000001 : Text[1024];
+      WriteStatus@1000000010 : Boolean;
+      NextLine@1000000009 : Boolean;
+      ParcelStatusHistory@1000000012 : Record 80013;
+      RecRef@1000000013 : RecordRef;
+      ParcelNo@1000000014 : Code[40];
+    BEGIN
+      //S/P1133
+      FPCGeneralSetup.GET;
+      //E/P1133
+
+      //MESSAGE(TextLine);
+      WHILE STRPOS(TextLine,';') <> 0 DO BEGIN
+        IF i = 2 THEN
+          DHLShipment := COPYSTR(TextLine,1,STRPOS(TextLine,';') - 1);
+        IF i = 12 THEN
+          IF EVALUATE(ShipDate, COPYSTR(TextLine,1,STRPOS(TextLine,';') - 1)) THEN;
+        IF i = 14 THEN
+          IF EVALUATE(LineNo, COPYSTR(TextLine,1,STRPOS(TextLine,';') - 1)) THEN;
+        IF i = 23 THEN BEGIN
+          SONo := COPYSTR(TextLine,1,STRPOS(TextLine,';') - 1);
+          IF NOT SO.GET(SO."Document Type"::Order,SONo) THEN
+            SONo := COPYSTR(SONo,1,STRLEN(SONo) - 3);
+
+          SOLine.RESET;
+          SOLine.SETRANGE("Document Type",SOLine."Document Type"::Order);
+          SOLine.SETRANGE("Document No.",SONo);
+          SOLine.SETRANGE("Seq. No.",LineNo);
+          // A/gob-lku/26.02.2013/P0832
+          //IF SOLine.FINDFIRST THEN BEGIN
+          IF SOLine.FINDFIRST THEN
+            WriteStatus := TRUE;
+            IF SOLine."Status Event Code" <> '' THEN
+              IF DHLStatusCode.GET(SOLine."Status Event Code",SOLine."Status Code") THEN
+                IF DHLStatusCode."Final Status" THEN
+                  WriteStatus := FALSE;
+            IF SOLine."Status Event Code" = DHLSetup."DHL Create Ship. Event Code" THEN BEGIN
+              SOLine.SETRANGE("No.",SOLine."No.");
+              SOLine.SETRANGE("Purchasing Code",SOLine."Purchasing Code");
+              SOLine.SETRANGE("Seq. No.");
+              IF SOLine.FINDSET(FALSE,FALSE) THEN BEGIN
+                REPEAT
+                  IF SOLine."Status Event Code" <> DHLSetup."DHL Create Ship. Event Code" THEN
+                    NextLine := TRUE;
+                UNTIL (SOLine.NEXT = 0) OR NextLine;
+                IF NOT NextLine THEN
+                  WriteStatus := FALSE;
+              END;
+            END;
+          IF WriteStatus THEN BEGIN
+          // E/gob-lku/26.02.2013/P0832
+            SOLine."DHL Shipment Number" := DHLShipment;
+            SOLine."Status Event Code" := DHLSetup."DHL Create Ship. Event Code";
+            SOLine."Status Code" := DHLSetup."DHL Create Ship. RIC Code";
+            SOLine.MODIFY;
+          // A/gob-lku/04.02.2013/P0789
+          //END ELSE
+          //  SOLine.INIT;
+          // E/gob-lku/04.02.2013/P0789
+          //S/P1117
+          //S/P1133
+          IF FPCGeneralSetup."Active Parcel Status History" IN
+            [FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+            FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+            FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New"]
+          THEN BEGIN
+          //E/P1133
+            CLEAR(ParcelStatusDHL);
+            // A/gob-lku/04.02.2013/P0789
+            ParcelStatusDHL.SETRANGE("DHL Shipment Code",UPPERCASE(DHLShipment));
+            ParcelStatusDHL.SETRANGE("Document No.",SONo);
+            ParcelStatusDHL.SETRANGE("Status Event",DHLSetup."DHL Create Ship. Event Code");
+            // S/gob-lku/08.05.13/P0832
+            ParcelStatusDHL.SETRANGE("Document Line No.",SOLine."Line No.");
+            // E/gob-lku/08.05.13/P0832
+            IF NOT ParcelStatusDHL.FINDFIRST THEN BEGIN
+            // E/gob-lku/04.02.2013/P0789
+            ParcelStatusDHL."DHL Shipment Code" := UPPERCASE(DHLShipment);
+            ParcelStatusDHL."Document Line No." := SOLine."Line No.";
+            ParcelStatusDHL."Document No." := SONo;
+            ParcelStatusDHL."Document Type" := ParcelStatusDHL."Document Type"::Order;
+            ParcelStatusDHL."Time Stamp" := CURRENTDATETIME;
+            ParcelStatusDHL."Current Status" := TRUE;
+            ParcelStatusDHL."Status Event" := DHLSetup."DHL Create Ship. Event Code";
+            ParcelStatusDHL."Status Code" := DHLSetup."DHL Create Ship. RIC Code";
+            ParcelStatusDHL."Shipment Date" := ShipDate;
+            //H0875  18.02.14  MBY  ++++++++++++++++++++++++++++
+            {
+            //H0875  18.02.14  MBY  ----------------------------
+            ParcelStatusDHL.INSERT;
+            //H0875  18.02.14  MBY  ++++++++++++++++++++++++++++
+            }
+            ParcelStatusDHL.INSERT(TRUE);
+            //H0875  18.02.14  MBY  ----------------------------
+            // A/gob-lku/04.02.2013/P0789
+            END;
+            // E/gob-lku/04.02.2013/P0789
+          //S/P1133
+          END;
+
+          IF FPCGeneralSetup."Active Parcel Status History" IN
+            [FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+            FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+            FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History"]
+          THEN BEGIN
+          //E/P1133
+            CLEAR(ParcelStatusHistory);
+            CLEAR(CUParcelStatusHistoryMgmt);
+            WITH ParcelStatusHistory DO BEGIN
+              SETCURRENTKEY("Tracking Code","Piece Code");
+              SETRANGE("Tracking Code",UPPERCASE(DHLShipment));
+              SETRANGE("Document No.",SONo);
+              SETRANGE("Status Code",DHLSetup."DHL Create Ship. Event Code");
+              SETRANGE("Document Line No.",SOLine."Line No.");
+              IF ISEMPTY THEN BEGIN
+                RecRef.GETTABLE(SOLine);
+                CUParcelStatusHistoryMgmt.SetDateGlobals(ShipDate,0D,0D);
+                CUParcelStatusHistoryMgmt.FillHistoryByDocLine(
+                  RecRef,                                 // Rec
+                  1,                                      // p_Command
+                  1,                                      // p_InfoDirection::  Incoming,Outgoing
+                  2,                                      // p_UsedInterface::  ,EDI,DHL,DocData,Drop Shipment,Rhenus,UPS
+                  'DHL',                                  // p_ShippingAgentCode
+                  UPPERCASE(DHLShipment),                 // p_TrackingCode
+                  '',                                     // p_PieceCode
+                  DHLSetup."DHL Create Ship. Event Code", // p_StatusCode
+                  DHLSetup."DHL Create Ship. RIC Code",   // p_StatusRICCode
+                  '',                                     // p_Comment
+                  1);                                    // p_HandleStatusDescription
+              END;
+            END;
+          //S/P1133
+          END;
+          //E/P1133
+          //E/P1117
+
+          SalesOrderStatusDHL.SETRANGE("DHL Shipment Number Code",UPPERCASE(DHLShipment));
+          SalesOrderStatusDHL.SETRANGE("SO No.",SONo);
+          IF NOT SalesOrderStatusDHL.FINDFIRST THEN BEGIN
+            SalesOrderStatusDHL.INIT;
+            SalesOrderStatusDHL."DHL Shipment Number Code" := UPPERCASE(DHLShipment);
+            SalesOrderStatusDHL."Shipping Agent Code" := DHLSetup."DHL Shipping Agent";
+            SalesOrderStatusDHL."SO No." := SONo;
+            SalesOrderStatusDHL."Shipment Date" := SOLine."Shipment Date";
+            SalesOrderStatusDHL."Creation Date Time" := CURRENTDATETIME;
+            SalesOrderStatusDHL."DHL Shipment Number" := UPPERCASE(DHLShipment);
+            SalesOrderStatusDHL."DHL Product Code" := SOLine."Shipping Agent Service Code";
+            SalesOrderStatusDHL."Purchasing Code" := SOLine."Purchasing Code";
+            IF NOT SalesOrderStatusDHL.INSERT THEN SalesOrderStatusDHL.MODIFY;
+          END;
+          // A/gob-lku/04.02.2013/P0789
+          END;
+          // E/gob-lku/04.02.2013/P0789
+        END;
+        IF i = 68 THEN BEGIN
+          i := 1;
+          EXIT;
+        END;
+        TextLine := COPYSTR(TextLine,STRPOS(TextLine,';') + 1);
+        i := i + 1;
+      END;
+    END;
+
+    BEGIN
+    {
+      31.10.11 Import EasyLog files
+      04.02.13 gob-lku  P0789   diverse Anpassungen
+      26.02.13 gob-lku  P0832   Final Status, gleicher Artikel etc.
+      08.05.13 gob-lku  P0832   DHL Parcel Status History - Filterung auf Line No. erweitert
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation GOB & Home24 NAV Team      |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      P1117       14.10.13  gob-mlan  - Redesign of "DHL Parcel Status History"
+                                      - Code within with //S/P1117/++S+++++++ and //E/P1117/--E-------
+                                        will be replaced by the new code and/or it will be deactivated
+      P1133       07.11.13  gob-mlan  - Redesign of "DHL Parcel Status History"
+
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      H0875       18.02.14  MBY       Execute OnInsert trigger in "DHL Parcels Status History" table
+    }
+    END.
+  }
+}
+

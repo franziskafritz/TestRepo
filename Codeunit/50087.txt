@@ -1,0 +1,2432 @@
+OBJECT Codeunit 50087 Interface Process Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=20.03.15;
+    Time=17:37:17;
+    Modified=Yes;
+    Version List=#GOB1.01,HME2157;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=VAR
+            FPCGeneralSetup@1000000000 : Record 50055;
+            SalesHeader@1000000001 : Record 36;
+          BEGIN
+            GlobalOrderNoFilter := "Parameter String";
+            ProcessLogStatusReserve;
+            ProcessLogStatusPick;
+            //H0587 17.06.14 HCN +++++++++++++++++++++++++++++
+            ProcessLogStatusCancelManual;
+            //H0587 17.06.14 HCN -----------------------------
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      TempRepeatCounter@1000000000 : Integer;
+      CreateAsProcessed@1000000001 : Boolean;
+      GlobalOrderNoFilter@1000000002 : Text[250];
+      InserFromChanChange@1000000003 : Boolean;
+      "*HME**************************"@1000000004 : Integer;
+      SalesLineIPLCancelTmp@1000000006 : TEMPORARY Record 37;
+      SalesLineIPLNoCancelTmp@1000000007 : TEMPORARY Record 37;
+      FPCGeneralSetup@1000000005 : Record 50055;
+      TextHME001@1000000009 : TextConst 'ENU=Interface could not be triggered in current state.';
+      TextHME002@1000000008 : TextConst 'ENU=No record found in table "%1".';
+      IPLSetup@1000000010 : Record 50232;
+      MaxNoOfTries@1000000012 : Integer;
+      TextHME003@1000000013 : TextConst 'ENU="SalesHeader Field set to ""%1"" = TRUE."';
+      TextHME004@1000000014 : TextConst 'ENU=SalesHeader Field "%1" not cleared.';
+      LastRHDSalesExpHeaderEntryNo@1000000011 : Integer;
+      TextHME005@1000000015 : TextConst 'ENU=Interface "%1" has not been setup for IPL-Processing.';
+      TextHME006@1000000016 : TextConst 'ENU=Status of SalesOrder must not be set to "%1".';
+      LastWhsLFSalesExpHeaderEntryNo@1000000018 : Integer;
+      IPLProcessStatusIsInformation@1000000017 : Boolean;
+
+    PROCEDURE InsertInterfaceRecords@1000000001(p_EntryType@1000000001 : 'Sales,Purchase';p_EntrySubType@1000000002 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order,Externe Logistik';p_DocumentNo@1000000003 : Code[20];p_DocumentLineNo@1000000004 : Integer;p_Interface@1000000005 : Code[10];p_Status@1000000006 : Code[20];p_Trigger@1000000008 : Code[20]);
+    VAR
+      InterfaceProcessLog@1000000000 : Record 50087;
+      SalesLine@1000000009 : Record 37;
+      PurchLine@1000000010 : Record 39;
+      FPCGeneralSetup@1000000007 : Record 50055;
+      SalesLine2@1000000011 : Record 37;
+      InterfaceProcessStatusCodes@1000000012 : Record 50086;
+      LocText001@1000000013 : TextConst 'DEU=%1 %2 existiert nicht.;ENU=%1 %2 does not exist.';
+      SalesHeader@1000000014 : Record 36;
+      IPLTestorders@1000000015 : Record 50185;
+    BEGIN
+      // InsertInterfaceRecords
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Status Open");
+      FPCGeneralSetup.TESTFIELD("Status Pick");
+      FPCGeneralSetup.TESTFIELD("Status Cancel");
+      FPCGeneralSetup.TESTFIELD("Trigger Channel Change");
+      IF NOT InterfaceProcessStatusCodes.GET(0,p_Status) THEN
+        ERROR(LocText001,InterfaceProcessStatusCodes.TABLECAPTION,p_Status);
+      CASE p_EntryType OF
+        p_EntryType::Sales:
+          BEGIN
+            IF p_DocumentLineNo = 0 THEN BEGIN
+              SalesLine.RESET;
+              SalesLine.SETRANGE("Document Type",p_EntrySubType);
+              SalesLine.SETRANGE("Document No.",p_DocumentNo);
+              IF SalesLine.FINDSET THEN BEGIN
+                SalesHeader.GET(SalesLine."Document Type",SalesLine."Document No.");
+                REPEAT
+                  IF ((SalesLine.Type = SalesLine.Type::Item) AND (SalesLine."Purchasing Code" <> '')) OR
+                     ((SalesLine.Type = SalesLine.Type::Resource) AND (SalesLine."Resource Type" = SalesLine."Resource Type"::Assembly))
+                  THEN BEGIN
+                    //H0587 20.06.14 HCN +++++++++++++++++++++++++++++
+                    IF (p_Status <> '') OR
+                       (p_Trigger = FPCGeneralSetup."Trigger Channel Change")
+                    //H0587 20.06.14 HCN -----------------------------
+                    THEN BEGIN
+                      InterfaceProcessLog.RESET;
+                      InterfaceProcessLog."Entry No." := 0;
+                      InterfaceProcessLog."Entry Type" := p_EntryType;
+                      InterfaceProcessLog."Entry Subtype" := p_EntrySubType;
+                      InterfaceProcessLog."Document No." := p_DocumentNo;
+                      InterfaceProcessLog."Document Line No." := SalesLine."Line No.";
+                      InterfaceProcessLog."Is Crossdock Channel" := SalesLine."Special Order";
+                      IF SalesLine.Type = SalesLine.Type::Item THEN BEGIN
+                        InterfaceProcessLog.Interface := GetInterfaceFromPurchCode(SalesLine."Purchasing Code");
+                        InterfaceProcessLog.Channel := SalesLine."Purchasing Code";
+                      END ELSE BEGIN
+                        SalesLine2.RESET;
+                        SalesLine2.SETRANGE("Document Type",SalesLine."Document Type");
+                        SalesLine2.SETRANGE("Document No.",SalesLine."Document No.");
+                        SalesLine2.SETRANGE(Type,SalesLine2.Type::Item);
+                        SalesLine2.SETRANGE(ID,SalesLine."Parent ID");
+                        SalesLine2.SETFILTER("Purchasing Code",'<>%1','');
+                        IF NOT SalesLine2.ISEMPTY THEN BEGIN
+                          SalesLine2.FINDFIRST;
+                          InterfaceProcessLog.Interface := GetInterfaceFromPurchCode(SalesLine2."Purchasing Code");
+                          InterfaceProcessLog.Channel := SalesLine2."Purchasing Code";
+                        END;
+                      END;
+                      InterfaceProcessLog.VALIDATE(Status,p_Status);
+                      InterfaceProcessLog.Trigger := p_Trigger;
+
+                      //H0587 18.06.14 HCN +++++++++++++++++++++++++++++
+                      IF CheckIfLogIsActive(InterfaceProcessLog.Interface,p_Status) AND
+                         (p_Status IN [FPCGeneralSetup."Status Reserve",
+                                       FPCGeneralSetup."Status Pick",
+                                       FPCGeneralSetup."Status Cancel"])
+                      THEN BEGIN
+                        CASE p_Trigger OF
+                          //H1418 29.07.14 HCN +++++++++++++++++++++++++++++
+                          FPCGeneralSetup."Trigger Magento Cancel Manual":
+                            BEGIN
+                              IF IPLProcessStatusIsInformation THEN BEGIN
+                                InterfaceProcessLog."Process Status" := InterfaceProcessLog."Process Status"::Information;
+                              END ELSE BEGIN
+                                InterfaceProcessLog."Process Status" := InterfaceProcessLog."Process Status"::Unprocessed;
+                              END;
+                            END;
+
+                          FPCGeneralSetup."Trigger Magento Cancel Autom.":
+                            BEGIN
+                              InterfaceProcessLog."Process Status" := InterfaceProcessLog."Process Status"::Information;
+                            END;
+
+                          FPCGeneralSetup."Trigger Channel Change":
+                            BEGIN
+                              //H1277 17.09.14 DMA +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+                              IF IPLProcessStatusIsInformation THEN BEGIN
+                              InterfaceProcessLog."Process Status" := InterfaceProcessLog."Process Status"::Information;
+                              END ELSE BEGIN
+                                InterfaceProcessLog."Process Status" := InterfaceProcessLog."Process Status"::Unprocessed;
+                              END;
+                              //H1277 17.09.14 DMA ---------------------------------------------------------------------
+                            END;
+                          //H1418 29.07.14 HCN -----------------------------
+                          //H1277 12.09.14 DMA +++++++++++++++++++++++++++++
+                          FPCGeneralSetup."Trigger NavC",
+                          FPCGeneralSetup."Trigger IPL",
+                          FPCGeneralSetup."Trigger Rhenus Interface",
+                          FPCGeneralSetup."Trigger Docdata Interface",
+                          FPCGeneralSetup."Trigger Dropship Creation",
+                          FPCGeneralSetup."Trigger Manual User Action",
+                          FPCGeneralSetup."Trigger Sales Post",
+                          FPCGeneralSetup."Trigger DHL Pro Active",
+                          FPCGeneralSetup."Trigger Channel Change",
+                          FPCGeneralSetup."Trigger Rcpt. Date OnValidate",
+                          FPCGeneralSetup."Trigger UPS",
+                          FPCGeneralSetup."Trigger Magento Cancel Manual",
+                          FPCGeneralSetup."Trigger DPD",
+                          FPCGeneralSetup."Trigger Whse. LF Interface":
+                            BEGIN
+                              InterfaceProcessLog."Process Status" := InterfaceProcessLog."Process Status"::Unprocessed;
+                            END;
+                          //H1277 12.09.14 DMA -----------------------------
+                          ELSE BEGIN
+                            InterfaceProcessLog."Process Status" := InterfaceProcessLog."Process Status"::Information;
+                          END;
+                        END;
+                      END ELSE BEGIN
+                        InterfaceProcessLog."Process Status" := InterfaceProcessLog."Process Status"::Information;
+                      END;
+                      //H0587 18.06.14 HCN -----------------------------
+
+                      IF IPLTestorders.GET(InterfaceProcessLog."Document No.",InterfaceProcessLog.Interface)
+                      AND IPLTestorders.Active
+                      AND ((p_Status = FPCGeneralSetup."Status Reserve") OR (p_Status = FPCGeneralSetup."Status Pick"))
+                      THEN
+                        InterfaceProcessLog."Process Status" := InterfaceProcessLog."Process Status"::Unprocessed;
+                      IF CreateAsProcessed THEN
+                        InterfaceProcessLog."Process Status" := InterfaceProcessLog."Process Status"::Processed;
+                      FPCGeneralSetup.TESTFIELD("Status Pick");
+                      IF (InterfaceProcessLog."Process Status" = InterfaceProcessLog."Process Status"::Unprocessed) AND
+                         (InterfaceProcessLog.Status = FPCGeneralSetup."Status Pick")
+                      THEN BEGIN
+                        UpdateUnprocessedReserve(InterfaceProcessLog);
+                      END;
+                      FPCGeneralSetup.TESTFIELD("Status Cancel");
+                      IF InterfaceProcessLog.Status = FPCGeneralSetup."Status Cancel" THEN BEGIN
+                        CancelPreviousLogs(InterfaceProcessLog);
+                      END;
+                      InterfaceProcessLog."Process Timestamp" := CURRENTDATETIME;
+                      IF (InterfaceProcessLog.Status <> FPCGeneralSetup."Status Cancel") AND
+                        (SalesHeader.Status = SalesHeader.Status::Canceled)
+                      THEN
+                        InterfaceProcessLog."Process Status" := InterfaceProcessLog."Process Status"::Canceled;
+                      IF NOT CheckIfISAlreadyLastStatus(InterfaceProcessLog."Entry Type",
+                                                        InterfaceProcessLog."Entry Subtype",
+                                                        InterfaceProcessLog."Document No.",
+                                                        InterfaceProcessLog."Document Line No.",
+                                                        InterfaceProcessLog.Interface,
+                                                        InterfaceProcessLog.Status)
+                         OR InserFromChanChange
+                      THEN BEGIN
+                        InterfaceProcessLog."Insert User" := USERID;
+                        InterfaceProcessLog."Insert Timestamp" := CURRENTDATETIME;
+                        InterfaceProcessLog.INSERT;
+                        IF SalesLine.Type = SalesLine.Type::Item THEN
+                          UpdateStatusAttachedAssembly(InterfaceProcessLog,SalesLine);
+                      END;
+                    END;
+                  END;
+                UNTIL SalesLine.NEXT = 0;
+              END;
+            END ELSE BEGIN
+              SalesLine.RESET;
+              SalesLine.GET(p_EntrySubType,p_DocumentNo,p_DocumentLineNo);
+              IF ((SalesLine.Type = SalesLine.Type::Item) AND (SalesLine."Purchasing Code" <> '')) OR
+                 ((SalesLine.Type = SalesLine.Type::Resource) AND (SalesLine."Resource Type" = SalesLine."Resource Type"::Assembly))
+              THEN BEGIN
+                //H0587 20.06.14 HCN +++++++++++++++++++++++++++++
+                IF (p_Status <> '') OR
+                   (p_Trigger = FPCGeneralSetup."Trigger Channel Change")
+                THEN BEGIN
+                {
+                IF ((p_Status = FPCGeneralSetup."Status Cancel") AND (SalesLine.Quantity = 0)) OR
+                  (p_Status <> FPCGeneralSetup."Status Cancel") OR
+                  (p_Trigger = FPCGeneralSetup."Trigger Channel Change")
+                THEN BEGIN
+                }
+                //H0587 20.06.14 HCN -----------------------------
+                  SalesHeader.GET(SalesLine."Document Type",SalesLine."Document No.");
+                  InterfaceProcessLog.RESET;
+                  InterfaceProcessLog."Entry No." := 0;
+                  InterfaceProcessLog."Entry Type" := p_EntryType;
+                  InterfaceProcessLog."Entry Subtype" := p_EntrySubType;
+                  InterfaceProcessLog."Document No." := p_DocumentNo;
+                  InterfaceProcessLog."Document Line No." := p_DocumentLineNo;
+                  InterfaceProcessLog."Is Crossdock Channel" := SalesLine."Special Order";
+                  IF p_Interface = '' THEN BEGIN
+                    IF SalesLine.Type = SalesLine.Type::Item THEN BEGIN
+                      InterfaceProcessLog.Interface := GetInterfaceFromPurchCode(SalesLine."Purchasing Code");
+                      InterfaceProcessLog.Channel := SalesLine."Purchasing Code";
+                    END ELSE BEGIN
+                      SalesLine2.RESET;
+                      SalesLine2.SETRANGE("Document Type",SalesLine."Document Type");
+                      SalesLine2.SETRANGE("Document No.",SalesLine."Document No.");
+                      SalesLine2.SETRANGE(Type,SalesLine2.Type::Item);
+                      SalesLine2.SETRANGE(ID,SalesLine."Parent ID");
+                      SalesLine2.SETFILTER("Purchasing Code",'<>%1','');
+                      IF NOT SalesLine2.ISEMPTY THEN BEGIN
+                        SalesLine2.FINDFIRST;
+                        InterfaceProcessLog.Interface := GetInterfaceFromPurchCode(SalesLine2."Purchasing Code");
+                        InterfaceProcessLog.Channel := SalesLine2."Purchasing Code";
+                      END;
+                    END;
+                  END ELSE
+                    InterfaceProcessLog.Interface := p_Interface;
+                  InterfaceProcessLog.Channel := SalesLine."Purchasing Code";
+                  InterfaceProcessLog.VALIDATE(Status,p_Status);
+                  InterfaceProcessLog.Trigger := p_Trigger;
+
+                  //H0587 18.06.14 HCN +++++++++++++++++++++++++++++
+                  IF CheckIfLogIsActive(InterfaceProcessLog.Interface,p_Status) AND
+                     (p_Status IN [FPCGeneralSetup."Status Reserve",
+                                   FPCGeneralSetup."Status Pick",
+                                   FPCGeneralSetup."Status Cancel"])
+                  THEN BEGIN
+                    CASE p_Trigger OF
+                      //H1418 29.07.14 HCN +++++++++++++++++++++++++++++
+                      FPCGeneralSetup."Trigger Magento Cancel Manual":
+                        BEGIN
+                          IF IPLProcessStatusIsInformation THEN BEGIN
+                            InterfaceProcessLog."Process Status" := InterfaceProcessLog."Process Status"::Information;
+                          END ELSE BEGIN
+                            InterfaceProcessLog."Process Status" := InterfaceProcessLog."Process Status"::Unprocessed;
+                          END;
+                        END;
+
+                      FPCGeneralSetup."Trigger Magento Cancel Autom.":
+                        BEGIN
+                          InterfaceProcessLog."Process Status" := InterfaceProcessLog."Process Status"::Information;
+                        END;
+
+                      FPCGeneralSetup."Trigger Channel Change":
+                        BEGIN
+                          //H1277 17.09.14 DMA +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+                          IF IPLProcessStatusIsInformation THEN BEGIN
+                            InterfaceProcessLog."Process Status" := InterfaceProcessLog."Process Status"::Information;
+                          END ELSE BEGIN
+                            InterfaceProcessLog."Process Status" := InterfaceProcessLog."Process Status"::Unprocessed;
+                          END;
+                          //H1277 17.09.14 DMA ---------------------------------------------------------------------
+                        END;
+                      //H1418 29.07.14 HCN -----------------------------
+                      //H1277 12.09.14 DMA +++++++++++++++++++++++++++++
+                      FPCGeneralSetup."Trigger NavC",
+                      FPCGeneralSetup."Trigger IPL",
+                      FPCGeneralSetup."Trigger Rhenus Interface",
+                      FPCGeneralSetup."Trigger Docdata Interface",
+                      FPCGeneralSetup."Trigger Dropship Creation",
+                      FPCGeneralSetup."Trigger Manual User Action",
+                      FPCGeneralSetup."Trigger Sales Post",
+                      FPCGeneralSetup."Trigger DHL Pro Active",
+                      FPCGeneralSetup."Trigger Channel Change",
+                      FPCGeneralSetup."Trigger Rcpt. Date OnValidate",
+                      FPCGeneralSetup."Trigger UPS",
+                      FPCGeneralSetup."Trigger Magento Cancel Manual",
+                      FPCGeneralSetup."Trigger DPD",
+                      FPCGeneralSetup."Trigger Whse. LF Interface":
+                        BEGIN
+                          InterfaceProcessLog."Process Status" := InterfaceProcessLog."Process Status"::Unprocessed;
+                        END;
+                      //H1277 12.09.14 DMA -----------------------------
+                      ELSE BEGIN
+                        InterfaceProcessLog."Process Status" := InterfaceProcessLog."Process Status"::Information;
+                      END;
+                    END;
+                  END ELSE BEGIN
+                    InterfaceProcessLog."Process Status" := InterfaceProcessLog."Process Status"::Information;
+                  END;
+                  //H0587 18.06.14 HCN -----------------------------
+
+
+                  IF (InterfaceProcessLog."Process Status" = InterfaceProcessLog."Process Status"::Unprocessed) AND
+                     (InterfaceProcessLog.Status = FPCGeneralSetup."Status Pick")
+                  THEN BEGIN
+                    UpdateUnprocessedReserve(InterfaceProcessLog);
+                  END;
+                  FPCGeneralSetup.TESTFIELD("Status Cancel");
+                  IF InterfaceProcessLog.Status = FPCGeneralSetup."Status Cancel" THEN BEGIN
+                    CancelPreviousLogs(InterfaceProcessLog);
+                  END;
+                  InterfaceProcessLog."Process Timestamp" := CURRENTDATETIME;
+                  IF (InterfaceProcessLog.Status <> FPCGeneralSetup."Status Cancel") AND
+                    (SalesHeader.Status = SalesHeader.Status::Canceled)
+                  THEN
+                    InterfaceProcessLog."Process Status" := InterfaceProcessLog."Process Status"::Canceled;
+                  IF NOT CheckIfISAlreadyLastStatus(InterfaceProcessLog."Entry Type",
+                    InterfaceProcessLog."Entry Subtype",
+                    InterfaceProcessLog."Document No.",
+                    InterfaceProcessLog."Document Line No.",
+                    InterfaceProcessLog.Interface,
+                    InterfaceProcessLog.Status)
+                  OR InserFromChanChange
+                   THEN
+                  BEGIN
+                    InterfaceProcessLog."Insert User" := USERID;
+                    InterfaceProcessLog."Insert Timestamp" := CURRENTDATETIME;
+                    InterfaceProcessLog.INSERT;
+                    IF SalesLine.Type = SalesLine.Type::Item THEN
+                      UpdateStatusAttachedAssembly(InterfaceProcessLog,SalesLine);
+                  END;
+                END;
+              END;
+            END;
+          END;
+        p_EntryType::Purchase:
+          BEGIN
+            IF p_DocumentLineNo = 0 THEN BEGIN
+              // Purch Repeat
+              InterfaceProcessLog.RESET;
+              InterfaceProcessLog."Entry No." := 0;
+              InterfaceProcessLog."Entry Type" := p_EntryType;
+              InterfaceProcessLog."Entry Subtype" := p_EntrySubType;
+              InterfaceProcessLog."Document No." := p_DocumentNo;
+              InterfaceProcessLog."Document Line No." := PurchLine."Line No.";
+              InterfaceProcessLog.Interface := p_Interface;
+              InterfaceProcessLog.VALIDATE(Status,p_Status);
+              InterfaceProcessLog.Trigger := p_Trigger;
+              InterfaceProcessLog."Process Status" := InterfaceProcessLog."Process Status"::Unprocessed;
+              InterfaceProcessLog."Insert User" := USERID;
+              InterfaceProcessLog."Insert Timestamp" := CURRENTDATETIME;
+              InterfaceProcessLog.INSERT;
+            END ELSE BEGIN
+              InterfaceProcessLog.RESET;
+              InterfaceProcessLog."Entry No." := 0;
+              InterfaceProcessLog."Entry Type" := p_EntryType;
+              InterfaceProcessLog."Entry Subtype" := p_EntrySubType;
+              InterfaceProcessLog."Document No." := p_DocumentNo;
+              InterfaceProcessLog."Document Line No." := p_DocumentLineNo;
+              InterfaceProcessLog.Interface := p_Interface;
+              InterfaceProcessLog.VALIDATE(Status,p_Status);
+              InterfaceProcessLog.Trigger := p_Trigger;
+              InterfaceProcessLog."Process Status" := InterfaceProcessLog."Process Status"::Unprocessed;
+              InterfaceProcessLog."Insert User" := USERID;
+              InterfaceProcessLog."Insert Timestamp" := CURRENTDATETIME;
+              InterfaceProcessLog.INSERT;
+            END;
+          END;
+      END;
+    END;
+
+    PROCEDURE GetInterfaceFromPurchCode@1000000017(p_PurchasingCode@1000000000 : Code[10]) r_InterfaceCode : Code[10];
+    VAR
+      Purchasing@1000000001 : Record 5721;
+    BEGIN
+      Purchasing.RESET;
+      Purchasing.GET(p_PurchasingCode);
+      //S/P0893
+      //Purchasing.TESTFIELD("Interface Code");
+      //E/P0893
+      EXIT(Purchasing."Interface Code");
+    END;
+
+    PROCEDURE TriggerInterface@1000000031(p_OrderNo@1000000000 : Code[20];p_Interface@1000000001 : Code[10]);
+    VAR
+      FPCGeneralSetup@1000000002 : Record 50055;
+      SalesHeader@1000000003 : Record 36;
+      RhenusChangeLog@1000000004 : Record 50070;
+      SalesLine@1000000005 : Record 37;
+      PurchSetup@1000000006 : Record 312;
+      ReleaseSalesDocument@1000000007 : Codeunit 414;
+      BatchPostDocument@1000000008 : Record 50043;
+    BEGIN
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Interface Code Rhenus"); // RHE
+      FPCGeneralSetup.TESTFIELD("Interface Code DocData"); // DD
+      FPCGeneralSetup.TESTFIELD("Interface Code Dropshipment"); //DS
+      //S/P0966
+      FPCGeneralSetup.TESTFIELD("Interface Code Crossdock"); // Crossdock
+      //E/P0966
+      //H1408 17.09.14 DMA ++++++++++++++++++++++++++++++++++
+      FPCGeneralSetup.TESTFIELD("Interface Code Whse. LF");
+      //H1408 17.09.14 DMA ----------------------------------
+      SalesHeader.GET(1,p_OrderNo); // umstellen auf doc type
+
+      IF p_Interface = FPCGeneralSetup."Interface Code Rhenus" THEN BEGIN //RHEN
+        ReleaseSalesDocument.InsertExpLog(SalesHeader);
+      END;
+
+      IF p_Interface = FPCGeneralSetup."Interface Code DocData" THEN BEGIN // DD
+        ReleaseSalesDocument.InitiateOrder2DDInterface(SalesHeader,0);
+      END;
+
+      IF p_Interface = FPCGeneralSetup."Interface Code Dropshipment" THEN BEGIN  // DS
+        BatchPostDocument.CreatePurchOrder(SalesHeader);
+      END;
+
+      //H1408 17.09.14 DMA ++++++++++++++++++++++++++++++++++
+      IF p_Interface = FPCGeneralSetup."Interface Code Whse. LF" THEN BEGIN // Whse. LF
+        ReleaseSalesDocument.InsertWhseLFExpLog(SalesHeader);
+      END;
+      //H1408 17.09.14 DMA ----------------------------------
+
+
+      //S/P0966
+      IF p_Interface = FPCGeneralSetup."Interface Code Crossdock" THEN BEGIN
+        ReleaseSalesDocument.InsertExpLog(SalesHeader);
+        BatchPostDocument.CreatePurchOrder(SalesHeader);
+      END;
+      //E/P0966
+    END;
+
+    PROCEDURE UpdateProcessLogForInterface@1000000003(p_DocumentNo@1000000004 : Code[20];p_LineNo@1000000005 : Integer;p_Interface@1000000002 : Code[10];p_OldStatus@1000000000 : Code[20];p_NewStatus@1000000001 : Code[20];p_Trigger@1000000003 : Code[20]);
+    VAR
+      InterfaceProcessLog@1000000007 : Record 50087;
+    BEGIN
+      InterfaceProcessLog.RESET;
+      //A/gob-adb/16.05.13
+      InterfaceProcessLog.SETCURRENTKEY("Document No.","Document Line No.");
+      //E/gob-adb/16.05.13
+      InterfaceProcessLog.SETRANGE("Entry Type",InterfaceProcessLog."Entry Type"::Sales);
+      InterfaceProcessLog.SETRANGE("Entry Subtype",InterfaceProcessLog."Entry Subtype"::Order);
+      InterfaceProcessLog.SETRANGE("Document No.",p_DocumentNo);
+      IF p_LineNo <> 0 THEN
+        InterfaceProcessLog.SETRANGE("Document Line No.",p_LineNo);
+      InterfaceProcessLog.SETRANGE(Interface,p_Interface);
+      InterfaceProcessLog.SETRANGE(Status,p_OldStatus);
+      IF InterfaceProcessLog.FINDSET THEN BEGIN
+        REPEAT
+          IF NOT CheckIfISAlreadyLastStatus(InterfaceProcessLog."Entry Type",
+               InterfaceProcessLog."Entry Subtype",
+               InterfaceProcessLog."Document No.",
+               InterfaceProcessLog."Document Line No.",
+               InterfaceProcessLog.Interface,
+               p_NewStatus)
+          THEN BEGIN
+            //Funktion pro line die den status schreibt
+            InsertInterfaceRecords(InterfaceProcessLog."Entry Type",
+              InterfaceProcessLog."Entry Subtype",
+              InterfaceProcessLog."Document No.",
+              InterfaceProcessLog."Document Line No.",
+              p_Interface,
+              p_NewStatus,
+              p_Trigger);
+          END;
+        UNTIL InterfaceProcessLog.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE AddSalesLineOpenToInterface@1000000000(p_SalesLine@1000000000 : Record 37);
+    VAR
+      InterfaceProcessLog@1000000001 : Record 50087;
+      FPCGeneralSetup@1000000002 : Record 50055;
+      LocText001@1000000003 : TextConst 'DEU=%1 muss leer oder %2 sein.;ENU=%1 must be empty or %2.';
+    BEGIN
+      InterfaceProcessLog.RESET;
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Status Open");
+      FPCGeneralSetup.TESTFIELD("Status Cancel");
+      FPCGeneralSetup.TESTFIELD("Trigger Manual User Action");
+      //A/gob-adb/16.05.13
+      InterfaceProcessLog.SETCURRENTKEY("Document No.","Document Line No.");
+      //E/gob-adb/16.05.13
+      InterfaceProcessLog.SETRANGE("Entry Type",InterfaceProcessLog."Entry Type"::Sales);
+      InterfaceProcessLog.SETRANGE("Entry Subtype",p_SalesLine."Document Type");
+      InterfaceProcessLog.SETRANGE("Document No.",p_SalesLine."Document No.");
+      InterfaceProcessLog.SETRANGE("Document Line No.",p_SalesLine."Line No.");
+      InterfaceProcessLog.SETRANGE(Interface,GetInterfaceFromPurchCode(p_SalesLine."Purchasing Code"));
+      InterfaceProcessLog.SETRANGE("Process Status",InterfaceProcessLog."Process Status"::Unprocessed);
+      IF InterfaceProcessLog.ISEMPTY THEN BEGIN
+        InsertInterfaceRecords(0,
+          p_SalesLine."Document Type",
+          p_SalesLine."Document No.",
+          p_SalesLine."Line No.",
+          GetInterfaceFromPurchCode(p_SalesLine."Purchasing Code"),
+          FPCGeneralSetup."Status Open",
+          FPCGeneralSetup."Trigger Manual User Action");
+        EXIT;
+      END ELSE BEGIN
+        InterfaceProcessLog.FINDLAST;
+        IF (InterfaceProcessLog.Status = FPCGeneralSetup."Status Open") AND
+           (InterfaceProcessLog."Process Status" = InterfaceProcessLog."Process Status"::Unprocessed)
+        THEN
+          EXIT;
+        IF InterfaceProcessLog.Status = FPCGeneralSetup."Status Cancel" THEN BEGIN
+          InsertInterfaceRecords(0,
+            p_SalesLine."Document Type",
+            p_SalesLine."Document No.",
+            p_SalesLine."Line No.",
+            GetInterfaceFromPurchCode(p_SalesLine."Purchasing Code"),
+            FPCGeneralSetup."Status Open",
+            FPCGeneralSetup."Trigger Manual User Action");
+          EXIT;
+        END ELSE BEGIN
+          ERROR(LocText001,InterfaceProcessLog.TABLECAPTION,FPCGeneralSetup."Status Cancel");
+        END;
+      END;
+    END;
+
+    PROCEDURE GetInterfaceStatus@1000000004(p_EntryType@1000000003 : 'Sales,Purchase';p_EntrySubType@1000000002 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order,Externe Logistik';p_DocumentNo@1000000001 : Code[20];p_DocumentLineNo@1000000000 : Integer) r_Status : Code[20];
+    VAR
+      InterfaceProcessLog@1000000004 : Record 50087;
+    BEGIN
+      InterfaceProcessLog.RESET;
+      //A/gob-adb/16.05.13
+      InterfaceProcessLog.SETCURRENTKEY("Document No.","Document Line No.");
+      //E/gob-adb/16.05.13
+      InterfaceProcessLog.SETRANGE("Entry Type",p_EntryType);
+      InterfaceProcessLog.SETRANGE("Entry Subtype",p_EntrySubType);
+      InterfaceProcessLog.SETRANGE("Document No.",p_DocumentNo);
+      InterfaceProcessLog.SETRANGE("Document Line No.",p_DocumentLineNo);
+      IF InterfaceProcessLog.FINDLAST THEN BEGIN
+        EXIT(InterfaceProcessLog.Status);
+      END ELSE BEGIN
+        EXIT('');
+      END;
+    END;
+
+    PROCEDURE ShowInterfaceStatus@1000000005(p_EntryType@1000000003 : 'Sales,Purchase';p_EntrySubType@1000000002 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order,Externe Logistik';p_DocumentNo@1000000001 : Code[20];p_DocumentLineNo@1000000000 : Integer) r_Status : Code[20];
+    VAR
+      InterfaceProcessLog@1000000004 : Record 50087;
+      InterfaceProcessLogForm@1000000005 : Form 50162;
+    BEGIN
+      InterfaceProcessLog.RESET;
+      //A/gob-adb/16.05.13
+      InterfaceProcessLog.SETCURRENTKEY("Document No.","Document Line No.");
+      //E/gob-adb/16.05.13
+      InterfaceProcessLog.SETRANGE("Entry Type",p_EntryType);
+      InterfaceProcessLog.SETRANGE("Entry Subtype",p_EntrySubType);
+      InterfaceProcessLog.SETRANGE("Document No.",p_DocumentNo);
+      InterfaceProcessLog.SETRANGE("Document Line No.",p_DocumentLineNo);
+      IF InterfaceProcessLog.FINDSET(FALSE,FALSE) THEN BEGIN
+        CLEAR(InterfaceProcessLogForm);
+        InterfaceProcessLogForm.SetKey(2);
+        InterfaceProcessLogForm.SETTABLEVIEW(InterfaceProcessLog);
+        InterfaceProcessLogForm.RUNMODAL;
+      END;
+    END;
+
+    PROCEDURE ProcessLogStatusReserve@1000000006();
+    VAR
+      FPCGeneralSetup@1000000001 : Record 50055;
+      InterfaceProcessLog@1000000000 : Record 50087;
+      OldOrderNo@1000000002 : Code[20];
+      OldStatus@1000000003 : Code[20];
+      OldDocType@1000000004 : Integer;
+      CodeunitOnRunMgt@1000000005 : Codeunit 50100;
+      ModifyDateTime@1000000006 : DateTime;
+    BEGIN
+      FPCGeneralSetup.RESET;
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Interface Code Rhenus");
+      FPCGeneralSetup.TESTFIELD("Interface Code DocData");
+      //H1408 17.09.14 DMA +++++++++++++++++++++++++++++++
+      FPCGeneralSetup.TESTFIELD("Interface Code Whse. LF");
+      //H1408 17.09.14 DMA -------------------------------
+
+      FPCGeneralSetup.TESTFIELD("Status Reserve");
+      InterfaceProcessLog.SETCURRENTKEY("Entry Type","Entry Subtype","Document No.","Document Line No.",Interface,Status,
+        "Process Status");
+      InterfaceProcessLog.SETRANGE(Status,FPCGeneralSetup."Status Reserve");
+      InterfaceProcessLog.SETRANGE("Process Status",InterfaceProcessLog."Process Status"::Unprocessed);
+      InterfaceProcessLog.SETRANGE("Entry Type",InterfaceProcessLog."Entry Type"::Sales);
+      //S/P0966
+      IF GlobalOrderNoFilter <> '' THEN
+        InterfaceProcessLog.SETFILTER("Document No.",GlobalOrderNoFilter);
+      //E/P0966
+      IF NOT InterfaceProcessLog.ISEMPTY THEN BEGIN
+        InterfaceProcessLog.FINDSET;
+        // Init Values
+        OldOrderNo := '';
+        OldStatus := '';
+        OldDocType := 0;
+        REPEAT
+          // Check if New Order
+          IF (OldOrderNo <> InterfaceProcessLog."Document No.") OR
+             (OldStatus <> InterfaceProcessLog.Status) OR
+             (OldDocType <> InterfaceProcessLog."Entry Subtype")
+          THEN BEGIN
+            // FirstRun Fill Values
+            //IF (OldOrderNo = '') AND (OldStatus = '') AND (OldDocType = 0) THEN BEGIN
+              //OldOrderNo := InterfaceProcessLog."Document No.";
+              //OldStatus := InterfaceProcessLog.Status;
+              //OldDocType := InterfaceProcessLog."Entry Subtype";
+            //END;
+            InterfaceProcessLog.SETRANGE("Entry Subtype",InterfaceProcessLog."Entry Subtype");
+            InterfaceProcessLog.SETRANGE("Document No.",InterfaceProcessLog."Document No.");
+            InterfaceProcessLog.SETRANGE(Status,InterfaceProcessLog.Status);
+            // Trigger for Rhenus
+            InterfaceProcessLog.SETRANGE(Interface,FPCGeneralSetup."Interface Code Rhenus");
+            IF NOT InterfaceProcessLog.ISEMPTY THEN BEGIN
+              InterfaceProcessLog.FINDSET;
+              CLEARLASTERROR;
+              CLEAR(CodeunitOnRunMgt);
+              //S/P0966
+              //CodeunitOnRunMgt.InitIPLForInterfaceAndOrder(InterfaceProcessLog."Entry No.");
+              CodeunitOnRunMgt.InitTriggerInterface(InterfaceProcessLog."Entry No.");
+              //E/P0966
+              ModifyDateTime := CURRENTDATETIME;
+              IF CodeunitOnRunMgt.RUN THEN BEGIN
+                InterfaceProcessLog.MODIFYALL("Process Timestamp",ModifyDateTime);
+                InterfaceProcessLog.MODIFYALL("Process Status",InterfaceProcessLog."Process Status"::Processed);
+              END ELSE BEGIN
+                InterfaceProcessLog.MODIFYALL("Process Status",InterfaceProcessLog."Process Status"::Error);
+                InterfaceProcessLog.MODIFYALL("Process Timestamp",ModifyDateTime);
+                InterfaceProcessLog.MODIFYALL("Error Text 1",COPYSTR(GETLASTERRORTEXT,1,250));
+                InterfaceProcessLog.MODIFYALL("Error Text 2",COPYSTR(GETLASTERRORTEXT,251,500));
+                InterfaceProcessLog.MODIFYALL("Error Text 3",COPYSTR(GETLASTERRORTEXT,5001,750));
+                InterfaceProcessLog.MODIFYALL("Error Text 4",COPYSTR(GETLASTERRORTEXT,751,1000));
+                InterfaceProcessLog.MODIFYALL("Error Priority",0);
+                //H0587 07.07.14 HCN +++++++++++++++++++++++++++++
+                InterfaceProcessLog.MODIFYALL("Process Status",InterfaceProcessLog."Process Status"::Error);
+                //H0587 07.07.14 HCN -----------------------------
+              END;
+              COMMIT;
+            //H1408 17.09.14 DMA +++++++++++++++++++++++++++++++++
+            END ELSE BEGIN
+              InterfaceProcessLog.SETRANGE(Interface,FPCGeneralSetup."Interface Code Whse. LF");
+              IF NOT InterfaceProcessLog.ISEMPTY THEN BEGIN
+                InterfaceProcessLog.FINDSET;
+                CLEARLASTERROR;
+
+                CLEAR(CodeunitOnRunMgt);
+                CodeunitOnRunMgt.InitTriggerInterface(InterfaceProcessLog."Entry No.");
+
+                ModifyDateTime := CURRENTDATETIME;
+                IF CodeunitOnRunMgt.RUN THEN BEGIN
+                  InterfaceProcessLog.MODIFYALL("Process Timestamp",ModifyDateTime);
+                  InterfaceProcessLog.MODIFYALL("Process Status",InterfaceProcessLog."Process Status"::Processed);
+                END ELSE BEGIN
+                  InterfaceProcessLog.MODIFYALL("Process Status",InterfaceProcessLog."Process Status"::Error);
+                  InterfaceProcessLog.MODIFYALL("Process Timestamp",ModifyDateTime);
+                  InterfaceProcessLog.MODIFYALL("Error Text 1",COPYSTR(GETLASTERRORTEXT,1,250));
+                  InterfaceProcessLog.MODIFYALL("Error Text 2",COPYSTR(GETLASTERRORTEXT,251,500));
+                  InterfaceProcessLog.MODIFYALL("Error Text 3",COPYSTR(GETLASTERRORTEXT,5001,750));
+                  InterfaceProcessLog.MODIFYALL("Error Text 4",COPYSTR(GETLASTERRORTEXT,751,1000));
+                  InterfaceProcessLog.MODIFYALL("Error Priority",0);
+                  InterfaceProcessLog.MODIFYALL("Process Status",InterfaceProcessLog."Process Status"::Error);
+                END;
+                COMMIT;
+              END;
+            //H1408 17.09.14 DMA ---------------------------------
+            END;
+          END;
+          InterfaceProcessLog.SETRANGE(Interface);
+          OldOrderNo := InterfaceProcessLog."Document No.";
+          OldStatus := InterfaceProcessLog.Status;
+          OldDocType := InterfaceProcessLog."Entry Subtype";
+          // Reset Filters
+          InterfaceProcessLog.SETRANGE("Entry Subtype");
+          InterfaceProcessLog.SETRANGE("Document No.");
+          InterfaceProcessLog.SETRANGE(Status);
+        UNTIL InterfaceProcessLog.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE ProcessLogForInterfaceAndOrder@1000000019(p_InterfaceProcessLog@1000000000 : Record 50087);
+    VAR
+      FPCGeneralSetup@1000000002 : Record 50055;
+      RhenusKADExport@1000000001 : Codeunit 50071;
+      SalesHeader@1000000003 : Record 36;
+      ReleaseSalesDocument@1000000004 : Codeunit 414;
+      BatchPostDocument@1000000005 : Record 50043;
+      InterfaceProcessLog@1000000006 : Record 50087;
+      LineNoFilterCrossdock@1000000007 : Text[1024];
+      LineNoFilteDropship@1000000008 : Text[1024];
+      RHDSalesInterfaceMgt@1000000009 : Codeunit 50153;
+      WhseLFInterfaceMgt@1000000010 : Codeunit 50303;
+    BEGIN
+      // ProcessLogForInterfaceAndOrder
+
+      FPCGeneralSetup.RESET;
+      SalesHeader.RESET;
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Interface Code Rhenus");
+      FPCGeneralSetup.TESTFIELD("Interface Code Dropshipment");
+      FPCGeneralSetup.TESTFIELD("Interface Code DocData");
+      //S/P0966
+      FPCGeneralSetup.TESTFIELD("Interface Code Crossdock");
+      //E/P0966
+      //H1408 17.09.14 DMA ++++++++++++++++++++++++++++++++
+      FPCGeneralSetup.TESTFIELD("Interface Code Whse. LF");
+      //H1408 17.09.14 DMA --------------------------------
+      FPCGeneralSetup.TESTFIELD("Status Open");
+      FPCGeneralSetup.TESTFIELD("Status Reserve");
+      //S/P0966
+      FPCGeneralSetup.TESTFIELD("Status Pick");
+      //E/P0966
+      IF SalesHeader.GET(p_InterfaceProcessLog."Entry Subtype",p_InterfaceProcessLog."Document No.")THEN BEGIN
+        IF (SalesHeader."Processing interrupted" <> SalesHeader."Processing interrupted"::No) AND
+           (NOT SalesHeader."Interruption Checked")
+        THEN
+          EXIT;
+        IF SalesHeader."Cancel Without Interfaces" THEN
+          EXIT;
+        //S/P0966
+        IF (p_InterfaceProcessLog.Status = FPCGeneralSetup."Status Pick") AND (SalesHeader."First Pick" = 0DT) THEN BEGIN
+          CheckAndSetFirstPick(SalesHeader);
+        END;
+        //E/P0966
+        CASE p_InterfaceProcessLog.Interface OF
+          //S/P0966
+          //FPCGeneralSetup."Interface Code Rhenus" :
+          FPCGeneralSetup."Interface Code Rhenus", FPCGeneralSetup."Interface Code Crossdock" :
+          //E/P0966
+            BEGIN
+              IF ((p_InterfaceProcessLog.Status = FPCGeneralSetup."Status Pick") AND
+                 (p_InterfaceProcessLog."Process Status" = p_InterfaceProcessLog."Process Status"::Unprocessed))
+                 OR ((p_InterfaceProcessLog.Status = FPCGeneralSetup."Status Reserve") AND
+                 (p_InterfaceProcessLog."Process Status" = p_InterfaceProcessLog."Process Status"::Unprocessed))
+              THEN BEGIN
+                IF (SalesHeader.Status = SalesHeader.Status::Released) OR
+                  (SalesHeader.Status = SalesHeader.Status::"Pending Prepayment")
+                THEN BEGIN
+                  CLEAR(RhenusKADExport);
+                  //S/P0966
+                  IF SalesHeader.Status = SalesHeader.Status::"Pending Prepayment" THEN
+                    RhenusKADExport.SetAvoidCrossdock(TRUE);
+                  //E/P0966
+                  RhenusKADExport.SalesOrderChangeLogFiller(SalesHeader);
+                  //S/P1070
+                  RHDSalesInterfaceMgt.TriggerRhenusFromSalesHeader(SalesHeader);
+                  //E/P1070
+                  //S/P0966
+                  RhenusKADExport.SetAvoidCrossdock(FALSE);
+                  //E/P0966
+                END;
+              END;
+              //S/P0966
+              IF (p_InterfaceProcessLog.Status = FPCGeneralSetup."Status Pick") AND
+                 (p_InterfaceProcessLog."Process Status" = p_InterfaceProcessLog."Process Status"::Unprocessed) AND
+                 (SalesHeader.Status = SalesHeader.Status::Released)
+              THEN BEGIN
+                InterfaceProcessLog.RESET;
+                //A/gob-adb/16.05.13
+                InterfaceProcessLog.SETCURRENTKEY("Document No.","Document Line No.");
+                //E/gob-adb/16.05.13
+                InterfaceProcessLog.SETRANGE("Entry Type",p_InterfaceProcessLog."Entry Type");
+                InterfaceProcessLog.SETRANGE("Entry Subtype",p_InterfaceProcessLog."Entry Subtype");
+                InterfaceProcessLog.SETRANGE("Document No.",p_InterfaceProcessLog."Document No.");
+                InterfaceProcessLog.SETRANGE(Status,p_InterfaceProcessLog.Status);
+                InterfaceProcessLog.SETRANGE("Process Status",p_InterfaceProcessLog."Process Status");
+                InterfaceProcessLog.SETRANGE(Interface,p_InterfaceProcessLog.Interface);
+                InterfaceProcessLog.SETRANGE("Is Crossdock Channel",TRUE);
+                IF InterfaceProcessLog.FINDSET THEN BEGIN
+                  LineNoFilterCrossdock := '';
+                  REPEAT
+                    IF LineNoFilterCrossdock = '' THEN
+                      LineNoFilterCrossdock := FORMAT(InterfaceProcessLog."Document Line No.")
+                    ELSE
+                      LineNoFilterCrossdock := LineNoFilterCrossdock + '|' + FORMAT(InterfaceProcessLog."Document Line No.");
+                  UNTIL InterfaceProcessLog.NEXT = 0;
+                  BatchPostDocument.SetSalesLineFilter(LineNoFilterCrossdock);
+                  BatchPostDocument.CreatePurchOrder(SalesHeader);
+                  BatchPostDocument.SetSalesLineFilter('');
+                END;
+              END;
+            END;
+          FPCGeneralSetup."Interface Code DocData" :
+            BEGIN
+              IF ((p_InterfaceProcessLog.Status = FPCGeneralSetup."Status Pick") AND
+                 (p_InterfaceProcessLog."Process Status" = p_InterfaceProcessLog."Process Status"::Unprocessed))
+              THEN BEGIN
+                IF SalesHeader.Status = SalesHeader.Status::Released THEN BEGIN
+                  CLEAR(ReleaseSalesDocument);
+                  ReleaseSalesDocument.InitiateOrder2DDInterface(SalesHeader,0);
+                END;
+              END;
+            END;
+          FPCGeneralSetup."Interface Code Dropshipment" :
+            BEGIN
+              IF ((p_InterfaceProcessLog.Status = FPCGeneralSetup."Status Pick") AND
+                 (p_InterfaceProcessLog."Process Status" = p_InterfaceProcessLog."Process Status"::Unprocessed))
+              THEN BEGIN
+                InterfaceProcessLog.RESET;
+                //A/gob-adb/16.05.13
+                InterfaceProcessLog.SETCURRENTKEY("Document No.","Document Line No.");
+                //E/gob-adb/16.05.13
+                InterfaceProcessLog.SETRANGE("Entry Type",p_InterfaceProcessLog."Entry Type");
+                InterfaceProcessLog.SETRANGE("Entry Subtype",p_InterfaceProcessLog."Entry Subtype");
+                InterfaceProcessLog.SETRANGE("Document No.",p_InterfaceProcessLog."Document No.");
+                InterfaceProcessLog.SETRANGE(Status,p_InterfaceProcessLog.Status);
+                InterfaceProcessLog.SETRANGE("Process Status",p_InterfaceProcessLog."Process Status");
+                InterfaceProcessLog.SETRANGE(Interface,p_InterfaceProcessLog.Interface);
+                IF InterfaceProcessLog.FINDSET THEN BEGIN
+                  LineNoFilteDropship := '';
+                  REPEAT
+                    IF LineNoFilteDropship = '' THEN
+                      LineNoFilteDropship:= FORMAT(InterfaceProcessLog."Document Line No.")
+                    ELSE
+                      LineNoFilteDropship := LineNoFilteDropship + '|' + FORMAT(InterfaceProcessLog."Document Line No.");
+                  UNTIL InterfaceProcessLog.NEXT = 0;
+                  BatchPostDocument.SetSalesLineFilter(LineNoFilteDropship);
+                  IF SalesHeader."Ship-to Country/Region Code" IN ['DE',''] THEN
+                    BatchPostDocument.CreatePurchOrder(SalesHeader)
+                  ELSE
+                    BatchPostDocument.CreateIntPurchOrder(SalesHeader);
+                  BatchPostDocument.SetSalesLineFilter('');
+                END;
+              END;
+            END;
+          //H1408 17.09.14 DMA +++++++++++++++++++++++++++++++++++++++++++++++++++++
+          FPCGeneralSetup."Interface Code Whse. LF" :
+            BEGIN
+              IF ((p_InterfaceProcessLog.Status = FPCGeneralSetup."Status Pick") AND
+                 (p_InterfaceProcessLog."Process Status" = p_InterfaceProcessLog."Process Status"::Unprocessed))
+                 OR ((p_InterfaceProcessLog.Status = FPCGeneralSetup."Status Reserve") AND
+                 (p_InterfaceProcessLog."Process Status" = p_InterfaceProcessLog."Process Status"::Unprocessed))
+              THEN BEGIN
+                IF (SalesHeader.Status = SalesHeader.Status::Released) OR
+                  (SalesHeader.Status = SalesHeader.Status::"Pending Prepayment")
+                THEN BEGIN
+                  WhseLFInterfaceMgt.TriggerWhsLFFromSalesHeader(SalesHeader);
+                END;
+              END;
+              IF (p_InterfaceProcessLog.Status = FPCGeneralSetup."Status Pick") AND
+                 (p_InterfaceProcessLog."Process Status" = p_InterfaceProcessLog."Process Status"::Unprocessed) AND
+                 (SalesHeader.Status = SalesHeader.Status::Released)
+              THEN BEGIN
+                InterfaceProcessLog.RESET;
+                InterfaceProcessLog.SETCURRENTKEY("Document No.","Document Line No.");
+                InterfaceProcessLog.SETRANGE("Entry Type",p_InterfaceProcessLog."Entry Type");
+                InterfaceProcessLog.SETRANGE("Entry Subtype",p_InterfaceProcessLog."Entry Subtype");
+                InterfaceProcessLog.SETRANGE("Document No.",p_InterfaceProcessLog."Document No.");
+                InterfaceProcessLog.SETRANGE(Status,p_InterfaceProcessLog.Status);
+                InterfaceProcessLog.SETRANGE("Process Status",p_InterfaceProcessLog."Process Status");
+                InterfaceProcessLog.SETRANGE(Interface,p_InterfaceProcessLog.Interface);
+                InterfaceProcessLog.SETRANGE("Is Crossdock Channel",TRUE);
+                IF InterfaceProcessLog.FINDSET THEN BEGIN
+                  LineNoFilterCrossdock := '';
+                  REPEAT
+                    IF LineNoFilterCrossdock = '' THEN
+                      LineNoFilterCrossdock := FORMAT(InterfaceProcessLog."Document Line No.")
+                    ELSE
+                      LineNoFilterCrossdock := LineNoFilterCrossdock + '|' + FORMAT(InterfaceProcessLog."Document Line No.");
+                  UNTIL InterfaceProcessLog.NEXT = 0;
+                  BatchPostDocument.SetSalesLineFilter(LineNoFilterCrossdock);
+                  BatchPostDocument.CreatePurchOrder(SalesHeader);
+                  BatchPostDocument.SetSalesLineFilter('');
+                END;
+              END;
+            END;
+          //H1408 17.09.14 DMA -----------------------------------------------------
+        END;
+      END;
+    END;
+
+    PROCEDURE ProcessLogStatusPick@1000000020();
+    VAR
+      FPCGeneralSetup@1000000001 : Record 50055;
+      InterfaceProcessLog@1000000000 : Record 50087;
+      OldOrderNo@1000000002 : Code[20];
+      OldStatus@1000000003 : Code[20];
+      OldDocType@1000000004 : Integer;
+      CodeunitOnRunMgt@1000000005 : Codeunit 50100;
+    BEGIN
+      // ProcessLogStatusPick
+      FPCGeneralSetup.RESET;
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Interface Code Rhenus");
+      FPCGeneralSetup.TESTFIELD("Interface Code Dropshipment");
+      FPCGeneralSetup.TESTFIELD("Interface Code DocData");
+      //H1408 17.09.14 DMA ++++++++++++++++++++++++++++++++++++
+      FPCGeneralSetup.TESTFIELD("Interface Code Whse. LF");
+      //H1408 17.09.14 DMA ------------------------------------
+      FPCGeneralSetup.TESTFIELD("Status Pick");
+      InterfaceProcessLog.SETCURRENTKEY("Entry Type","Entry Subtype","Document No.","Document Line No.",Interface,Status,
+        "Process Status");
+      InterfaceProcessLog.SETRANGE(Status,FPCGeneralSetup."Status Pick");
+      InterfaceProcessLog.SETRANGE("Process Status",InterfaceProcessLog."Process Status"::Unprocessed);
+      InterfaceProcessLog.SETRANGE("Entry Type",InterfaceProcessLog."Entry Type"::Sales);
+      IF GlobalOrderNoFilter <> '' THEN
+        InterfaceProcessLog.SETFILTER("Document No.",GlobalOrderNoFilter);
+      IF NOT InterfaceProcessLog.ISEMPTY THEN BEGIN
+        InterfaceProcessLog.FINDSET;
+        OldOrderNo := '';
+        OldStatus := '';
+        OldDocType := 0;
+        REPEAT
+          IF (OldOrderNo <> InterfaceProcessLog."Document No.") OR
+             (OldStatus <> InterfaceProcessLog.Status) OR
+             (OldDocType <> InterfaceProcessLog."Entry Subtype")
+          THEN BEGIN
+            InterfaceProcessLog.SETRANGE("Entry Subtype",InterfaceProcessLog."Entry Subtype");
+            InterfaceProcessLog.SETRANGE("Document No.",InterfaceProcessLog."Document No.");
+            InterfaceProcessLog.SETRANGE(Status,InterfaceProcessLog.Status);
+            InterfaceProcessLog.SETFILTER(Interface,'%1|%2',
+              FPCGeneralSetup."Interface Code Rhenus",FPCGeneralSetup."Interface Code Crossdock");
+            IF NOT InterfaceProcessLog.ISEMPTY THEN BEGIN
+              InterfaceProcessLog.FINDSET;
+              CLEARLASTERROR;
+              CLEAR(CodeunitOnRunMgt);
+              CodeunitOnRunMgt.InitTriggerInterface(InterfaceProcessLog."Entry No.");
+              IF CodeunitOnRunMgt.RUN THEN BEGIN
+                InterfaceProcessLog.MODIFYALL("Process Timestamp",CURRENTDATETIME);
+                InterfaceProcessLog.MODIFYALL("Process Status",InterfaceProcessLog."Process Status"::Processed);
+              END ELSE BEGIN
+                InterfaceProcessLog.MODIFYALL("Process Timestamp",CURRENTDATETIME);
+                InterfaceProcessLog.MODIFYALL("Error Text 1",COPYSTR(GETLASTERRORTEXT,1,250));
+                InterfaceProcessLog.MODIFYALL("Error Text 2",COPYSTR(GETLASTERRORTEXT,251,500));
+                InterfaceProcessLog.MODIFYALL("Error Text 3",COPYSTR(GETLASTERRORTEXT,501,750));
+                InterfaceProcessLog.MODIFYALL("Error Text 4",COPYSTR(GETLASTERRORTEXT,751,1000));
+                InterfaceProcessLog.MODIFYALL("Error Priority",0);
+                //H0587 07.07.14 HCN +++++++++++++++++++++++++++++
+                InterfaceProcessLog.MODIFYALL("Process Status",InterfaceProcessLog."Process Status"::Error);
+                //H0587 07.07.14 HCN -----------------------------
+              END;
+              COMMIT;
+            END;
+            // Trigger for Docdata
+            InterfaceProcessLog.SETRANGE(Interface);
+            InterfaceProcessLog.SETRANGE(Interface,FPCGeneralSetup."Interface Code DocData");
+            IF NOT InterfaceProcessLog.ISEMPTY THEN BEGIN
+              InterfaceProcessLog.FINDSET;
+              CLEARLASTERROR;
+              CLEAR(CodeunitOnRunMgt);
+              CodeunitOnRunMgt.InitTriggerInterface(InterfaceProcessLog."Entry No.");
+              IF CodeunitOnRunMgt.RUN THEN BEGIN
+                InterfaceProcessLog.MODIFYALL("Process Timestamp",CURRENTDATETIME);
+                InterfaceProcessLog.MODIFYALL("Process Status",InterfaceProcessLog."Process Status"::Processed);
+              END ELSE BEGIN
+                InterfaceProcessLog.MODIFYALL("Process Timestamp",CURRENTDATETIME);
+                InterfaceProcessLog.MODIFYALL("Error Text 1",COPYSTR(GETLASTERRORTEXT,1,250));
+                InterfaceProcessLog.MODIFYALL("Error Text 2",COPYSTR(GETLASTERRORTEXT,251,500));
+                InterfaceProcessLog.MODIFYALL("Error Text 3",COPYSTR(GETLASTERRORTEXT,501,750));
+                InterfaceProcessLog.MODIFYALL("Error Text 4",COPYSTR(GETLASTERRORTEXT,751,1000));
+                InterfaceProcessLog.MODIFYALL("Error Priority",0);
+                //H0587 07.07.14 HCN +++++++++++++++++++++++++++++
+                InterfaceProcessLog.MODIFYALL("Process Status",InterfaceProcessLog."Process Status"::Error);
+                //H0587 07.07.14 HCN -----------------------------
+              END;
+              COMMIT;
+            END;
+            // Trigger for Dropship
+            InterfaceProcessLog.SETRANGE(Interface);
+            InterfaceProcessLog.SETRANGE(Interface,FPCGeneralSetup."Interface Code Dropshipment");
+            IF NOT InterfaceProcessLog.ISEMPTY THEN BEGIN
+              InterfaceProcessLog.FINDSET;
+              CLEARLASTERROR;
+              CLEAR(CodeunitOnRunMgt);
+              CodeunitOnRunMgt.InitTriggerInterface(InterfaceProcessLog."Entry No.");
+              IF CodeunitOnRunMgt.RUN THEN BEGIN
+                InterfaceProcessLog.MODIFYALL("Process Timestamp",CURRENTDATETIME);
+                InterfaceProcessLog.MODIFYALL("Process Status",InterfaceProcessLog."Process Status"::Processed);
+              END ELSE BEGIN
+                InterfaceProcessLog.MODIFYALL("Process Timestamp",CURRENTDATETIME);
+                InterfaceProcessLog.MODIFYALL("Error Text 1",COPYSTR(GETLASTERRORTEXT,1,250));
+                InterfaceProcessLog.MODIFYALL("Error Text 2",COPYSTR(GETLASTERRORTEXT,251,500));
+                InterfaceProcessLog.MODIFYALL("Error Text 3",COPYSTR(GETLASTERRORTEXT,501,750));
+                InterfaceProcessLog.MODIFYALL("Error Text 4",COPYSTR(GETLASTERRORTEXT,751,1000));
+                InterfaceProcessLog.MODIFYALL("Error Priority",0);
+                //H0587 07.07.14 HCN +++++++++++++++++++++++++++++
+                InterfaceProcessLog.MODIFYALL("Process Status",InterfaceProcessLog."Process Status"::Error);
+                //H0587 07.07.14 HCN -----------------------------
+              END;
+              COMMIT;
+            END;
+            //H1408 17.09.14 DMA ++++++++++++++++++++++++++++++++++++++++++++++++
+            // Trigger for Whse. LF
+            InterfaceProcessLog.SETRANGE(Interface);
+            InterfaceProcessLog.SETRANGE(Interface,FPCGeneralSetup."Interface Code Whse. LF");
+            IF NOT InterfaceProcessLog.ISEMPTY THEN BEGIN
+              InterfaceProcessLog.FINDSET;
+              CLEARLASTERROR;
+              CLEAR(CodeunitOnRunMgt);
+              CodeunitOnRunMgt.InitTriggerInterface(InterfaceProcessLog."Entry No.");
+              IF CodeunitOnRunMgt.RUN THEN BEGIN
+                InterfaceProcessLog.MODIFYALL("Process Timestamp",CURRENTDATETIME);
+                InterfaceProcessLog.MODIFYALL("Process Status",InterfaceProcessLog."Process Status"::Processed);
+              END ELSE BEGIN
+                InterfaceProcessLog.MODIFYALL("Process Timestamp",CURRENTDATETIME);
+                InterfaceProcessLog.MODIFYALL("Error Text 1",COPYSTR(GETLASTERRORTEXT,1,250));
+                InterfaceProcessLog.MODIFYALL("Error Text 2",COPYSTR(GETLASTERRORTEXT,251,500));
+                InterfaceProcessLog.MODIFYALL("Error Text 3",COPYSTR(GETLASTERRORTEXT,501,750));
+                InterfaceProcessLog.MODIFYALL("Error Text 4",COPYSTR(GETLASTERRORTEXT,751,1000));
+                InterfaceProcessLog.MODIFYALL("Error Priority",0);
+                InterfaceProcessLog.MODIFYALL("Process Status",InterfaceProcessLog."Process Status"::Error);
+              END;
+              COMMIT;
+            END;
+            //H1408 17.09.14 DMA ------------------------------------------------
+          END;
+          InterfaceProcessLog.SETRANGE(Status);
+          OldOrderNo := InterfaceProcessLog."Document No.";
+          OldStatus := InterfaceProcessLog.Status;
+          OldDocType := InterfaceProcessLog."Entry Subtype";
+          InterfaceProcessLog.SETRANGE(Interface);
+          InterfaceProcessLog.SETRANGE("Entry Subtype");
+          InterfaceProcessLog.SETRANGE("Document No.");
+        UNTIL InterfaceProcessLog.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE CheckIfISAlreadyLastStatus@1000000008(p_EntryType@1000000006 : 'Sales,Purchase';p_EntrySubType@1000000005 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order,Externe Logistik';p_DocumentNo@1000000004 : Code[20];p_DocumentLineNo@1000000003 : Integer;p_Interface@1000000002 : Code[10];p_Status@1000000001 : Code[20]) : Boolean;
+    VAR
+      InterfaceProcessLog@1000000007 : Record 50087;
+    BEGIN
+      InterfaceProcessLog.RESET;
+      InterfaceProcessLog.SETCURRENTKEY("Entry Type","Entry Subtype","Document No.","Document Line No.",Interface,Status);
+      InterfaceProcessLog.SETRANGE("Entry Type",p_EntryType);
+      InterfaceProcessLog.SETRANGE("Entry Subtype",p_EntrySubType);
+      InterfaceProcessLog.SETRANGE("Document No.",p_DocumentNo);
+      InterfaceProcessLog.SETRANGE("Document Line No.",p_DocumentLineNo);
+      InterfaceProcessLog.SETRANGE(Interface,p_Interface);
+      //InterfaceProcessLog.SETRANGE(Status,p_Status);
+      IF NOT InterfaceProcessLog.ISEMPTY THEN
+        IF InterfaceProcessLog.FINDLAST AND (InterfaceProcessLog.Status = p_Status) THEN
+          EXIT(TRUE);
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE GetInterfaceStatusArchiv@1000000011(p_EntryType@1000000003 : 'Sales,Purchase';p_EntrySubType@1000000002 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order,Externe Logistik';p_DocumentNo@1000000001 : Code[20];p_DocumentLineNo@1000000000 : Integer) r_Status : Code[20];
+    VAR
+      InterfaceProcessLogArchiv@1000000004 : Record 50085;
+    BEGIN
+      InterfaceProcessLogArchiv.RESET;
+      //A/gob-adb/16.05.13
+      InterfaceProcessLogArchiv.SETCURRENTKEY("Document No.","Document Line No.");
+      //E/gob-adb/16.05.13
+      InterfaceProcessLogArchiv.SETRANGE("Entry Type",p_EntryType);
+      InterfaceProcessLogArchiv.SETRANGE("Entry Subtype",p_EntrySubType);
+      InterfaceProcessLogArchiv.SETRANGE("Document No.",p_DocumentNo);
+      InterfaceProcessLogArchiv.SETRANGE("Document Line No.",p_DocumentLineNo);
+      IF InterfaceProcessLogArchiv.FINDLAST THEN
+        EXIT(InterfaceProcessLogArchiv.Status)
+      ELSE
+        EXIT('');
+    END;
+
+    PROCEDURE ShowInterfaceStatusArchiv@1000000009(p_EntryType@1000000003 : 'Sales,Purchase';p_EntrySubType@1000000002 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order,Externe Logistik';p_DocumentNo@1000000001 : Code[20];p_DocumentLineNo@1000000000 : Integer) r_Status : Code[20];
+    VAR
+      InterfaceProcessLogArchiv@1000000004 : Record 50085;
+      InterfaceProcessLogArchivForm@1000000005 : Form 50160;
+    BEGIN
+      InterfaceProcessLogArchiv.RESET;
+      //A/gob-adb/16.05.13
+      InterfaceProcessLogArchiv.SETCURRENTKEY("Document No.","Document Line No.");
+      //E/gob-adb/16.05.13
+      InterfaceProcessLogArchiv.SETRANGE("Entry Type",p_EntryType);
+      InterfaceProcessLogArchiv.SETRANGE("Entry Subtype",p_EntrySubType);
+      InterfaceProcessLogArchiv.SETRANGE("Document No.",p_DocumentNo);
+      InterfaceProcessLogArchiv.SETRANGE("Document Line No.",p_DocumentLineNo);
+      IF InterfaceProcessLogArchiv.FINDSET(FALSE,FALSE) THEN BEGIN
+        CLEAR(InterfaceProcessLogArchivForm);
+        InterfaceProcessLogArchivForm.SETTABLEVIEW(InterfaceProcessLogArchiv);
+        InterfaceProcessLogArchivForm.RUNMODAL;
+      END;
+    END;
+
+    PROCEDURE GetLowestOrderStatus@1000000012(p_SalesHeader@1000000000 : Record 36) : Code[20];
+    VAR
+      SalesLine@1000000010 : Record 37;
+      StatusArray@1000000009 : ARRAY [99] OF Code[20];
+      FPCGeneralSetup@1000000008 : Record 50055;
+      InterfaceProcessLog@1000000007 : Record 50087;
+      LastStatus@1000000006 : Code[20];
+      i@1000000005 : Integer;
+      STIME@1000000004 : Time;
+      ETIME@1000000003 : Time;
+      CancelCount@1000000002 : Integer;
+      LineCount@1000000001 : Integer;
+    BEGIN
+      CLEAR(StatusArray);
+      SalesLine.RESET;
+      FPCGeneralSetup.RESET;
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Status Open");
+      FPCGeneralSetup.TESTFIELD("Status Reserve");
+      FPCGeneralSetup.TESTFIELD("Status Pick");
+      FPCGeneralSetup.TESTFIELD("Status Cancel");
+      FPCGeneralSetup.TESTFIELD("Status Transport");
+      FPCGeneralSetup.TESTFIELD("Status Finished");
+      FPCGeneralSetup.TESTFIELD("Status Invoiced");
+      SalesLine.SETRANGE("Document Type",p_SalesHeader."Document Type");
+      SalesLine.SETRANGE("Document No.",p_SalesHeader."No.");
+      IF SalesLine.FINDSET(FALSE,FALSE) THEN BEGIN
+        CancelCount := 0;
+        LineCount := 0;
+        REPEAT
+          IF ((SalesLine.Type = SalesLine.Type::Item) AND (SalesLine."Purchasing Code" <> '')) OR
+             ((SalesLine.Type = SalesLine.Type::Resource) AND (SalesLine."Resource Type" = SalesLine."Resource Type"::Assembly))
+          THEN BEGIN
+            LineCount += 1;
+            LastStatus := '';
+            InterfaceProcessLog.RESET;
+            //A/gob-adb/16.05.13
+            InterfaceProcessLog.SETCURRENTKEY("Document No.","Document Line No.");
+            //E/gob-adb/16.05.13
+            InterfaceProcessLog.SETRANGE("Entry Type",InterfaceProcessLog."Entry Type"::Sales);
+            InterfaceProcessLog.SETRANGE("Entry Subtype",SalesLine."Document Type");
+            InterfaceProcessLog.SETRANGE("Document No.",SalesLine."Document No.");
+            InterfaceProcessLog.SETRANGE("Document Line No.",SalesLine."Line No.");
+            IF InterfaceProcessLog.FINDLAST THEN BEGIN
+              LastStatus := InterfaceProcessLog.Status;
+            END;
+            CASE LastStatus OF
+              FPCGeneralSetup."Status Open" :
+                BEGIN
+                  StatusArray[10] := LastStatus;
+                END;
+              FPCGeneralSetup."Status Reserve" :
+                BEGIN
+                  StatusArray[20] := LastStatus;
+                END;
+              FPCGeneralSetup."Status Pick" :
+                BEGIN
+                  StatusArray[30] := LastStatus;
+                END;
+              FPCGeneralSetup."Status Cancel" :
+                BEGIN
+                  CancelCount += 1;
+                END;
+              FPCGeneralSetup."Status Transport" :
+                BEGIN
+                  StatusArray[50] := LastStatus;
+                END;
+              FPCGeneralSetup."Status Finished" :
+                BEGIN
+                  StatusArray[60] := LastStatus;
+                END;
+              FPCGeneralSetup."Status Invoiced" :
+                BEGIN
+                  StatusArray[70] := LastStatus;
+                END;
+            END;
+          END;
+        UNTIL SalesLine.NEXT = 0;
+      END;
+      IF (LineCount <> 0) AND (CancelCount <> 0) AND (LineCount = CancelCount) THEN
+        EXIT(FPCGeneralSetup."Status Cancel");
+      FOR i := 1 TO ARRAYLEN(StatusArray) DO BEGIN
+        IF StatusArray[i] <> '' THEN
+          EXIT(StatusArray[i]);
+      END;
+
+      EXIT('');
+    END;
+
+    PROCEDURE GetLowestOrderStatusArchiv@1000000014(p_SalesHeaderArchive@1000000000 : Record 5107) : Code[20];
+    VAR
+      SalesLineArchive@1000000010 : Record 5108;
+      StatusArray@1000000009 : ARRAY [99] OF Code[20];
+      FPCGeneralSetup@1000000008 : Record 50055;
+      InterfaceProcessLogArchiv@1000000007 : Record 50085;
+      LastStatus@1000000006 : Code[20];
+      i@1000000005 : Integer;
+      STIME@1000000004 : Time;
+      ETIME@1000000003 : Time;
+      CancelCount@1000000002 : Integer;
+      LineCount@1000000001 : Integer;
+    BEGIN
+      CLEAR(StatusArray);
+      SalesLineArchive.RESET;
+      FPCGeneralSetup.RESET;
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Status Open");
+      FPCGeneralSetup.TESTFIELD("Status Reserve");
+      FPCGeneralSetup.TESTFIELD("Status Pick");
+      FPCGeneralSetup.TESTFIELD("Status Cancel");
+      FPCGeneralSetup.TESTFIELD("Status Transport");
+      FPCGeneralSetup.TESTFIELD("Status Finished");
+      FPCGeneralSetup.TESTFIELD("Status Invoiced");
+      SalesLineArchive.SETRANGE("Document Type",p_SalesHeaderArchive."Document Type");
+      SalesLineArchive.SETRANGE("Document No.",p_SalesHeaderArchive."No.");
+      IF SalesLineArchive.FINDSET(FALSE,FALSE) THEN BEGIN
+        CancelCount := 0;
+        LineCount := 0;
+        REPEAT
+          IF ((SalesLineArchive.Type = SalesLineArchive.Type::Item) AND (SalesLineArchive."Purchasing Code" <> ''))OR
+             ((SalesLineArchive.Type = SalesLineArchive.Type::Resource) AND
+             (SalesLineArchive."Resource Type" = SalesLineArchive."Resource Type"::Assembly))
+          THEN BEGIN
+            LineCount += 1;
+            LastStatus := '';
+            InterfaceProcessLogArchiv.RESET;
+            //A/gob-adb/16.05.13
+            InterfaceProcessLogArchiv.SETCURRENTKEY("Document No.","Document Line No.");
+            //E/gob-adb/16.05.13
+            InterfaceProcessLogArchiv.SETRANGE("Entry Type",InterfaceProcessLogArchiv."Entry Type"::Sales);
+            InterfaceProcessLogArchiv.SETRANGE("Entry Subtype",SalesLineArchive."Document Type");
+            InterfaceProcessLogArchiv.SETRANGE("Document No.",SalesLineArchive."Document No.");
+            InterfaceProcessLogArchiv.SETRANGE("Document Line No.",SalesLineArchive."Line No.");
+            IF InterfaceProcessLogArchiv.FINDLAST THEN BEGIN
+              LastStatus := InterfaceProcessLogArchiv.Status;
+            END;
+            CASE LastStatus OF
+              FPCGeneralSetup."Status Open" :
+                BEGIN
+                  StatusArray[10] := LastStatus;
+                END;
+              FPCGeneralSetup."Status Reserve" :
+                BEGIN
+                  StatusArray[20] := LastStatus;
+                END;
+              FPCGeneralSetup."Status Pick" :
+                BEGIN
+                  StatusArray[30] := LastStatus;
+                END;
+              FPCGeneralSetup."Status Cancel" :
+                BEGIN
+                  CancelCount += 1;
+                END;
+              FPCGeneralSetup."Status Transport" :
+                BEGIN
+                  StatusArray[50] := LastStatus;
+                END;
+              FPCGeneralSetup."Status Finished" :
+                BEGIN
+                  StatusArray[60] := LastStatus;
+                END;
+              FPCGeneralSetup."Status Invoiced" :
+                BEGIN
+                  StatusArray[70] := LastStatus;
+                END;
+            END;
+          END;
+        UNTIL SalesLineArchive.NEXT = 0;
+      END;
+      IF (LineCount <> 0) AND (CancelCount <> 0) AND (LineCount = CancelCount) THEN
+        EXIT(FPCGeneralSetup."Status Cancel");
+      FOR i := 1 TO ARRAYLEN(StatusArray) DO BEGIN
+        IF StatusArray[i] <> '' THEN
+          EXIT(StatusArray[i]);
+      END;
+
+      EXIT('');
+    END;
+
+    PROCEDURE CheckIfLogIsActive@1000000013(InterfaceV@1000000000 : Code[10];StatusV@1000000004 : Code[20]) : Boolean;
+    VAR
+      "****HME***********************"@1000000002 : Integer;
+      FPCInterfaceSetupL@1000000001 : Record 50014;
+      InterfaceProcessStatusCodeL@1000000003 : Record 50086;
+    BEGIN
+      // CheckIfLogIsActive
+      //H0587 30.06.14 HCN +++++++++++++++++++++++++++++
+      CLEAR(FPCInterfaceSetupL);
+      CLEAR(InterfaceProcessStatusCodeL);
+      IF FPCInterfaceSetupL.GET(InterfaceV) AND
+         FPCInterfaceSetupL."Interface Process Log Active" AND
+         InterfaceProcessStatusCodeL.GET(InterfaceProcessStatusCodeL."Status Type"::Status,StatusV) AND
+         InterfaceProcessStatusCodeL.Active
+      THEN BEGIN
+        EXIT(TRUE);
+      END;
+
+      EXIT(FALSE);
+      //H0587 30.06.14 HCN -----------------------------
+    END;
+
+    PROCEDURE UseIPLForSalesOrder@1000000018(p_OrderNo@1000000000 : Code[20];p_Interface@1000000001 : Code[10];p_Status@1000000002 : Code[10]) : Boolean;
+    VAR
+      InterfaceProcessLog@1000000003 : Record 50087;
+    BEGIN
+      InterfaceProcessLog.RESET;
+      //A/gob-adb/16.05.13
+      InterfaceProcessLog.SETCURRENTKEY("Document No.","Document Line No.");
+      //E/gob-adb/16.05.13
+      InterfaceProcessLog.SETRANGE("Entry Type",InterfaceProcessLog."Entry Type"::Sales);
+      InterfaceProcessLog.SETRANGE("Entry Subtype",InterfaceProcessLog."Entry Subtype"::Order);
+      InterfaceProcessLog.SETRANGE("Document No.",p_OrderNo);
+      InterfaceProcessLog.SETRANGE(Interface,p_Interface);
+      InterfaceProcessLog.SETRANGE(Status,p_Status);
+      InterfaceProcessLog.SETRANGE("Process Status",InterfaceProcessLog."Process Status"::Unprocessed);
+      IF NOT InterfaceProcessLog.ISEMPTY THEN
+        EXIT(TRUE);
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE AddInformationLogCancelRenew@1000000021(p_DocumentNo@1000000003 : Code[20];p_DocumentLineNo@1000000004 : Integer;p_Interface@1000000005 : Code[10];p_Status@1000000006 : Code[20];p_Trigger@1000000008 : Code[20]);
+    VAR
+      InterfaceProcessLog@1000000000 : Record 50087;
+      SalesLine@1000000009 : Record 37;
+      PurchLine@1000000010 : Record 39;
+      FPCGeneralSetup@1000000007 : Record 50055;
+      SalesLine2@1000000011 : Record 37;
+      InterfaceProcessStatusCodes@1000000012 : Record 50086;
+      LocText001@1000000013 : TextConst 'DEU=%1 %2 existiert nicht.;ENU=%1 %2 does not exist.';
+    BEGIN
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Status Open");
+      FPCGeneralSetup.TESTFIELD("Status Pick");
+      FPCGeneralSetup.TESTFIELD("Status Cancel");
+      IF NOT InterfaceProcessStatusCodes.GET(0,p_Status) THEN
+        ERROR(LocText001,InterfaceProcessStatusCodes.TABLECAPTION,p_Status);
+      SalesLine.GET(SalesLine."Document Type"::Order,p_DocumentNo,p_DocumentLineNo);
+      IF ((SalesLine.Type = SalesLine.Type::Item) AND (SalesLine."Purchasing Code" <> '')) OR
+         ((SalesLine.Type = SalesLine.Type::Resource) AND (SalesLine."Resource Type" = SalesLine."Resource Type"::Assembly))
+      THEN BEGIN
+        InterfaceProcessLog.RESET;
+        //A/gob-adb/11.11.13
+        //InterfaceProcessLog."Entry No." := InterfaceProcessLog.GetNextEntryNo;
+        InterfaceProcessLog."Entry No." := 0;
+        //E/gob-adb/11.11.13
+        InterfaceProcessLog."Entry Type" := InterfaceProcessLog."Entry Type"::Sales;
+        InterfaceProcessLog."Entry Subtype" := InterfaceProcessLog."Entry Subtype"::Order;
+        InterfaceProcessLog."Document No." := p_DocumentNo;
+        InterfaceProcessLog."Document Line No." := SalesLine."Line No.";
+        InterfaceProcessLog."Is Crossdock Channel" := SalesLine."Special Order";
+        IF SalesLine.Type = SalesLine.Type::Item THEN BEGIN
+          InterfaceProcessLog.Interface := GetInterfaceFromPurchCode(SalesLine."Purchasing Code");
+          InterfaceProcessLog.Channel := SalesLine."Purchasing Code";
+        END ELSE BEGIN
+          SalesLine2.RESET;
+          SalesLine2.SETRANGE("Document Type",SalesLine."Document Type");
+          SalesLine2.SETRANGE("Document No.",SalesLine."Document No.");
+          SalesLine2.SETRANGE(Type,SalesLine2.Type::Item);
+          SalesLine2.SETRANGE(ID,SalesLine."Parent ID");
+          SalesLine2.SETFILTER("Purchasing Code",'<>%1','');
+          IF NOT SalesLine2.ISEMPTY THEN BEGIN
+            SalesLine2.FINDFIRST;
+            InterfaceProcessLog.Interface := GetInterfaceFromPurchCode(SalesLine2."Purchasing Code");
+            InterfaceProcessLog.Channel := SalesLine2."Purchasing Code";
+          END;
+        END;
+        InterfaceProcessLog.VALIDATE(Status,p_Status);
+        InterfaceProcessLog.Trigger := p_Trigger;
+        InterfaceProcessLog."Process Status" := InterfaceProcessLog."Process Status"::Information;
+        InterfaceProcessLog."Process Timestamp" := CURRENTDATETIME;
+        //A/gob-adb/11.11.13
+        //InterfaceProcessLog.INSERT(TRUE);
+        InterfaceProcessLog."Insert User" := USERID;
+        InterfaceProcessLog."Insert Timestamp" := CURRENTDATETIME;
+        InterfaceProcessLog.INSERT;
+        //E/gob-adb/11.11.13
+      END;
+    END;
+
+    PROCEDURE GetForColorForLog@1000000002(p_InterfaceProcessLog@1000000000 : Record 50087) : Integer;
+    VAR
+      FPCGeneralSetup@1000000001 : Record 50055;
+      SalesLine@1000000002 : Record 37;
+    BEGIN
+      FPCGeneralSetup.GET;
+      //S/P1122
+      IF SalesLine.GET(p_InterfaceProcessLog."Entry Subtype",
+        p_InterfaceProcessLog."Document No.",
+        p_InterfaceProcessLog."Document Line No.")
+      THEN BEGIN
+        IF p_InterfaceProcessLog.Status <> FPCGeneralSetup."Status Cancel" THEN BEGIN
+          IF SalesLine.Quantity = 0 THEN
+            EXIT(FPCGeneralSetup."IPL Color Qty. = 0 <> Cancel");
+        END;
+      END;
+      //E/P1122
+      CASE p_InterfaceProcessLog."Process Status" OF
+        p_InterfaceProcessLog."Process Status"::Unprocessed :
+          BEGIN
+            EXIT(FPCGeneralSetup."IPL Color Unprocessed");
+          END;
+        p_InterfaceProcessLog."Process Status"::Canceled :
+          BEGIN
+            EXIT(FPCGeneralSetup."IPL Color Canceled");
+          END;
+        p_InterfaceProcessLog."Process Status"::Processed :
+          BEGIN
+            EXIT(FPCGeneralSetup."IPL Color Processed");
+          END;
+        p_InterfaceProcessLog."Process Status"::Information :
+          BEGIN
+            EXIT(FPCGeneralSetup."IPL Color Information");
+          END;
+        p_InterfaceProcessLog."Process Status"::Error :
+          BEGIN
+            EXIT(FPCGeneralSetup."IPL Color Error");
+          END;
+      END;
+
+      EXIT(0);
+    END;
+
+    PROCEDURE TriggerActive@1000000015(p_TriggerCode@1000000000 : Code[20]) : Boolean;
+    VAR
+      InterfaceProcessStatusCodes@1000000001 : Record 50086;
+    BEGIN
+      InterfaceProcessStatusCodes.RESET;
+      IF InterfaceProcessStatusCodes.GET(InterfaceProcessStatusCodes."Status Type"::Trigger,p_TriggerCode) THEN
+        EXIT(InterfaceProcessStatusCodes.Active);
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE PickManualOrder@1000000022(p_SalesHeader@1000000000 : Record 36;p_CalledFrom@1000000004 : 'Order,Release,PostPrepayment');
+    VAR
+      SalesLine@1000000001 : Record 37;
+      InterfaceProcessLog@1000000002 : Record 50087;
+      FPCGeneralSetup@1000000003 : Record 50055;
+    BEGIN
+      IF (p_SalesHeader.Status = p_SalesHeader.Status::Released) OR (p_CalledFrom = p_CalledFrom::Release) THEN BEGIN
+        IF NOT p_SalesHeader."Payment received" THEN
+          EXIT;
+
+        FPCGeneralSetup.GET;
+        FPCGeneralSetup.TESTFIELD("Status Pick");
+
+        InterfaceProcessLog.RESET;
+        InterfaceProcessLog.SETRANGE("Entry Type",InterfaceProcessLog."Entry Type"::Sales);
+        InterfaceProcessLog.SETRANGE("Entry Subtype",p_SalesHeader."Document Type");
+        InterfaceProcessLog.SETRANGE("Document No.",p_SalesHeader."No.");
+        InterfaceProcessLog.SETRANGE(Status,FPCGeneralSetup."Status Pick");
+        IF NOT InterfaceProcessLog.ISEMPTY THEN
+          EXIT;
+
+        SalesLine.RESET;
+        SalesLine.SETRANGE("Document Type",p_SalesHeader."Document Type");
+        SalesLine.SETRANGE("Document No.",p_SalesHeader."No.");
+        SalesLine.SETRANGE(Type,SalesLine.Type::Item);
+        SalesLine.SETFILTER(Quantity,'<>%1',0);
+        IF SalesLine.FINDSET THEN BEGIN
+          REPEAT
+            IF TriggerActive(FPCGeneralSetup."Trigger Manual User Action") THEN BEGIN
+              InsertInterfaceRecords(0,
+                SalesLine."Document Type",
+                SalesLine."Document No.",
+                SalesLine."Line No.",
+                '',
+                FPCGeneralSetup."Status Pick",
+                FPCGeneralSetup."Trigger Manual User Action");
+            END;
+          UNTIL SalesLine.NEXT = 0;
+        END;
+      END;
+
+      IF (p_SalesHeader.Status = p_SalesHeader.Status::"Pending Prepayment") OR (p_CalledFrom = p_CalledFrom::PostPrepayment) THEN BEGIN
+        FPCGeneralSetup.TESTFIELD("Status Pick");
+        FPCGeneralSetup.TESTFIELD("Status Reserve");
+        FPCGeneralSetup.TESTFIELD("Interface Code Rhenus");
+        FPCGeneralSetup.TESTFIELD("Trigger Manual User Action");
+        IF TriggerActive(FPCGeneralSetup."Trigger Manual User Action") THEN BEGIN
+          UpdateProcessLogForInterface(p_SalesHeader."No.",
+            0,
+            FPCGeneralSetup."Interface Code Rhenus",
+            FPCGeneralSetup."Status Open",
+            FPCGeneralSetup."Status Reserve",
+            FPCGeneralSetup."Trigger NavC");
+        END;
+      END;
+
+      //H1408 17.09.14 DMA ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF (p_SalesHeader.Status = p_SalesHeader.Status::"Pending Prepayment") OR (p_CalledFrom = p_CalledFrom::PostPrepayment) THEN BEGIN
+        FPCGeneralSetup.TESTFIELD("Status Pick");
+        FPCGeneralSetup.TESTFIELD("Status Reserve");
+        FPCGeneralSetup.TESTFIELD("Interface Code Whse. LF");
+        FPCGeneralSetup.TESTFIELD("Trigger Manual User Action");
+        IF TriggerActive(FPCGeneralSetup."Trigger Manual User Action") THEN BEGIN
+          UpdateProcessLogForInterface(p_SalesHeader."No.",
+            0,
+            FPCGeneralSetup."Interface Code Whse. LF",
+            FPCGeneralSetup."Status Open",
+            FPCGeneralSetup."Status Reserve",
+            FPCGeneralSetup."Trigger NavC");
+        END;
+      END;
+      //H1408 17.09.14 DMA -----------------------------------------------------
+    END;
+
+    PROCEDURE InitDDPickAsProcessed@1000000023(p_CreateAsProcessed@1000000000 : Boolean);
+    BEGIN
+      CreateAsProcessed := p_CreateAsProcessed;
+    END;
+
+    PROCEDURE UpdateUnprocessedReserve@1000000027(p_InterfaceProcessLog@1000000000 : Record 50087);
+    VAR
+      InterfaceProcessLog@1000000001 : Record 50087;
+      FPCGeneralSetup@1000000002 : Record 50055;
+    BEGIN
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Status Reserve");
+      InterfaceProcessLog.RESET;
+      InterfaceProcessLog.SETRANGE("Entry Type",p_InterfaceProcessLog."Entry Type");
+      InterfaceProcessLog.SETRANGE("Entry Subtype",p_InterfaceProcessLog."Entry Subtype");
+      InterfaceProcessLog.SETRANGE("Document No.",p_InterfaceProcessLog."Document No.");
+      InterfaceProcessLog.SETRANGE(Status,FPCGeneralSetup."Status Reserve");
+      InterfaceProcessLog.SETRANGE("Process Status",InterfaceProcessLog."Process Status"::Unprocessed);
+      IF NOT InterfaceProcessLog.ISEMPTY THEN BEGIN
+        InterfaceProcessLog.FINDSET;
+        REPEAT
+          InterfaceProcessLog."Process Status" := InterfaceProcessLog."Process Status"::Canceled;
+          InterfaceProcessLog.MODIFY;
+        UNTIL InterfaceProcessLog.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE CancelPreviousLogs@1000000024(p_InterfaceProcessLog@1000000000 : Record 50087);
+    VAR
+      InterfaceProcessLog@1000000001 : Record 50087;
+    BEGIN
+      InterfaceProcessLog.RESET;
+      InterfaceProcessLog.SETFILTER("Entry No.",'<%1',p_InterfaceProcessLog."Entry No.");
+      InterfaceProcessLog.SETRANGE("Entry Type",p_InterfaceProcessLog."Entry Type");
+      InterfaceProcessLog.SETRANGE("Entry Subtype",p_InterfaceProcessLog."Entry Subtype");
+      InterfaceProcessLog.SETRANGE("Document No.",p_InterfaceProcessLog."Document No.");
+      InterfaceProcessLog.SETRANGE("Document Line No.",p_InterfaceProcessLog."Document Line No.");
+      InterfaceProcessLog.SETRANGE("Process Status",InterfaceProcessLog."Process Status"::Unprocessed);
+      IF NOT InterfaceProcessLog.ISEMPTY THEN BEGIN
+        InterfaceProcessLog.FINDSET;
+          REPEAT
+          InterfaceProcessLog."Process Status" := InterfaceProcessLog."Process Status"::Canceled;
+          InterfaceProcessLog.MODIFY;
+        UNTIL InterfaceProcessLog.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE PickOrder@1000000025(p_SalesHeader@1000000000 : Record 36);
+    VAR
+      SalesLine@1000000001 : Record 37;
+    BEGIN
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type",p_SalesHeader."Document Type");
+      SalesLine.SETRANGE("Document No.",p_SalesHeader."No.");
+      IF SalesLine.FINDSET THEN BEGIN
+        REPEAT
+          PickLine(SalesLine);
+        UNTIL SalesLine.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE PickLine@1000000010(p_SalesLine@1000000000 : Record 37);
+    VAR
+      FPCGeneralSetup@1000000001 : Record 50055;
+    BEGIN
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Status Pick");
+      FPCGeneralSetup.TESTFIELD("Trigger Manual User Action");
+      InsertInterfaceRecords(0,
+        p_SalesLine."Document Type",
+        p_SalesLine."Document No.",
+        p_SalesLine."Line No.",
+        '',
+        FPCGeneralSetup."Status Pick",
+        FPCGeneralSetup."Trigger Manual User Action");
+    END;
+
+    PROCEDURE ReserveOrder@1000000026(p_SalesHeader@1000000000 : Record 36);
+    VAR
+      SalesLine@1000000001 : Record 37;
+    BEGIN
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type",p_SalesHeader."Document Type");
+      SalesLine.SETRANGE("Document No.",p_SalesHeader."No.");
+      IF SalesLine.FINDSET THEN BEGIN
+        REPEAT
+          ReserveLine(SalesLine);
+        UNTIL SalesLine.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE ReserveLine@1000000016(p_SalesLine@1000000000 : Record 37);
+    VAR
+      FPCGeneralSetup@1000000001 : Record 50055;
+    BEGIN
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Status Reserve");
+      FPCGeneralSetup.TESTFIELD("Trigger Manual User Action");
+      InsertInterfaceRecords(0,
+        p_SalesLine."Document Type",
+        p_SalesLine."Document No.",
+        p_SalesLine."Line No.",
+        '',
+        FPCGeneralSetup."Status Reserve",
+        FPCGeneralSetup."Trigger Manual User Action");
+    END;
+
+    PROCEDURE UseOldPicking@1000000007(p_SalesHeader@1000000000 : Record 36;p_Interface@1000000001 : Code[10]) : Boolean;
+    VAR
+      IPLTestorders@1000000002 : Record 50185;
+      FPCInterfaceSetup@1000000003 : Record 50014;
+      "****HME***********************"@1000000004 : Integer;
+      InterfaceProcessStatusCodeL@1000000005 : Record 50086;
+      FPCGeneralSetupL@1000000006 : Record 50055;
+    BEGIN
+      // UseOldPicking
+      //H0587 30.06.14 HCN +++++++++++++++++++++++++++++
+      FPCGeneralSetupL.GET;
+      FPCGeneralSetupL.TESTFIELD("Status Pick");
+      CLEAR(FPCInterfaceSetup);
+      CLEAR(InterfaceProcessStatusCodeL);
+
+      IF FPCInterfaceSetup.GET(p_Interface) AND
+         FPCInterfaceSetup."Interface Process Log Active" AND
+         InterfaceProcessStatusCodeL.GET(InterfaceProcessStatusCodeL."Status Type"::Status,
+                                         FPCGeneralSetupL."Status Pick") AND
+         InterfaceProcessStatusCodeL.Active
+      THEN BEGIN
+        EXIT(FALSE);
+      END;
+      //H0587 30.06.14 HCN -----------------------------
+
+      IF IPLTestorders.GET(p_SalesHeader."No.",p_Interface) AND IPLTestorders.Active THEN
+        EXIT(FALSE);
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE PickOrderOnRelease@1000000028(p_SalesHeader@1000000000 : Record 36);
+    VAR
+      FPCGeneralSetup@1000000001 : Record 50055;
+      SalesLine@1000000002 : Record 37;
+      InterfaceProcessLog@1000000003 : Record 50087;
+    BEGIN
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Status Pick");
+      FPCGeneralSetup.TESTFIELD("Status Reserve");
+      FPCGeneralSetup.TESTFIELD("Status Open");
+      FPCGeneralSetup.TESTFIELD("Trigger Manual User Action");
+
+      IF TriggerActive(FPCGeneralSetup."Trigger Manual User Action") THEN BEGIN
+        SalesLine.RESET;
+        SalesLine.SETRANGE("Document Type",p_SalesHeader."Document Type");
+        SalesLine.SETRANGE("Document No.",p_SalesHeader."No.");
+        IF SalesLine.FINDSET THEN BEGIN
+          REPEAT
+            IF (SalesLine.Type = SalesLine.Type::Item) OR
+              ((SalesLine.Type = SalesLine.Type::Resource) AND (SalesLine."Resource Type" = SalesLine."Resource Type"::Assembly))
+            THEN BEGIN
+              InterfaceProcessLog.RESET;
+              InterfaceProcessLog.SETCURRENTKEY("Document No.","Document Line No.");
+              InterfaceProcessLog.SETRANGE("Document No.",SalesLine."Document No.");
+              InterfaceProcessLog.SETRANGE("Document Line No.",SalesLine."Line No.");
+              IF InterfaceProcessLog.FINDLAST THEN BEGIN
+                IF InterfaceProcessLog.Status IN [FPCGeneralSetup."Status Open",FPCGeneralSetup."Status Reserve"] THEN BEGIN
+                  InsertInterfaceRecords(0,
+                    SalesLine."Document Type",
+                    SalesLine."Document No.",
+                    SalesLine."Line No.",
+                    '',
+                    FPCGeneralSetup."Status Pick",
+                    FPCGeneralSetup."Trigger Manual User Action");
+                END;
+              END;
+            END;
+          UNTIL SalesLine.NEXT = 0;
+        END;
+      END;
+    END;
+
+    PROCEDURE ReserveOrderOnPostPrePmt@1000000056(p_SalesHeader@1000000000 : Record 36);
+    VAR
+      FPCGeneralSetup@1000000003 : Record 50055;
+      SalesLine@1000000002 : Record 37;
+      InterfaceProcessLog@1000000001 : Record 50087;
+      ParentSalesLineL@1000000004 : Record 37;
+      IdenticalInterfaceCodeL@1000000005 : Boolean;
+      PaymentMethodL@1000000006 : Record 289;
+    BEGIN
+      //H1009 01.07.14 ARI ++++++++++++++++++++++++++
+      PaymentMethodL.GET(p_SalesHeader."Payment Method Code");
+
+      IF NOT PaymentMethodL."Reserve Item on pending Prepmt" THEN
+        EXIT;
+      //H1009 01.07.14 ARI --------------------------
+
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Status Reserve");
+      FPCGeneralSetup.TESTFIELD("Status Open");
+      FPCGeneralSetup.TESTFIELD("Trigger Manual User Action");
+      FPCGeneralSetup.TESTFIELD("Interface Code Rhenus");
+      //H1408 17.09.14 DMA +++++++++++++++++++++++++++++++++++
+      FPCGeneralSetup.TESTFIELD("Interface Code Whse. LF");
+      //H1408 17.09.14 DMA -----------------------------------
+
+      IF TriggerActive(FPCGeneralSetup."Trigger Manual User Action") THEN BEGIN
+        SalesLine.RESET;
+        SalesLine.SETRANGE("Document Type",p_SalesHeader."Document Type");
+        SalesLine.SETRANGE("Document No.",p_SalesHeader."No.");
+        IF SalesLine.FINDSET THEN BEGIN
+          REPEAT
+          //S/P0966
+          IdenticalInterfaceCodeL := FALSE;
+          //E/P0966
+      //H0540 02.09.2013 ARI +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      //      IF (SalesLine.Type = SalesLine.Type::Item) OR
+      //        ((SalesLine.Type = SalesLine.Type::Resource) AND (SalesLine."Resource Type" = SalesLine."Resource Type"::Assembly))
+      //      THEN BEGIN
+      //        IF GetInterfaceFromPurchCode(SalesLine."Purchasing Code") = FPCGeneralSetup."Interface Code Rhenus" THEN BEGIN
+            IF (SalesLine.Type = SalesLine.Type::Item) THEN
+              //H1408 17.09.14 DMA +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+              {
+              //H1408 17.09.14 DMA -------------------------------------------------------------------------------------
+              IF GetInterfaceFromPurchCode(SalesLine."Purchasing Code") = FPCGeneralSetup."Interface Code Rhenus"  THEN
+              //H1408 17.09.14 DMA +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+              }
+              IF (GetInterfaceFromPurchCode(SalesLine."Purchasing Code") = FPCGeneralSetup."Interface Code Rhenus")  OR
+                (GetInterfaceFromPurchCode(SalesLine."Purchasing Code") = FPCGeneralSetup."Interface Code Whse. LF") THEN
+              //H1408 17.09.14 DMA -------------------------------------------------------------------------------------
+                IdenticalInterfaceCodeL := TRUE;
+            IF ((SalesLine.Type = SalesLine.Type::Resource) AND
+               (SalesLine."Resource Type" = SalesLine."Resource Type"::Assembly)) THEN BEGIN
+              ParentSalesLineL.SETRANGE("Document Type",p_SalesHeader."Document Type");
+              ParentSalesLineL.SETRANGE("Document No.",p_SalesHeader."No.");
+              ParentSalesLineL.SETRANGE(ID,SalesLine."Parent ID");
+              IF ParentSalesLineL.FIND('-') THEN
+                //H1630,H1408 17.09.14 DMA ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+                {
+                //H1630,H1408 17.09.14 DMA ------------------------------------------------------------------------------------
+                IF GetInterfaceFromPurchCode(ParentSalesLineL."Purchasing Code") = FPCGeneralSetup."Interface Code Rhenus" THEN
+                //H1630,H1408 17.09.14 DMA ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+                }
+                IF (GetInterfaceFromPurchCode(ParentSalesLineL."Purchasing Code") = FPCGeneralSetup."Interface Code Rhenus")  OR
+                  (GetInterfaceFromPurchCode(ParentSalesLineL."Purchasing Code") = FPCGeneralSetup."Interface Code Whse. LF") THEN
+                //H1630,H1408 17.09.14 DMA ------------------------------------------------------------------------------------
+                  IdenticalInterfaceCodeL := TRUE;
+            END;
+            IF IdenticalInterfaceCodeL THEN BEGIN
+      //H0540 02.09.2013 ARI -----------------------------------------------------------------------------------------------
+                InterfaceProcessLog.RESET;
+                InterfaceProcessLog.SETCURRENTKEY("Document No.","Document Line No.");
+                InterfaceProcessLog.SETRANGE("Document No.",SalesLine."Document No.");
+                InterfaceProcessLog.SETRANGE("Document Line No.",SalesLine."Line No.");
+                IF InterfaceProcessLog.FINDLAST THEN BEGIN
+                  IF InterfaceProcessLog.Status = FPCGeneralSetup."Status Open" THEN BEGIN
+                    InsertInterfaceRecords(0,
+                      SalesLine."Document Type",
+                      SalesLine."Document No.",
+                      SalesLine."Line No.",
+                      '',
+                      FPCGeneralSetup."Status Reserve",
+                      FPCGeneralSetup."Trigger Manual User Action");
+                  END;
+                END;
+              END;
+      //H0540 02.09.2013 ARI +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      //      END;
+      //H0540 02.09.2013 ARI -----------------------------------------------------------------------------------------------
+          UNTIL SalesLine.NEXT = 0;
+        END;
+      END;
+    END;
+
+    PROCEDURE CheckAndSetFirstPick@1000000030(VAR p_SalesHeader_Var@1000000000 : Record 36);
+    VAR
+      SalesLine@1000000001 : Record 37;
+      InterfaceProcessLog@1000000002 : Record 50087;
+      InsertFirstPick@1000000003 : Boolean;
+      FPCGeneralSetup@1000000004 : Record 50055;
+    BEGIN
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Status Pick");
+
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type",p_SalesHeader_Var."Document Type");
+      SalesLine.SETRANGE("Document No.",p_SalesHeader_Var."No.");
+      IF SalesLine.FINDSET THEN BEGIN
+        InsertFirstPick := TRUE;
+        REPEAT
+          IF (SalesLine.Type = SalesLine.Type::Item) OR
+            ((SalesLine.Type = SalesLine.Type::Resource) AND (SalesLine."Resource Type" = SalesLine."Resource Type"::Assembly))
+          THEN BEGIN
+            InterfaceProcessLog.RESET;
+            InterfaceProcessLog.SETCURRENTKEY("Document No.","Document Line No.");
+            InterfaceProcessLog.SETRANGE("Document No.",SalesLine."Document No.");
+            InterfaceProcessLog.SETRANGE("Document Line No.",SalesLine."Line No.");
+            InterfaceProcessLog.SETRANGE(Status,FPCGeneralSetup."Status Pick");
+            IF InterfaceProcessLog.ISEMPTY THEN
+                InsertFirstPick := FALSE;
+          END;
+        UNTIL (SalesLine.NEXT = 0) OR NOT InsertFirstPick;
+        IF InsertFirstPick THEN BEGIN
+          p_SalesHeader_Var."First Pick" := CURRENTDATETIME;
+          p_SalesHeader_Var."First Pick User" := USERID;
+          p_SalesHeader_Var.MODIFY;
+        END;
+      END;
+    END;
+
+    PROCEDURE SetInserFromChanChange@1000000029(p_InserFromChanChange@1000000000 : Boolean);
+    BEGIN
+      //S/P1122
+      InserFromChanChange := p_InserFromChanChange;
+      //E/P1122
+    END;
+
+    PROCEDURE UpdateStatusAttachedAssembly@1000000033(p_InterfaceProcessLog@1000000000 : Record 50087;p_SalesLine@1000000001 : Record 37);
+    VAR
+      SalesLine@1000000003 : Record 37;
+    BEGIN
+      //S/P1219
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type",p_SalesLine."Document Type");
+      SalesLine.SETRANGE("Document No.",p_SalesLine."Document No.");
+      SalesLine.SETRANGE(Type,SalesLine.Type::Resource);
+      SalesLine.SETRANGE("Resource Type",SalesLine."Resource Type"::Assembly);
+      SalesLine.SETRANGE("Parent ID",p_SalesLine.ID);
+      IF NOT SalesLine.ISEMPTY THEN BEGIN
+        SalesLine.FINDFIRST;
+        InsertInterfaceRecords(p_InterfaceProcessLog."Entry Type",
+          SalesLine."Document Type",
+          SalesLine."Document No.",
+          SalesLine."Line No.",
+          p_InterfaceProcessLog.Interface,
+          p_InterfaceProcessLog.Status,
+          p_InterfaceProcessLog.Trigger);
+      END;
+      //E/P1219
+    END;
+
+    PROCEDURE "***HME************************"@1000000032();
+    BEGIN
+    END;
+
+    PROCEDURE CheckIPLSetup@1000000035();
+    VAR
+      InterfaceProcessStatusCodeL@1000000000 : Record 50086;
+      FPCInterfaceSetupL@1000000001 : Record 50014;
+    BEGIN
+      // CheckIPLSetup
+      //H0587 17.06.14 HCN +++++++++++++++++++++++++++++
+      FPCGeneralSetup.GET;
+      FPCGeneralSetup.TESTFIELD("Interface Code Rhenus");
+      FPCGeneralSetup.TESTFIELD("Interface Code DocData");
+      FPCGeneralSetup.TESTFIELD("Interface Code Crossdock");
+      //H1408 17.09.14 DMA ++++++++++++++++++++++++++++++++
+      FPCGeneralSetup.TESTFIELD("Interface Code Whse. LF");
+      //H1408 17.09.14 DMA --------------------------------
+      FPCGeneralSetup.TESTFIELD("Status Open");
+      FPCGeneralSetup.TESTFIELD("Status Reserve");
+      FPCGeneralSetup.TESTFIELD("Status Pick");
+      FPCGeneralSetup.TESTFIELD("Status Cancel");
+
+      FPCGeneralSetup.TESTFIELD("Trigger Magento Cancel Autom.");
+      FPCGeneralSetup.TESTFIELD("Trigger Magento Cancel Manual");
+
+      InterfaceProcessStatusCodeL.GET(InterfaceProcessStatusCodeL."Status Type"::Trigger,
+                                      FPCGeneralSetup."Trigger Magento Cancel Autom.");
+      InterfaceProcessStatusCodeL.TESTFIELD(Active,TRUE);
+      InterfaceProcessStatusCodeL.GET(InterfaceProcessStatusCodeL."Status Type"::Trigger,
+                                      FPCGeneralSetup."Trigger Magento Cancel Manual");
+      InterfaceProcessStatusCodeL.TESTFIELD(Active,TRUE);
+
+      FPCInterfaceSetupL.GET(FPCGeneralSetup."Interface Code Rhenus");
+      FPCInterfaceSetupL.TESTFIELD("Interface Process Log Active",TRUE);
+      FPCInterfaceSetupL.GET(FPCGeneralSetup."Interface Code DocData");
+      FPCInterfaceSetupL.TESTFIELD("Interface Process Log Active",TRUE);
+      FPCInterfaceSetupL.GET(FPCGeneralSetup."Interface Code Crossdock");
+      FPCInterfaceSetupL.TESTFIELD("Interface Process Log Active",TRUE);
+      //H0587 17.06.14 HCN -----------------------------
+      //H1408 17.09.14 DMA ++++++++++++++++++++++++++++++++
+      FPCInterfaceSetupL.GET(FPCGeneralSetup."Interface Code Whse. LF");
+      FPCInterfaceSetupL.TESTFIELD("Interface Process Log Active",TRUE);
+      //H1408 17.09.14 DMA --------------------------------
+    END;
+
+    PROCEDURE CheckIPLSetup2@1000000041(StatusV@1000000001 : Code[10]);
+    VAR
+      InterfaceProcessStatusCodeL@1000000000 : Record 50086;
+    BEGIN
+      // CheckIPLSetup2
+      //H0587 10.07.14 HCN +++++++++++++++++++++++++++++
+      IPLSetup.GET;
+      IPLSetup.TESTFIELD("Maximum Tries");
+      MaxNoOfTries := IPLSetup."Maximum Tries";
+      //H0587 10.07.14 HCN -----------------------------
+    END;
+
+    PROCEDURE ExistsCancellationIPL@1000000037(SalesLineV@1000000000 : Record 37) CancellationDoesExistO : Boolean;
+    VAR
+      FPCGeneralSetupL@1000000002 : Record 50055;
+      InterfaceProcessLogL@1000000001 : Record 50087;
+      EntryNoCancRequestL@1000000003 : Integer;
+      StopLoopL@1000000004 : Boolean;
+    BEGIN
+      // ExistsCancellationIPL
+      //H0587 15.04.14 HCN +++++++++++++++++++++++++++++
+      CancellationDoesExistO := SalesLineIPLCancelTmp.GET(SalesLineV."Document Type",
+                                                          SalesLineV."Document No.",
+                                                          SalesLineV."Line No.");
+      IF CancellationDoesExistO THEN BEGIN
+        EXIT(CancellationDoesExistO);  // TRUE
+      END;
+
+      IF SalesLineIPLNoCancelTmp.GET(SalesLineV."Document Type",
+                                     SalesLineV."Document No.",
+                                     SalesLineV."Line No.")
+      THEN BEGIN
+        EXIT(CancellationDoesExistO);  // FALSE
+      END;
+
+      FPCGeneralSetupL.GET;
+      FPCGeneralSetupL.TESTFIELD("Status Cancel");
+      FPCGeneralSetupL.TESTFIELD("Interface Code Rhenus");
+      FPCGeneralSetupL.TESTFIELD("Interface Code Crossdock");
+      FPCGeneralSetupL.TESTFIELD("Interface Code DocData");
+      FPCGeneralSetupL.TESTFIELD("Trigger Magento Cancel Manual");
+
+      CLEAR(InterfaceProcessLogL);
+      InterfaceProcessLogL.SETCURRENTKEY("Entry No.");
+      InterfaceProcessLogL.SETRANGE("Entry Type",InterfaceProcessLogL."Entry Type"::Sales);
+      InterfaceProcessLogL.SETRANGE("Entry Subtype",InterfaceProcessLogL."Entry Subtype"::Order);
+      InterfaceProcessLogL.SETRANGE("Document No.",SalesLineV."Document No.");
+      InterfaceProcessLogL.SETRANGE("Document Line No.",SalesLineV."Line No.");
+      //H1408 17.09.14 DMA ++++++++++++++++++++++++++++++++++++++++++++++++++++
+      {
+      //H1408 17.09.14 DMA ----------------------------------------------------
+      InterfaceProcessLogL.SETFILTER(Interface,'%1|%2|%3',
+                                     FPCGeneralSetupL."Interface Code Rhenus",
+                                     FPCGeneralSetupL."Interface Code Crossdock",
+                                     FPCGeneralSetupL."Interface Code DocData");
+      //H1408 17.09.14 DMA ++++++++++++++++++++++++++++++++++++++++++++++++++++
+      }
+      InterfaceProcessLogL.SETFILTER(Interface,'%1|%2|%3|%4',
+                                     FPCGeneralSetupL."Interface Code Rhenus",
+                                     FPCGeneralSetupL."Interface Code Crossdock",
+                                     FPCGeneralSetupL."Interface Code DocData",
+                                     FPCGeneralSetupL."Interface Code Whse. LF");
+      //H1408 17.09.14 DMA ----------------------------------------------------
+
+      InterfaceProcessLogL.SETRANGE(Trigger,FPCGeneralSetupL."Trigger Magento Cancel Manual");
+      InterfaceProcessLogL.SETFILTER("Process Status",'<>%1',InterfaceProcessLogL."Process Status"::Information);
+      CancellationDoesExistO := InterfaceProcessLogL.FINDLAST AND
+                                (InterfaceProcessLogL.Status = FPCGeneralSetupL."Status Cancel");
+      IF CancellationDoesExistO THEN BEGIN
+        SalesLineIPLCancelTmp.INIT;
+        SalesLineIPLCancelTmp := SalesLineV;
+        SalesLineIPLCancelTmp.INSERT;
+      END ELSE BEGIN
+        SalesLineIPLNoCancelTmp.INIT;
+        SalesLineIPLNoCancelTmp := SalesLineV;
+        SalesLineIPLNoCancelTmp.INSERT;
+      END;
+      EXIT(CancellationDoesExistO);
+      //H0587 15.04.14 HCN -----------------------------
+    END;
+
+    PROCEDURE ProcessLogStatusCancelManual@1000000034();
+    VAR
+      InterfaceProcessLogL@1000000000 : Record 50087;
+      InterfaceProcessLog2L@1000000005 : Record 50087;
+      InterfaceProcessLog3L@1000000006 : Record 50087;
+      CodeunitOnRunMgtL@1000000001 : Codeunit 50100;
+      OldOrderNoL@1000000002 : Code[20];
+      OldInterfaceL@1000000003 : Code[10];
+      NoOfTriesL@1000000004 : Integer;
+    BEGIN
+      // ProcessLogStatusCancelManual
+      //H0587 17.06.14 HCN +++++++++++++++++++++++++++++
+      CheckIPLSetup();
+      CheckIPLSetup2(FPCGeneralSetup."Status Cancel");
+
+      CLEAR(InterfaceProcessLogL);
+      InterfaceProcessLogL.SETCURRENTKEY("Document No.","Document Line No.",Status,Interface);
+      InterfaceProcessLogL.SETRANGE("Entry Type",InterfaceProcessLogL."Entry Type"::Sales);
+      InterfaceProcessLogL.SETRANGE("Entry Subtype",InterfaceProcessLogL."Entry Subtype"::Order);
+      InterfaceProcessLogL.SETRANGE(Status,FPCGeneralSetup."Status Cancel");
+      InterfaceProcessLogL.SETRANGE("Process Status",InterfaceProcessLogL."Process Status"::Unprocessed);
+      //H1408 17.09.14 +++++++++++++++++++++++++++++++++
+      {
+      //H1408 17.09.14 ---------------------------------
+      InterfaceProcessLogL.SETFILTER(Interface,'%1|%2|%3',
+                                     FPCGeneralSetup."Interface Code Rhenus",
+                                     FPCGeneralSetup."Interface Code DocData",
+                                     FPCGeneralSetup."Interface Code Crossdock");
+
+      //H1408 17.09.14 +++++++++++++++++++++++++++++++++
+      }
+      InterfaceProcessLogL.SETFILTER(Interface,'%1|%2|%3|%4',
+                                     FPCGeneralSetup."Interface Code Rhenus",
+                                     FPCGeneralSetup."Interface Code DocData",
+                                     FPCGeneralSetup."Interface Code Crossdock",
+                                     FPCGeneralSetup."Interface Code Whse. LF");
+
+      //H1408 17.09.14 ---------------------------------
+
+      //H1418 29.07.14 HCN +++++++++++++++++++++++++++++
+      InterfaceProcessLogL.SETRANGE(Trigger,FPCGeneralSetup."Trigger Magento Cancel Manual");
+      //H1418 29.07.14 HCN -----------------------------
+      IF GlobalOrderNoFilter <> '' THEN BEGIN
+        InterfaceProcessLogL.SETFILTER("Document No.",GlobalOrderNoFilter);
+      END;
+
+      IF NOT InterfaceProcessLogL.ISEMPTY THEN BEGIN
+        InterfaceProcessLogL.FINDSET;
+        OldOrderNoL := '';
+        REPEAT
+          IF (OldOrderNoL <> InterfaceProcessLogL."Document No.") OR
+             (OldInterfaceL <> InterfaceProcessLogL.Interface)
+          THEN BEGIN
+            InterfaceProcessLogL.SETRANGE("Document No.",InterfaceProcessLogL."Document No.");
+            InterfaceProcessLogL.SETRANGE(Interface,InterfaceProcessLogL.Interface);
+            IF InterfaceProcessLogL.FIND('-') THEN BEGIN
+              OldOrderNoL := InterfaceProcessLogL."Document No.";
+              OldInterfaceL := InterfaceProcessLogL.Interface;
+              IF CheckIfIPLRetry(InterfaceProcessLogL,
+                                 IPLSetup."Maximum Tries")
+              THEN BEGIN
+                NoOfTriesL := InterfaceProcessLogL."No. of Tries" + 1;
+                CLEAR(InterfaceProcessLog2L);
+                CLEAR(InterfaceProcessLog3L);
+                InterfaceProcessLog3L.COPYFILTERS(InterfaceProcessLogL);
+
+                CLEARLASTERROR;
+                CLEAR(CodeunitOnRunMgtL);
+                CodeunitOnRunMgtL.InitTriggerInterfaceCancel(InterfaceProcessLogL."Entry No.");
+                IF CodeunitOnRunMgtL.RUN THEN BEGIN
+                  InterfaceProcessLog2L."Process Status" := InterfaceProcessLog2L."Process Status"::Processed;
+                END ELSE BEGIN
+                  InterfaceProcessLog3L.MODIFYALL("Error Text 1",COPYSTR(GETLASTERRORTEXT,1,250));
+                  InterfaceProcessLog3L.MODIFYALL("Error Text 2",COPYSTR(GETLASTERRORTEXT,251,500));
+                  InterfaceProcessLog3L.MODIFYALL("Error Text 3",COPYSTR(GETLASTERRORTEXT,501,750));
+                  InterfaceProcessLog3L.MODIFYALL("Error Text 4",COPYSTR(GETLASTERRORTEXT,751,1000));
+                  InterfaceProcessLog3L.MODIFYALL("Error Priority",0);
+                  IF (NoOfTriesL < IPLSetup."Maximum Tries") THEN BEGIN
+                    InterfaceProcessLog2L."Process Status" := InterfaceProcessLog2L."Process Status"::Unprocessed;
+                  END ELSE BEGIN
+                    InterfaceProcessLog2L."Process Status" := InterfaceProcessLog2L."Process Status"::Error;
+                  END;
+                END;
+                InterfaceProcessLog3L.MODIFYALL("Process Timestamp",CURRENTDATETIME);
+                InterfaceProcessLog3L.MODIFYALL("No. of Tries",NoOfTriesL);
+                InterfaceProcessLog3L.MODIFYALL("Process Status",InterfaceProcessLog2L."Process Status");
+                COMMIT;
+              END;
+            END;
+          END;
+          InterfaceProcessLogL.SETRANGE("Document No.");
+          InterfaceProcessLogL.SETRANGE(Interface);
+        UNTIL InterfaceProcessLogL.NEXT = 0;
+      END;
+      //H0587 17.06.14 HCN -----------------------------
+    END;
+
+    PROCEDURE ProcessLogForInterfaceCancel@1000000036(InterfaceProcessLogV@1000000000 : Record 50087);
+    VAR
+      InterfaceProcessLogL@1000000002 : Record 50087;
+      SalesHeaderL@1000000003 : Record 36;
+      SalesLineL@1000000004 : Record 37;
+      FPCManagementL@1000000005 : Codeunit 50003;
+      ReleaseSalesDocumentL@1000000001 : Codeunit 414;
+      RHDSalesInterfaceMgtL@1000000009 : Codeunit 50153;
+      WhseLFSalesInterfaceMgtL@1000000008 : Codeunit 50303;
+      InterfaceInitiationSuccessfulL@1000000006 : Boolean;
+      DoProcessL@1000000007 : Boolean;
+    BEGIN
+      // ProcessLogForInterfaceCancel
+      //H0587 24.07.14 HCN +++++++++++++++++++++++++++++
+
+      CheckIPLSetup();
+
+      IF SalesHeaderL.GET(InterfaceProcessLogV."Entry Subtype",InterfaceProcessLogV."Document No.") AND
+         (InterfaceProcessLogV.Status = FPCGeneralSetup."Status Cancel") AND
+         (InterfaceProcessLogV."Process Status" = InterfaceProcessLogV."Process Status"::Unprocessed) AND
+         (InterfaceProcessLogV.Trigger = FPCGeneralSetup."Trigger Magento Cancel Manual")
+      THEN BEGIN
+
+        // Check Processing
+        CASE TRUE OF
+          SalesHeaderL."Cancel Without Interfaces":
+            BEGIN
+              ERROR(TextHME003,SalesHeaderL.FIELDCAPTION("Cancel Without Interfaces"));
+            END;
+
+          (SalesHeaderL."Processing interrupted" <> SalesHeaderL."Processing interrupted"::No) AND
+          (NOT SalesHeaderL."Interruption Checked"):
+            BEGIN
+              ERROR(TextHME004,SalesHeaderL.FIELDCAPTION("Processing interrupted"));
+            END;
+        END;
+
+
+        // Actual Processing
+        CASE InterfaceProcessLogV.Interface OF
+          FPCGeneralSetup."Interface Code Rhenus",
+          FPCGeneralSetup."Interface Code Crossdock":
+            BEGIN
+              IdentifyLastRHDExportHeader(SalesHeaderL);
+              CLEAR(RHDSalesInterfaceMgtL);
+              RHDSalesInterfaceMgtL.TriggerRhenusFromSalesHeader(SalesHeaderL);
+              InterfaceInitiationSuccessfulL := ChkInterfaceInitiationSuccess(InterfaceProcessLogV);
+            END;
+
+          FPCGeneralSetup."Interface Code DocData":
+            BEGIN
+              IF (SalesHeaderL.Status = SalesHeaderL.Status::Released) OR
+                 (SalesHeaderL.Status = SalesHeaderL.Status::Canceled)
+              THEN BEGIN
+                ReleaseSalesDocumentL.CalledFromCancel(TRUE);
+                ReleaseSalesDocumentL.InitiateOrder2DDInterface(SalesHeaderL,2); // 2 = cancellation
+                InterfaceInitiationSuccessfulL := ReleaseSalesDocumentL.GetResultInterfaceInitiation();
+                CLEAR(ReleaseSalesDocumentL);
+                ReleaseSalesDocumentL.InitiateOrder2DDInterface(SalesHeaderL,0); // 0 = new
+              END ELSE BEGIN
+                ERROR(TextHME006,FORMAT(SalesHeaderL.Status));
+              END;
+            END;
+          //H1408 17.09.14 DMA +++++++++++++++++++++++++++++++
+          FPCGeneralSetup."Interface Code Whse. LF":
+            BEGIN
+              IdentifyLastWhseLFExportHeader(SalesHeaderL);
+              CLEAR(WhseLFSalesInterfaceMgtL);
+              WhseLFSalesInterfaceMgtL.TriggerWhsLFFromSalesHeader(SalesHeaderL);
+              InterfaceInitiationSuccessfulL := ChkInterfaceInitiationSuccess(InterfaceProcessLogV);
+            END;
+          //H1408 17.09.14 DMA -------------------------------
+          ELSE BEGIN
+            ERROR(TextHME005,InterfaceProcessLogV.Interface);
+          END;
+        END;
+
+        IF NOT InterfaceInitiationSuccessfulL THEN BEGIN
+          ERROR(TextHME001);
+        END;
+      END;
+      //H0587 24.07.14 HCN -----------------------------
+    END;
+
+    PROCEDURE ChkInterfaceInitiationSuccess@1000000038(InterfaceProcessLogV@1000000000 : Record 50087) InterfaceInitiationSuccessfulO : Boolean;
+    VAR
+      RHDSalesExportHeaderL@1000000001 : Record 50181;
+      RHDSalesExportLineL@1000000002 : Record 50182;
+      RHDSalesLineReferenceL@1000000003 : Record 80011;
+      "****HME***********************"@1000000004 : Integer;
+      FPCInterfaceSetupL@1000000005 : Record 50014;
+      WhseLFSalesExportHeaderL@1000000008 : Record 50304;
+      WhseLFSalesExportLineL@1000000007 : Record 50305;
+      WhseLFSalesLineReferenceL@1000000006 : Record 50314;
+      LocationL@1000000012 : Record 14;
+      SalesLineL@1000000011 : Record 37;
+      WhseH24BranchL@1000000010 : Record 50507;
+    BEGIN
+      // ChkInterfaceInitiationSuccess
+
+      //H0587 07.07.14 HCN +++++++++++++++++++++++++++++
+      IF NOT FPCInterfaceSetupL.GET(InterfaceProcessLogV.Interface) THEN BEGIN
+        EXIT(FALSE);
+      END;
+
+      CASE TRUE OF
+        (InterfaceProcessLogV.Interface IN [FPCGeneralSetup."Interface Code Rhenus",
+                                            FPCGeneralSetup."Interface Code Crossdock"]):
+          BEGIN
+            CLEAR(RHDSalesExportHeaderL);
+            RHDSalesExportHeaderL.SETCURRENTKEY("Document Type","Document No.","Sequence No.","Transmission No.");
+            RHDSalesExportHeaderL.SETRANGE("Document Type",RHDSalesExportHeaderL."Document Type"::Order);
+            RHDSalesExportHeaderL.SETRANGE("Document No.",InterfaceProcessLogV."Document No.");
+            IF RHDSalesExportHeaderL.FINDLAST THEN BEGIN
+              InterfaceInitiationSuccessfulO :=
+                (RHDSalesExportHeaderL."Transmission Mode" IN [RHDSalesExportHeaderL."Transmission Mode"::Delete,
+                                                               RHDSalesExportHeaderL."Transmission Mode"::Update,
+                                                               RHDSalesExportHeaderL."Transmission Mode"::New]);
+
+              CLEAR(RHDSalesExportLineL);
+              RHDSalesExportLineL.SETCURRENTKEY("Entry No.","Entry Line No.");
+              RHDSalesExportLineL.SETRANGE("Entry No.",RHDSalesExportHeaderL."Entry No.");
+
+              InterfaceInitiationSuccessfulO := InterfaceInitiationSuccessfulO AND
+                                                RHDSalesExportLineL.FINDFIRST;
+              CLEAR(RHDSalesLineReferenceL);
+              RHDSalesLineReferenceL.SETCURRENTKEY("Attached to Entry No.","Attached to Entry Line No.","Attached to Sales Line No.");
+              RHDSalesLineReferenceL.SETRANGE("Attached to Entry No.",RHDSalesExportHeaderL."Entry No.");
+              RHDSalesLineReferenceL.SETRANGE("Attached to Sales Line No.",InterfaceProcessLogV."Document Line No.");
+
+              CASE TRUE OF
+                InterfaceInitiationSuccessfulO AND
+                (RHDSalesExportHeaderL."Transmission Mode" = RHDSalesExportHeaderL."Transmission Mode"::New) AND
+                (RHDSalesExportHeaderL."Entry No." > LastRHDSalesExpHeaderEntryNo) AND
+                RHDSalesLineReferenceL.ISEMPTY:
+                  BEGIN
+                    InterfaceInitiationSuccessfulO := TRUE;
+                  END;
+
+                InterfaceInitiationSuccessfulO AND
+                (RHDSalesExportHeaderL."Transmission Mode" = RHDSalesExportHeaderL."Transmission Mode"::Update) AND
+                RHDSalesLineReferenceL.ISEMPTY:
+                  BEGIN
+                    InterfaceInitiationSuccessfulO := TRUE;
+                  END;
+
+                InterfaceInitiationSuccessfulO AND
+                (RHDSalesExportHeaderL."Transmission Mode" = RHDSalesExportHeaderL."Transmission Mode"::Delete) AND
+                NOT RHDSalesLineReferenceL.ISEMPTY:
+                  BEGIN
+                    InterfaceInitiationSuccessfulO := TRUE;
+                  END;
+
+                ELSE BEGIN
+                  InterfaceInitiationSuccessfulO := FALSE;
+                END;
+              END;
+            END ELSE BEGIN
+              ERROR(TextHME002,RHDSalesExportHeaderL.TABLECAPTION);
+            END;
+            EXIT(InterfaceInitiationSuccessfulO);
+          END;
+          //H2157,H1408 16.03.15 DMO ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+          (InterfaceProcessLogV.Interface = FPCGeneralSetup."Interface Code Whse. LF"):
+          BEGIN
+            CLEAR(WhseLFSalesExportHeaderL);
+            WhseLFSalesExportHeaderL.SETCURRENTKEY("Document Type","Document No.","Sequence No.");
+            WhseLFSalesExportHeaderL.SETRANGE("Document Type",WhseLFSalesExportHeaderL."Document Type"::Order);
+            WhseLFSalesExportHeaderL.SETRANGE("Document No.",InterfaceProcessLogV."Document No.");
+            //This part needs to be reviewed as we have project H2184 in development!!!
+            SalesLineL.GET(
+                        SalesLineL."Document Type"::Order,
+                        InterfaceProcessLogV."Document No.",
+                        InterfaceProcessLogV."Document Line No.");
+            LocationL.GET(SalesLineL."Location Code");
+            WhseH24BranchL.SETRANGE("Location Code",SalesLineL."Location Code");
+            IF WhseH24BranchL.FINDFIRST THEN
+              WhseLFSalesExportHeaderL.SETRANGE("Whse. H24 Identifier Code",WhseH24BranchL."Whse. H24 Identifier Code");
+
+            IF WhseLFSalesExportHeaderL.FINDLAST THEN BEGIN
+              InterfaceInitiationSuccessfulO :=
+                (WhseLFSalesExportHeaderL."Transmission Mode" IN [WhseLFSalesExportHeaderL."Transmission Mode"::Cancel,
+                                                               WhseLFSalesExportHeaderL."Transmission Mode"::Update,
+                                                               WhseLFSalesExportHeaderL."Transmission Mode"::New]);
+
+              CLEAR(WhseLFSalesExportLineL);
+              WhseLFSalesExportLineL.SETCURRENTKEY("Entry No.","Entry Line No.");
+              WhseLFSalesExportLineL.SETRANGE("Entry No.",WhseLFSalesExportHeaderL."Entry No.");
+
+              InterfaceInitiationSuccessfulO := InterfaceInitiationSuccessfulO AND
+                                                WhseLFSalesExportLineL.FINDFIRST;
+              CLEAR(WhseLFSalesLineReferenceL);
+              WhseLFSalesLineReferenceL.SETCURRENTKEY(
+                                                  "Attached to Entry No.",
+                                                  "Attached to Entry Line No.",
+                                                  "Attached to Sales Line No.");
+              WhseLFSalesLineReferenceL.SETRANGE("Attached to Entry No.",WhseLFSalesExportHeaderL."Entry No.");
+              WhseLFSalesLineReferenceL.SETRANGE("Attached to Sales Line No.",InterfaceProcessLogV."Document Line No.");
+
+              CASE TRUE OF
+                InterfaceInitiationSuccessfulO AND
+                (WhseLFSalesExportHeaderL."Transmission Mode" = RHDSalesExportHeaderL."Transmission Mode"::New) AND
+                (WhseLFSalesExportHeaderL."Entry No." > LastWhsLFSalesExpHeaderEntryNo) AND
+                WhseLFSalesLineReferenceL.ISEMPTY:
+                  BEGIN
+                    InterfaceInitiationSuccessfulO := TRUE;
+                  END;
+
+                InterfaceInitiationSuccessfulO AND
+                (WhseLFSalesExportHeaderL."Transmission Mode" = WhseLFSalesExportHeaderL."Transmission Mode"::Update) AND
+                WhseLFSalesLineReferenceL.ISEMPTY:
+                  BEGIN
+                    InterfaceInitiationSuccessfulO := TRUE;
+                  END;
+
+                InterfaceInitiationSuccessfulO AND
+                (WhseLFSalesExportHeaderL."Transmission Mode" = WhseLFSalesExportHeaderL."Transmission Mode"::Cancel) AND
+                NOT WhseLFSalesLineReferenceL.ISEMPTY:
+                  BEGIN
+                    InterfaceInitiationSuccessfulO := TRUE;
+                  END;
+
+                ELSE BEGIN
+                  InterfaceInitiationSuccessfulO := FALSE;
+                END;
+              END;
+            END ELSE BEGIN
+              ERROR(TextHME002,WhseLFSalesExportHeaderL.TABLECAPTION);
+            END;
+            EXIT(InterfaceInitiationSuccessfulO);
+          END;
+          //H2157,H1408 16.03.15 DMO --------------------------------------------------------
+        ELSE BEGIN
+          EXIT(FALSE);
+        END;
+      END;
+      //H0587 07.07.14 HCN -----------------------------
+    END;
+
+    PROCEDURE CheckIfIPLRetry@1000000039(VAR InterfaceProcessLogR@1000000000 : Record 50087;MaxNumberOfTriesV@1000000001 : Integer) : Boolean;
+    VAR
+      NextProcessingDateTimeL@1000000005 : DateTime;
+      CurrentProcessingDateTimeL@1000000003 : DateTime;
+    BEGIN
+      // CheckIfIPLRetry
+      //H0587 10.07.14 HCN +++++++++++++++++++++++++++++
+      IF (InterfaceProcessLogR."No. of Tries" >= MaxNumberOfTriesV) THEN BEGIN
+        EXIT(FALSE);
+      END ELSE BEGIN
+        EXIT(TRUE);
+      END;
+      //H0587 10.07.14 HCN -----------------------------
+    END;
+
+    PROCEDURE IdentifyLastRHDExportHeader@1000000040(SalesHeaderV@1000000000 : Record 36);
+    VAR
+      RHDSalesExportHeaderL@1000000001 : Record 50181;
+    BEGIN
+      // IdentifyLastRHDExportHeader
+      //H0587 23.07.14 HCN +++++++++++++++++++++++++++++
+      CLEAR(RHDSalesExportHeaderL);
+      RHDSalesExportHeaderL.SETCURRENTKEY("Document Type","Document No.");
+      RHDSalesExportHeaderL.SETRANGE("Document Type",SalesHeaderV."Document Type");
+      RHDSalesExportHeaderL.SETRANGE("Document No.",SalesHeaderV."No.");
+      IF RHDSalesExportHeaderL.FINDLAST THEN BEGIN
+        LastRHDSalesExpHeaderEntryNo := RHDSalesExportHeaderL."Entry No.";
+      END;
+      //H0587 23.07.14 HCN -----------------------------
+    END;
+
+    PROCEDURE SetIPLProcessStatusInformation@1000000042();
+    BEGIN
+      // SetIPLProcessStatusInformation
+      //H1418 29.07.14 HCN +++++++++++++++++++++++++++++
+      IPLProcessStatusIsInformation := TRUE;
+      //H1418 29.07.14 HCN -----------------------------
+    END;
+
+    PROCEDURE IdentifyLastWhseLFExportHeader@1000000046(SalesHeaderV@1000000000 : Record 36);
+    VAR
+      WhseLFSalesExportHeaderL@1000000001 : Record 50304;
+    BEGIN
+      // IdentifyLastRHDExportHeader
+      //H0587 23.07.14 HCN +++++++++++++++++++++++++++++
+      CLEAR(WhseLFSalesExportHeaderL);
+      WhseLFSalesExportHeaderL.SETCURRENTKEY("Document Type","Document No.");
+      WhseLFSalesExportHeaderL.SETRANGE("Document Type",SalesHeaderV."Document Type");
+      WhseLFSalesExportHeaderL.SETRANGE("Document No.",SalesHeaderV."No.");
+      IF WhseLFSalesExportHeaderL.FINDLAST THEN BEGIN
+        LastWhsLFSalesExpHeaderEntryNo := WhseLFSalesExportHeaderL."Entry No.";
+      END;
+      //H0587 23.07.14 HCN -----------------------------
+    END;
+
+    PROCEDURE UseOldReserve@1000000045(p_SalesHeader@1000000000 : Record 36;p_Interface@1000000001 : Code[10]) : Boolean;
+    VAR
+      IPLTestorders@1000000002 : Record 50185;
+      FPCInterfaceSetup@1000000003 : Record 50014;
+      "****HME***********************"@1000000004 : Integer;
+      InterfaceProcessStatusCodeL@1000000005 : Record 50086;
+      FPCGeneralSetupL@1000000006 : Record 50055;
+    BEGIN
+      // UseOldPicking
+      //H1277 08.10 14 DMA +++++++++++++++++++++++++++++
+      FPCGeneralSetupL.GET;
+      FPCGeneralSetupL.TESTFIELD("Status Pick");
+      CLEAR(FPCInterfaceSetup);
+      CLEAR(InterfaceProcessStatusCodeL);
+
+      IF FPCInterfaceSetup.GET(p_Interface) AND
+         FPCInterfaceSetup."Interface Process Log Active" AND
+         (InterfaceProcessStatusCodeL.GET(InterfaceProcessStatusCodeL."Status Type"::Status,
+                                         FPCGeneralSetupL."Status Reserve") AND
+         InterfaceProcessStatusCodeL.Active)
+      THEN BEGIN
+        EXIT(FALSE);
+      END;
+
+      //H1681,P1287 21.01.14 DMA +++++++++++++++++++++++++++++++++++++++
+      FPCGeneralSetupL.TESTFIELD("Status Reserve");
+      IF IPLTestorders.GET(p_SalesHeader."No.",p_Interface) AND IPLTestorders.Active THEN
+      //H1681,P1287 21.01.14 DMA ---------------------------------------
+        EXIT(FALSE);
+      EXIT(TRUE);
+      //H1277 08.10 14 DMA -----------------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------------+
+      |                                                  |
+      |                      home24                      |
+      +--------------------------------------------------+
+      |                 Inter Process Log                |
+      +--------------------------------------------------+
+
+      Version   Date      Consultant  Comment
+      ____________________________________________________________________________________________________________________________________
+      P0564     07.11.12  gob-rste    Object created
+      P0893     22.04.13  gob-mlan    Fix Testfield Interface Code nach Mail Hr. Beckmann
+      P0914     16.05.13  gob-adb     SETCURRENTKEY's eingefgt
+      P0966     16.06.13  gob-rste    New Interface Code Crossdock, Bugfixes
+      P1122     08.10.13  gob-rste    Dont Update Status if canceled, Update Color if <> Canceled and qty = 0
+      P1143     11.11.13  gob-adb     GetNextEntryNo disabled (now AutoIncrement = Yes)
+
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+      H0540       02.09.13 ARI       Bugfix for Sales Line Type Ressoruce (Assembly)
+      H0587       17.06.14 HCN       Redesign Cancellation Process, Cleanup of OnRunTrigger,ProcessLogStatusPick,InsertInterfaceRecords
+      H1009       01.07.14 ARI       Remove all hardcoded Payment Methods
+      H1418       29.07.14 HCN       Insertion of IPL entries for cancellations w/o interface
+      H1408       05.08.14 DMA       Copy RHD Interface, rename and implement as Whs LF Interface, CODECHANGE
+      H1277       12.09.14 DMA       IPL: Testing /Activation, Bugfix for IPL triggers activation
+      H1630       09.10.14 DMA       Bug: NAV Connector - Channel identification for Resources error,CODECHANGE
+      H1681       21.10.14 DMA       BUG: Too many key fields were specified in IPL Testorders  tabel, ROLLBACK OF P1287 in UseOldReserve
+      H2157       16.03.15 DMO       "Transmission No." is deleted
+    }
+    END.
+  }
+}
+

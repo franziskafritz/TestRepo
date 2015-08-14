@@ -1,0 +1,795 @@
+OBJECT Codeunit 50029 home24 FTP Functions
+{
+  OBJECT-PROPERTIES
+  {
+    Date=17.04.15;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=GOB1.02,HME2158;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=VAR
+            LocPWText@1000000000 : TextConst;
+            FPCInterfaceSetup@1000000001 : Record 50014;
+            CodeunitOnRunMgt@1000000002 : Codeunit 50100;
+            FTPLog@1000000003 : Record 50038;
+            FTPLogError@1000000004 : Record 50038;
+          BEGIN
+            FPCInterfaceSetup.RESET;
+            FPCInterfaceSetup.SETRANGE("FTP Download Active",TRUE);
+            //H1530 16.09.14 EHN ++++++++++++++++++++++++++
+            IF "Parameter String" <> '' THEN BEGIN
+              FPCInterfaceSetup.SETRANGE(Code,"Parameter String");
+            END;
+            //H1530 16.09.14 EHN --------------------------
+            IF FPCInterfaceSetup.FIND('-') THEN BEGIN
+              REPEAT
+                CLEAR(CodeunitOnRunMgt);
+                CLEARLASTERROR;
+                CodeunitOnRunMgt.InitFTPDownload(FPCInterfaceSetup.Code);
+                IF NOT CodeunitOnRunMgt.RUN THEN BEGIN
+                  FTPLogError.RESET;
+                  FTPLogError."Entry No." := FTPLogError.GetNextEntryNo;
+                  FTPLogError."Entry Type" := FTPLogError."Entry Type"::Error;
+                  FTPLogError."Interface Code" := FPCInterfaceSetup.Code;
+                  FTPLogError."Upload/Download" := FTPLogError."Upload/Download"::Download;
+                  FTPLogError.Timestamp := CURRENTDATETIME;
+                  FTPLogError."Log Type" := FTPLogError."Log Type"::"FTP Log";
+                  FTPLogError."Error Text 1" := COPYSTR(GETLASTERRORTEXT,1,250);
+                  FTPLogError."Error Text 2" := COPYSTR(GETLASTERRORTEXT,251,500);
+                  FTPLogError."Error Text 3" := COPYSTR(GETLASTERRORTEXT,501,750);
+                  FTPLogError."Error Text 4" := COPYSTR(GETLASTERRORTEXT,751,1000);
+                  FTPLogError.INSERT;
+                  CLEARLASTERROR;
+                END ELSE BEGIN
+                  FTPLog.RESET;
+                  FTPLog."Entry No." := FTPLog.GetNextEntryNo;
+                  FTPLog."Entry Type" := FTPLog."Entry Type"::Success;
+                  FTPLog."Interface Code" := FPCInterfaceSetup.Code;
+                  FTPLog."Upload/Download" := FTPLog."Upload/Download"::Download;
+                  FTPLog.Timestamp := CURRENTDATETIME;
+                  FTPLog."Log Type" := FTPLog."Log Type"::"FTP Log";
+                  FTPLog.INSERT;
+                  // H0474     30.07.13  FX ++++++++++++++++++
+                  CheckFTPError(FTPLog);
+                  // H0474       30.07.13  FX ----------
+                END;
+                COMMIT;
+              UNTIL FPCInterfaceSetup.NEXT = 0;
+            END;
+
+            FPCInterfaceSetup.RESET;
+            FPCInterfaceSetup.SETRANGE("FTP Upload Active",TRUE);
+            //H1530 16.09.14 EHN ++++++++++++++++++++++++++
+            IF "Parameter String" <> '' THEN BEGIN
+              FPCInterfaceSetup.SETRANGE(Code,"Parameter String");
+            END;
+            //H1530 16.09.14 EHN --------------------------
+            IF FPCInterfaceSetup.FIND('-') THEN BEGIN
+              REPEAT
+                CLEAR(CodeunitOnRunMgt);
+                CLEARLASTERROR;
+                //
+                COMMIT;
+                //
+                CodeunitOnRunMgt.InitFTPUpload(FPCInterfaceSetup.Code);
+                IF NOT CodeunitOnRunMgt.RUN THEN BEGIN
+                  FTPLogError.RESET;
+                  FTPLogError."Entry No." := FTPLogError.GetNextEntryNo;
+                  FTPLogError."Entry Type" := FTPLogError."Entry Type"::Error;
+                  FTPLogError."Interface Code" := FPCInterfaceSetup.Code;
+                  FTPLogError."Upload/Download" := FTPLogError."Upload/Download"::Upload;
+                  FTPLogError.Timestamp := CURRENTDATETIME;
+                  FTPLogError."Log Type" := FTPLogError."Log Type"::"FTP Log";
+                  FTPLogError."Error Text 1" := COPYSTR(GETLASTERRORTEXT,1,250);
+                  FTPLogError."Error Text 2" := COPYSTR(GETLASTERRORTEXT,251,500);
+                  FTPLogError."Error Text 3" := COPYSTR(GETLASTERRORTEXT,501,750);
+                  FTPLogError."Error Text 4" := COPYSTR(GETLASTERRORTEXT,751,1000);
+                  FTPLogError.INSERT;
+                  CLEARLASTERROR;
+                END ELSE BEGIN
+                  FTPLog.RESET;
+                  FTPLog."Entry No." := FTPLog.GetNextEntryNo;
+                  FTPLog."Entry Type" := FTPLog."Entry Type"::Success;
+                  FTPLog."Interface Code" := FPCInterfaceSetup.Code;
+                  FTPLog."Upload/Download" := FTPLog."Upload/Download"::Upload;
+                  FTPLog.Timestamp := CURRENTDATETIME;
+                  FTPLog."Log Type" := FTPLog."Log Type"::"FTP Log";
+                  FTPLog.INSERT;
+                END;
+                COMMIT;
+              UNTIL FPCInterfaceSetup.NEXT = 0;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      FTPLog2@1000000000 : Record 50038;
+
+    PROCEDURE UploadFiles@1000000002(p_Server@1000000004 : Text[1024];p_User@1000000005 : Text[1024];p_Password@1000000006 : Text[1024];p_UploadServerPath@1000000007 : Text[1024];p_UploadDirectoryPath@1000000008 : Text[1024];p_FileNameFilter@1000000012 : Text[1024];p_UseSFTP@1000000009 : Boolean;p_UploadAsTempAndRename@1000000010 : Boolean;p_DeleteAfterUpload@1000000013 : Boolean;p_Archiv@1000000015 : Boolean;p_ArchivPath@1000000016 : Text[1024];p_InterfaceCode@1000000018 : Code[10]) : Boolean;
+    VAR
+      FTPWrapper@1000000011 : Automation "{46E84892-F0B5-4CDA-9011-090955071C7B} 1.0:{15CF033B-85AF-4620-B211-5349F8DB55C6}:'FTPWrapper'.FTPWrapper";
+      FileRec@1000000000 : Record 2000000022;
+      tempFileName@1000000001 : Text[1024];
+      OriginalFileName@1000000002 : Text[1024];
+      ExceptionText@1000000003 : Text[1024];
+      OriginalFileExtension@1000000014 : Text[30];
+      LocText001@1000000017 : TextConst 'DEU=Kein Archivpfad angegeben.;ENU=No Archiv Path.';
+      UploadFileLog@1000000019 : Record 50038;
+      "**** HME ****************"@1000000029 : Integer;
+      TotalUploadFilesL@1000000020 : Integer;
+      RHDSetupL@1000000022 : Record 50177;
+      WhseLFSetupL@1000000025 : Record 50300;
+      WhseH24SubInterfaceL@1000000021 : Record 50506;
+      RHDSalesInterfaceMgtL@1000000023 : Codeunit 50153;
+      RHDPurchInterfaceMgtL@1000000024 : Codeunit 50156;
+      WhseLFSalesInterfaceMgtL@1000000027 : Codeunit 50303;
+      WhseLFPurchInterfaceMgtL@1000000026 : Codeunit 50306;
+      WhseH24FileTypeL@1000000028 : Code[10];
+    BEGIN
+      // H0474       30.07.13  FX ++++++++++++++++++++++++++++++++++++
+      GLOBALLANGUAGE := 1033;
+      // H0474       30.07.13  FX ------------------------------------
+
+      // Get Files for FTP Upload
+      FileRec.RESET;
+      FileRec.SETRANGE(Path,p_UploadDirectoryPath);
+      FileRec.SETRANGE("Is a file",TRUE);
+      // Set additional Filename-Filter like *xml
+      IF p_FileNameFilter <> '' THEN
+        FileRec.SETFILTER(Name,p_FileNameFilter);
+      IF FileRec.FIND('-') THEN BEGIN
+        IF NOT ISCLEAR(FTPWrapper) THEN
+          CLEAR(FTPWrapper);
+        IF CREATE(FTPWrapper) THEN BEGIN
+          // Open FTP Connection
+          FTPWrapper.CreateFTPObject(p_Server,p_User,p_Password,p_UseSFTP);
+
+          //H0236  06.03.13  PAU  +++++++++++++++++++++++++++++++++++++
+          TotalUploadFilesL := FileRec.COUNT;
+          //H0236  06.03.13  PAU  -------------------------------------
+
+          //H2146,P1092,P1193,H1530 25.02.15 EHN ++++++++++++++++++++++++++++
+          RHDSetupL.GET;
+          WhseLFSetupL.GET;
+          CASE p_InterfaceCode OF
+            RHDSetupL."Interface Code KAD" : RHDSetupL.TESTFIELD("Record Type KAD");
+            RHDSetupL."Interface Code WEA" : RHDSetupL.TESTFIELD("Record Type WEA");
+            WhseLFSetupL."Interface ID KAD" : WhseLFSetupL.TESTFIELD("Record Type KAD");
+          END;
+          WhseH24SubInterfaceL.RESET;
+          WhseH24SubInterfaceL.SETRANGE("FPC Interface Setup Code",p_InterfaceCode);
+          IF WhseH24SubInterfaceL.FINDFIRST THEN
+             WhseH24FileTypeL := WhseH24SubInterfaceL."File Type";
+          //H2146,P1092,P1193,H1530 25.02.15 EHN ----------------------------
+          REPEAT
+            ExceptionText := '';
+            IF p_UploadAsTempAndRename THEN BEGIN
+              // Upload as .temp and rename after complete Upload
+              tempFileName := '';
+              OriginalFileName := FileRec.Name;
+              OriginalFileExtension := GetFileExtension(FileRec.Name);
+              tempFileName := COPYSTR(FileRec.Name,1,STRLEN(FileRec.Name)-STRLEN(OriginalFileExtension)) + '.temp';
+              FTPWrapper.UploadFileFromHardDisk(FileRec.Path + FileRec.Name,p_UploadServerPath,tempFileName,ExceptionText);
+            END ELSE
+              // normal Upload
+              FTPWrapper.UploadFileFromHardDisk(FileRec.Path + FileRec.Name,p_UploadServerPath,FileRec.Name,ExceptionText);
+            IF ExceptionText <> '' THEN
+              //A/P0574
+              //ERROR(ExeptionText);
+              ERROR('Upload File %1 failed: ' + ExceptionText,FileRec.Name);
+              //E/P0574
+            IF p_UploadAsTempAndRename THEN BEGIN
+              // Rename Filename.temp to OriginalFileName
+              FTPWrapper.RenameFile(tempFileName,p_UploadServerPath,OriginalFileName,ExceptionText);
+              IF ExceptionText <> '' THEN
+                //A/P0574
+                //ERROR(ExeptionText);
+                ERROR('Rename File %1 failed: ' + ExceptionText,tempFileName);
+                //E/P0574
+            END;
+            IF p_Archiv THEN BEGIN
+              // If Archiv then Copy File to Archiv Folder
+              IF p_ArchivPath = '' THEN
+                ERROR(LocText001);
+              COPY(FileRec.Path + FileRec.Name,p_ArchivPath + FileRec.Name);
+            END;
+            IF p_DeleteAfterUpload THEN
+              // Delete File After Upload
+              ERASE(FileRec.Path + FileRec.Name);
+            //A/P0547
+            UploadFileLog.RESET;
+            UploadFileLog."Entry No." := UploadFileLog.GetNextEntryNo;
+            UploadFileLog."Entry Type" := UploadFileLog."Entry Type"::Success;
+            UploadFileLog."Interface Code" := p_InterfaceCode;
+            UploadFileLog."Upload/Download" := UploadFileLog."Upload/Download"::Upload;
+            UploadFileLog.Timestamp := CURRENTDATETIME;
+            UploadFileLog."Log Type" := UploadFileLog."Log Type"::"File Log";
+            UploadFileLog."File Name" := FileRec.Name;
+
+            //H0236  06.03.13  PAU  +++++++++++++++++++++++++++++++++++++
+            UploadFileLog."Files Counter" := TotalUploadFilesL;
+            //H0236  06.03.13  PAU  -------------------------------------
+            UploadFileLog.INSERT;
+
+            //H2146, P0192, P1193, P1200, H1530 25.02.15 EHN ++++++++++++++++++++++++++
+            CASE p_InterfaceCode OF
+              RHDSetupL."Interface Code KAD":
+                BEGIN
+                  IF RHDSetupL."Record Type KAD" = COPYSTR(FileRec.Name,1,STRLEN(RHDSetupL."Record Type KAD")) THEN
+                    RHDSalesInterfaceMgtL.UpdateStatusUploaded(FileRec.Name);
+                END;
+              RHDSetupL."Interface Code WEA" :
+                BEGIN
+                  IF RHDSetupL."Record Type WEA" = COPYSTR(FileRec.Name,1,STRLEN(RHDSetupL."Record Type WEA")) THEN
+                    RHDPurchInterfaceMgtL.UpdateStatusUploaded(FileRec.Name);
+                END;
+              WhseLFSetupL."Interface ID KAD":
+                BEGIN
+                  IF WhseLFSetupL."Record Type KAD" = COPYSTR(FileRec.Name,1,STRLEN(WhseLFSetupL."Record Type KAD")) THEN
+                    WhseLFSalesInterfaceMgtL.UpdateStatusUploaded(FileRec.Name);
+                END;
+            END;
+            IF WhseH24FileTypeL = WhseLFSetupL."Record Type WEA" THEN BEGIN
+              IF WhseLFSetupL."Record Type WEA" = COPYSTR(FileRec.Name,1,STRLEN(WhseLFSetupL."Record Type WEA")) THEN
+                WhseLFPurchInterfaceMgtL.UpdateStatusUploaded(FileRec.Name);
+            END;
+            //H2146, P0192, P1193, P1200, H1530 25.02.15 EHN --------------------------
+            COMMIT;
+            //E/P0547
+          UNTIL FileRec.NEXT = 0;
+          // Close FTP Connection
+          FTPWrapper.CloseConnection(ExceptionText);
+          IF ExceptionText <> '' THEN
+            //A/P0574
+            //ERROR(ExeptionText);
+            ERROR('Close Connection failed: ' + ExceptionText);
+            //E/P0574
+          CLEAR(FTPWrapper);
+        END;
+      END;
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE ReverseString@1000000004(p_String@1000000000 : Text[1024]) r_ReverseText : Text[1024];
+    VAR
+      i@1000000001 : Integer;
+      j@1000000002 : Integer;
+    BEGIN
+      j := 0;
+      FOR i := STRLEN(p_String) DOWNTO 1 DO BEGIN
+        j += 1;
+        r_ReverseText[j] := p_String[i];
+      END;
+    END;
+
+    PROCEDURE GetFileExtension@1000000000(p_Path@1000000000 : Text[1024]) r_FileExtension : Text[30];
+    BEGIN
+      p_Path := ReverseString(p_Path);
+      r_FileExtension := COPYSTR(p_Path,1,STRPOS(p_Path,'.'));
+      r_FileExtension := ReverseString(r_FileExtension);
+      EXIT(r_FileExtension)
+    END;
+
+    PROCEDURE DownloadFiles@1000000005(p_Server@1000000017 : Text[1024];p_User@1000000016 : Text[1024];p_Password@1000000015 : Text[1024];p_DownloadServerPath@1000000014 : Text[1024];p_DownloadDirectoryPath@1000000013 : Text[1024];p_FileExtensionFilter@1000000012 : Text[1024];p_UseSFTP@1000000011 : Boolean;p_DownloadAsTempAndRename@1000000010 : Boolean;p_DeleteAfterDownload@1000000009 : Boolean;p_CheckIfFileAlreadyExists@1000000021 : Boolean;p_InterfaceCode@1000000018 : Code[10];p_FileNameFilter@1000000036 : Text[1024]);
+    VAR
+      FTPWrapper@1000000008 : Automation "{46E84892-F0B5-4CDA-9011-090955071C7B} 1.0:{15CF033B-85AF-4620-B211-5349F8DB55C6}:'FTPWrapper'.FTPWrapper";
+      FileArray@1000000007 : ARRAY [100000] OF Text[1024];
+      ExceptionText@1000000006 : Text[1024];
+      NoOfFiles@1000000005 : Integer;
+      i@1000000004 : Integer;
+      FileName@1000000003 : Text[1024];
+      tempFileName@1000000002 : Text[1024];
+      FileChecked@1000000001 : Boolean;
+      OriginalFileExtension@1000000000 : Text[30];
+      DownloadFileLog@1000000019 : Record 50038;
+      TotalDownloadedFiles@1000000020 : Integer;
+      FPCGeneralSetup@1000000022 : Record 50055;
+      IsRhenusDL@1000000023 : Boolean;
+      RHDSetup@1000000024 : Record 50177;
+      FPCInterfaceSetupSTA@1000000025 : Record 50014;
+      FPCInterfaceSetupWEM@1000000026 : Record 50014;
+      FPCInterfaceSetupPLZ@1000000027 : Record 50014;
+      LocText001@1000000028 : TextConst 'ENU=Moving File %1 to %2 Import Folder %3 failed.';
+      FPCInterfaceSetup@1000000029 : Record 50014;
+      FilenameForDownload@1000000030 : Text[1024];
+      "**** HME *********************"@1000000032 : Integer;
+      WhseLFSetupL@1000000035 : Record 50300;
+    BEGIN
+      //H2158,H2157,P1090, H0854, H0856, H0857, H1530 25.02.15 DMO +++++++++++++++++++++++++++++++
+      RHDSetup.GET;
+      WhseLFSetupL.GET;
+      FPCInterfaceSetup.GET(p_InterfaceCode);
+      IF p_InterfaceCode IN
+        [RHDSetup."Interface Code STA",
+         RHDSetup."Interface Code WEM",
+         RHDSetup."Interface Code Post Code",
+         RHDSetup."Interface Code BMP",
+         RHDSetup."Interface Code UMP",
+         RHDSetup."Interface Code WMP"]
+      THEN BEGIN
+        FPCInterfaceSetup.TESTFIELD("Download File Filter");
+        FPCInterfaceSetup.TESTFIELD("Archive Root Folder");
+      END;
+      //H2158,H2157,P1090, H0854, H0856, H0857, H1530 25.02.15 DMO -------------------------------
+
+      //A,gob-Fuchs,09.04.13,P0885
+      // H0474       30.07.13  FX ++++++++++++++++++++++++++++++++++++
+      GLOBALLANGUAGE := 1033;
+      // H0474       30.07.13  FX ------------------------------------
+
+      IF COPYSTR(p_DownloadDirectoryPath,STRLEN(p_DownloadDirectoryPath),1) <> '\' THEN
+        p_DownloadDirectoryPath += '\';
+      //E,gob-Fuchs,09.04.13,P0885
+      IF NOT ISCLEAR(FTPWrapper) THEN
+        CLEAR(FTPWrapper);
+      CREATE(FTPWrapper);
+      FTPWrapper.Debug := FALSE;
+      // Open FTP Connection
+      //A,gob-Fuchs,09.04.13,GOB1.03
+      FTPWrapper.SFTP := p_UseSFTP;
+      FTPWrapper.CreateFTPObject(p_Server,p_User,p_Password,FALSE);
+      //E,gob-Fuchs,09.04.13,GOB1.03
+
+      NoOfFiles := 0;
+      // List all Filenames in Text Array
+      NoOfFiles := FTPWrapper.ListDirectoryFilesInArray(p_DownloadServerPath, ExceptionText);
+      //H0236  06.03.13  PAU  +++++++++++++++++++++++++++++++++++++
+      TotalDownloadedFiles := NoOfFiles;
+      //H0236  06.03.13  PAU  -------------------------------------
+
+      IF ExceptionText <> '' THEN
+        //A/P0574
+        //ERROR(ExeptionText);
+        ERROR('List Files in Array failed: ' + ExceptionText);
+        //E/P0574
+      // Download every single file
+      IF NoOfFiles > 0 THEN
+        FOR i := 0 TO (NoOfFiles -1) DO BEGIN
+          FileName := '';
+          ExceptionText := '';
+          // Get Single Filename
+          FileName := FTPWrapper.ReturnFileFromFileArray(i);
+          //P1227, H1530 16.09.14 EHN ++++++++++++++++++++++++++++
+          FilenameForDownload := FileName;
+          IF FPCInterfaceSetup."Add File Extension After DL" <> '' THEN
+            FileName += FPCInterfaceSetup."Add File Extension After DL";
+          //P1227, H1530 16.09.14 EHN ----------------------------
+          // Check if File has right extension
+          IF p_FileExtensionFilter <> '' THEN BEGIN
+            FileChecked := FALSE;
+            IF STRPOS(UPPERCASE(FileName),UPPERCASE(p_FileExtensionFilter)) =
+               STRLEN(FileName) - STRLEN(UPPERCASE(GetFileExtension(FileName))) + 1
+            THEN
+              FileChecked := TRUE;
+          END ELSE
+            FileChecked := TRUE;
+          //H1530 16.09.14 EHN +++++++++++++++++++++++++
+          IF FileChecked AND (p_FileNameFilter <> '') THEN
+            IF p_FileNameFilter <> COPYSTR(FileName,1,STRLEN(p_FileNameFilter)) THEN
+              FileChecked := FALSE;
+          //H1530 16.09.14 EHN -------------------------
+          //A,gob-Fuchs,18.04.13,P0885
+          IF p_CheckIfFileAlreadyExists THEN
+            IF EXISTS(p_DownloadDirectoryPath + FileName) THEN
+              FileChecked := FALSE;
+          //E,gob-Fuchs,18.04.13,P0885
+          IF FileChecked THEN BEGIN
+            IF p_DownloadAsTempAndRename THEN BEGIN
+              // Download as .temp an rename
+              OriginalFileExtension := GetFileExtension(FileName);
+              tempFileName := COPYSTR(FileName,1,STRLEN(FileName)-STRLEN(OriginalFileExtension)) + '.temp';
+              //S/P1227
+      //FTPWrapper.DownloadFileToHardDisk(FileName, p_DownloadServerPath, p_DownloadDirectoryPath + tempFileName, ExceptionText);
+              FTPWrapper.DownloadFileToHardDisk(
+                FilenameForDownload,
+                p_DownloadServerPath,
+                p_DownloadDirectoryPath + tempFileName,
+                ExceptionText);
+              //E/P1227
+              RENAME(p_DownloadDirectoryPath + tempFileName,p_DownloadDirectoryPath + FileName);
+            END ELSE BEGIN
+              // normal download
+              //S/P1227
+              //FTPWrapper.DownloadFileToHardDisk(FileName, p_DownloadServerPath, p_DownloadDirectoryPath + FileName, ExceptionText);
+              FTPWrapper.DownloadFileToHardDisk(
+                FilenameForDownload,
+                p_DownloadServerPath,
+                p_DownloadDirectoryPath + FileName,
+                ExceptionText);
+              //E/P12227
+            END;
+            IF ExceptionText <> '' THEN
+              //A/P0574
+              //ERROR(ExeptionText);
+              ERROR('Download File %1 failed: ' + ExceptionText, FileName);
+              //E/P0574
+            IF p_DeleteAfterDownload THEN BEGIN
+              // Delete File from FTP After Upload
+              //S/P1227
+              //FTPWrapper.DeleteFile(FileName,p_DownloadServerPath, ExceptionText);
+              FTPWrapper.DeleteFile(FilenameForDownload,p_DownloadServerPath, ExceptionText);
+              //E/P1227
+              IF ExceptionText <> '' THEN
+                //A/P0574
+                //ERROR(ExeptionText);
+                ERROR('Delete File %1 failed: ' + ExceptionText, FileName);
+                //E/P0574
+            END;
+            //H1530 16.09.14 EHN ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            {
+            //H1530 16.09.14 EHN ----------------------------------------------------------------------------
+            //S/P1090
+            IF IsRhenusDL THEN BEGIN
+              IF STRPOS(FileName,FPCInterfaceSetupSTA."Upload File Filter") = 1 THEN BEGIN
+                FILE.COPY(p_DownloadDirectoryPath + FileName,FPCInterfaceSetupSTA."Import Folder" + FileName);
+                IF FILE.EXISTS(FPCInterfaceSetupSTA."Import Folder" + FileName) THEN
+                  FILE.ERASE(p_DownloadDirectoryPath + FileName)
+                ELSE
+                  ERROR(LocText001,FileName,RHDSetup."Interface Code STA",FPCInterfaceSetupSTA."Import Folder");
+              END;
+              IF STRPOS(FileName,FPCInterfaceSetupWEM."Upload File Filter") = 1 THEN BEGIN
+                FILE.COPY(p_DownloadDirectoryPath + FileName,FPCInterfaceSetupWEM."Import Folder" + FileName);
+                IF FILE.EXISTS(FPCInterfaceSetupWEM."Import Folder" + FileName) THEN
+                  FILE.ERASE(p_DownloadDirectoryPath + FileName)
+                ELSE
+                  ERROR(LocText001,FileName,RHDSetup."Interface Code WEM",FPCInterfaceSetupWEM."Import Folder");
+              END;
+              IF STRPOS(FileName,FPCInterfaceSetupPLZ."Upload File Filter") = 1 THEN BEGIN
+                FILE.COPY(p_DownloadDirectoryPath + FileName,FPCInterfaceSetupPLZ."Import Folder" + FileName);
+                IF FILE.EXISTS(FPCInterfaceSetupPLZ."Import Folder" + FileName) THEN
+                  FILE.ERASE(p_DownloadDirectoryPath + FileName)
+                ELSE
+                  ERROR(LocText001,FileName,RHDSetup."Interface Code Post Code",FPCInterfaceSetupPLZ."Import Folder");
+              END;
+              //H0854 09.09.14 DMA ++++++++++++++++++++++++++++++++++++++++++++++++
+              IF STRPOS(FileName,FPCInterfaceSetupWMP."Upload File Filter") = 1 THEN BEGIN
+                FILE.COPY(p_DownloadDirectoryPath + FileName,FPCInterfaceSetupWMP."Import Folder" + FileName);
+                IF FILE.EXISTS(FPCInterfaceSetupWMP."Import Folder" + FileName) THEN
+                  FILE.ERASE(p_DownloadDirectoryPath + FileName)
+                ELSE
+                  ERROR(LocText001,FileName,RHDSetup."Interface Code Post Code",FPCInterfaceSetupWMP."Import Folder");
+              END;
+              //H0854 09.09.14 DMA ------------------------------------------------
+              //H0856 09.09.14 DMA ++++++++++++++++++++++++++++++++++++++++++++++++
+              IF STRPOS(FileName,FPCInterfaceSetupUMP."Upload File Filter") = 1 THEN BEGIN
+                FILE.COPY(p_DownloadDirectoryPath + FileName,FPCInterfaceSetupUMP."Import Folder" + FileName);
+                IF FILE.EXISTS(FPCInterfaceSetupUMP."Import Folder" + FileName) THEN
+                  FILE.ERASE(p_DownloadDirectoryPath + FileName)
+                ELSE
+                  ERROR(LocText001,FileName,RHDSetup."Interface Code Post Code",FPCInterfaceSetupUMP."Import Folder");
+              END;
+              //H0856 09.09.14 DMA ------------------------------------------------
+              //H0857 09.09.14 DMA ++++++++++++++++++++++++++++++++++++++++++++++++
+              IF STRPOS(FileName,FPCInterfaceSetupBMP."Upload File Filter") = 1 THEN BEGIN
+                FILE.COPY(p_DownloadDirectoryPath + FileName,FPCInterfaceSetupBMP."Import Folder" + FileName);
+                IF FILE.EXISTS(FPCInterfaceSetupBMP."Import Folder" + FileName) THEN
+                  FILE.ERASE(p_DownloadDirectoryPath + FileName)
+                ELSE
+                  ERROR(LocText001,FileName,RHDSetup."Interface Code Post Code",FPCInterfaceSetupBMP."Import Folder");
+              END;
+              //H0857 09.09.14 DMA ------------------------------------------------
+            END;
+            //E/P1090
+            //H1530 16.09.14 EHN ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            }
+            //H1530 16.09.14 EHN ----------------------------------------------------------------------------
+            //A/P0547
+            DownloadFileLog.RESET;
+            DownloadFileLog."Entry No." := DownloadFileLog.GetNextEntryNo;
+            DownloadFileLog."Entry Type" := DownloadFileLog."Entry Type"::Success;
+            DownloadFileLog."Interface Code" := p_InterfaceCode;
+            DownloadFileLog."Upload/Download" := DownloadFileLog."Upload/Download"::Download;
+            DownloadFileLog.Timestamp := CURRENTDATETIME;
+            DownloadFileLog."Log Type" := DownloadFileLog."Log Type"::"File Log";
+            DownloadFileLog."File Name" := COPYSTR(FileName,1,100);
+
+            //H0236  06.03.13  PAU  +++++++++++++++++++++++++++++++++++++
+            DownloadFileLog."Files Counter" := TotalDownloadedFiles;
+            //H0236  06.03.13  PAU  -------------------------------------
+
+            DownloadFileLog.INSERT;
+            COMMIT;
+            //E/P0547
+          END;
+        END;
+      // Close Connection
+      FTPWrapper.CloseConnection(ExceptionText);
+      CLEAR(FTPWrapper);
+      IF ExceptionText <> '' THEN
+        //A/P0574
+        //ERROR(ExeptionText);
+        ERROR('Close Connection failed: ' + ExceptionText);
+        //E/P0574
+    END;
+
+    PROCEDURE UploadSFiles@1000000001(p_Server@1000000004 : Text[1024];p_User@1000000005 : Text[1024];p_Password@1000000006 : Text[1024];p_UploadServerPath@1000000007 : Text[1024];p_UploadDirectoryPath@1000000008 : Text[1024];p_FileNameFilter@1000000012 : Text[1024];p_UseSFTP@1000000009 : Boolean;p_UploadAsTempAndRename@1000000010 : Boolean;p_DeleteAfterUpload@1000000013 : Boolean;p_Archiv@1000000015 : Boolean;p_ArchivPath@1000000016 : Text[1024];p_InterfaceCode@1000000018 : Code[10]) : Boolean;
+    VAR
+      FTPClient@1000000020 : Automation "{42A8A505-1CD3-4CA4-A7EA-E6EBCC481DDC} 1.0:{B32A3669-654B-4CEF-980E-C7753F1FA524}:'FTPNav'.FTPNavClass";
+      FileRec@1000000000 : Record 2000000022;
+      LocText001@1000000017 : TextConst 'DEU=Kein Archivpfad angegeben.;ENU=No Archiv Path.';
+      UploadFileLog@1000000019 : Record 50038;
+    BEGIN
+      //13.11.12  nas <<<
+      FileRec.RESET;
+      FileRec.SETRANGE(Path,p_UploadDirectoryPath);
+      FileRec.SETRANGE("Is a file",TRUE);
+      IF p_FileNameFilter <> '' THEN
+        FileRec.SETFILTER(Name,p_FileNameFilter);
+      IF FileRec.FIND('-') THEN BEGIN
+        IF NOT ISCLEAR(FTPClient) THEN
+          CLEAR(FTPClient);
+        IF CREATE(FTPClient) THEN BEGIN
+          REPEAT
+            IF NOT FTPClient.sUploadFile(
+                     p_Server, p_User, p_Password, p_UploadServerPath, FileRec.Path + FileRec.Name,FALSE,FALSE)
+                     THEN
+              ERROR('Upload File %1 failed.',FileRec.Name);
+            IF p_Archiv THEN BEGIN
+              IF p_ArchivPath = '' THEN
+                ERROR(LocText001);
+              IF COPY(FileRec.Path + FileRec.Name,p_ArchivPath + FileRec.Name) THEN;
+            END;
+            IF p_DeleteAfterUpload THEN
+              ERASE(FileRec.Path + FileRec.Name);
+            UploadFileLog.RESET;
+            UploadFileLog."Entry No." := UploadFileLog.GetNextEntryNo;
+            UploadFileLog."Entry Type" := UploadFileLog."Entry Type"::Success;
+            UploadFileLog."Interface Code" := p_InterfaceCode;
+            UploadFileLog."Upload/Download" := UploadFileLog."Upload/Download"::Upload;
+            UploadFileLog.Timestamp := CURRENTDATETIME;
+            UploadFileLog."Log Type" := UploadFileLog."Log Type"::"File Log";
+            UploadFileLog."File Name" := FileRec.Name;
+            UploadFileLog.INSERT;
+            COMMIT;
+          UNTIL FileRec.NEXT = 0;
+          CLEAR(FTPClient);
+        END;
+      END;
+
+      EXIT(TRUE);
+      //13.11.12  nas <<<
+    END;
+
+    PROCEDURE DownloadSFiles@1000000003(p_Server@1000000017 : Text[1024];p_User@1000000016 : Text[1024];p_Password@1000000015 : Text[1024];p_DownloadServerPath@1000000014 : Text[1024];p_DownloadDirectoryPath@1000000013 : Text[1024];p_FileExtensionFilter@1000000012 : Text[1024];p_UseSFTP@1000000011 : Boolean;p_DownloadAsTempAndRename@1000000010 : Boolean;p_DeleteAfterDownload@1000000009 : Boolean;p_InterfaceCode@1000000018 : Code[10]);
+    VAR
+      FTPClient@1000000020 : Automation "{42A8A505-1CD3-4CA4-A7EA-E6EBCC481DDC} 1.0:{B32A3669-654B-4CEF-980E-C7753F1FA524}:'FTPNav'.FTPNavClass";
+      FileArray@1000000007 : ARRAY [100000] OF Text[1024];
+      ExeptionText@1000000006 : Text[1024];
+      NoOfFiles@1000000005 : Integer;
+      i@1000000004 : Integer;
+      FileName@1000000003 : Text[1024];
+      tempFileName@1000000002 : Text[1024];
+      FileChecked@1000000001 : Boolean;
+      OriginalFileExtension@1000000000 : Text[30];
+      DownloadFileLog@1000000019 : Record 50038;
+    BEGIN
+      //13.11.12  nas >>>
+      IF NOT ISCLEAR(FTPClient) THEN
+        CLEAR(FTPClient);
+      CREATE(FTPClient);
+
+      IF NOT FTPClient.sDownloadDirectory(
+               p_Server, p_User, p_Password, p_DownloadServerPath,p_DownloadDirectoryPath,p_DeleteAfterDownload,FALSE)
+      THEN
+        ERROR('Download failed.');
+
+      //DownloadFileLog.RESET;
+      //DownloadFileLog."Entry No." := DownloadFileLog.GetNextEntryNo;
+      //DownloadFileLog."Entry Type" := DownloadFileLog."Entry Type"::Success;
+      //DownloadFileLog."Interface Code" := p_InterfaceCode;
+      //DownloadFileLog."Upload/Download" := DownloadFileLog."Upload/Download"::Download;
+      //DownloadFileLog.Timestamp := CURRENTDATETIME;
+      //DownloadFileLog."Log Type" := DownloadFileLog."Log Type"::"FTP Log";
+      //DownloadFileLog."File Name" := COPYSTR(FileName,1,100);
+      //DownloadFileLog.INSERT;
+      //COMMIT;
+
+      CLEAR(FTPClient);
+      //13.11.12  nas <<<
+    END;
+
+    PROCEDURE CountFTPFiles@1000000007(p_Server@1000000017 : Text[1024];p_User@1000000016 : Text[1024];p_Password@1000000015 : Text[1024];p_DownloadServerPath@1000000014 : Text[1024];p_UseSFTP@1000000011 : Boolean) TotalDownloadedFiles : Integer;
+    VAR
+      FTPWrapper@1000000008 : Automation "{46E84892-F0B5-4CDA-9011-090955071C7B} 1.0:{15CF033B-85AF-4620-B211-5349F8DB55C6}:'FTPWrapper'.FTPWrapper";
+      FileArray@1000000007 : ARRAY [100000] OF Text[1024];
+      ExeptionText@1000000006 : Text[1024];
+      NoOfFiles@1000000005 : Integer;
+      i@1000000004 : Integer;
+      FileName@1000000003 : Text[1024];
+      tempFileName@1000000002 : Text[1024];
+      FileChecked@1000000001 : Boolean;
+      OriginalFileExtension@1000000000 : Text[30];
+      DownloadFileLog@1000000019 : Record 50038;
+      FileRecAA@1000000009 : Record 2000000022;
+      FolderGet@1000000010 : Automation "{50A7E9B0-70EF-11D1-B75A-00A0C90564FE} 1.0:{C94F0AD0-F363-11D2-A327-00C04F8EEC7F}:'Microsoft Shell Controls And Automation'.FolderItems2";
+      FolderOpen@1000000012 : Automation "{50A7E9B0-70EF-11D1-B75A-00A0C90564FE} 1.0:{F0D2D8EF-3890-11D2-BF8B-00C04FB93661}:'Microsoft Shell Controls And Automation'.Folder2";
+    BEGIN
+      //H0236  06.03.13  PAU  +++++++++++++++++++++++++++++++++++++
+      IF NOT ISCLEAR(FTPWrapper) THEN
+        CLEAR(FTPWrapper);
+
+      IF NOT CREATE(FTPWrapper) THEN
+        EXIT(0);
+
+      FTPWrapper.Debug := FALSE;
+      FTPWrapper.CreateFTPObject(p_Server,p_User,p_Password,p_UseSFTP);
+
+      NoOfFiles := 0;
+      NoOfFiles := FTPWrapper.ListDirectoryFilesInArray(p_DownloadServerPath,ExeptionText);
+
+      CLEAR(FTPWrapper);
+      EXIT(NoOfFiles);
+      //H0236  06.03.13  PAU  -------------------------------------
+    END;
+
+    PROCEDURE CountDD@1000000006() DDValue : Integer;
+    VAR
+      DDHeaderLook@1000000000 : Record 50061;
+    BEGIN
+      //H0236  06.03.13  PAU  +++++++++++++++++++++++++++++++++++++
+      DDHeaderLook.SETRANGE("Record ID",'51');
+      DDHeaderLook.SETFILTER("File Name",'<>%1','');
+      DDHeaderLook.SETRANGE("Trans. Date",TODAY);
+      DDHeaderLook.SETRANGE("Trans. Time",TIME-3600000,TIME);
+      EXIT(DDHeaderLook.COUNT);
+      //H0236  06.03.13  PAU  -------------------------------------
+    END;
+
+    PROCEDURE CountRehnus@1000000008() RehnusValue : Integer;
+    VAR
+      RhenusChangeLog@1000000000 : Record 50070;
+      "*** H0914 ***"@1000000002 : Integer;
+      RHDSalesLog@1000000001 : Record 80004;
+    BEGIN
+      //H0914  03.03.14 DMA +++++++++++++++++++++++++++++++++++
+      //H0236  06.03.13  PAU  +++++++++++++++++++++++++++++++++++++
+      //RhenusChangeLog.SETRANGE("Source Type",RhenusChangeLog."Source Type"::Sales);
+      //RhenusChangeLog.SETRANGE(Processed,TRUE);
+      //RhenusChangeLog.SETRANGE("Processing Date",CREATEDATETIME(TODAY,TIME-3600000),CURRENTDATETIME);
+      //EXIT(RhenusChangeLog.COUNT);
+      //H0236  06.03.13  PAU  -------------------------------------
+      //H0914  03.03.14 DMA -----------------------------------
+
+      //H0914  03.03.14 DMA +++++++++++++++++++++++++++++++++++
+      RHDSalesLog.RESET;
+      RHDSalesLog.SETRANGE("Action Type", RHDSalesLog."Action Type"::Export);
+      RHDSalesLog.SETRANGE("Action Sub Type", RHDSalesLog."Action Sub Type"::KAD);
+      RHDSalesLog.SETRANGE("Process Date", TODAY);
+      RHDSalesLog.SETRANGE("Process Time", TIME-3600000, TIME);
+      EXIT(RHDSalesLog.COUNT);
+      //H0914  03.03.14 DMA -----------------------------------
+    END;
+
+    PROCEDURE CountFilesOnDisk@1000000009(NameKanal@1000000000 : Code[20];PathToCalc@1000000001 : Text[50]) CountOfFiles : Integer;
+    VAR
+      FilesRec@1000000002 : Record 2000000022;
+    BEGIN
+      //H0261  19.03.13  PAU  +++++++++++++++++++++++++++++++++++++
+      FilesRec.RESET;
+      FilesRec.RESET;
+      FilesRec.SETRANGE(Path,PathToCalc);
+      FilesRec.SETRANGE("Is a file",TRUE);
+      IF FilesRec.FIND('-') THEN
+        EXIT(FilesRec.COUNT);
+      //H0261  19.03.13  PAU  ------------------------------------
+    END;
+
+    PROCEDURE CheckFTPError@1000000020(FTPLogV@1000000000 : Record 50038);
+    BEGIN
+      // H0474       30.07.13  FX ++++++++++++++++++++++++++++++++++++
+      FTPLog2.SETRANGE("Entry Type", FTPLog2."Entry Type"::Error);
+      FTPLog2.SETRANGE("Log Type", FTPLogV."Log Type");
+      FTPLog2.SETRANGE("Interface Code", FTPLogV."Interface Code");
+      FTPLog2.SETRANGE("Upload/Download", FTPLogV."Upload/Download");
+      FTPLog2.SETRANGE(Checked, FALSE);
+      IF FTPLog2.FINDFIRST THEN
+        REPEAT
+          FTPLog2.VALIDATE(Checked, TRUE);
+          FTPLog2.MODIFY;
+        UNTIL FTPLog2.NEXT = 0;
+      // H0474       30.07.13  FX ----------------------------------------------
+    END;
+
+    PROCEDURE "--- H0914 ---"@1000000026();
+    BEGIN
+    END;
+
+    PROCEDURE CountRehnusIn@1000000010() : Integer;
+    VAR
+      "*** H0914 ***"@1000000001 : Integer;
+      RHDPurchaseLog@1000000000 : Record 80005;
+    BEGIN
+      //H0914  03.03.14 DMA +++++++++++++++++++++++++++++++++++
+      RHDPurchaseLog.RESET;
+      RHDPurchaseLog.SETRANGE("Action Type", RHDPurchaseLog."Action Type"::Export);
+      RHDPurchaseLog.SETRANGE("Action Sub Type", RHDPurchaseLog."Action Sub Type"::WEA);
+      RHDPurchaseLog.SETRANGE("Process Date", TODAY);
+      RHDPurchaseLog.SETRANGE("Process Time", TIME-3600000, TIME);
+      EXIT(RHDPurchaseLog.COUNT);
+      //H0914  03.03.14 DMA -----------------------------------
+    END;
+
+    PROCEDURE CountWHLFSales@1000000011() : Integer;
+    VAR
+      WHLFSalesLogL@1000000000 : Record 50312;
+    BEGIN
+      //H1414 07.10.14 MSL +++++++++++++++++++++++++++++++++++
+      WHLFSalesLogL.RESET;
+      WHLFSalesLogL.SETRANGE("Action Type", WHLFSalesLogL."Action Type"::Export);
+      WHLFSalesLogL.SETRANGE("Action Subtype", WHLFSalesLogL."Action Subtype"::KAD);
+      WHLFSalesLogL.SETRANGE("Processing Date", TODAY);
+      WHLFSalesLogL.SETRANGE("Processing Time", TIME-3600000, TIME);
+      EXIT(WHLFSalesLogL.COUNT);
+      //H1414 07.10.14 MSL -----------------------------------
+    END;
+
+    PROCEDURE CountWHLFPurch@1000000012() : Integer;
+    VAR
+      WHLFPurchaseLogL@1000000000 : Record 50313;
+    BEGIN
+      //H1414 07.10.14 MSL +++++++++++++++++++++++++++++++++++
+      WHLFPurchaseLogL.RESET;
+      WHLFPurchaseLogL.SETRANGE("Action Type", WHLFPurchaseLogL."Action Type"::Export);
+      WHLFPurchaseLogL.SETRANGE("Action Subtype", WHLFPurchaseLogL."Action Subtype"::WEA);
+      WHLFPurchaseLogL.SETRANGE("Processing Date", TODAY);
+      WHLFPurchaseLogL.SETRANGE("Processing Time", TIME-3600000, TIME);
+      EXIT(WHLFPurchaseLogL.COUNT);
+      //H1414 07.10.14 MSL -----------------------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------------+
+      |                                                  |
+      |                      home24                      |
+      +--------------------------------------------------+
+      |          FTP Functions with FTP Wrapper          |
+      +--------------------------------------------------+
+
+      Version   Date      Consultant   Comment
+      ____________________________________________________________________________________________________________________________________
+      GOB1.00   22.10.12  gob-rste     Object created
+      GOB1.01   31.10.12  gob-rste     File Log added (P0547)
+      GOB1.02   12.11.12  gob-rste     New Error Logging (P0574)
+                13.11.12  nas          New functions for SFTP
+      P0885     09.04.13  gob-Fuchs    Conversion sFTPfrom unitop FTPWrapper
+
+      P1090     29.09.13  gob-rste     Seperate RHD FTP Files for Import STA/WEM/Post Code
+      P1092     11.09.13  gob-rste     Update KAD Status to Uploaded
+      P1193     05.02.14  gob-dst      Update WEA Status to Uploaded
+      P1200     12.02.14  gob-dst      Hotfix Update WEA Status to Uploaded
+      P1227     16.04.14  gob-rste     Download Files with new File Extension
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+
+      H0236       06.03.13  PAU       Count Files by upload and download.
+                                      New Function CountFTPFiles
+      H0261       19.03.13  PAU       Monitoring Correction
+      H0474       30.07.13  FX        Check corrected FTP errors automatically
+      H0914       03.03.14  DMA       Fix For rhenus indicator on monitoring screen
+      H0854       09.09.14  DMA       WMP (old WEM): redesign for PSE records
+      H0856       09.09.14  DMA       UMP: New file type UMP
+      H0857       09.09.14  DMA       BMP (old BMA): Changed file type BMA to BMP
+      H1530       15.09.14  EHN       WHSLF: create jobs fot FTP up- and download
+      H1414       07.10.14  MSL       Extend Monitoring Screen for Whs LF - new funcs: "CountWHLFSales","CountWHLFPurch"
+      H2157       18.02.15  DMO       DownloadFiles function is modified: "Interface Code STA" field is deleted in Whse.LF Setup
+      H2158       25.02.15  DMO       DownloadFiles function is modified: "Interface Code WEM" field is deleted in Whse.LF Setup
+      H2146       25.02.15  EHN       Dynamic location for all home24 operated warehouses in WEA
+    }
+    END.
+  }
+}
+

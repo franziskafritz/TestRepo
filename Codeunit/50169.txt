@@ -1,0 +1,1092 @@
+OBJECT Codeunit 50169 SII Fill Log - Create
+{
+  OBJECT-PROPERTIES
+  {
+    Date=11.03.15;
+    Time=18:45:37;
+    Modified=Yes;
+    Version List=HME1985;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+            // Please do not use OnRun trigger
+            // Please do not use Global variables
+            // Please do not create functions, unless it's a new create function for new SII message
+            // Please do not create sophisticated logical forks.
+            // Think about creating new SII message if you really want to separate existing logic.
+            // Please keep this codeunit as simple as possible. It has to be easily debugged.
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      TextHME001@1000000003 : TextConst 'ENU=There is no %1 within the filter. Filters: %2';
+      TextHME002@1000000002 : TextConst 'ENU=%1 must not be %2 in %3';
+      TextHME003@1000000001 : TextConst 'ENU=%1 already exists: %2, %3';
+      TextHME004@1000000000 : TextConst 'ENU=%1 already exists: %2, %3\Do you want to proceed?';
+
+    PROCEDURE CreateReturnOrderLabel@1000000001(VAR SalesHeaderR@1000000001 : Record 36);
+    VAR
+      SalesHeaderL@1000000003 : Record 36;
+      SalesLineL@1000000002 : Record 37;
+      ReturnReasonL@1000000013 : Record 6635;
+      SIISetupL@1000000007 : Record 50140;
+      SIIMessageL@1000000006 : Record 50141;
+      SIIActionL@1000000010 : Record 50142;
+      SIIActiveActionL@1000000005 : Record 50143;
+      SIIActiveChannelL@1000000004 : Record 50144;
+      SIILogManualL@1000000000 : Record 50155;
+      SIILogLineManualL@1000000008 : Record 50156;
+      SIILogLineActionManualL@1000000009 : Record 50160;
+      SIIFillLogCheckL@1000000012 : Codeunit 50168;
+    BEGIN
+      //*************************************************************************************//
+      //                            ORDERITEMRETURNINSTRUCTLABEL                             //
+      //*************************************************************************************//
+      //         Return process for parcel only orders. Sending labels to customer.          //
+      //*************************************************************************************//
+      //                                                                                     //
+      //  Create and send via email labels (barcodes) to a customer.                         //
+      //  Labels have to be printed by customer and attached to the goods.                   //
+      //                                                                                     //
+      //  Function is called for one Return Order, which is passed via parameter.            //
+      //  Labels are created for each line in the Return Order which satisfies the filter:   //
+      //  (Type = Item) and (Quantity > 0) and                                               //
+      //  ("Return Reason Code"."Use in FTTC Return Trigger"=TRUE)                           //
+      //  Items which is not in the filter are going to be skipped.                          //
+      //                                                                                     //
+      //  All items within the filter must have  (Transp. Type = Parcel Service)             //
+      //  You should use ORDERITEMRETURNINSTRUCTNOLABEL if Return Order has at least one     //
+      //  item which is not (Transp. Type = Parcel Service)                                  //
+      //                                                                                     //
+      //  Parameters:                                                                        //
+      //  [in] SalesHeaderR - Return Order to process                                        //
+      //                                                                                     //
+      //*************************************************************************************//
+
+      //Ensure we are working with actual and not a temporary record
+      SalesHeaderL.GET(SalesHeaderR."Document Type",SalesHeaderR."No.");
+
+      //Check Return Order before further processing.
+      //Some checks may cause errors, some checks may return FALSE,
+      //which means to silently skip this Sales Order and do not process it.
+      IF NOT SIIFillLogCheckL.CheckReturnOrderLabel(SalesHeaderL) THEN
+        EXIT;
+
+      //Get "SII Setup" & "SII Message"
+      SIISetupL.GET;
+      SIIMessageL.RESET;
+      SIIMessageL.SETRANGE("Website No.",SalesHeaderL."Website No.");
+      SIIMessageL.SETRANGE("Message Code NAV",SIISetupL."Return Order Label NAV");
+      SIIMessageL.FINDFIRST;
+
+      //Insert SII Log entry.
+      SIILogManualL.LOCKTABLE;
+      IF SIILogManualL.FINDLAST THEN;
+      SIILogManualL.INIT;
+      SIILogManualL."Entry No." := SIILogManualL."Entry No." + 1;
+      SIILogManualL.Status := SIILogManualL.Status::Unprocessed;
+      SIILogManualL."Created At" := CURRENTDATETIME;
+      SIILogManualL.MessageMode := SIISetupL.Mode;
+      IF (SIIMessageL.Mode IN [SIIMessageL.Mode::"Test Offline",SIIMessageL.Mode::"Test Online"]) THEN
+        SIILogManualL.MessageMode := SIIMessageL.Mode;
+      SIILogManualL."E-Mail" := SalesHeaderL."E-Mail";
+      IF (SIIMessageL.Mode IN [SIIMessageL.Mode::"Test Offline",SIIMessageL.Mode::"Test Online"]) THEN
+        SIILogManualL."E-Mail" := SIIMessageL."Test E-Mail Address";
+      SIILogManualL."Message Code NAV" := SIIMessageL."Message Code NAV";
+      SIILogManualL."Message Code Shop" := SIIMessageL."Message Code Shop";
+      SIILogManualL.MessageStructureVersion := SIIMessageL."Actual Structure Version";
+      SIILogManualL.Priority := SIIMessageL.Priority;
+      SIILogManualL."Order Reference ID" := 1;
+      SIILogManualL.AppDomain := SalesHeaderL."Website No.";
+      SIILogManualL."Process Table No." := DATABASE::"Sales Header";
+      SIILogManualL."Process Document Type" := SalesHeaderL."Document Type";
+      SIILogManualL."Process Document No." := SalesHeaderL."No.";
+      SIILogManualL."Attached to Table" := DATABASE::"Sales Header";
+      SIILogManualL."Attached to Document Type" := SalesHeaderL."Document Type"::Order;
+      SIILogManualL."Attached to Document No." := SalesHeaderL."External Document No.";
+      SIILogManualL.INSERT;
+
+      //Go through lines, insert SII Log Line for each Sales Line
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type",SalesHeaderL."Document Type");
+      SalesLineL.SETRANGE("Document No.",SalesHeaderL."No.");
+      SalesLineL.SETRANGE(Type,SalesLineL.Type::Item);
+      SalesLineL.SETFILTER("No.",'<>%1','');
+      SalesLineL.SETFILTER(Quantity,'>%1',0);
+      SalesLineL.FINDSET(FALSE,FALSE);
+      REPEAT
+        //Check return reason.
+        ReturnReasonL.GET(SalesLineL."Return Reason Code");
+        IF ReturnReasonL."Use in FTTC Return Trigger" THEN BEGIN
+          //Calculate flowfields
+          SalesLineL.CALCFIELDS("Website No.");
+
+          //Insert SII Log Line
+          SIILogLineManualL.INIT;
+          SIILogLineManualL."Entry No." := SIILogManualL."Entry No.";
+          SIILogLineManualL."Reference ID" := SIILogLineManualL."Reference ID" + 1;
+          SIILogLineManualL."Message Code NAV" := SIIMessageL."Message Code NAV";
+          SIILogLineManualL."Message Code Shop" := SIIMessageL."Message Code Shop";
+          SIILogLineManualL.AppDomain := SalesLineL."Website No.";
+          SIILogLineManualL."Process Document No." := SalesLineL."Document No.";
+          SIILogLineManualL."Process Document Line No." := SalesLineL."Line No.";
+          SIILogLineManualL."Document No." := SalesLineL."Linked to Sales Order No.";
+          SIILogLineManualL."Document Line No." := SalesLineL."Linked to Sales Order Line No.";
+          SIILogLineManualL."Item ID" := SalesLineL.ID;
+          SIILogLineManualL."Item No." := SalesLineL."No.";
+          SIILogLineManualL.INSERT;
+
+          //For each Sales Line, insert SII Log Action
+          SIIActiveActionL.RESET;
+          SIIActiveActionL.SETRANGE("Website No.",SIIMessageL."Website No.");
+          SIIActiveActionL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+          SIIActiveActionL.SETRANGE(Active,TRUE);
+          SIIActiveActionL.FINDSET(FALSE,FALSE);
+          REPEAT
+            SIIActionL.RESET;
+            SIIActionL.SETRANGE(Code,SIIActiveActionL."Action Code NAV");
+            SIIActionL.FINDFIRST;
+
+            //Insert SII Log Action
+            SIILogLineActionManualL.INIT;
+            SIILogLineActionManualL."Log Entry No." := SIILogManualL."Entry No.";
+            SIILogLineActionManualL."Reference ID" := SIILogLineManualL."Reference ID";
+            SIILogLineActionManualL."Action For" := SIIActionL."Action For";
+            SIILogLineActionManualL."Action Code" := SIIActiveActionL."Action Code NAV";
+            SIILogLineActionManualL."Action Code Shop" := SIIActiveActionL."Action Code Shop";
+            SIILogLineActionManualL."Message Code NAV" := SIIActiveActionL."Message Code NAV";
+            SIILogLineActionManualL."Message Code Shop" := SIIActiveActionL."Message Code Shop";
+            SIILogLineActionManualL."Process Document No." := SalesLineL."Document No.";
+            SIILogLineActionManualL."Process Document Line No." := SalesLineL."Line No.";
+            SIILogLineActionManualL."Document No." := SalesLineL."Linked to Sales Order No.";
+            SIILogLineActionManualL."Document Line No." := SalesLineL."Linked to Sales Order Line No.";
+            SIILogLineActionManualL.INSERT;
+
+          UNTIL SIIActiveActionL.NEXT = 0;
+        END;
+      UNTIL SalesLineL.NEXT = 0;
+    END;
+
+    PROCEDURE CreateReturnOrderInstruction@1000000000(VAR SalesHeaderR@1000000012 : Record 36);
+    VAR
+      SalesHeaderL@1000000011 : Record 36;
+      SalesLineL@1000000010 : Record 37;
+      ReturnReasonL@1000000013 : Record 6635;
+      SIISetupL@1000000009 : Record 50140;
+      SIIMessageL@1000000008 : Record 50141;
+      SIIActionL@1000000007 : Record 50142;
+      SIIActiveActionL@1000000006 : Record 50143;
+      SIIActiveChannelL@1000000005 : Record 50144;
+      SIILogManualL@1000000004 : Record 50155;
+      SIILogLineManualL@1000000003 : Record 50156;
+      SIILogLineActionManualL@1000000002 : Record 50160;
+      SIIFillLogCheckL@1000000001 : Codeunit 50168;
+    BEGIN
+      //*************************************************************************************//
+      //                            ORDERITEMRETURNINSTRUCTNOLABEL                           //
+      //*************************************************************************************//
+      //      Return process for all orders. Sending return instruction  to customer.        //
+      //*************************************************************************************//
+      //                                                                                     //
+      //  Create and send via email instruction to a customer of how to return purchased     //
+      //  goods.                                                                             //
+      //  This message is used if at least one item in the Return Order is not               //
+      //  (Transp. Type = Parcel Service), that means a shipping company will take care      //
+      //  about return process.                                                              //
+      //                                                                                     //
+      //  Function is called for one Return Order, which is passed via parameter.            //
+      //  Instruction will contain information about each line in the Return Order           //
+      //  which satisfies the filter:  (Type = Item) and (Quantity > 0) and                  //
+      //  ("Return Reason Code"."Use in FTTC Return Trigger"=TRUE)                           //
+      //  Items that are not in the filter are going to be skipped.                          //
+      //                                                                                     //
+      //  Parameters:                                                                        //
+      //  [in] SalesHeaderR - Return Order to process                                        //
+      //                                                                                     //
+      //*************************************************************************************//
+
+      //Ensure we are working with actual and not a temporary record
+      SalesHeaderL.GET(SalesHeaderR."Document Type",SalesHeaderR."No.");
+
+      //Check Return Order before further processing.
+      //Some checks may cause errors, some checks may return FALSE,
+      //which means to silently skip this Sales Order and do not process it.
+      IF NOT SIIFillLogCheckL.CheckReturnOrderInstruction(SalesHeaderL) THEN
+        EXIT;
+
+      //Get "SII Setup" & "SII Message"
+      SIISetupL.GET;
+      SIIMessageL.RESET;
+      SIIMessageL.SETRANGE("Website No.",SalesHeaderL."Website No.");
+      SIIMessageL.SETRANGE("Message Code NAV",SIISetupL."Return Order Requested NAV");
+      SIIMessageL.FINDFIRST;
+
+      //Insert SII Log entry.
+      SIILogManualL.LOCKTABLE;
+      IF SIILogManualL.FINDLAST THEN;
+      SIILogManualL.INIT;
+      SIILogManualL."Entry No." := SIILogManualL."Entry No." + 1;
+      SIILogManualL.Status := SIILogManualL.Status::Unprocessed;
+      SIILogManualL."Created At" := CURRENTDATETIME;
+      SIILogManualL.MessageMode := SIISetupL.Mode;
+      IF (SIIMessageL.Mode IN [SIIMessageL.Mode::"Test Offline",SIIMessageL.Mode::"Test Online"]) THEN
+        SIILogManualL.MessageMode := SIIMessageL.Mode;
+      SIILogManualL."E-Mail" := SalesHeaderL."E-Mail";
+      IF (SIIMessageL.Mode IN [SIIMessageL.Mode::"Test Offline",SIIMessageL.Mode::"Test Online"]) THEN
+        SIILogManualL."E-Mail" := SIIMessageL."Test E-Mail Address";
+      SIILogManualL."Message Code NAV" := SIIMessageL."Message Code NAV";
+      SIILogManualL."Message Code Shop" := SIIMessageL."Message Code Shop";
+      SIILogManualL.MessageStructureVersion := SIIMessageL."Actual Structure Version";
+      SIILogManualL.Priority := SIIMessageL.Priority;
+      SIILogManualL."Order Reference ID" := 1;
+      SIILogManualL.AppDomain := SalesHeaderL."Website No.";
+      SIILogManualL."Process Table No." := DATABASE::"Sales Header";
+      SIILogManualL."Process Document Type" := SalesHeaderL."Document Type";
+      SIILogManualL."Process Document No." := SalesHeaderL."No.";
+      SIILogManualL."Attached to Table" := DATABASE::"Sales Header";
+      SIILogManualL."Attached to Document Type" := SalesHeaderL."Document Type"::Order;
+      SIILogManualL."Attached to Document No." := SalesHeaderL."External Document No.";
+      SIILogManualL.INSERT;
+
+      //Go through lines, insert SII Log Line for each Sales Line
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type",SalesHeaderL."Document Type");
+      SalesLineL.SETRANGE("Document No.",SalesHeaderL."No.");
+      SalesLineL.SETRANGE(Type,SalesLineL.Type::Item);
+      SalesLineL.SETFILTER("No.",'<>%1','');
+      SalesLineL.SETFILTER(Quantity,'>%1',0);
+      SalesLineL.FINDSET(FALSE,FALSE);
+      REPEAT
+        //Check return reason.
+        ReturnReasonL.GET(SalesLineL."Return Reason Code");
+        IF ReturnReasonL."Use in FTTC Return Trigger" THEN BEGIN
+          //Calculate flowfields
+          SalesLineL.CALCFIELDS("Website No.");
+
+          //Insert SII Log Line
+          SIILogLineManualL.INIT;
+          SIILogLineManualL."Entry No." := SIILogManualL."Entry No.";
+          SIILogLineManualL."Reference ID" := SIILogLineManualL."Reference ID" + 1;
+          SIILogLineManualL."Message Code NAV" := SIIMessageL."Message Code NAV";
+          SIILogLineManualL."Message Code Shop" := SIIMessageL."Message Code Shop";
+          SIILogLineManualL.AppDomain := SalesLineL."Website No.";
+          SIILogLineManualL."Process Document No." := SalesLineL."Document No.";
+          SIILogLineManualL."Process Document Line No." := SalesLineL."Line No.";
+          SIILogLineManualL."Document No." := SalesLineL."Linked to Sales Order No.";
+          SIILogLineManualL."Document Line No." := SalesLineL."Linked to Sales Order Line No.";
+          SIILogLineManualL."Item ID" := SalesLineL.ID;
+          SIILogLineManualL."Item No." := SalesLineL."No.";
+          SIILogLineManualL.INSERT;
+
+          //For each Sales Line, insert SII Log Action
+          SIIActiveActionL.RESET;
+          SIIActiveActionL.SETRANGE("Website No.",SIIMessageL."Website No.");
+          SIIActiveActionL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+          SIIActiveActionL.SETRANGE(Active,TRUE);
+          SIIActiveActionL.FINDSET(FALSE,FALSE);
+          REPEAT
+            SIIActionL.RESET;
+            SIIActionL.SETRANGE(Code,SIIActiveActionL."Action Code NAV");
+            SIIActionL.FINDFIRST;
+
+            //Insert SII Log Action
+            SIILogLineActionManualL.INIT;
+            SIILogLineActionManualL."Log Entry No." := SIILogManualL."Entry No.";
+            SIILogLineActionManualL."Reference ID" := SIILogLineManualL."Reference ID";
+            SIILogLineActionManualL."Action For" := SIIActionL."Action For";
+            SIILogLineActionManualL."Action Code" := SIIActiveActionL."Action Code NAV";
+            SIILogLineActionManualL."Action Code Shop" := SIIActiveActionL."Action Code Shop";
+            SIILogLineActionManualL."Message Code NAV" := SIIActiveActionL."Message Code NAV";
+            SIILogLineActionManualL."Message Code Shop" := SIIActiveActionL."Message Code Shop";
+            SIILogLineActionManualL."Process Document No." := SalesLineL."Document No.";
+            SIILogLineActionManualL."Process Document Line No." := SalesLineL."Line No.";
+            SIILogLineActionManualL."Document No." := SalesLineL."Linked to Sales Order No.";
+            SIILogLineActionManualL."Document Line No." := SalesLineL."Linked to Sales Order Line No.";
+            SIILogLineActionManualL.INSERT;
+
+          UNTIL SIIActiveActionL.NEXT = 0;
+        END;
+      UNTIL SalesLineL.NEXT = 0;
+    END;
+
+    PROCEDURE CreateChangeOrderLabel@1000000003(VAR SalesHeaderR@1000000001 : Record 36);
+    VAR
+      SalesHeaderL@1000000003 : Record 36;
+      SalesLineL@1000000002 : Record 37;
+      ReturnReasonL@1000000013 : Record 6635;
+      SIISetupL@1000000007 : Record 50140;
+      SIIMessageL@1000000006 : Record 50141;
+      SIIActionL@1000000010 : Record 50142;
+      SIIActiveActionL@1000000005 : Record 50143;
+      SIIActiveChannelL@1000000004 : Record 50144;
+      SIILogManualL@1000000000 : Record 50155;
+      SIILogLineManualL@1000000008 : Record 50156;
+      SIILogLineActionManualL@1000000009 : Record 50160;
+      SIIFillLogCheckL@1000000012 : Codeunit 50168;
+    BEGIN
+      //*************************************************************************************//
+      //                            ORDERITEMCHANGEINSTRUCTLABEL                             //
+      //*************************************************************************************//
+      //         Change process for parcel only orders. Sending labels to customer.          //
+      //*************************************************************************************//
+      //                                                                                     //
+      //  Create and send via email labels (barcodes) to a customer.                         //
+      //  Labels have to be printed by customer and attached to the goods.                   //
+      //                                                                                     //
+      //  Function is called for one Return Order, which is passed via parameter.            //
+      //  Labels are created for each line in the Return Order which satisfies the filter:   //
+      //  (Type = Item) and (Quantity > 0) and                                               //
+      //  ("Return Reason Code"."Use in FTTC Change Trigger"=TRUE)                           //
+      //  Items which is not in the filter are going to be skipped.                          //
+      //                                                                                     //
+      //  All items within the filter must have  (Transp. Type = Parcel Service)             //
+      //  You should use ORDERITEMCHANGEINSTRUCTNOLABEL if Return Order has at least one     //
+      //  item which is not (Transp. Type = Parcel Service)                                  //
+      //                                                                                     //
+      //  Parameters:                                                                        //
+      //  [in] SalesHeaderR - Return Order to process                                        //
+      //                                                                                     //
+      //*************************************************************************************//
+
+      //Ensure we are working with actual and not a temporary record
+      SalesHeaderL.GET(SalesHeaderR."Document Type",SalesHeaderR."No.");
+
+      //Check Return Order before further processing.
+      //Some checks may cause errors, some checks may return FALSE,
+      //which means to silently skip this Sales Order and do not process it.
+      IF NOT SIIFillLogCheckL.CheckChangeOrderLabel(SalesHeaderL) THEN
+        EXIT;
+
+      //Get "SII Setup" & "SII Message"
+      SIISetupL.GET;
+      SIIMessageL.RESET;
+      SIIMessageL.SETRANGE("Website No.",SalesHeaderL."Website No.");
+      SIIMessageL.SETRANGE("Message Code NAV",SIISetupL."Change Return Req. Label NAV");
+      SIIMessageL.FINDFIRST;
+
+      //Insert SII Log entry.
+      SIILogManualL.LOCKTABLE;
+      IF SIILogManualL.FINDLAST THEN;
+      SIILogManualL.INIT;
+      SIILogManualL."Entry No." := SIILogManualL."Entry No." + 1;
+      SIILogManualL.Status := SIILogManualL.Status::Unprocessed;
+      SIILogManualL."Created At" := CURRENTDATETIME;
+      SIILogManualL.MessageMode := SIISetupL.Mode;
+      IF (SIIMessageL.Mode IN [SIIMessageL.Mode::"Test Offline",SIIMessageL.Mode::"Test Online"]) THEN
+        SIILogManualL.MessageMode := SIIMessageL.Mode;
+      SIILogManualL."E-Mail" := SalesHeaderL."E-Mail";
+      IF (SIIMessageL.Mode IN [SIIMessageL.Mode::"Test Offline",SIIMessageL.Mode::"Test Online"]) THEN
+        SIILogManualL."E-Mail" := SIIMessageL."Test E-Mail Address";
+      SIILogManualL."Message Code NAV" := SIIMessageL."Message Code NAV";
+      SIILogManualL."Message Code Shop" := SIIMessageL."Message Code Shop";
+      SIILogManualL.MessageStructureVersion := SIIMessageL."Actual Structure Version";
+      SIILogManualL.Priority := SIIMessageL.Priority;
+      SIILogManualL."Order Reference ID" := 1;
+      SIILogManualL.AppDomain := SalesHeaderL."Website No.";
+      SIILogManualL."Process Table No." := DATABASE::"Sales Header";
+      SIILogManualL."Process Document Type" := SalesHeaderL."Document Type";
+      SIILogManualL."Process Document No." := SalesHeaderL."No.";
+      SIILogManualL."Attached to Table" := DATABASE::"Sales Header";
+      SIILogManualL."Attached to Document Type" := SalesHeaderL."Document Type"::Order;
+      SIILogManualL."Attached to Document No." := SalesHeaderL."External Document No.";
+      SIILogManualL.INSERT;
+
+      //Go through lines, insert SII Log Line for each Sales Line
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type",SalesHeaderL."Document Type");
+      SalesLineL.SETRANGE("Document No.",SalesHeaderL."No.");
+      SalesLineL.SETRANGE(Type,SalesLineL.Type::Item);
+      SalesLineL.SETFILTER("No.",'<>%1','');
+      SalesLineL.SETFILTER(Quantity,'>%1',0);
+      SalesLineL.FINDSET(FALSE,FALSE);
+      REPEAT
+        //Check return reason.
+        ReturnReasonL.GET(SalesLineL."Return Reason Code");
+        IF ReturnReasonL."Use in FTTC Change Trigger" THEN BEGIN
+          //Calculate flowfields
+          SalesLineL.CALCFIELDS("Website No.");
+
+          //Insert SII Log Line
+          SIILogLineManualL.INIT;
+          SIILogLineManualL."Entry No." := SIILogManualL."Entry No.";
+          SIILogLineManualL."Reference ID" := SIILogLineManualL."Reference ID" + 1;
+          SIILogLineManualL."Message Code NAV" := SIIMessageL."Message Code NAV";
+          SIILogLineManualL."Message Code Shop" := SIIMessageL."Message Code Shop";
+          SIILogLineManualL.AppDomain := SalesLineL."Website No.";
+          SIILogLineManualL."Process Document No." := SalesLineL."Document No.";
+          SIILogLineManualL."Process Document Line No." := SalesLineL."Line No.";
+          SIILogLineManualL."Document No." := SalesLineL."Linked to Sales Order No.";
+          SIILogLineManualL."Document Line No." := SalesLineL."Linked to Sales Order Line No.";
+          SIILogLineManualL."Item ID" := SalesLineL.ID;
+          SIILogLineManualL."Item No." := SalesLineL."No.";
+          SIILogLineManualL.INSERT;
+
+          //For each Sales Line, insert SII Log Action
+          SIIActiveActionL.RESET;
+          SIIActiveActionL.SETRANGE("Website No.",SIIMessageL."Website No.");
+          SIIActiveActionL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+          SIIActiveActionL.SETRANGE(Active,TRUE);
+          SIIActiveActionL.FINDSET(FALSE,FALSE);
+          REPEAT
+            SIIActionL.RESET;
+            SIIActionL.SETRANGE(Code,SIIActiveActionL."Action Code NAV");
+            SIIActionL.FINDFIRST;
+
+            //Insert SII Log Action
+            SIILogLineActionManualL.INIT;
+            SIILogLineActionManualL."Log Entry No." := SIILogManualL."Entry No.";
+            SIILogLineActionManualL."Reference ID" := SIILogLineManualL."Reference ID";
+            SIILogLineActionManualL."Action For" := SIIActionL."Action For";
+            SIILogLineActionManualL."Action Code" := SIIActiveActionL."Action Code NAV";
+            SIILogLineActionManualL."Action Code Shop" := SIIActiveActionL."Action Code Shop";
+            SIILogLineActionManualL."Message Code NAV" := SIIActiveActionL."Message Code NAV";
+            SIILogLineActionManualL."Message Code Shop" := SIIActiveActionL."Message Code Shop";
+            SIILogLineActionManualL."Process Document No." := SalesLineL."Document No.";
+            SIILogLineActionManualL."Process Document Line No." := SalesLineL."Line No.";
+            SIILogLineActionManualL."Document No." := SalesLineL."Linked to Sales Order No.";
+            SIILogLineActionManualL."Document Line No." := SalesLineL."Linked to Sales Order Line No.";
+            SIILogLineActionManualL.INSERT;
+          UNTIL SIIActiveActionL.NEXT = 0;
+        END;
+      UNTIL SalesLineL.NEXT = 0;
+    END;
+
+    PROCEDURE CreateChangeOrderInstruction@1000000008(VAR SalesHeaderR@1000000001 : Record 36);
+    VAR
+      SalesHeaderL@1000000003 : Record 36;
+      SalesLineL@1000000002 : Record 37;
+      ReturnReasonL@1000000013 : Record 6635;
+      SIISetupL@1000000007 : Record 50140;
+      SIIMessageL@1000000006 : Record 50141;
+      SIIActionL@1000000010 : Record 50142;
+      SIIActiveActionL@1000000005 : Record 50143;
+      SIIActiveChannelL@1000000004 : Record 50144;
+      SIILogManualL@1000000000 : Record 50155;
+      SIILogLineManualL@1000000008 : Record 50156;
+      SIILogLineActionManualL@1000000009 : Record 50160;
+      SIIFillLogCheckL@1000000012 : Codeunit 50168;
+    BEGIN
+      //*************************************************************************************//
+      //                           ORDERITEMCHANGEINSTRUCTNOLABEL                            //
+      //*************************************************************************************//
+      //      Change process for all orders. Sending change instruction  to customer.        //
+      //*************************************************************************************//
+      //                                                                                     //
+      //  Create and send via email instruction to a customer of how to change purchased     //
+      //  goods.                                                                             //
+      //  This message is used if at least one item in the Return Order is not               //
+      //  (Transp. Type = Parcel Service), that means a shipping company will take care      //
+      //  about change process.                                                              //
+      //                                                                                     //
+      //  Function is called for one Return Order, which is passed via parameter.            //
+      //  Instruction will contain information about each line in the Return Change Order    //
+      //  which satisfies the filter:  (Type = Item) and (Quantity > 0) and                  //
+      //  ("Return Reason Code"."Use in FTTC Change Trigger"=TRUE)                           //
+      //  Items that are not in the filter are going to be skipped.                          //
+      //                                                                                     //
+      //  Parameters:                                                                        //
+      //  [in] SalesHeaderR - Return Order to process                                        //
+      //                                                                                     //
+      //*************************************************************************************//
+
+
+      //Ensure we are working with actual and not a temporary record
+      SalesHeaderL.GET(SalesHeaderR."Document Type",SalesHeaderR."No.");
+
+      //Check Return Order before further processing.
+      //Some checks may cause errors, some checks may return FALSE,
+      //which means to silently skip this Sales Order and do not process it.
+      IF NOT SIIFillLogCheckL.CheckChangeOrderInstruction(SalesHeaderL) THEN
+        EXIT;
+
+      //Get "SII Setup" & "SII Message"
+      SIISetupL.GET;
+      SIIMessageL.RESET;
+      SIIMessageL.SETRANGE("Website No.",SalesHeaderL."Website No.");
+      SIIMessageL.SETRANGE("Message Code NAV",SIISetupL."Change Return Requested NAV");
+      SIIMessageL.FINDFIRST;
+
+      //Insert SII Log entry.
+      SIILogManualL.LOCKTABLE;
+      IF SIILogManualL.FINDLAST THEN;
+      SIILogManualL.INIT;
+      SIILogManualL."Entry No." := SIILogManualL."Entry No." + 1;
+      SIILogManualL.Status := SIILogManualL.Status::Unprocessed;
+      SIILogManualL."Created At" := CURRENTDATETIME;
+      SIILogManualL.MessageMode := SIISetupL.Mode;
+      IF (SIIMessageL.Mode IN [SIIMessageL.Mode::"Test Offline",SIIMessageL.Mode::"Test Online"]) THEN
+        SIILogManualL.MessageMode := SIIMessageL.Mode;
+      SIILogManualL."E-Mail" := SalesHeaderL."E-Mail";
+      IF (SIIMessageL.Mode IN [SIIMessageL.Mode::"Test Offline",SIIMessageL.Mode::"Test Online"]) THEN
+        SIILogManualL."E-Mail" := SIIMessageL."Test E-Mail Address";
+      SIILogManualL."Message Code NAV" := SIIMessageL."Message Code NAV";
+      SIILogManualL."Message Code Shop" := SIIMessageL."Message Code Shop";
+      SIILogManualL.MessageStructureVersion := SIIMessageL."Actual Structure Version";
+      SIILogManualL.Priority := SIIMessageL.Priority;
+      SIILogManualL."Order Reference ID" := 1;
+      SIILogManualL.AppDomain := SalesHeaderL."Website No.";
+      SIILogManualL."Process Table No." := DATABASE::"Sales Header";
+      SIILogManualL."Process Document Type" := SalesHeaderL."Document Type";
+      SIILogManualL."Process Document No." := SalesHeaderL."No.";
+      SIILogManualL."Attached to Table" := DATABASE::"Sales Header";
+      SIILogManualL."Attached to Document Type" := SalesHeaderL."Document Type"::Order;
+      SIILogManualL."Attached to Document No." := SalesHeaderL."External Document No.";
+      SIILogManualL.INSERT;
+
+      //Go through lines, insert SII Log Line for each Sales Line
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type",SalesHeaderL."Document Type");
+      SalesLineL.SETRANGE("Document No.",SalesHeaderL."No.");
+      SalesLineL.SETRANGE(Type,SalesLineL.Type::Item);
+      SalesLineL.SETFILTER("No.",'<>%1','');
+      SalesLineL.SETFILTER(Quantity,'>%1',0);
+      SalesLineL.FINDSET(FALSE,FALSE);
+      REPEAT
+        //Check return reason.
+        ReturnReasonL.GET(SalesLineL."Return Reason Code");
+        IF ReturnReasonL."Use in FTTC Change Trigger" THEN BEGIN
+          //Calculate flowfields
+          SalesLineL.CALCFIELDS("Website No.");
+
+          //Insert SII Log Line
+          SIILogLineManualL.INIT;
+          SIILogLineManualL."Entry No." := SIILogManualL."Entry No.";
+          SIILogLineManualL."Reference ID" := SIILogLineManualL."Reference ID" + 1;
+          SIILogLineManualL."Message Code NAV" := SIIMessageL."Message Code NAV";
+          SIILogLineManualL."Message Code Shop" := SIIMessageL."Message Code Shop";
+          SIILogLineManualL.AppDomain := SalesLineL."Website No.";
+          SIILogLineManualL."Process Document No." := SalesLineL."Document No.";
+          SIILogLineManualL."Process Document Line No." := SalesLineL."Line No.";
+          SIILogLineManualL."Document No." := SalesLineL."Linked to Sales Order No.";
+          SIILogLineManualL."Document Line No." := SalesLineL."Linked to Sales Order Line No.";
+          SIILogLineManualL."Item ID" := SalesLineL.ID;
+          SIILogLineManualL."Item No." := SalesLineL."No.";
+          SIILogLineManualL.INSERT;
+
+          //For each Sales Line, insert SII Log Action
+          SIIActiveActionL.RESET;
+          SIIActiveActionL.SETRANGE("Website No.",SIIMessageL."Website No.");
+          SIIActiveActionL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+          SIIActiveActionL.SETRANGE(Active,TRUE);
+          SIIActiveActionL.FINDSET(FALSE,FALSE);
+          REPEAT
+            SIIActionL.RESET;
+            SIIActionL.SETRANGE(Code,SIIActiveActionL."Action Code NAV");
+            SIIActionL.FINDFIRST;
+
+            //Insert SII Log Action
+            SIILogLineActionManualL.INIT;
+            SIILogLineActionManualL."Log Entry No." := SIILogManualL."Entry No.";
+            SIILogLineActionManualL."Reference ID" := SIILogLineManualL."Reference ID";
+            SIILogLineActionManualL."Action For" := SIIActionL."Action For";
+            SIILogLineActionManualL."Action Code" := SIIActiveActionL."Action Code NAV";
+            SIILogLineActionManualL."Action Code Shop" := SIIActiveActionL."Action Code Shop";
+            SIILogLineActionManualL."Message Code NAV" := SIIActiveActionL."Message Code NAV";
+            SIILogLineActionManualL."Message Code Shop" := SIIActiveActionL."Message Code Shop";
+            SIILogLineActionManualL."Process Document No." := SalesLineL."Document No.";
+            SIILogLineActionManualL."Process Document Line No." := SalesLineL."Line No.";
+            SIILogLineActionManualL."Document No." := SalesLineL."Linked to Sales Order No.";
+            SIILogLineActionManualL."Document Line No." := SalesLineL."Linked to Sales Order Line No.";
+            SIILogLineActionManualL.INSERT;
+          UNTIL SIIActiveActionL.NEXT = 0;
+        END;
+      UNTIL SalesLineL.NEXT = 0;
+    END;
+
+    PROCEDURE CreateOrderPicking@1000000002(VAR SalesHeaderR@1000000001 : Record 36);
+    VAR
+      SalesHeaderL@1000000003 : Record 36;
+      SIISetupL@1000000007 : Record 50140;
+      SIIMessageL@1000000006 : Record 50141;
+      SIIActionL@1000000010 : Record 50142;
+      SIIActiveActionL@1000000005 : Record 50143;
+      SIILogManualL@1000000000 : Record 50155;
+      SIILogLineActionManualL@1000000009 : Record 50160;
+      SIIFillLogCheckL@1000000012 : Codeunit 50168;
+    BEGIN
+      //*************************************************************************************//
+      //                                    ORDERPICKING                                     //
+      //*************************************************************************************//
+      //  Payment update confirmation. Order commissioning process (picking) can be started. //
+      //*************************************************************************************//
+      //                                                                                     //
+      //  Inform the Webshop, that Payment is recieved and updated in Navision system.       //
+      //                                                                                     //
+      //  Function is called for one Sales Order, which is passed via parameter.             //
+      //                                                                                     //
+      //  Parameters:                                                                        //
+      //  [in] SalesHeaderR - Return Order to process                                        //
+      //                                                                                     //
+      //*************************************************************************************//
+
+      //H1784  24.11.14 MIK ++++++++++++++++++++++++++++++++++++
+
+      //Ensure we are working with actual and not a temporary record
+      SalesHeaderL.GET(SalesHeaderR."Document Type",SalesHeaderR."No.");
+
+      //Check Return Order before further processing.
+      //Some checks may cause errors, some checks may return FALSE,
+      //which means to silently skip this Sales Order and do not process it.
+      IF NOT SIIFillLogCheckL.CheckOrderPicking(SalesHeaderL) THEN
+        EXIT;
+
+      //Get "SII Setup" & "SII Message"
+      SIISetupL.GET;
+      SIIMessageL.RESET;
+      SIIMessageL.SETRANGE("Website No.",SalesHeaderL."Website No.");
+      SIIMessageL.SETRANGE("Message Code NAV",SIISetupL."Payment Update Confirm. NAV");
+      SIIMessageL.FINDFIRST;
+
+
+      //Insert SII Log entry.
+      SIILogManualL.LOCKTABLE;
+      IF SIILogManualL.FINDLAST THEN;
+      SIILogManualL.INIT;
+      SIILogManualL."Entry No." := SIILogManualL."Entry No." + 1;
+      SIILogManualL.Status := SIILogManualL.Status::Unprocessed;
+      SIILogManualL."Created At" := CURRENTDATETIME;
+      SIILogManualL.MessageMode := SIISetupL.Mode;
+      IF (SIIMessageL.Mode IN [SIIMessageL.Mode::"Test Offline",SIIMessageL.Mode::"Test Online"]) THEN
+        SIILogManualL.MessageMode := SIIMessageL.Mode;
+      SIILogManualL."E-Mail" := SalesHeaderL."E-Mail";
+      IF (SIIMessageL.Mode IN [SIIMessageL.Mode::"Test Offline",SIIMessageL.Mode::"Test Online"]) THEN
+        SIILogManualL."E-Mail" := SIIMessageL."Test E-Mail Address";
+      SIILogManualL."Message Code NAV" := SIIMessageL."Message Code NAV";
+      SIILogManualL."Message Code Shop" := SIIMessageL."Message Code Shop";
+      SIILogManualL.MessageStructureVersion := SIIMessageL."Actual Structure Version";
+      SIILogManualL.Priority := SIIMessageL.Priority;
+      SIILogManualL."Order Reference ID" := 1;
+      SIILogManualL.AppDomain := SalesHeaderL."Website No.";
+      SIILogManualL."Process Table No." := DATABASE::"Sales Header";
+      SIILogManualL."Process Document Type" := SalesHeaderL."Document Type";
+      SIILogManualL."Process Document No." := SalesHeaderL."No.";
+      SIILogManualL."Attached to Table" := DATABASE::"Sales Header";
+      SIILogManualL."Attached to Document Type" := SalesHeaderL."Document Type";
+      SIILogManualL."Attached to Document No." := SalesHeaderL."No.";
+      SIILogManualL.INSERT;
+
+      //Insert SII Log Actions
+      SIIActiveActionL.RESET;
+      SIIActiveActionL.SETRANGE("Website No.",SIIMessageL."Website No.");
+      SIIActiveActionL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIIActiveActionL.SETRANGE(Active,TRUE);
+      SIIActiveActionL.FINDSET(FALSE,FALSE);
+      REPEAT
+        SIIActionL.RESET;
+        SIIActionL.SETRANGE(Code,SIIActiveActionL."Action Code NAV");
+        SIIActionL.FINDFIRST;
+
+        //Insert SII Log Action
+        SIILogLineActionManualL.INIT;
+        SIILogLineActionManualL."Log Entry No." := SIILogManualL."Entry No.";
+        SIILogLineActionManualL."Reference ID" := 1;
+        SIILogLineActionManualL."Action For" := SIIActionL."Action For";
+        SIILogLineActionManualL."Action Code" := SIIActiveActionL."Action Code NAV";
+        SIILogLineActionManualL."Action Code Shop" := SIIActiveActionL."Action Code Shop";
+        SIILogLineActionManualL."Message Code NAV" := SIIActiveActionL."Message Code NAV";
+        SIILogLineActionManualL."Message Code Shop" := SIIActiveActionL."Message Code Shop";
+        SIILogLineActionManualL."Process Document No." := SalesHeaderL."No.";
+        SIILogLineActionManualL."Document No." := SalesHeaderL."No.";
+        //Getting "Payment received at" from param SalesHeaderR, instead of SalesHeaderL because changes in this field is still pending
+        SIILogLineActionManualL."Action DateTime" := CREATEDATETIME(SalesHeaderR."Payment received at",0T);
+        SIILogLineActionManualL.INSERT;
+      UNTIL SIIActiveActionL.NEXT = 0;
+
+      //H1784  24.11.14 MIK ------------------------------------
+    END;
+
+    PROCEDURE CreateOrderPickingPrepayment@1000000004(VAR SalesHeaderR@1000000001 : Record 36);
+    VAR
+      SalesHeaderL@1000000003 : Record 36;
+      SIISetupL@1000000007 : Record 50140;
+      SIIMessageL@1000000006 : Record 50141;
+      SIIActionL@1000000010 : Record 50142;
+      SIIActiveActionL@1000000005 : Record 50143;
+      SIILogManualL@1000000000 : Record 50155;
+      SIILogLineActionManualL@1000000009 : Record 50160;
+      SIIFillLogCheckL@1000000012 : Codeunit 50168;
+    BEGIN
+      //*************************************************************************************//
+      //                                 ORDERPICKINGPREPMT                                  //
+      //*************************************************************************************//
+      //  Payment update confirmation (For prepayment only).                                 //
+      //  Order commissioning process (picking) can be started.                              //
+      //*************************************************************************************//
+      //                                                                                     //
+      //  Inform the Webshop, that Payment is recieved and updated in Navision system.       //
+      //                                                                                     //
+      //  Function is called for one Sales Order, which is passed via parameter.             //
+      //                                                                                     //
+      //  Parameters:                                                                        //
+      //  [in] SalesHeaderR - Return Order to process                                        //
+      //                                                                                     //
+      //*************************************************************************************//
+
+      //H1784  24.11.14 MIK ++++++++++++++++++++++++++++++++++++
+
+      //Ensure we are working with actual and not a temporary record
+      SalesHeaderL.GET(SalesHeaderR."Document Type",SalesHeaderR."No.");
+
+      //Check Return Order before further processing.
+      //Some checks may cause errors, some checks may return FALSE,
+      //which means to silently skip this Sales Order and do not process it.
+      IF NOT SIIFillLogCheckL.CheckOrderPickingPrepayment(SalesHeaderL) THEN
+        EXIT;
+
+      //Get "SII Setup" & "SII Message"
+      SIISetupL.GET;
+      SIIMessageL.RESET;
+      SIIMessageL.SETRANGE("Website No.",SalesHeaderL."Website No.");
+      SIIMessageL.SETRANGE("Message Code NAV",SIISetupL."Payment Upd. Conf. Prepmt. NAV");
+      SIIMessageL.FINDFIRST;
+
+
+      //Insert SII Log entry.
+      SIILogManualL.LOCKTABLE;
+      IF SIILogManualL.FINDLAST THEN;
+      SIILogManualL.INIT;
+      SIILogManualL."Entry No." := SIILogManualL."Entry No." + 1;
+      SIILogManualL.Status := SIILogManualL.Status::Unprocessed;
+      SIILogManualL."Created At" := CURRENTDATETIME;
+      SIILogManualL.MessageMode := SIISetupL.Mode;
+      IF (SIIMessageL.Mode IN [SIIMessageL.Mode::"Test Offline",SIIMessageL.Mode::"Test Online"]) THEN
+        SIILogManualL.MessageMode := SIIMessageL.Mode;
+      SIILogManualL."E-Mail" := SalesHeaderL."E-Mail";
+      IF (SIIMessageL.Mode IN [SIIMessageL.Mode::"Test Offline",SIIMessageL.Mode::"Test Online"]) THEN
+        SIILogManualL."E-Mail" := SIIMessageL."Test E-Mail Address";
+      SIILogManualL."Message Code NAV" := SIIMessageL."Message Code NAV";
+      SIILogManualL."Message Code Shop" := SIIMessageL."Message Code Shop";
+      SIILogManualL.MessageStructureVersion := SIIMessageL."Actual Structure Version";
+      SIILogManualL.Priority := SIIMessageL.Priority;
+      SIILogManualL."Order Reference ID" := 1;
+      SIILogManualL.AppDomain := SalesHeaderL."Website No.";
+      SIILogManualL."Process Table No." := DATABASE::"Sales Header";
+      SIILogManualL."Process Document Type" := SalesHeaderL."Document Type";
+      SIILogManualL."Process Document No." := SalesHeaderL."No.";
+      SIILogManualL."Attached to Table" := DATABASE::"Sales Header";
+      SIILogManualL."Attached to Document Type" := SalesHeaderL."Document Type";
+      SIILogManualL."Attached to Document No." := SalesHeaderL."No.";
+      SIILogManualL.INSERT;
+
+      //Insert SII Log Actions
+      SIIActiveActionL.RESET;
+      SIIActiveActionL.SETRANGE("Website No.",SIIMessageL."Website No.");
+      SIIActiveActionL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIIActiveActionL.SETRANGE(Active,TRUE);
+      SIIActiveActionL.FINDSET(FALSE,FALSE);
+      REPEAT
+        SIIActionL.RESET;
+        SIIActionL.SETRANGE(Code,SIIActiveActionL."Action Code NAV");
+        SIIActionL.FINDFIRST;
+
+        //Insert SII Log Action
+        SIILogLineActionManualL.INIT;
+        SIILogLineActionManualL."Log Entry No." := SIILogManualL."Entry No.";
+        SIILogLineActionManualL."Reference ID" := 1;
+        SIILogLineActionManualL."Action For" := SIIActionL."Action For";
+        SIILogLineActionManualL."Action Code" := SIIActiveActionL."Action Code NAV";
+        SIILogLineActionManualL."Action Code Shop" := SIIActiveActionL."Action Code Shop";
+        SIILogLineActionManualL."Message Code NAV" := SIIActiveActionL."Message Code NAV";
+        SIILogLineActionManualL."Message Code Shop" := SIIActiveActionL."Message Code Shop";
+        SIILogLineActionManualL."Process Document No." := SalesHeaderL."No.";
+        SIILogLineActionManualL."Document No." := SalesHeaderL."No.";
+        //Getting "Payment received at" from param SalesHeaderR, instead of SalesHeaderL because changes in this field is still pending
+        SIILogLineActionManualL."Action DateTime" := CREATEDATETIME(SalesHeaderR."Payment received at",0T);
+        SIILogLineActionManualL.INSERT;
+      UNTIL SIIActiveActionL.NEXT = 0;
+
+      //H1784  24.11.14 MIK ------------------------------------
+    END;
+
+    PROCEDURE CreateOrderItemDeliveryConfirm@1000000005(VAR ParcelStatusHistoryR@1000000000 : Record 80013);
+    VAR
+      SalesHeaderL@1000000010 : Record 36;
+      SalesLineL@1000000011 : Record 37;
+      SIISetupL@1000000009 : Record 50140;
+      SIIMessageL@1000000008 : Record 50141;
+      SIIActionL@1000000007 : Record 50142;
+      SIIActiveActionL@1000000006 : Record 50143;
+      SIILogManualL@1000000004 : Record 50155;
+      SIILogLineManualL@1000000003 : Record 50156;
+      SIILogLineActionManualL@1000000002 : Record 50160;
+      SIIFillLogCheckL@1000000001 : Codeunit 50168;
+      CreateExtendedMailEntryL@1000000013 : Boolean;
+      DoInsertActionL@1000000014 : Boolean;
+    BEGIN
+      //*************************************************************************************//
+      //                           ORDERITEMDELIVERYCONFIRMATION                             //
+      //*************************************************************************************//
+      // Shipping company has initiated delivery process. Tracking number has been assigned. //
+      //*************************************************************************************//
+      //                                                                                     //
+      //  Delivery process has been initiated. Shipping company has assigned tracking number //
+      //  to a parcel. First scan has been performed and we've received tracking number.     //
+      //                                                                                     //
+      //  Now we need to send Tracking Number and Shipping Company name to the webshop, so   //
+      //  Customer will be able to track delivery.                                           //
+      //  Additionally, customer will receive email, if conditions are fulfilled             //
+      //                                                                                     //
+      //  Function is called for one Parcel Status History, which is passed via parameter.   //
+      //                                                                                     //
+      //  Parameters:                                                                        //
+      //  [in] ParcelStatusHistoryR - Parcel Status History entry to process                 //
+      //                                                                                     //
+      //*************************************************************************************//
+      //H1878 05.12.14 MIK ++++++++++++++++++++++++++++++++++++
+
+      //Check Parcel Status History before further processing.
+      //None of the checks may cause error, If some of the checks is not passed, function will return FALSE,
+      //which means to silently skip this Parcel Status History and do not process it.
+      IF NOT SIIFillLogCheckL.CheckOrderItemDeliveryConfirm(ParcelStatusHistoryR,CreateExtendedMailEntryL) THEN
+        EXIT;
+
+      // Get Sales Header & Sales Line
+      SalesHeaderL.GET(ParcelStatusHistoryR."Document Type",ParcelStatusHistoryR."Document No.");
+      SalesLineL.GET(SalesHeaderL."Document Type",SalesHeaderL."No.",ParcelStatusHistoryR."Document Line No.");
+
+
+      //Get "SII Setup" & "SII Message"
+      SIISetupL.GET;
+      SIIMessageL.RESET;
+      SIIMessageL.SETRANGE("Website No.",SalesHeaderL."Website No.");
+      SIIMessageL.SETRANGE("Message Code NAV",SIISetupL."Shipment Confirmation NAV");
+      SIIMessageL.FINDFIRST;
+
+      //Find existing SII Log Entry OR Insert new SII Log entry.
+      SIILogManualL.LOCKTABLE;
+      SIILogManualL.RESET;
+      SIILogManualL.SETRANGE(AppDomain,SIIMessageL."Website No.");
+      SIILogManualL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIILogManualL.SETRANGE("Process Table No.",DATABASE::"Sales Header");
+      SIILogManualL.SETRANGE("Process Document Type",SalesHeaderL."Document Type");
+      SIILogManualL.SETRANGE("Process Document No.",SalesHeaderL."No.");
+      SIILogManualL.SETRANGE(Status,SIILogManualL.Status::Unprocessed);
+      SIILogManualL.SETFILTER(MessageMode,'<>%1',SIILogManualL.MessageMode::Inactive);
+      IF NOT SIILogManualL.FINDLAST THEN BEGIN
+        //Entry not found, creating new.
+        SIILogManualL.RESET;
+        IF SIILogManualL.FINDLAST THEN;
+        SIILogManualL.INIT;
+        SIILogManualL."Entry No." := SIILogManualL."Entry No." + 1;
+        SIILogManualL.Status := SIILogManualL.Status::Unprocessed;
+        SIILogManualL."Created At" := CURRENTDATETIME;
+        SIILogManualL.MessageMode := SIISetupL.Mode;
+        IF (SIIMessageL.Mode IN [SIIMessageL.Mode::"Test Offline",SIIMessageL.Mode::"Test Online"]) THEN
+          SIILogManualL.MessageMode := SIIMessageL.Mode;
+        SIILogManualL."E-Mail" := SalesHeaderL."E-Mail";
+        IF (SIIMessageL.Mode IN [SIIMessageL.Mode::"Test Offline",SIIMessageL.Mode::"Test Online"]) THEN
+          SIILogManualL."E-Mail" := SIIMessageL."Test E-Mail Address";
+        SIILogManualL."Message Code NAV" := SIIMessageL."Message Code NAV";
+        SIILogManualL."Message Code Shop" := SIIMessageL."Message Code Shop";
+        SIILogManualL.MessageStructureVersion := SIIMessageL."Actual Structure Version";
+        SIILogManualL.Priority := SIIMessageL.Priority;
+        SIILogManualL."Order Reference ID" := 1;
+        SIILogManualL.AppDomain := SalesHeaderL."Website No.";
+        SIILogManualL."Process Table No." := DATABASE::"Sales Header";
+        SIILogManualL."Process Document Type" := SalesHeaderL."Document Type";
+        SIILogManualL."Process Document No." := SalesHeaderL."No.";
+        SIILogManualL."Attached to Table" := DATABASE::"Sales Header";
+        SIILogManualL."Attached to Document Type" := SalesHeaderL."Document Type";
+        SIILogManualL."Attached to Document No." := SalesHeaderL."No.";
+        SIILogManualL.INSERT;
+      END;
+
+      //Insert SII Log Line
+      SIILogLineManualL.RESET;
+      SIILogLineManualL.SETRANGE("Entry No.",SIILogManualL."Entry No.");
+      IF SIILogLineManualL.FINDLAST THEN;
+      SIILogLineManualL.INIT;
+      SIILogLineManualL."Entry No." := SIILogManualL."Entry No.";
+      SIILogLineManualL."Reference ID" := SIILogLineManualL."Reference ID" + 1;
+      SIILogLineManualL."Message Code NAV" := SIIMessageL."Message Code NAV";
+      SIILogLineManualL."Message Code Shop" := SIIMessageL."Message Code Shop";
+      SIILogLineManualL.AppDomain := SalesHeaderL."Website No.";
+      SIILogLineManualL."Process Document No." := SalesLineL."Document No.";
+      SIILogLineManualL."Process Document Line No." := SalesLineL."Line No.";
+      SIILogLineManualL."Document No." := SalesLineL."Document No.";
+      SIILogLineManualL."Document Line No." := SalesLineL."Line No.";
+      SIILogLineManualL."Item ID" := SalesLineL.ID;
+      SIILogLineManualL."Item No." := SalesLineL."No.";
+      SIILogLineManualL.INSERT;
+
+
+      //Insert SII Log Action
+      SIIActiveActionL.RESET;
+      SIIActiveActionL.SETRANGE("Website No.",SIIMessageL."Website No.");
+      SIIActiveActionL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIIActiveActionL.SETRANGE(Active,TRUE);
+      SIIActiveActionL.FINDSET(FALSE,FALSE);
+      REPEAT
+        SIIActionL.RESET;
+        SIIActionL.SETRANGE(Code,SIIActiveActionL."Action Code NAV");
+        SIIActionL.FINDFIRST;
+
+        DoInsertActionL := TRUE;
+        IF SIIActionL."Action For"=SIIActionL."Action For"::EMail THEN
+          IF SIIActiveActionL."Is Extended Mail Action" THEN
+              DoInsertActionL := CreateExtendedMailEntryL;
+
+        IF DoInsertActionL THEN BEGIN
+          //Insert SII Log Action
+          SIILogLineActionManualL.INIT;
+          SIILogLineActionManualL."Log Entry No." := SIILogManualL."Entry No.";
+          SIILogLineActionManualL."Reference ID" := SIILogLineManualL."Reference ID";
+          SIILogLineActionManualL."Action For" := SIIActionL."Action For";
+          SIILogLineActionManualL."Action Code" := SIIActiveActionL."Action Code NAV";
+          SIILogLineActionManualL."Action Code Shop" := SIIActiveActionL."Action Code Shop";
+          SIILogLineActionManualL."Message Code NAV" := SIIActiveActionL."Message Code NAV";
+          SIILogLineActionManualL."Message Code Shop" := SIIActiveActionL."Message Code Shop";
+          SIILogLineActionManualL."Process Document No." := SalesLineL."Document No.";
+          SIILogLineActionManualL."Process Document Line No." := SalesLineL."Line No.";
+          SIILogLineActionManualL."Document No." := SalesLineL."Document No.";
+          SIILogLineActionManualL."Document Line No." := SalesLineL."Line No.";
+          SIILogLineActionManualL."Action DateTime" := CREATEDATETIME(DT2DATE(ParcelStatusHistoryR."Timestamp Insert"),0T);
+          SIILogLineActionManualL."Text 80_1" := ParcelStatusHistoryR."Tracking Code";
+          SIILogLineActionManualL."Code 10_1" := ParcelStatusHistoryR."Shipping Agent Code";
+          SIILogLineActionManualL.INSERT;
+        END;
+      UNTIL SIIActiveActionL.NEXT = 0;
+
+      //H1878 05.12.14 MIK ------------------------------------
+    END;
+
+    PROCEDURE CreateOrderDunning@1000000007(VAR IssuedReminderHeaderR@1000000001 : Record 297);
+    VAR
+      SalesHeaderL@1000000003 : Record 36;
+      SalesHeaderArchiveL@1000000002 : Record 5107;
+      SIISetupL@1000000007 : Record 50140;
+      SIIMessageL@1000000006 : Record 50141;
+      SIIActionL@1000000010 : Record 50142;
+      SIIActiveActionL@1000000005 : Record 50143;
+      SIILogManualL@1000000000 : Record 50155;
+      SIILogLineActionManualL@1000000009 : Record 50160;
+      SIIFillLogCheckL@1000000012 : Codeunit 50168;
+    BEGIN
+      //*************************************************************************************//
+      //                                ORDERITEMDUNNING                                     //
+      //*************************************************************************************//
+      //  Payment Reminder letter to the customer.                                           //
+      //*************************************************************************************//
+      //                                                                                     //
+      //  Create and send reminder letter to customer via Webshop                            //
+      //                                                                                     //
+      //  Function is called for one Issued Reminder Header, which is passed via parameter.  //
+      //                                                                                     //
+      //  Parameters:                                                                        //
+      //  [in] IssuedReminderHeaderR - Reminder letter to send                               //
+      //                                                                                     //
+      //*************************************************************************************//
+
+      //H1985  13.02.15  MBY ++++++++++++++++++++++++++++++++++++
+
+      //Check Return Order before further processing.
+      //Some checks may cause errors, some checks may return FALSE,
+      //which means to silently skip this Sales Order and do not process it.
+      IF NOT SIIFillLogCheckL.CheckOrderDunning(IssuedReminderHeaderR) THEN
+        EXIT;
+
+      //Getting Sales Order. We need "Website No." and "E-Mail" from the order (can be already archived)
+      SalesHeaderL.RESET;
+      SalesHeaderL.SETRANGE("Document Type",SalesHeaderL."Document Type"::Order);
+      SalesHeaderL.SETRANGE("No.",IssuedReminderHeaderR."Order No.");
+      SalesHeaderL.SETRANGE("External Document No.",IssuedReminderHeaderR."Order No.");
+      IF NOT SalesHeaderL.FINDFIRST THEN BEGIN
+        SalesHeaderArchiveL.RESET;
+        SalesHeaderArchiveL.SETRANGE("Document Type",SalesHeaderArchiveL."Document Type"::Order);
+        SalesHeaderArchiveL.SETRANGE("No.",IssuedReminderHeaderR."Order No.");
+        SalesHeaderArchiveL.SETRANGE("External Document No.",IssuedReminderHeaderR."Order No.");
+        SalesHeaderArchiveL.FINDLAST;
+        SalesHeaderL.TRANSFERFIELDS(SalesHeaderArchiveL);
+      END;
+
+      //Get "SII Setup" & "SII Message"
+      SIISetupL.GET;
+      SIIMessageL.RESET;
+      SIIMessageL.SETRANGE("Website No.",SalesHeaderL."Website No.");
+      SIIMessageL.SETRANGE("Message Code NAV",SIISetupL."Reminder Mail NAV");
+      SIIMessageL.FINDFIRST;
+
+
+      //Insert SII Log entry.
+      SIILogManualL.LOCKTABLE;
+      IF SIILogManualL.FINDLAST THEN;
+      SIILogManualL.INIT;
+      SIILogManualL."Entry No." := SIILogManualL."Entry No." + 1;
+      SIILogManualL.Status := SIILogManualL.Status::Unprocessed;
+      SIILogManualL."Created At" := CURRENTDATETIME;
+      SIILogManualL.MessageMode := SIISetupL.Mode;
+      IF (SIIMessageL.Mode IN [SIIMessageL.Mode::"Test Offline",SIIMessageL.Mode::"Test Online"]) THEN
+        SIILogManualL.MessageMode := SIIMessageL.Mode;
+      SIILogManualL."E-Mail" := SalesHeaderL."E-Mail";
+      IF (SIIMessageL.Mode IN [SIIMessageL.Mode::"Test Offline",SIIMessageL.Mode::"Test Online"]) THEN
+        SIILogManualL."E-Mail" := SIIMessageL."Test E-Mail Address";
+      SIILogManualL."Message Code NAV" := SIIMessageL."Message Code NAV";
+      SIILogManualL."Message Code Shop" := SIIMessageL."Message Code Shop";
+      SIILogManualL.MessageStructureVersion := SIIMessageL."Actual Structure Version";
+      SIILogManualL.Priority := SIIMessageL.Priority;
+      SIILogManualL."Order Reference ID" := 1;
+      SIILogManualL.AppDomain := SIIMessageL."Website No.";
+      SIILogManualL."Process Table No." := DATABASE::"Issued Reminder Header";
+      SIILogManualL."Process Document Type" := 0;
+      SIILogManualL."Process Document No." := IssuedReminderHeaderR."No.";
+      SIILogManualL."Attached to Table" := DATABASE::"Sales Header";
+      SIILogManualL."Attached to Document Type" := SalesHeaderL."Document Type"::Order;
+      SIILogManualL."Attached to Document No." := IssuedReminderHeaderR."Order No.";
+      SIILogManualL.INSERT;
+
+      //Insert SII Log Actions
+      SIIActiveActionL.RESET;
+      SIIActiveActionL.SETRANGE("Website No.",SIIMessageL."Website No.");
+      SIIActiveActionL.SETRANGE("Message Code NAV",SIIMessageL."Message Code NAV");
+      SIIActiveActionL.SETRANGE(Active,TRUE);
+      SIIActiveActionL.FINDSET(FALSE,FALSE);
+      REPEAT
+        SIIActionL.RESET;
+        SIIActionL.SETRANGE(Code,SIIActiveActionL."Action Code NAV");
+        SIIActionL.FINDFIRST;
+
+        //Insert SII Log Action
+        SIILogLineActionManualL.INIT;
+        SIILogLineActionManualL."Log Entry No." := SIILogManualL."Entry No.";
+        SIILogLineActionManualL."Reference ID" := 1;
+        SIILogLineActionManualL."Action For" := SIIActionL."Action For";
+        SIILogLineActionManualL."Action Code" := SIIActiveActionL."Action Code NAV";
+        SIILogLineActionManualL."Action Code Shop" := SIIActiveActionL."Action Code Shop";
+        SIILogLineActionManualL."Message Code NAV" := SIIActiveActionL."Message Code NAV";
+        SIILogLineActionManualL."Message Code Shop" := SIIActiveActionL."Message Code Shop";
+        SIILogLineActionManualL."Process Document No." := IssuedReminderHeaderR."No.";
+        SIILogLineActionManualL."Document No." := IssuedReminderHeaderR."Order No.";
+        SIILogLineActionManualL."Code 10_1" := FORMAT(IssuedReminderHeaderR."Reminder Level");
+        SIILogLineActionManualL.INSERT;
+      UNTIL SIIActiveActionL.NEXT = 0;
+
+      IssuedReminderHeaderR."Exported to Shop" := TRUE;
+
+      //H1985  13.02.15  MBY  ------------------------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      H1687       10.11.14  MIK       FTTC3: SII Redesign
+      H1783       19.11.14  MIK       SII Redesign for the Return&Change messages (Label&Instruction)
+      H1784       24.11.14  MIK       SII Redesign for the message ORDERPICKING & ORDERPICKINGPREPMT
+      H1878       05.12.14  MIK       SII Redesign for the ORDERITEMDELIVERYCONFIRMATION
+                                        new functions: CreateOrderItemDeliveryConfirm
+      H1985       13.02.15 MBY       Sending reminders by SII
+                                        new function: CreateReminder
+    }
+    END.
+  }
+}
+

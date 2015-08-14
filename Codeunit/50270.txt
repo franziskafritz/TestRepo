@@ -1,0 +1,505 @@
+OBJECT Codeunit 50270 XML Exchange Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=23.07.15;
+    Time=17:06:36;
+    Modified=Yes;
+    Version List=HME4481;
+  }
+  PROPERTIES
+  {
+    TableNo=472;
+    OnRun=BEGIN
+            //H4292  24.06.15 DMO ++++++++++++++++++++
+            CASE "Parameter String" OF
+              'RETWEM_IMPORT' : ImportSalesReturnOrder;
+              'CFM_PROCESS' : ProcessSROConfirmation;
+            END;
+            //H4292  24.06.15 DMO --------------------
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      DOMDocument@1000000001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v6.0'.DOMDocument";
+      DOMNode@1000000000 : ARRAY [100] OF Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";
+      XMLProcessingDOMNode@1000000002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";
+      DateFormatStr@1000000004 : TextConst 'ENU=<Day,2>.<Month,2>.<Year4>';
+      DateTimeFormatStr@1000000005 : TextConst 'ENU=<Year4><Month,2><Day,2><Hours24><Minutes,2><Seconds,2>';
+      DocType@1000000006 : 'Sales Return Order,SRO Confirmation';
+
+    PROCEDURE CreateSalesReturnOrderXML@1000000000(SalesHeaderV@1000000001 : Record 36);
+    VAR
+      OriginalSalesHeaderL@1000000002 : Record 36;
+      OriginalArchivedSalesHeaderL@1000000013 : Record 5107;
+      CustomerL@1000000003 : Record 18;
+      SalesLineL@1000000004 : Record 37;
+      ReturnReasonL@1000000005 : Record 6635;
+      SalesReceivablesSetupL@1000000007 : Record 311;
+      FPCIntfcSetupL@1000000008 : Record 50014;
+      LogisticsStatusHistL@1000000009 : Record 80013;
+      XMLExchLogL@1000000011 : Record 50842;
+      LocalDataNodeL@1000000000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";
+      FileNameL@1000000006 : Text[250];
+      TrackingNosL@1000000010 : Text[1024];
+      OriginalOrderDateL@1000000012 : Date;
+    BEGIN
+      IF SalesHeaderV."External Document No." <> '' THEN
+        IF OriginalSalesHeaderL.GET(OriginalSalesHeaderL."Document Type"::Order,SalesHeaderV."External Document No.") THEN
+          OriginalOrderDateL := OriginalSalesHeaderL."Order Date"
+        ELSE BEGIN
+          OriginalArchivedSalesHeaderL.RESET;
+          OriginalArchivedSalesHeaderL.SETRANGE("Document Type",OriginalArchivedSalesHeaderL."Document Type"::Order);
+          OriginalArchivedSalesHeaderL.SETRANGE("No.",SalesHeaderV."External Document No.");
+          IF OriginalArchivedSalesHeaderL.FINDLAST THEN
+            OriginalOrderDateL := OriginalArchivedSalesHeaderL."Order Date";
+        END;
+      CustomerL.GET(SalesHeaderV."Bill-to Customer No.");
+
+      SalesReceivablesSetupL.GET;
+      SalesReceivablesSetupL.TESTFIELD("Sales Ret. Order -Intfc. Setup");
+
+      FPCIntfcSetupL.GET(SalesReceivablesSetupL."Sales Ret. Order -Intfc. Setup");
+      FPCIntfcSetupL.TESTFIELD("Export Folder");
+
+      IF NOT ISCLEAR(DOMDocument) THEN
+        CLEAR(DOMDocument);
+      CREATE(DOMDocument,FALSE,TRUE);
+
+      //Create header
+      XMLProcessingDOMNode := DOMDocument.createProcessingInstruction('xml','version="1.0" encoding="UTF-8"');
+      DOMNode[1] := DOMDocument.appendChild(XMLProcessingDOMNode);
+      DOMNode[1] := DOMDocument.createElement('SalesOrder');
+      DOMNode[1] := DOMDocument.appendChild(DOMNode[1]);
+
+      AddElement(DOMNode[1],'SalesOrderHeader','','',DOMNode[2]);
+      AddElement(DOMNode[2],'DocumentID','','',DOMNode[3]);
+      AddElement(DOMNode[3],'ID',FORMAT(SalesHeaderV."No."),'',DOMNode[4]);
+      AddElement(
+        DOMNode[3],'VariationID',FORMAT(XMLExchLogL.GetNextVersionNo(DocType::"Sales Return Order",SalesHeaderV."No.")),'',DOMNode[4]);
+      AddElement(DOMNode[2],'DocumentDateTime',FORMAT(SalesHeaderV."Order Date",0,DateFormatStr),'',DOMNode[3]);
+
+      IF SalesHeaderV."External Document No." <> '' THEN BEGIN
+        AddElement(DOMNode[2],'DocumentReference','','',DOMNode[3]);
+        AddElement(DOMNode[3],'DocumentID','','',DOMNode[4]);
+        AddElement(DOMNode[4],'ID',FORMAT(SalesHeaderV."External Document No."),'',DOMNode[5]);
+        AddElement(DOMNode[3],'DocumentDateTime',FORMAT(OriginalOrderDateL,0,DateFormatStr),'',DOMNode[4]);
+      END;
+
+      IF FORMAT(SalesHeaderV.Status) <> '' THEN BEGIN
+        AddElement(DOMNode[2],'Status','','',DOMNode[3]);
+        AddElement(DOMNode[3],'Code',FORMAT(SalesHeaderV.Status),'',DOMNode[4]);
+      END;
+
+      AddElement(DOMNode[2],'BillToParty','','',DOMNode[3]);
+      AddElement(DOMNode[3],'AccountID',FORMAT(SalesHeaderV."Bill-to Customer No."),'',DOMNode[4]);
+      AddElement(
+        DOMNode[3],'Name',FORMAT(SalesHeaderV."Sell-to Customer Name" + ' ' + SalesHeaderV."Sell-to Customer Name 2"),'',DOMNode[4]);
+      AddElement(DOMNode[3],'Location','','',DOMNode[4]);
+      AddElement(DOMNode[4],'Address',FORMAT(CustomerL.Address),'',DOMNode[5]);
+      AddElement(DOMNode[4],'UserArea','','',DOMNode[5]);
+      AddElement(DOMNode[5],'Address2',FORMAT(CustomerL."Address 2"),'',DOMNode[6]);
+      AddElement(DOMNode[5],'PostCode',FORMAT(CustomerL."Post Code"),'',DOMNode[6]);
+      AddElement(DOMNode[5],'City',FORMAT(CustomerL.City),'',DOMNode[6]);
+      AddElement(DOMNode[5],'RegionCode',FORMAT(CustomerL."Country/Region Code"),'',DOMNode[6]);
+
+      //logistics status history...
+      TrackingNosL := '';
+      LogisticsStatusHistL.RESET;
+      LogisticsStatusHistL.SETRANGE("Document Type",SalesHeaderV."Document Type");
+      LogisticsStatusHistL.SETRANGE("Document No.",SalesHeaderV."No.");
+      LogisticsStatusHistL.SETFILTER("Tracking Code",'<>%1','');
+      IF LogisticsStatusHistL.FINDSET THEN BEGIN
+        REPEAT
+          IF TrackingNosL = '' THEN
+            TrackingNosL += LogisticsStatusHistL."Tracking Code"
+          ELSE
+            TrackingNosL += ';' + LogisticsStatusHistL."Tracking Code";
+        UNTIL LogisticsStatusHistL.NEXT = 0;
+        AddElement(DOMNode[2],'UserArea','','',DOMNode[3]);
+        AddElement(DOMNode[3],'TrackingCodes',TrackingNosL,'',DOMNode[4]);
+      END;
+      //Create lines
+      SalesLineL.RESET;
+      SalesLineL.SETRANGE("Document Type",SalesHeaderV."Document Type");
+      SalesLineL.SETRANGE("Document No.",SalesHeaderV."No.");
+      SalesLineL.SETRANGE(Type,SalesLineL.Type::Item);
+      IF SalesLineL.FINDSET THEN
+        REPEAT
+          AddElement(DOMNode[1],'SalesOrderLine','','',DOMNode[2]);
+          AddElement(DOMNode[2],'LineNumber',FORMAT(SalesLineL."Line No."),'',DOMNode[3]);
+
+          AddElement(DOMNode[2],'Status','','',DOMNode[3]);
+          AddElement(DOMNode[3],'ReasonCode',FORMAT(SalesLineL."Return Reason Code"),'',DOMNode[4]);
+          IF SalesLineL."Return Reason Code" <> '' THEN
+            IF ReturnReasonL.GET(SalesLineL."Return Reason Code") THEN
+              AddElement(DOMNode[3],'Reason',FORMAT(ReturnReasonL.Description),'',DOMNode[4]);
+          AddElement(DOMNode[3],'UserArea','','',DOMNode[4]);
+          AddElement(DOMNode[4],'PurchasingCode',FORMAT(SalesLineL."Purchasing Code"),'',DOMNode[5]);
+          AddElement(DOMNode[4],'ReturnType',FORMAT(SalesLineL."Return Type"),'',DOMNode[5]);
+          //H4481  23.07.15 DMO ++++++++++++++++++++
+          SalesLineL.CALCFIELDS("Return Agreement Type");
+          AddElement(DOMNode[4],'ReturnAgreementType',FORMAT(SalesLineL."Return Agreement Type"),'',DOMNode[5]);
+          //H4481  23.07.15 DMO --------------------
+          IF SalesLineL."Purchase Order No." <> '' THEN BEGIN
+            AddElement(DOMNode[2],'PurchaseOrderReference','','',DOMNode[3]);
+            AddElement(DOMNode[3],'DocumentID','','',DOMNode[4]);
+            AddElement(DOMNode[4],'ID',FORMAT(SalesLineL."Purchase Order No."),'',DOMNode[5]);
+            AddElement(DOMNode[3],'LineNumber',FORMAT(SalesLineL."Purch. Order Line No."),'',DOMNode[4]);
+          END;
+
+          AddElement(DOMNode[2],'Item','','',DOMNode[3]);
+          AddElement(DOMNode[3],'ItemID','','',DOMNode[4]);
+          AddElement(DOMNode[4],'ID',SalesLineL."No.",'',DOMNode[5]);
+          AddElement(DOMNode[3],'Description',SalesLineL.Description,'',DOMNode[4]);
+          IF SalesLineL."Vendor SKU" <> '' THEN BEGIN
+            AddElement(DOMNode[3],'UserArea','','',DOMNode[4]);
+            AddElement(DOMNode[4],'VendorSKU',SalesLineL."Vendor SKU",'',DOMNode[5]);
+          END;
+
+          AddElement(DOMNode[2],'Quantity',FORMAT(SalesLineL.Quantity),'',DOMNode[3]);
+        UNTIL SalesLineL.NEXT = 0;
+
+      IF FPCIntfcSetupL."Export Folder"[STRLEN(FPCIntfcSetupL."Export Folder")] <> '\' THEN
+        FPCIntfcSetupL."Export Folder" += '\';
+      FileNameL :=
+        FPCIntfcSetupL."Export Folder" + 'RET_' + SalesHeaderV."No." + '_' + FORMAT(CURRENTDATETIME,0,DateTimeFormatStr) + '.xml';
+      DOMDocument.save(FileNameL);
+      CreateLog(DocType::"Sales Return Order",SalesHeaderV."No.",0,FileNameL);
+    END;
+
+    LOCAL PROCEDURE AddElement@1(VAR XMLNode@1001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v3.0'.DOMDocument";NodeName@1002 : Text[250];NodeText@1003 : Text[1024];NameSpace@1004 : Text[250];VAR CreatedXMLNode@1005 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMNode") ExitStatus@1000 : Integer;
+    VAR
+      NewChildNode@1006 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMNode";
+    BEGIN
+      NewChildNode := XMLNode.ownerDocument.createNode('element', NodeName, NameSpace);
+
+      IF ISCLEAR(NewChildNode) THEN BEGIN
+        ExitStatus := 50;
+        EXIT;
+      END;
+
+      IF NodeText <> '' THEN
+        NewChildNode.text := NodeText;
+
+      XMLNode.appendChild(NewChildNode);
+      CreatedXMLNode := NewChildNode;
+
+      ExitStatus := 0;
+    END;
+
+    LOCAL PROCEDURE AddAttribute@2(VAR XMLNode@1001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMNode";Name@1002 : Text[260];NodeValue@1003 : Text[1024]) ExitStatus@1000 : Integer;
+    VAR
+      XMLNewAttributeNode@1004 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMNode";
+    BEGIN
+      XMLNewAttributeNode := XMLNode.ownerDocument.createAttribute(Name);
+
+      IF ISCLEAR(XMLNewAttributeNode) THEN BEGIN
+        ExitStatus := 60;
+        EXIT(ExitStatus)
+      END;
+
+      IF NodeValue <> '' THEN
+        XMLNewAttributeNode.nodeValue := NodeValue;
+
+      XMLNode.attributes.setNamedItem(XMLNewAttributeNode);
+    END;
+
+    LOCAL PROCEDURE CreateLog@1000000002(DocTypeV@1000000001 : 'Sales Return Order,SRO Confirmation';DocNoV@1000000002 : Code[20];DocVersionNoV@1000000004 : Integer;FileNameV@1000000003 : Text[250]);
+    VAR
+      XMLExchLogL@1000000000 : Record 50842;
+    BEGIN
+      XMLExchLogL.INIT;
+      XMLExchLogL."Document Type" := DocTypeV;
+      XMLExchLogL."Document No." := DocNoV;
+      IF DocTypeV = DocTypeV::"Sales Return Order" THEN
+        XMLExchLogL."Version No." := XMLExchLogL.GetNextVersionNo(DocTypeV,DocNoV)
+      ELSE
+        XMLExchLogL."Version No." := DocVersionNoV;
+      XMLExchLogL.Direction := XMLExchLogL.Direction::Export;
+      XMLExchLogL.Status := XMLExchLogL.Status::Sent;
+      XMLExchLogL."Request Document".IMPORT(FileNameV);
+      XMLExchLogL.INSERT(TRUE);
+    END;
+
+    PROCEDURE ImportSalesReturnOrder@1000000004();
+    VAR
+      SalesAndReceivablesSetupL@1000000000 : Record 311;
+      FPCInterfaceSetupL@1000000002 : Record 50014;
+      FileRecL@1000000001 : Record 2000000022;
+      XMLExchCUL@1000000005 : Codeunit 50270;
+      FileNameL@1000000004 : Text[1024];
+      ArchiveFileNameL@1000000003 : Text[1024];
+      ErrorFileNameL@1000000006 : Text[1024];
+    BEGIN
+      //H4292  24.06.15 DMO ++++++++++++++++++++
+      SalesAndReceivablesSetupL.GET;
+      SalesAndReceivablesSetupL.TESTFIELD("Sales Ret. Order -Intfc. Setup");
+
+      FPCInterfaceSetupL.GET(SalesAndReceivablesSetupL."Sales Ret. Order -Intfc. Setup");
+      FPCInterfaceSetupL.TESTFIELD("Import Folder");
+      FPCInterfaceSetupL.TESTFIELD("Import Error Folder");
+      FPCInterfaceSetupL.TESTFIELD("Archive Root Folder");
+
+      IF FPCInterfaceSetupL."Import Folder"[STRLEN(FPCInterfaceSetupL."Import Folder")] <> '\' THEN
+        FPCInterfaceSetupL."Import Folder" := FPCInterfaceSetupL."Import Folder" + '\';
+
+      IF FPCInterfaceSetupL."Archive Root Folder"[STRLEN(FPCInterfaceSetupL."Archive Root Folder")] <> '\' THEN
+        FPCInterfaceSetupL."Archive Root Folder" := FPCInterfaceSetupL."Archive Root Folder" + '\';
+
+      IF FPCInterfaceSetupL."Import Error Folder"[STRLEN(FPCInterfaceSetupL."Import Error Folder")] <> '\' THEN
+        FPCInterfaceSetupL."Import Error Folder" := FPCInterfaceSetupL."Import Error Folder" + '\';
+
+      FileRecL.RESET;
+      FileRecL.SETRANGE(Path,FPCInterfaceSetupL."Import Folder");
+      FileRecL.SETRANGE("Is a file",TRUE);
+      CLEARLASTERROR;
+      IF FileRecL.FINDSET THEN
+        REPEAT
+          FileNameL := FPCInterfaceSetupL."Import Folder" + FileRecL.Name;
+          ArchiveFileNameL := FPCInterfaceSetupL."Archive Root Folder" + FileRecL.Name;
+          ErrorFileNameL := FPCInterfaceSetupL."Import Error Folder" + FileRecL.Name;
+
+          IF XMLExchCUL.ReadRETWEM(FileNameL,FileRecL.Name) THEN
+            FILE.RENAME(FPCInterfaceSetupL."Import Folder" + FileRecL.Name,ArchiveFileNameL)
+          ELSE
+            FILE.RENAME(FPCInterfaceSetupL."Import Folder" + FileRecL.Name,ErrorFileNameL);
+        UNTIL FileRecL.NEXT = 0;
+      //H4292  24.06.15 DMO --------------------
+    END;
+
+    PROCEDURE ProcessSROConfirmation@1000000003();
+    VAR
+      SalesAndReceivablesSetupL@1000000007 : Record 311;
+      FPCInterfaceSetupL@1000000006 : Record 50014;
+      FileRecL@1000000005 : Record 2000000022;
+      XMLExchCUL@1000000004 : Codeunit 50270;
+      FileNameL@1000000003 : Text[1024];
+      ArchiveFileNameL@1000000002 : Text[1024];
+      ErrorFileNameL@1000000001 : Text[1024];
+      ErrorTextL@1000000000 : Text[1024];
+    BEGIN
+      //H4292  24.06.15 DMO ++++++++++++++++++++
+      SalesAndReceivablesSetupL.GET;
+      SalesAndReceivablesSetupL.TESTFIELD("Sales Ret. Confm -Intfc. Setup");
+
+      FPCInterfaceSetupL.GET(SalesAndReceivablesSetupL."Sales Ret. Confm -Intfc. Setup");
+      FPCInterfaceSetupL.TESTFIELD("Import Folder");
+      FPCInterfaceSetupL.TESTFIELD("Import Error Folder");
+      FPCInterfaceSetupL.TESTFIELD("Archive Root Folder");
+
+      IF FPCInterfaceSetupL."Import Folder"[STRLEN(FPCInterfaceSetupL."Import Folder")] <> '\' THEN
+        FPCInterfaceSetupL."Import Folder" := FPCInterfaceSetupL."Import Folder" + '\';
+
+      IF FPCInterfaceSetupL."Import Error Folder"[STRLEN(FPCInterfaceSetupL."Import Error Folder")] <> '\' THEN
+        FPCInterfaceSetupL."Import Error Folder" := FPCInterfaceSetupL."Import Error Folder" + '\';
+
+      IF FPCInterfaceSetupL."Archive Root Folder"[STRLEN(FPCInterfaceSetupL."Archive Root Folder")] <> '\' THEN
+        FPCInterfaceSetupL."Archive Root Folder" := FPCInterfaceSetupL."Archive Root Folder" + '\';
+
+      FileRecL.RESET;
+      FileRecL.SETRANGE(Path,FPCInterfaceSetupL."Import Folder");
+      FileRecL.SETRANGE("Is a file",TRUE);
+      CLEARLASTERROR;
+      IF FileRecL.FINDSET THEN
+        REPEAT
+          FileNameL := FPCInterfaceSetupL."Import Folder" + FileRecL.Name;
+          ArchiveFileNameL := FPCInterfaceSetupL."Archive Root Folder" + FileRecL.Name;
+          ErrorFileNameL := FPCInterfaceSetupL."Import Error Folder" + FileRecL.Name;
+
+          IF XMLExchCUL.ReadCFM(FileNameL,FileRecL.Name) THEN
+            FILE.RENAME(FPCInterfaceSetupL."Import Folder" + FileRecL.Name,ArchiveFileNameL)
+          ELSE
+            FILE.RENAME(FPCInterfaceSetupL."Import Folder" + FileRecL.Name,ErrorFileNameL);
+        UNTIL FileRecL.NEXT = 0;
+      //H4292  24.06.15 DMO --------------------
+    END;
+
+    PROCEDURE ReadRETWEM@1000000007(FullFileNameV@1000000000 : Text[1024];FileNameV@1000000006 : Text[1024]) : Boolean;
+    VAR
+      ImportXMLDocL@1000000005 : Record 50844;
+      NodeElementL@1000000001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+      ParentElementL@1000000003 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+      ChildElementL@1000000004 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+      ChildListL@1000000002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF82-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNodeList";
+    BEGIN
+      //H4292  24.06.15 DMO ++++++++++++++++++++
+      IF NOT ISCLEAR(DOMDocument) THEN
+        CLEAR(DOMDocument);
+      CREATE(DOMDocument,FALSE,TRUE);
+      DOMDocument.load(FullFileNameV);
+
+      NodeElementL := DOMDocument.selectSingleNode('//AcknowledgeReceiveDelivery');
+      IF ISCLEAR(NodeElementL) THEN
+        EXIT(FALSE);
+
+      ImportXMLDocL.INIT;
+      ImportXMLDocL."Document Type" := ImportXMLDocL."Document Type"::"Sales Return Order";
+      ImportXMLDocL.Filename := FileNameV;
+
+      ParentElementL := DOMDocument.selectSingleNode('//DocumentID');
+      IF ISCLEAR(ParentElementL) THEN
+        EXIT(FALSE);
+
+      //get Document No.
+      ChildListL := ParentElementL.getElementsByTagName('ID');
+      ChildElementL := ChildListL.item(0);
+      IF ISCLEAR(ChildElementL) THEN
+        EXIT(FALSE);
+      ImportXMLDocL."Document No." := ChildElementL.text;
+
+      //get Version No.
+      ChildListL := ParentElementL.getElementsByTagName('VariationID');
+      ChildElementL := ChildListL.item(0);
+      IF ISCLEAR(ChildElementL) THEN
+        EXIT(FALSE);
+      IF ChildElementL.text <> '' THEN
+        IF NOT EVALUATE(ImportXMLDocL."Version No.",ChildElementL.text) THEN
+          EXIT(FALSE);
+
+      ParentElementL := DOMDocument.selectSingleNode('//ItemID');
+      IF ISCLEAR(ParentElementL) THEN
+        EXIT(FALSE);
+
+      //get Item No.
+      ChildListL := ParentElementL.getElementsByTagName('ID');
+      ChildElementL := ChildListL.item(0);
+      IF ISCLEAR(ChildElementL) THEN
+        EXIT(FALSE);
+      ImportXMLDocL."Item No." := ChildElementL.text;
+
+      //get Quantity
+      ParentElementL := DOMDocument.selectSingleNode('//Quantity');
+      IF ISCLEAR(ParentElementL) THEN
+        EXIT(FALSE);
+      IF ParentElementL.text <> '' THEN
+        IF NOT EVALUATE(ImportXMLDocL.Quantity,ParentElementL.text) THEN
+          EXIT(FALSE);
+
+      //get Line No.
+      ParentElementL := DOMDocument.selectSingleNode('//LineNumber');
+      IF ISCLEAR(ParentElementL) THEN
+        EXIT(FALSE);
+      IF ParentElementL.text <> '' THEN
+        IF NOT EVALUATE(ImportXMLDocL."Document Line No.",ParentElementL.text) THEN
+          EXIT(FALSE);
+
+      //get Receipt Timestamp
+      ParentElementL := DOMDocument.selectSingleNode('//ReceiptDateTime');
+      IF ISCLEAR(ParentElementL) THEN
+        EXIT(FALSE);
+      IF ParentElementL.text <> '' THEN
+        IF NOT EVALUATE(ImportXMLDocL."Receipt Timestamp",ParentElementL.text) THEN
+          EXIT(FALSE);
+
+      //get Item Category
+      ParentElementL := DOMDocument.selectSingleNode('//ItemCategory');
+      IF ISCLEAR(ParentElementL) THEN
+        EXIT(FALSE);
+      ImportXMLDocL."Item Category" := ParentElementL.text;
+
+      //get Item Condition
+      ParentElementL := DOMDocument.selectSingleNode('//ItemCondition');
+      IF ISCLEAR(ParentElementL) THEN
+        EXIT(FALSE);
+      ImportXMLDocL."Item Condition" := ParentElementL.text;
+
+      //get Warehouse Return Reason Code
+      ParentElementL := DOMDocument.selectSingleNode('//WarehouseReturnReason');
+      IF ISCLEAR(ParentElementL) THEN
+        EXIT(FALSE);
+      ImportXMLDocL."Warehouse Return Reason Code" := ParentElementL.text;
+      ImportXMLDocL."Response Document".IMPORT(FullFileNameV);
+      ImportXMLDocL.INSERT(TRUE);
+      EXIT(TRUE);
+      //H4292  24.06.15 DMO --------------------
+    END;
+
+    PROCEDURE ReadCFM@1000000010(FullFileNameV@1000000000 : Text[1024];FileNameV@1000000006 : Text[1024]) : Boolean;
+    VAR
+      XMLExchangeLogL@1000000005 : Record 50842;
+      NodeElementL@1000000001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+      ParentElementL@1000000003 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+      DocNoL@1000000007 : Code[20];
+      VersionNoL@1000000008 : Integer;
+      StatusL@1000000009 : Text[30];
+    BEGIN
+      //H4292  24.06.15 DMO ++++++++++++++++++++
+      IF NOT ISCLEAR(DOMDocument) THEN
+        CLEAR(DOMDocument);
+      CREATE(DOMDocument,FALSE,TRUE);
+      DOMDocument.load(FullFileNameV);
+
+      NodeElementL := DOMDocument.selectSingleNode('//SalesOrder');
+      IF ISCLEAR(NodeElementL) THEN
+        EXIT(FALSE);
+
+      //get Document No.
+      ParentElementL := DOMDocument.selectSingleNode('//DocumentID');
+      IF ISCLEAR(ParentElementL) THEN
+        EXIT(FALSE);
+      DocNoL := ParentElementL.text;
+
+      //get Version No.
+      ParentElementL := DOMDocument.selectSingleNode('//VariationID');
+      IF ISCLEAR(ParentElementL) THEN
+        EXIT(FALSE);
+      IF ParentElementL.text <> '' THEN
+        IF NOT EVALUATE(VersionNoL,ParentElementL.text) THEN
+          EXIT(FALSE);
+
+      //get Status
+      ParentElementL := DOMDocument.selectSingleNode('//Status');
+      IF ISCLEAR(ParentElementL) THEN
+        EXIT(FALSE);
+      StatusL := ParentElementL.text;
+      IF NOT (StatusL IN ['Rejected','Received']) THEN
+        EXIT(FALSE);
+
+      CreateLog(DocType::"SRO Confirmation",DocNoL,VersionNoL,FullFileNameV);
+
+      XMLExchangeLogL.RESET;
+      XMLExchangeLogL.SETCURRENTKEY("Document Type","Document No.","Version No.");
+      XMLExchangeLogL.SETRANGE("Document Type",XMLExchangeLogL."Document Type"::"Sales Return Order");
+      XMLExchangeLogL.SETRANGE("Document No.",DocNoL);
+      XMLExchangeLogL.SETRANGE("Version No.",VersionNoL);
+      IF XMLExchangeLogL.FINDFIRST THEN BEGIN
+        IF StatusL = 'Rejected' THEN
+          XMLExchangeLogL.Status := XMLExchangeLogL.Status::Rejected
+        ELSE
+          XMLExchangeLogL.Status := XMLExchangeLogL.Status::Received;
+        XMLExchangeLogL.MODIFY(TRUE);
+        EXIT(TRUE);
+      END;
+      //H4292  24.06.15 DMO --------------------
+    END;
+
+    EVENT DOMDocument@1000000001::ondataavailable@198();
+    BEGIN
+    END;
+
+    EVENT DOMDocument@1000000001::onreadystatechange@-609();
+    BEGIN
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+      H4260     08.06.15   DMO       Return WH: Return Orders outbound - NEW OBJECT
+      H4292     24.06.15   DMO       Return WH: Return Orders import
+      H4481     23.07.15   DMO       Add Supplier Return Agreement to XML interface with Storelogix
+    }
+    END.
+  }
+}
+

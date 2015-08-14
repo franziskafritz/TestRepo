@@ -1,0 +1,610 @@
+OBJECT Codeunit 50216 Purchase Credit Memo
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02.09.13;
+    Time=14:59:54;
+    Version List=HME0513;
+  }
+  PROPERTIES
+  {
+    Subtype=Test;
+    OnRun=BEGIN
+            IsInitialized := FALSE;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Assert@1004 : Codeunit 50200;
+      LibrarySCM@1002 : Codeunit 50210;
+      LibraryUtility@1007 : Codeunit 50206;
+      LibraryFinance@1010 : Codeunit 50207;
+      IsInitialized@1000 : Boolean;
+      FieldError@1005 : TextConst 'ENU=%1 must be equal in %2.';
+      LineError@1003 : TextConst 'ENU=Number of lines for %1 and %2 must be equal.';
+      VATAmountErrorMessage@1006 : TextConst 'ENU=VAT Amount must be %1 in %2.';
+      CommonError@1008 : TextConst 'ENU=%1 in %2 must be same as %3.';
+
+    LOCAL PROCEDURE Initialize@8();
+    VAR
+      BackupManagement@1001 : Codeunit 50201;
+    BEGIN
+      RANDOMIZE(1);  // Seed RANDOM function.
+      IF IsInitialized THEN
+        EXIT;
+
+      BackupManagement.DefaultFixture;
+      LibraryFinance.InitializeGeneralPostingSetup;
+      LibraryFinance.InitializeVATPostingSetup;
+
+      IsInitialized := TRUE;
+      COMMIT;
+    END;
+
+    [Test]
+    PROCEDURE PurchaseCreditMemoCreation@3();
+    VAR
+      PurchaseHeader@1000 : Record 38;
+      PurchaseLine@1001 : Record 39;
+    BEGIN
+      // Test New Purchase Credit Memo creation.
+
+      // Setup.
+      Initialize;
+
+      // Exercise: Create Purchase Credit Memo.
+      CreatePurchaseHeader(PurchaseHeader,PurchaseHeader."Document Type"::"Credit Memo",CreateVendor);
+      CreatePurchaseLine(PurchaseLine,PurchaseHeader);
+
+      // Verify: Verify Purchase Credit Memo created.
+      PurchaseHeader.GET(PurchaseHeader."Document Type",PurchaseHeader."No.");
+      PurchaseLine.GET(PurchaseLine."Document Type",PurchaseLine."Document No.",PurchaseLine."Line No.");
+    END;
+
+    [Test]
+    PROCEDURE VATAmountOnPurchaseCreditMemo@4();
+    VAR
+      GeneralLedgerSetup@1008 : Record 98;
+      PurchaseHeader@1001 : Record 38;
+      PurchaseLine@1000 : Record 39;
+      VATAmountLine@1002 : Record 290;
+      ReleasePurchaseDocument@1004 : Codeunit 415;
+      QtyType@1003 : 'General,Invoicing,Shipping';
+    BEGIN
+      // Create a Purchase Credit Memo and verify that correct VAT Amount calculated for Purchase Credit Memo.
+
+      // Setup.
+      Initialize;
+
+      // Exercise: Create Purchase Credit Memo and calculate VAT Amount for Purchase Lines.
+      CreatePurchaseHeader(PurchaseHeader,PurchaseHeader."Document Type"::"Credit Memo",CreateVendor);
+      CreatePurchaseLine(PurchaseLine,PurchaseHeader);
+      PurchaseLine.CalcVATAmountLines(QtyType::Invoicing,PurchaseHeader,PurchaseLine,VATAmountLine);
+      ReleasePurchaseDocument.PerformManualRelease(PurchaseHeader);
+      PurchaseHeader.CALCFIELDS(Amount);
+
+      // Verify: Verify VAT Amount on Purchase Credit Memo.
+      GeneralLedgerSetup.GET;
+      Assert.AreNearlyEqual(
+        PurchaseHeader.Amount * PurchaseLine."VAT %" / 100,VATAmountLine."VAT Amount",GeneralLedgerSetup."Amount Rounding Precision",
+        STRSUBSTNO(VATAmountErrorMessage,PurchaseHeader.Amount * PurchaseLine."VAT %" / 100,VATAmountLine.TABLECAPTION));
+    END;
+
+    [Test]
+    PROCEDURE PurchaseCreditMemoReport@5();
+    VAR
+      PurchaseHeader@1001 : Record 38;
+      PurchaseLine@1000 : Record 39;
+      PurchaseDocumentTest@1005 : Report 402;
+      FilePath@1003 : Text[1024];
+    BEGIN
+      // Create a Purchase Credit Memo and save it as external file and verify that saved files has some data.
+
+      // Setup.
+      Initialize;
+      CreatePurchaseHeader(PurchaseHeader,PurchaseHeader."Document Type"::"Credit Memo",CreateVendor);
+      CreatePurchaseLine(PurchaseLine,PurchaseHeader);
+
+      // Exercise: Generate Report as external file for Purchase Credit Memo.
+      PurchaseHeader.SETRANGE("Document Type",PurchaseHeader."Document Type"::"Credit Memo");
+      PurchaseHeader.SETRANGE("No.",PurchaseHeader."No.");
+      PurchaseDocumentTest.SETTABLEVIEW(PurchaseHeader);
+      IF ISSERVICETIER THEN BEGIN
+        FilePath := TEMPORARYPATH + FORMAT(PurchaseHeader."Document Type") + PurchaseHeader."No." + '.xls';
+        PurchaseDocumentTest.SAVEASEXCEL(FilePath)
+      END ELSE BEGIN
+        FilePath := TEMPORARYPATH + FORMAT(PurchaseHeader."Document Type") + PurchaseHeader."No." + '.xml';
+        PurchaseDocumentTest.SAVEASXML(FilePath);
+      END;
+
+      // Verify: Verify that saved files have some data.
+      LibraryUtility.CheckFileNotEmpty(FilePath);
+    END;
+
+    [Test]
+    PROCEDURE PostedPurchaseCreditMemoReport@12();
+    VAR
+      PurchaseHeader@1001 : Record 38;
+      PurchaseLine@1000 : Record 39;
+      PurchCrMemoHdr@1003 : Record 124;
+      PurchaseCreditMemo@1005 : Report 407;
+      NoSeriesManagement@1004 : Codeunit 396;
+      FilePath@1006 : Text[1024];
+      PostedCreditMemoNo@1002 : Code[20];
+    BEGIN
+      // Create a Purchase Credit Memo and Post it. Generate Posted Purchase Credit Memo Report and verify that it contains some data.
+
+      // Setup.
+      Initialize;
+      CreatePurchaseHeader(PurchaseHeader,PurchaseHeader."Document Type"::"Credit Memo",CreateVendor);
+      CreatePurchaseLine(PurchaseLine,PurchaseHeader);
+      PostedCreditMemoNo := NoSeriesManagement.GetNextNo(PurchaseHeader."Posting No. Series",WORKDATE,FALSE);
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,TRUE,TRUE);
+
+      // Exercise: Generate Report as external file for Posted Purchase Credit Memo.
+      PurchCrMemoHdr.SETRANGE("No.",PostedCreditMemoNo);
+      PurchaseCreditMemo.SETTABLEVIEW(PurchCrMemoHdr);
+      IF ISSERVICETIER THEN BEGIN
+        FilePath := TEMPORARYPATH + FORMAT('Purchase - Credit Memo') + PurchCrMemoHdr."No." + '.xls';
+        PurchaseCreditMemo.SAVEASEXCEL(FilePath)
+      END ELSE BEGIN
+        FilePath := TEMPORARYPATH + FORMAT('Purchase - Credit Memo') + PurchCrMemoHdr."No." + '.xml';
+        PurchaseCreditMemo.SAVEASXML(FilePath);
+      END;
+
+      // Verify: Verify that Saved files have some data.
+      LibraryUtility.CheckFileNotEmpty(FilePath);
+    END;
+
+    [Test]
+    PROCEDURE PostPurchaseCreditMemo@14();
+    VAR
+      PurchaseHeader@1006 : Record 38;
+      PurchaseLine@1005 : Record 39;
+      PurchCrMemoHdr@1009 : Record 124;
+      ReturnShipmentLine@1001 : Record 6651;
+      NoSeriesManagement@1002 : Codeunit 396;
+      PostedCreditMemoNo@1003 : Code[20];
+      PostedReturnShipmentNo@1000 : Code[20];
+      Counter@1004 : Integer;
+    BEGIN
+      // Create and Post Purchase Credit Memo and verify Posted Return Shipment Lines,Vendor Ledger Entry, GL Entry, VAT Entry and
+      // Value Entries.
+
+      // Setup:
+      Initialize;
+
+      // Exercise: Create and Post Purchase Credit Memo with multiple lines.
+      CreatePurchaseHeader(PurchaseHeader,PurchaseHeader."Document Type"::"Credit Memo",CreateVendor);
+      FOR Counter := 1 TO 1 + RANDOM(10) DO
+        CreatePurchaseLine(PurchaseLine,PurchaseHeader);
+      PostedReturnShipmentNo := NoSeriesManagement.GetNextNo(PurchaseHeader."Return Shipment No. Series",WORKDATE,FALSE);
+      CLEAR(NoSeriesManagement);
+      PostedCreditMemoNo := NoSeriesManagement.GetNextNo(PurchaseHeader."Posting No. Series",WORKDATE,FALSE);
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,TRUE,TRUE);
+
+      // Verify: Verify Posted Return Shipment Lines, GL Entries, Vendor Ledger Entries, VAT Entries and Value Entries.
+      ReturnShipmentLine.SETRANGE("Document No.",PostedReturnShipmentNo);
+      Assert.AreEqual(
+        Counter,ReturnShipmentLine.COUNT,STRSUBSTNO(LineError,PurchaseLine.TABLECAPTION,ReturnShipmentLine.TABLECAPTION));
+
+      PurchCrMemoHdr.GET(PostedCreditMemoNo);
+      PurchCrMemoHdr.CALCFIELDS(Amount,"Amount Including VAT");
+      VerifyGLEntry(PostedCreditMemoNo,PurchCrMemoHdr."Amount Including VAT");
+      VerifyVendorLedgerEntry(PostedCreditMemoNo,PurchCrMemoHdr."Amount Including VAT");
+      VerifyVATEntry(PostedCreditMemoNo,PurchCrMemoHdr."Amount Including VAT");
+      VerifyValueEntry(PostedCreditMemoNo,PurchCrMemoHdr.Amount);
+    END;
+
+    [Test]
+    PROCEDURE LocationOnPurchaseCreditMemo@15();
+    VAR
+      PurchaseHeader@1001 : Record 38;
+      PurchaseLine@1000 : Record 39;
+      ReturnShipmentLine@1004 : Record 6651;
+      NoSeriesManagement@1003 : Codeunit 396;
+      PostedReturnShipmentNo@1002 : Code[20];
+    BEGIN
+      // Create a Purchase Credit Memo with Location and Post it, verify Location on Return Shipment Line.
+
+      // Setup: Update Warehouse Location to Enable Require Shipment.
+      Initialize;
+
+      // Exercise: Create Purchase Credit Memo with Location and Post it.
+      CreatePurchaseHeader(PurchaseHeader,PurchaseHeader."Document Type"::"Credit Memo",CreateVendor);
+      CreatePurchaseLine(PurchaseLine,PurchaseHeader);
+      PurchaseLine.VALIDATE("Location Code",LibrarySCM.FindLocation);
+      PurchaseLine.MODIFY(TRUE);
+      LibrarySCM.CreateInvtPostingSetup(PurchaseLine."Location Code",PurchaseLine."No.");
+      PostedReturnShipmentNo := NoSeriesManagement.GetNextNo(PurchaseHeader."Return Shipment No. Series",WORKDATE,FALSE);
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,TRUE,TRUE);
+
+      // Verify: Verify Location on Return Shipment Line.
+      ReturnShipmentLine.SETRANGE("Document No.",PostedReturnShipmentNo);
+      ReturnShipmentLine.FINDFIRST;
+      Assert.AreEqual(PurchaseLine."Location Code",ReturnShipmentLine."Location Code",
+        STRSUBSTNO(CommonError,ReturnShipmentLine.FIELDCAPTION("Location Code"),ReturnShipmentLine.TABLECAPTION,
+          PurchaseLine.TABLECAPTION))
+    END;
+
+    [Test]
+    PROCEDURE LineDiscountPurchaseCreditMemo@17();
+    VAR
+      PurchaseHeader@1004 : Record 38;
+      PurchaseLine@1003 : Record 39;
+      PurchaseLineDiscount@1002 : Record 7014;
+      NoSeriesManagement@1001 : Codeunit 396;
+      PostedDocumentNo@1000 : Code[20];
+    BEGIN
+      // Create Purchase Credit Memo with Line Discount and Verify the Amount in GL Entry.
+
+      // Setup: Create Line Discount Setup.
+      Initialize;
+      SetupLineDiscount(PurchaseLineDiscount);
+
+      // Exercise: Create and Post Purchase Credit Memo. Take Quantity greater than Purchase Line Discount Min. Quantity.
+      CreatePurchaseHeader(PurchaseHeader,PurchaseHeader."Document Type"::"Credit Memo",PurchaseLineDiscount."Vendor No.");
+      LibrarySCM.CreatePurchaseLine(PurchaseHeader,PurchaseLine,PurchaseLine.Type::Item,PurchaseLineDiscount."Item No.",
+        PurchaseLineDiscount."Minimum Quantity" + RANDOM(10));
+      PurchaseLine.VALIDATE("Qty. to Receive",0);  // Qty. to Receive must be 0 for Purchase Credit Memo.
+      PurchaseLine.MODIFY(TRUE);
+      PostedDocumentNo := NoSeriesManagement.GetNextNo(PurchaseHeader."Posting No. Series",WORKDATE,FALSE);
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,TRUE,TRUE);
+
+      // Verify: Verify the Line Discount Amount for Purchase Credit Memo in GL Entry.
+      VerifyLineDiscountAmount(PurchaseLine,PostedDocumentNo,
+        (PurchaseLine.Quantity * PurchaseLine."Direct Unit Cost") * PurchaseLineDiscount."Line Discount %" / 100);
+    END;
+
+    [Test]
+    PROCEDURE InvDiscountPurchaseCreditMemo@34();
+    VAR
+      VendorInvoiceDisc@1002 : Record 24;
+      PurchaseHeader@1004 : Record 38;
+      PurchaseLine@1003 : Record 39;
+      NoSeriesManagement@1001 : Codeunit 396;
+      ReleasePurchaseDocument@1005 : Codeunit 415;
+      PostedDocumentNo@1000 : Code[20];
+    BEGIN
+      // Create Purchase Credit Memo with Invoice Discount, Post it and verify Posted GL Entry.
+
+      // Setup: Create Invoice Discount Setup.
+      Initialize;
+      SetupInvoiceDiscount(VendorInvoiceDisc);
+
+      // Exercise: Create Purchase Credit Memo, calculate Invoice Discount and Post the Credit Memo.
+      // Take Direct Unit Cost equal to Minimum Amount so that the Total Amount always greater than Minimum Amount.
+      CreatePurchaseHeader(PurchaseHeader,PurchaseHeader."Document Type"::"Credit Memo",VendorInvoiceDisc.Code);
+      CreatePurchaseLine(PurchaseLine,PurchaseHeader);
+      PurchaseLine.VALIDATE("Direct Unit Cost",VendorInvoiceDisc."Minimum Amount");
+      PurchaseLine.MODIFY(TRUE);
+      PostedDocumentNo := NoSeriesManagement.GetNextNo(PurchaseHeader."Posting No. Series",WORKDATE,FALSE);
+      ReleasePurchaseDocument.PerformManualRelease(PurchaseHeader);
+      CODEUNIT.RUN(CODEUNIT::"Purch.-Calc.Discount",PurchaseLine);
+      PurchaseLine.GET(PurchaseLine."Document Type",PurchaseLine."Document No.",PurchaseLine."Line No.");
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,TRUE,TRUE);
+
+      // Verify: Verify Purchase Line and Posted G/L Entry for Invoice Discount Amount.
+      VerifyInvoiceDiscountAmount(PurchaseLine,PostedDocumentNo,
+        (PurchaseLine.Quantity * PurchaseLine."Direct Unit Cost") * VendorInvoiceDisc."Discount %" / 100);
+    END;
+
+    [Test]
+    PROCEDURE PurchaseCreditMemoWithFCY@18();
+    VAR
+      PurchaseHeader@1002 : Record 38;
+      PurchaseLine@1001 : Record 39;
+      ReturnShipmentHeader@1003 : Record 6650;
+      NoSeriesManagement@1004 : Codeunit 396;
+      PostedDocumentNo@1000 : Code[20];
+    BEGIN
+      // Create and Post a Purchase Credit Memo with Currency and verify currency on Return Shipment.
+
+      // Setup.
+      Initialize;
+
+      // Exercise: Create Purchase Credit Memo with new Currency and Post it.
+      CreatePurchaseHeader(PurchaseHeader,PurchaseHeader."Document Type"::"Credit Memo",CreateVendor);
+      PurchaseHeader.VALIDATE("Currency Code",CreateCurrency);
+      PurchaseHeader.MODIFY(TRUE);
+      CreatePurchaseLine(PurchaseLine,PurchaseHeader);
+      PostedDocumentNo := NoSeriesManagement.GetNextNo(PurchaseHeader."Return Shipment No. Series",WORKDATE,FALSE);
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,TRUE,TRUE);
+
+      // Verify: Verify Currency Code in Purchase Line and Posted Purchase Return Shipment Header.
+      ReturnShipmentHeader.GET(PostedDocumentNo);
+      Assert.AreEqual(PurchaseHeader."Currency Code",PurchaseLine."Currency Code",
+        STRSUBSTNO(FieldError,PurchaseLine.FIELDCAPTION("Currency Code"),PurchaseLine.TABLECAPTION));
+      Assert.AreEqual(PurchaseHeader."Currency Code",ReturnShipmentHeader."Currency Code",
+        STRSUBSTNO(FieldError,ReturnShipmentHeader.FIELDCAPTION("Currency Code"),ReturnShipmentHeader.TABLECAPTION));
+    END;
+
+    [Test]
+    PROCEDURE CopyPurchaseDocument@6();
+    VAR
+      PurchaseHeader@1001 : Record 38;
+      PurchaseLine@1000 : Record 39;
+      PurchaseLine2@1005 : Record 39;
+      CopyPurchaseDocument@1002 : Report 492;
+      DocType@1004 : 'Quote,Blanket Order,Order,Invoice,Return Order,Credit Memo,Posted Receipt,Posted Invoice,Posted Return Shipment,Posted Credit Memo';
+      PurchaseOrderNo@1003 : Code[20];
+    BEGIN
+      // Create Purchase Order. Perform Copy Document on Purchase Credit Memo and Verify the data in Purchase Credit Memo.
+
+      // Setup: Create a Purchase Order.
+      Initialize;
+      CreatePurchaseHeader(PurchaseHeader,PurchaseHeader."Document Type"::Order,CreateVendor);
+      CreatePurchaseLine(PurchaseLine,PurchaseHeader);
+      PurchaseOrderNo := PurchaseHeader."No.";
+
+      // Exercise: Create Purchase Credit Memo Header and copy the Purchase Order to Purchase Credit Memo.
+      PurchaseHeader.INIT;
+      PurchaseHeader.VALIDATE("Document Type",PurchaseHeader."Document Type"::"Credit Memo");
+      PurchaseHeader.INSERT(TRUE);
+
+      CopyPurchaseDocument.SetPurchHeader(PurchaseHeader);
+      CopyPurchaseDocument.InitializeRequest(DocType::Order,PurchaseOrderNo,TRUE,FALSE);
+      CopyPurchaseDocument.USEREQUESTFORM(FALSE);
+      CopyPurchaseDocument.RUN;
+
+      // Verify: Verify that Correct Item No. and Quantity copied from Purchase Order to Purchase Credit Memo Line.
+      PurchaseLine2.SETRANGE("Document Type",PurchaseHeader."Document Type");
+      PurchaseLine2.SETRANGE("Document No.",PurchaseHeader."No.");
+      PurchaseLine2.FINDFIRST;
+      Assert.AreEqual(PurchaseLine."No.",PurchaseLine2."No.",
+        STRSUBSTNO(FieldError,PurchaseLine.FIELDCAPTION("No."),PurchaseLine.TABLECAPTION));
+      Assert.AreEqual(PurchaseLine.Quantity,PurchaseLine2.Quantity,
+        STRSUBSTNO(FieldError,PurchaseLine.FIELDCAPTION(Quantity),PurchaseLine.TABLECAPTION));
+    END;
+
+    [Test]
+    PROCEDURE PurchaseCreditMemoApplication@19();
+    VAR
+      PurchaseHeader@1000 : Record 38;
+      PurchaseLine@1001 : Record 39;
+      PurchaseHeader2@1004 : Record 38;
+      PurchaseLine2@1003 : Record 39;
+      ReturnShipmentHeader@1007 : Record 6650;
+      NoSeriesManagement@1006 : Codeunit 396;
+      PostedPurchaseInvoiceNo@1002 : Code[20];
+      PostedReturnShipmentNo@1005 : Code[20];
+    BEGIN
+      // Check if Credit Memo can be applied against Purchase Invoice.
+
+      // Setup: Create a Purchase Invoice and Post it. Store Posted Invoice No. in a variable.
+      Initialize;
+      CreatePurchaseHeader(PurchaseHeader,PurchaseHeader."Document Type"::Invoice,CreateVendor);
+      CreatePurchaseLine(PurchaseLine,PurchaseHeader);
+      PostedPurchaseInvoiceNo := NoSeriesManagement.GetNextNo(PurchaseHeader."Posting No. Series",WORKDATE,FALSE);
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader,TRUE,TRUE);
+
+      // Exercise: Create Purchase Credit Memo with the same Vendor used in Purchase Invoice, Update Applies to Document Type
+      // and Document No. fields and Post Purchase Credit Memo.
+      LibrarySCM.CreatePurchaseHeader(
+        PurchaseHeader2,PurchaseHeader2."Document Type"::"Credit Memo",PurchaseHeader."Buy-from Vendor No.");
+      PurchaseHeader2.VALIDATE("Vendor Cr. Memo No.",PurchaseHeader2."No.");
+      PurchaseHeader2.VALIDATE("Applies-to Doc. Type",PurchaseHeader2."Applies-to Doc. Type"::Invoice);
+      PurchaseHeader2.VALIDATE("Applies-to Doc. No.",PostedPurchaseInvoiceNo);
+      PurchaseHeader2.MODIFY(TRUE);
+
+      CreatePurchaseLine(PurchaseLine2,PurchaseHeader2);
+      CLEAR(NoSeriesManagement);
+      PostedReturnShipmentNo := NoSeriesManagement.GetNextNo(PurchaseHeader2."Return Shipment No. Series",WORKDATE,FALSE);
+      LibrarySCM.PostPurchaseHeader(PurchaseHeader2,TRUE,TRUE);
+
+      // Verify: Verify the Applies to Doc Type and Applies to Doc No. in Return Shipment Header.
+      ReturnShipmentHeader.GET(PostedReturnShipmentNo);
+      Assert.AreEqual(PurchaseHeader."Document Type",ReturnShipmentHeader."Applies-to Doc. Type",
+        STRSUBSTNO(FieldError,ReturnShipmentHeader.FIELDCAPTION("Applies-to Doc. Type"),ReturnShipmentHeader.TABLECAPTION));
+      Assert.AreEqual(PostedPurchaseInvoiceNo,ReturnShipmentHeader."Applies-to Doc. No.",
+        STRSUBSTNO(FieldError,ReturnShipmentHeader.FIELDCAPTION("Applies-to Doc. No."),ReturnShipmentHeader.TABLECAPTION));
+    END;
+
+    LOCAL PROCEDURE CreatePurchaseHeader@21(VAR PurchaseHeader@1000 : Record 38;DocumentType@1003 : Option;VendorNo@1001 : Code[20]);
+    BEGIN
+      LibrarySCM.CreatePurchaseHeader(PurchaseHeader,DocumentType,VendorNo);
+      PurchaseHeader.VALIDATE("Vendor Cr. Memo No.",PurchaseHeader."No.");
+      PurchaseHeader.VALIDATE("Vendor Invoice No.",PurchaseHeader."No.");
+      PurchaseHeader.MODIFY(TRUE);
+    END;
+
+    LOCAL PROCEDURE CreatePurchaseLine@25(VAR PurchaseLine@1001 : Record 39;PurchaseHeader@1000 : Record 38);
+    BEGIN
+      LibrarySCM.CreatePurchaseLine(
+        PurchaseHeader,PurchaseLine,PurchaseLine.Type::Item,CreateItem,RANDOM(10));
+
+      IF PurchaseHeader."Document Type" = PurchaseHeader."Document Type"::"Credit Memo" THEN BEGIN
+        PurchaseLine.VALIDATE("Qty. to Receive",0);  // Qty. to Receive must be 0 for Purchase Credit Memo.
+        PurchaseLine.MODIFY(TRUE);
+      END;
+    END;
+
+    LOCAL PROCEDURE CreateVendor@1() : Code[20];
+    VAR
+      Vendor@1001 : Record 23;
+      VATPostingSetup@1000 : Record 325;
+    BEGIN
+      FindVATPostingSetup(VATPostingSetup);
+      LibrarySCM.CreateVendor(Vendor);
+      Vendor.VALIDATE("VAT Bus. Posting Group",VATPostingSetup."VAT Bus. Posting Group");
+      Vendor.MODIFY(TRUE);
+      EXIT(Vendor."No.");
+    END;
+
+    LOCAL PROCEDURE CreateItem@9() : Code[20];
+    VAR
+      Item@1000 : Record 27;
+      InventorySetup@1003 : Record 313;
+      VATPostingSetup@1002 : Record 325;
+      LibrarySCM@1001 : Codeunit 50210;
+    BEGIN
+      FindVATPostingSetup(VATPostingSetup);
+
+      // Modify Item No. Series in Inventory setup.
+      InventorySetup.GET;
+      InventorySetup.VALIDATE("Item Nos.",LibraryUtility.GetNoSeriesCode);
+      InventorySetup.MODIFY(TRUE);
+      LibrarySCM.CreateItem(Item);
+      Item.VALIDATE("VAT Prod. Posting Group",VATPostingSetup."VAT Prod. Posting Group");
+      Item.VALIDATE("Last Direct Cost",RANDOM(100));  // Using RANDOM value for Last Direct Cost.
+      Item.MODIFY(TRUE);
+      EXIT(Item."No.");
+    END;
+
+    LOCAL PROCEDURE FindVATPostingSetup@13(VAR VATPostingSetup@1000 : Record 325);
+    BEGIN
+      VATPostingSetup.SETFILTER("VAT Bus. Posting Group",'<>''''');
+      VATPostingSetup.SETFILTER("VAT Prod. Posting Group",'<>''''');
+      VATPostingSetup.SETRANGE("VAT Calculation Type",VATPostingSetup."VAT Calculation Type"::"Normal VAT");
+      VATPostingSetup.SETFILTER("VAT %",'>0');
+      VATPostingSetup.FINDFIRST;
+    END;
+
+    LOCAL PROCEDURE SetupLineDiscount@22(VAR PurchaseLineDiscount@1000 : Record 7014);
+    VAR
+      Item@1002 : Record 27;
+    BEGIN
+      // Enter Random Values for "Minimum Quantity" and "Line Discount %".
+      Item.GET(CreateItem);
+      LibraryFinance.CreateLineDiscForVendor(PurchaseLineDiscount,Item."No.",CreateVendor,WORKDATE,'','',
+        Item."Base Unit of Measure",RANDOM(10));
+      PurchaseLineDiscount.VALIDATE("Line Discount %",RANDOM(10));
+      PurchaseLineDiscount.MODIFY(TRUE);
+    END;
+
+    [Normal]
+    LOCAL PROCEDURE SetupInvoiceDiscount@31(VAR VendorInvoiceDisc@1001 : Record 24);
+    BEGIN
+      // Enter Random Values for "Minimum Amount" and "Discount %".
+      LibraryFinance.CreateInvDiscForVendor(VendorInvoiceDisc,CreateVendor,'',RANDOM(100));
+      VendorInvoiceDisc.VALIDATE("Discount %",RANDOM(10));
+      VendorInvoiceDisc.MODIFY(TRUE);
+    END;
+
+    LOCAL PROCEDURE CreateCurrency@27() : Code[10];
+    VAR
+      Currency@1001 : Record 4;
+    BEGIN
+      LibraryFinance.CreateCurrency(Currency);
+      LibraryFinance.CreateRandomExchangeRate(Currency.Code);
+      EXIT(Currency.Code);
+    END;
+
+    LOCAL PROCEDURE VerifyGLEntry@2(DocumentNo@1000 : Code[20];Amount@1001 : Decimal);
+    VAR
+      GLEntry@1002 : Record 17;
+      GeneralLedgerSetup@1004 : Record 98;
+      TotalGLAmount@1003 : Decimal;
+    BEGIN
+      GeneralLedgerSetup.GET;
+      GLEntry.SETRANGE("Document No.",DocumentNo);
+      GLEntry.SETRANGE("Document Type",GLEntry."Document Type"::"Credit Memo");
+      GLEntry.SETFILTER(Amount,'>0');
+      GLEntry.FINDSET;
+      REPEAT
+        TotalGLAmount += GLEntry.Amount;
+      UNTIL GLEntry.NEXT = 0;
+      Assert.AreNearlyEqual(Amount,TotalGLAmount,GeneralLedgerSetup."Amount Rounding Precision",
+        STRSUBSTNO(FieldError,GLEntry.FIELDCAPTION(Amount),GLEntry.TABLECAPTION));
+    END;
+
+    LOCAL PROCEDURE VerifyVendorLedgerEntry@11(DocumentNo@1001 : Code[20];Amount@1000 : Decimal);
+    VAR
+      VendorLedgerEntry@1002 : Record 25;
+      GeneralLedgerSetup@1003 : Record 98;
+    BEGIN
+      GeneralLedgerSetup.GET;
+      VendorLedgerEntry.SETRANGE("Document No.",DocumentNo);
+      VendorLedgerEntry.SETRANGE("Document Type",VendorLedgerEntry."Document Type"::"Credit Memo");
+      VendorLedgerEntry.FINDFIRST;
+      VendorLedgerEntry.CALCFIELDS("Amount (LCY)");
+      Assert.AreNearlyEqual(Amount,ABS(VendorLedgerEntry."Amount (LCY)"),GeneralLedgerSetup."Amount Rounding Precision",
+        STRSUBSTNO(FieldError,VendorLedgerEntry.FIELDCAPTION("Amount (LCY)"),VendorLedgerEntry.TABLECAPTION));
+    END;
+
+    LOCAL PROCEDURE VerifyVATEntry@7(DocumentNo@1001 : Code[20];Amount@1000 : Decimal);
+    VAR
+      GeneralLedgerSetup@1003 : Record 98;
+      VATEntry@1002 : Record 254;
+    BEGIN
+      GeneralLedgerSetup.GET;
+      VATEntry.SETRANGE("Document No.",DocumentNo);
+      VATEntry.SETRANGE("Document Type",VATEntry."Document Type"::"Credit Memo");
+      VATEntry.FINDFIRST;
+      Assert.AreNearlyEqual(Amount,ABS(VATEntry.Base + VATEntry.Amount),GeneralLedgerSetup."Amount Rounding Precision",
+        STRSUBSTNO(FieldError,VATEntry.FIELDCAPTION(Amount),VATEntry.TABLECAPTION));
+    END;
+
+    LOCAL PROCEDURE VerifyValueEntry@24(DocumentNo@1001 : Code[20];Amount@1000 : Decimal);
+    VAR
+      GeneralLedgerSetup@1003 : Record 98;
+      ValueEntry@1002 : Record 5802;
+      CostAmount@1004 : Decimal;
+    BEGIN
+      GeneralLedgerSetup.GET;
+      ValueEntry.SETRANGE("Document No.",DocumentNo);
+      ValueEntry.SETRANGE("Document Type",ValueEntry."Document Type"::"Purchase Credit Memo");
+      ValueEntry.FINDSET;
+      REPEAT
+        CostAmount += ValueEntry."Cost Amount (Actual)";
+      UNTIL ValueEntry.NEXT = 0;
+      Assert.AreNearlyEqual(-Amount,CostAmount,GeneralLedgerSetup."Amount Rounding Precision",
+        STRSUBSTNO(FieldError,ValueEntry.FIELDCAPTION("Cost Amount (Actual)"),ValueEntry.TABLECAPTION));
+    END;
+
+    LOCAL PROCEDURE VerifyLineDiscountAmount@23(PurchaseLine@1000 : Record 39;DocumentNo@1001 : Code[20];LineDiscountAmount@1002 : Decimal);
+    VAR
+      GeneralLedgerSetup@1005 : Record 98;
+      GeneralPostingSetup@1004 : Record 252;
+      GLEntry@1003 : Record 17;
+    BEGIN
+      GeneralLedgerSetup.GET;
+      GeneralPostingSetup.GET(PurchaseLine."Gen. Bus. Posting Group",PurchaseLine."Gen. Prod. Posting Group");
+      GLEntry.SETRANGE("Document No.",DocumentNo);
+      GLEntry.SETRANGE("G/L Account No.",GeneralPostingSetup."Purch. Line Disc. Account");
+      GLEntry.FINDFIRST;
+      Assert.AreNearlyEqual(LineDiscountAmount,GLEntry.Amount,GeneralLedgerSetup."Amount Rounding Precision",
+        STRSUBSTNO(FieldError,GLEntry.FIELDCAPTION(Amount),GLEntry.TABLECAPTION));
+      Assert.AreNearlyEqual(LineDiscountAmount,PurchaseLine."Line Discount Amount",GeneralLedgerSetup."Amount Rounding Precision",
+        STRSUBSTNO(FieldError,PurchaseLine.FIELDCAPTION("Line Discount Amount"),PurchaseLine.TABLECAPTION));
+    END;
+
+    LOCAL PROCEDURE VerifyInvoiceDiscountAmount@35(PurchaseLine@1005 : Record 39;DocumentNo@1004 : Code[20];InvoiceDiscountAmount@1003 : Decimal);
+    VAR
+      GeneralLedgerSetup@1002 : Record 98;
+      GeneralPostingSetup@1001 : Record 252;
+      GLEntry@1000 : Record 17;
+    BEGIN
+      GeneralLedgerSetup.GET;
+      GeneralPostingSetup.GET(PurchaseLine."Gen. Bus. Posting Group",PurchaseLine."Gen. Prod. Posting Group");
+      GLEntry.SETRANGE("Document No.",DocumentNo);
+      GLEntry.SETRANGE("G/L Account No.",GeneralPostingSetup."Purch. Inv. Disc. Account");
+      GLEntry.FINDFIRST;
+      Assert.AreNearlyEqual(InvoiceDiscountAmount,ABS(GLEntry.Amount),GeneralLedgerSetup."Amount Rounding Precision",
+        STRSUBSTNO(FieldError,GLEntry.FIELDCAPTION(Amount),GLEntry.TABLECAPTION));
+      Assert.AreNearlyEqual(InvoiceDiscountAmount,PurchaseLine."Inv. Discount Amount",GeneralLedgerSetup."Amount Rounding Precision",
+        STRSUBSTNO(FieldError,PurchaseLine.FIELDCAPTION("Inv. Discount Amount"),PurchaseLine.TABLECAPTION));
+    END;
+
+    BEGIN
+    {
+      Check various functionalities of Purchase Credit Memo.
+        1. Test that a Purchase Credit Memo Header and Line exist after Purchase Credit Memo creation.
+        2. Test VAT Amount calculated correctly on Purchase Credit Memo.
+        3. Test that a Report generated from Purchase Credit Memo and it contains some data.
+        4. Test that a Report generated from Posted Purchase Credit Memo and it contains some data.
+        5. Test GL Entries, VAT Entries, Vendor Ledger Entries and Value Entries After Posting Purchase Credit Memo. Also test that
+           a Return Shipment has been created after posting Purchase Credit Memo.
+        6. Test that Correct Location updated on Purchase Return Shipment after Posting a Credit Memo with Location included.
+        7. Test that correct Line Discount calculated in GL Entry after posting Purchase Credit Memo.
+        8. Test that correct Invoice Discount calculated in GL Entry after posting Purchase Credit Memo.
+        9. Test that correct Currency updated on Purchase Return Shipment after posting Purchase Credit Memo with Currency included.
+       10. Test the Copy Document Functionality by Creating Purchase Order and then copying it to Purchase Credit memo.
+       11. Test that Purchase Credit Memo can be applied against Purchase Invoice.
+    }
+    END.
+  }
+}
+

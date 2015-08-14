@@ -1,0 +1,480 @@
+OBJECT Codeunit 50157 RHD General Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02.12.14;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=GOB,HME1273;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      oFile@1000000000 : File;
+      GTC_TempFileExtension@1000000001 : TextConst 'DEU=.tmp;ENU=.tmp';
+      tBigText@1000000002 : BigText;
+      "** HME *****"@1000000004 : TextConst;
+      HMEText001@1000000003 : TextConst 'ENU=Filename must be specified.';
+      HMEText002@1000000005 : TextConst 'ENU=%1 for %2 does not exists.';
+
+    PROCEDURE AppendToString@1119443002(VAR TextPar@1119443000 : Text[1024];TextToAppendPar@1119443001 : Text[1024];ActualStringLengthPar@1119443002 : Integer;PadCharPar@1119443003 : Text[1];PadTypePar@1119443004 : 'Left,Right') : Boolean;
+    VAR
+      NoOfNecPadChars@1119443005 : Integer;
+      PadLoop@1119443006 : Integer;
+    BEGIN
+      // Diese Fkt. h„ngt den in TextToAppendPar bergebenen String an den in TextPar bergebenen Text an und fllt mit dem in
+      // PadCharPar bergebenen Character auf die ActualStringLengthPar auf. Ob links oder Rechts aufgefllt wird, wird ber den
+      // Parameter PadTypePar gesteuert.
+
+      // Anzuh„ngenden Text zun„chst auf maximale L„nge krzen
+      TextToAppendPar := COPYSTR(TextToAppendPar,1,ActualStringLengthPar);
+
+      NoOfNecPadChars := ActualStringLengthPar - STRLEN(TextToAppendPar);
+
+      FOR PadLoop := 1 TO NoOfNecPadChars DO
+        CASE PadTypePar OF
+          PadTypePar::Left:
+            TextToAppendPar := PadCharPar + TextToAppendPar;
+
+          PadTypePar::Right:
+            TextToAppendPar := TextToAppendPar + PadCharPar;
+
+        END;//*** CASE ***
+
+      IF STRLEN(TextPar + TextToAppendPar) > MAXSTRLEN(TextPar) THEN
+        EXIT(FALSE);
+
+      TextPar := TextPar + TextToAppendPar;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE GetNextEntryNo@1000000006(ObjectID@1000000000 : Integer) : Integer;
+    VAR
+      RecRef@1000000001 : RecordRef;
+      FieldRef@1000000002 : FieldRef;
+      EntryNo@1000000003 : Integer;
+    BEGIN
+      RecRef.OPEN(ObjectID);
+      IF RecRef.FINDLAST THEN;
+      FieldRef := RecRef.FIELD(1);
+      EntryNo := FieldRef.VALUE;
+      EXIT(EntryNo + 1);
+    END;
+
+    PROCEDURE FileNameOnAssitEdit@1(pFileName@1000000000 : Text[250];RecordType@1000000001 : Code[10]) : Boolean;
+    VAR
+      Wait@1003 : Integer;
+      RHDSetup@1000000002 : Record 50177;
+      FPCIntSetup@1000000006 : Record 50014;
+      locFileName@1000000003 : Text[250];
+      locPath@1000000004 : Text[250];
+      locPathArchive@1000000005 : Text[250];
+    BEGIN
+      // S/P1158
+      // IF NOT EXISTS(pFileName)THEN
+      //   EXIT;
+
+      // Wait := SHELL('C:\Windows\notepad.exe',pFileName);
+
+      IF NOT EXISTS(pFileName) THEN BEGIN
+        locFileName := pFileName;
+        IF STRPOS(locFileName,'\') <> 0 THEN REPEAT
+          locFileName := COPYSTR(locFileName,STRPOS(locFileName,'\') + 1);
+        UNTIL STRPOS(locFileName,'\') = 0;
+      END ELSE BEGIN
+        Wait := SHELL('C:\Windows\notepad.exe',pFileName);
+        EXIT;
+      END;
+
+      RHDSetup.GET;
+      CASE RecordType OF
+        RHDSetup."Record Type WEA":
+          BEGIN
+            FPCIntSetup.GET(RHDSetup."Interface Code WEA");
+            locPath := FPCIntSetup."Export Folder";
+            locPathArchive := FPCIntSetup."Archive Root Folder";
+          END;
+        RHDSetup."Record Type KAK":
+          BEGIN
+            FPCIntSetup.GET(RHDSetup."Interface Code KAD");
+            locPath := FPCIntSetup."Export Folder";
+            locPathArchive := FPCIntSetup."Archive Root Folder";
+          END;
+        RHDSetup."Record Type STA":
+          BEGIN
+            FPCIntSetup.GET(RHDSetup."Interface Code STA");
+            locPath := FPCIntSetup."Import Folder";
+            locPathArchive := FPCIntSetup."Archive Root Folder";
+          END;
+        'PLZ':
+          BEGIN
+            FPCIntSetup.GET(RHDSetup."Interface Code Post Code");
+            locPath := FPCIntSetup."Import Folder";
+            locPathArchive := FPCIntSetup."Archive Root Folder";
+          END;
+      END;
+
+      IF locPath <> '' THEN
+        IF NOT (COPYSTR(locPath,STRLEN(locPath),1) = '\') THEN
+          locPath += '\';
+      IF locPathArchive <> '' THEN
+        IF NOT (COPYSTR(locPathArchive,STRLEN(locPathArchive),1) = '\') THEN
+          locPathArchive += '\';
+
+      locPath += locFileName;
+      locPathArchive += locFileName;
+
+      IF NOT EXISTS(locPath)THEN BEGIN
+        IF NOT EXISTS(locPathArchive) THEN
+          EXIT
+        ELSE
+          Wait := SHELL('C:\Windows\notepad.exe',locPathArchive);
+      END ELSE
+        Wait := SHELL('C:\Windows\notepad.exe',locPath);
+      // E/P1158
+    END;
+
+    PROCEDURE "--- File Functions ---"@1000000000();
+    BEGIN
+    END;
+
+    PROCEDURE FileCreate@1000000001(pFilePath@1000000000 : Text[250];pFileName@1000000001 : Text[250]) : Boolean;
+    BEGIN
+      // Datei anlegen.
+      // Bis zum Fertigstellen der Datei wird eine tempor„re Endung angeh„ngt, damit die Datei nicht vorzeitig hochgeladen wird.
+
+      EXIT(oFile.CREATE(pFilePath + pFileName + GTC_TempFileExtension));
+    END;
+
+    PROCEDURE FileOpen@1000000002(pFilePath@1000000001 : Text[250];pFileName@1000000000 : Text[250]) : Boolean;
+    BEGIN
+      // Datei frs Schreiben ”ffnen.
+
+      oFile.WRITEMODE(TRUE);
+      EXIT(oFile.OPEN(pFilePath + pFileName + GTC_TempFileExtension));
+    END;
+
+    PROCEDURE FileAddLine@1000000003(pLine@1000000000 : Text[1000];pNewLineAfter@1000000001 : Boolean);
+    VAR
+      CR@1000000002 : Char;
+      LF@1000000003 : Char;
+      FPCManagement@1000000004 : Codeunit 50003;
+    BEGIN
+      // Text anh„ngen.
+      // Per pNewLineAfter kann ein Zeilenumbruch erg„nzt werden.
+      //S/P1195
+      pLine := FPCManagement.DeleteCRLF(pLine,FALSE);
+      //E/P1195
+      IF pNewLineAfter THEN BEGIN
+        CR := 13;
+        LF := 10;
+
+        oFile.WRITE(pLine + FORMAT(CR) + FORMAT(LF));
+        tBigText.ADDTEXT(pLine + FORMAT(CR) + FORMAT(LF));
+      END ELSE BEGIN
+        oFile.WRITE(pLine);
+        tBigText.ADDTEXT(pLine);
+      END;
+    END;
+
+    PROCEDURE FileSave@1000000004();
+    BEGIN
+      // Datei schlieáen.
+
+      oFile.CLOSE();
+    END;
+
+    PROCEDURE FileConvertToUTF8@1000000007(pFilePath@1000000001 : Text[250];pFileName@1000000000 : Text[250]) : Boolean;
+    VAR
+      UTFStream@1000000005 : Automation "{2A75196C-D9EB-4129-B803-931327F72D5C} 2.8:{00000566-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.8 Library'.Stream";
+      sSubText@1000000002 : Text[1024];
+      iPos@1000000003 : Integer;
+      iLength@1000000004 : Integer;
+    BEGIN
+      // Datei von ANSI in UTF-8 konvertieren
+
+      IF NOT CREATE(UTFStream) THEN
+        EXIT(FALSE);
+
+      EXISTS(pFilePath + pFileName + GTC_TempFileExtension);
+
+      UTFStream.Open;
+      UTFStream.Charset('UTF-8');
+      UTFStream.LineSeparator := 10;
+      //UTFStream.LineSeparator := -1;
+
+      iPos := 1;
+      iLength := tBigText.LENGTH;
+      REPEAT
+        sSubText := '';
+        tBigText.GETSUBTEXT(sSubText,iPos,1024);
+        iPos := iPos + 1024;
+        UTFStream.WriteText(sSubText);
+      UNTIL iPos >= iLength;
+
+      UTFStream.SaveToFile(pFilePath + pFileName);
+      UTFStream.Close;
+      ERASE(pFilePath + pFileName + GTC_TempFileExtension);
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE FileDeleteAfterError@1000000005(pFilePath@1000000001 : Text[250];pFileName@1000000000 : Text[250]);
+    BEGIN
+      // If Error occurs temp-file still exists.
+      // Delete temp-file after error:
+      ERASE(pFilePath + pFileName + GTC_TempFileExtension);
+    END;
+
+    PROCEDURE "***  H0856 ***"@1000000008();
+    BEGIN
+    END;
+
+    PROCEDURE GetLastEntryNo@1000000009(ObjectIdV@1000000003 : Integer;FieldNoV@1000000004 : Integer;FilterV@1000000005 : Text[30]) : Integer;
+    VAR
+      RecRef@1000000002 : RecordRef;
+      FieldRef@1000000001 : FieldRef;
+      EntryNo@1000000000 : Integer;
+    BEGIN
+      RecRef.OPEN(ObjectIdV);
+      FieldRef := RecRef.FIELD(FieldNoV);
+      FieldRef.SETRANGE(FilterV);
+      IF RecRef.FINDLAST THEN BEGIN
+        FieldRef := RecRef.FIELD(1);
+        EntryNo := FieldRef.VALUE;
+      END;
+      EXIT(EntryNo);
+    END;
+
+    PROCEDURE "*** H1100 ***"@1000000010();
+    BEGIN
+    END;
+
+    PROCEDURE OpenFileWithEditor@1000000011(RecordIdV@1000000000 : Text[30];FileNameV@1000000001 : Text[250]);
+    VAR
+      RHDSetupL@1000000003 : Record 50177;
+      FPCInterfacesSetupL@1000000006 : Record 50014;
+      eBayEditorL@1000000007 : Codeunit 5095849;
+      FileL@1000000004 : File;
+      FilePathL@1000000005 : Text[80];
+      TempCharL@1000000002 : Text[1];
+      ServerPathL@1000000008 : Text[30];
+      SessionL@1000000009 : Record 2000000009;
+      ConnectionStrL@1000000010 : Text[150];
+    BEGIN
+      IF FileNameV = '' THEN
+        ERROR(HMEText001);
+
+      RHDSetupL.GET;
+
+      CASE RecordIdV OF
+        'WEA':
+          BEGIN
+            FPCInterfacesSetupL.GET(RHDSetupL."Interface Code WEA");
+          END;
+        'WEM':
+          BEGIN
+            FPCInterfacesSetupL.GET(RHDSetupL."Interface Code WEM");
+          END;
+        'STA':
+          BEGIN
+            FPCInterfacesSetupL.GET(RHDSetupL."Interface Code STA");
+          END;
+        'KAD', 'KAK', 'KAL', 'KAA', 'KAP', 'KAB', 'KAS':
+          BEGIN
+            FPCInterfacesSetupL.GET(RHDSetupL."Interface Code KAD");
+          END;
+        'UMB':
+          BEGIN
+          END;
+        'UMP':
+          BEGIN
+            FPCInterfacesSetupL.GET(RHDSetupL."Interface Code UMP");
+          END;
+        'BMP':
+          BEGIN
+            FPCInterfacesSetupL.GET(RHDSetupL."Interface Code BMP");
+          END;
+        'WMP':
+          BEGIN
+            FPCInterfacesSetupL.GET(RHDSetupL."Interface Code WMP");
+          END;
+      END;
+
+      //H1273 14.08.14 EHN ++++++++++++++++++++++++++++++++++++++++++++++++++++
+      ServerPathL := '\\' + RHDSetupL."Host Name Application Server";
+      WHILE STRPOS(FileNameV,'\') <> 0 DO
+        FileNameV := COPYSTR(FileNameV,STRPOS(FileNameV,'\') + 1);
+
+      FilePathL := FPCInterfacesSetupL."Import Folder";
+      IF FilePathL = '' THEN
+        FilePathL := FPCInterfacesSetupL."Export Folder";
+      FilePathL := DELCHR(FilePathL,'>','\') + '\';
+
+      SessionL.RESET;
+      SessionL.SETRANGE("My Session",TRUE);
+      SessionL.FINDFIRST;
+      IF SessionL."Host Name" <> RHDSetupL."Host Name Application Server" THEN
+        //H1273 25.11.14 DMA +++++++++++++++++++++++++++++++++++++++++
+        IF COPYSTR(FilePathL,1,2) = '\\' THEN
+          ConnectionStrL := DELCHR(FilePathL,'=',':') + FileNameV
+        ELSE
+          ConnectionStrL := ServerPathL + COPYSTR(FilePathL,STRPOS(FilePathL,':')+1,STRLEN(FilePathL)-STRPOS(FilePathL,':')) + FileNameV
+        //H1273 25.11.14 DMA -----------------------------------------
+      ELSE
+        ConnectionStrL := FilePathL + FileNameV;
+
+      IF NOT EXISTS(ConnectionStrL) THEN BEGIN
+        FilePathL := FPCInterfacesSetupL."Archive Root Folder";
+        FilePathL := DELCHR(FilePathL,'>','\') + '\';
+        IF SessionL."Host Name" <> RHDSetupL."Host Name Application Server" THEN
+          //H1273 25.11.14 DMA +++++++++++++++++++++++++++++++++++++++++
+          IF COPYSTR(FilePathL,1,2) = '\\' THEN
+            ConnectionStrL := DELCHR(FilePathL,'=',':') + FileNameV
+          ELSE
+            ConnectionStrL := ServerPathL + COPYSTR(FilePathL,STRPOS(FilePathL,':')+1,STRLEN(FilePathL)-STRPOS(FilePathL,':')) +
+      FileNameV
+          //H1273 25.11.14 DMA -----------------------------------------
+        ELSE
+          ConnectionStrL := FilePathL + FileNameV;
+      END;
+
+      eBayEditorL.RunEditor(ConnectionStrL,2,FALSE);
+
+      {
+      FilePathL := FPCInterfacesSetupL."Import Folder";
+      IF FilePathL = '' THEN
+        FilePathL := FPCInterfacesSetupL."Export Folder";
+      TempCharL := COPYSTR(FilePathL, STRLEN(FilePathL) - 1, 1);
+      IF TempCharL <> '\' THEN
+        FilePathL := FilePathL + '\';
+
+      IF NOT EXISTS(FilePathL + FileNameV) THEN
+        FilePathL := FPCInterfacesSetupL."Archive Root Folder";
+
+      //IF RecordIdV <> '' THEN
+      //  FilePathL := FilePathL + RecordIdV + '\';
+
+      FilePathL := FilePathL + FileNameV;
+      eBayEditorL.RunEditor(FilePathL,2,FALSE);
+      }
+      //H1273 14.08.14 EHN ----------------------------------------------------
+    END;
+
+    PROCEDURE OpenUnprocFileWithEditor@1000000012(RecordIdV@1000000001 : Text[30];FileNameV@1000000000 : Text[250]);
+    VAR
+      FPCInterfacesSetupL@1000000002 : Record 50014;
+      RHDSetupL@1000000006 : Record 50177;
+      eBayEditorL@1000000005 : Codeunit 5095849;
+      FileL@1000000004 : File;
+      FilePathL@1000000003 : Text[80];
+      TempCharL@1000000007 : Text[1];
+    BEGIN
+      IF FileNameV = '' THEN
+        ERROR(HMEText001);
+
+      RHDSetupL.GET;
+
+      CASE RecordIdV OF
+        'WEA':
+          BEGIN
+            FPCInterfacesSetupL.GET(RHDSetupL."Interface Code WEA");
+          END;
+        'WEM':
+          BEGIN
+            FPCInterfacesSetupL.GET(RHDSetupL."Interface Code WEM");
+          END;
+        'STA':
+          BEGIN
+            FPCInterfacesSetupL.GET(RHDSetupL."Interface Code STA");
+          END;
+        'KAD', 'KAK', 'KAL', 'KAA', 'KAP', 'KAB', 'KAS':
+          BEGIN
+            FPCInterfacesSetupL.GET(RHDSetupL."Interface Code KAD");
+          END;
+        'UMB':
+          BEGIN
+          END;
+        //H0856 12.02.14 DMA +++++++++++++++++++++++++++++++++++++++
+        'UMP':
+          BEGIN
+            FPCInterfacesSetupL.GET(RHDSetupL."Interface Code UMP");
+          END;
+        //H0856 12.02.14 DMA +++++++++++++++++++++++++++++++++++++++
+        //H0857 12.02.14 DMA +++++++++++++++++++++++++++++++++++++++
+        'BMP':
+          BEGIN
+            FPCInterfacesSetupL.GET(RHDSetupL."Interface Code BMP");
+          END;
+        //H0857 12.02.14 DMA +++++++++++++++++++++++++++++++++++++++
+        //H0854 12.02.14 DMA +++++++++++++++++++++++++++++++++++++++
+        'WMP':
+          BEGIN
+            FPCInterfacesSetupL.GET(RHDSetupL."Interface Code WMP");
+          END;
+        //H0854 12.02.14 DMA ---------------------------------------
+      END;
+
+      IF FPCInterfacesSetupL.ISEMPTY THEN BEGIN
+            ERROR(HMEText002, FPCInterfacesSetupL.TABLECAPTION,RecordIdV);
+      END ELSE BEGIN
+        IF FPCInterfacesSetupL."Import Folder" <> '' THEN
+          FilePathL := FPCInterfacesSetupL."Import Folder";
+        IF FPCInterfacesSetupL."Export Folder" <> '' THEN
+          FilePathL := FPCInterfacesSetupL."Export Folder";
+      END;
+
+      TempCharL := COPYSTR(FilePathL, STRLEN(FilePathL), 1);
+      IF TempCharL <> '\' THEN
+        FilePathL := FilePathL + '\';
+
+      IF RecordIdV <> '' THEN
+        FilePathL := FilePathL + RecordIdV + '\';
+
+      FilePathL := FilePathL + FileNameV;
+      eBayEditorL.RunEditor(FilePathL,2,FALSE);
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------------+
+      |                   ¸  Copyright                   |
+      |       GOB Software & Systeme GmbH & Co. KG       |
+      +--------------------------------------------------+
+      |                      home24                      |
+      +--------------------------------------------------+
+
+      Project   Date        Consultant  Comment
+      ------------------------------------------------------
+      P1070     23.10.13    gob-rste    RHD Redesign
+      P1100     23.10.13    gob-dst     Erg„nzung File Funktionen
+      P1158     27.11.13    gob-ael     Anpassungen in FileNameOnAssistEdit
+      P1195     07.02.13    gob-rste    Delete CR/LF/TAB
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+
+      *** Module: Rhenus Import ***
+      H0854       12.02.14 DMA       CODECHANGE FOR WMP
+      H0857       12.02.14 DMA       CODECHANGE FOR BMP
+      H0856       12.02.14 DMA       CODECHANGE FOR UMP, New function: "GetLastEntryNo"
+      H1100       30.04.14 DMA       BUG: AssistEdit for WEA/WEM/KAD/STA without function, NEW Function OpenFileWithEditor
+      H1273       13.08.14 EHN,DMA   Follow on Project: WEA AssistEdit Button without Function
+    }
+    END.
+  }
+}
+

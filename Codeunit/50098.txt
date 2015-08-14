@@ -1,0 +1,327 @@
+OBJECT Codeunit 50098 Inbound EDI DESADV Conf.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=21.11.14;
+    Time=13:45:13;
+    Modified=Yes;
+    Version List=EDIINT6.02,HME1142,P1297;
+  }
+  PROPERTIES
+  {
+    TableNo=82868;
+    OnRun=BEGIN
+            UpdatePurchaseOrder(Rec);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      RecRef@1000000000 : RecordRef;
+      CUParcelStatusHistoryMgmt@1000000001 : Codeunit 80011;
+      FPCGeneralSetup@1000000002 : Record 50055;
+
+    PROCEDURE UpdatePurchaseOrder@1000000000(rInboundEDIPurchDocHeader@1000000000 : Record 82868);
+    VAR
+      rPurchaseHeader@1000000001 : Record 38;
+      rPurchaseLine@1000000002 : Record 39;
+      Text000@1000000003 : TextConst 'ENU=Do you want to update the order %1?';
+      rInboundEDIDocPurchLine@1000000004 : Record 82869;
+      Text001@1000000005 : TextConst 'ENU=The order %1 has been updated.';
+      rEDIPartnerDocumentType@1000000006 : Record 82852;
+      rItemCrossRef@1000000007 : Record 5717;
+      rItem@1000000008 : Record 27;
+      EDIIntegratorSetup@1000000009 : Record 82850;
+      SalesLine@1000000010 : Record 37;
+      EDIDHLShipmentCode_l@1000000013 : Record 50112;
+      DHLParcelsStatusHistory_l@1000000014 : Record 50021;
+      cReleasePurchaseDocument@1000000012 : Codeunit 415;
+      cPurchPost@1000000011 : Codeunit 90;
+      ParcelStatusHistory@1000000015 : Record 80013;
+      "**** HME *********************"@1000000016 : Integer;
+      PromissedReceiptDateL@1000000017 : DateTime;
+    BEGIN
+      //S/P1133
+      FPCGeneralSetup.GET;
+      //E/P1133
+      IF GUIALLOWED THEN BEGIN
+        IF NOT CONFIRM(STRSUBSTNO(Text000,rInboundEDIPurchDocHeader."Purchase Document No."),TRUE) THEN
+          EXIT;
+      END;
+
+      EDIIntegratorSetup.GET();
+
+      rEDIPartnerDocumentType.GET(rInboundEDIPurchDocHeader."EDI Sender Partner Code",
+        rEDIPartnerDocumentType."Document Direction"::Inbound,'DESADV');
+
+      //H0880 20140411 DMA ++++++++++++++++++++++++++++++
+      IF rEDIPartnerDocumentType."Startdate Sales Shipment" = 0D THEN BEGIN
+        rEDIPartnerDocumentType."Startdate Sales Shipment" := rInboundEDIPurchDocHeader."Date Received";
+        rEDIPartnerDocumentType.MODIFY;
+      END;
+      //H0880 20140411 DMA ------------------------------
+
+      rPurchaseHeader.GET(rPurchaseHeader."Document Type"::Order,rInboundEDIPurchDocHeader."Purchase Document No.");
+      cReleasePurchaseDocument.Reopen(rPurchaseHeader);
+
+      IF rPurchaseHeader."Sell-to Customer No." = '' THEN
+        rPurchaseHeader.VALIDATE("Promised Receipt Date",rInboundEDIPurchDocHeader."Promised Receipt Date");
+      rPurchaseHeader."Vendor Order No." := rInboundEDIPurchDocHeader."Vendor Order No.";
+      rPurchaseHeader.VALIDATE("Vendor Authorization No.",rInboundEDIPurchDocHeader."Vendor Order No.");
+      rPurchaseHeader."EDI DESADV Receive Date" := rInboundEDIPurchDocHeader."Date Received";
+      rPurchaseHeader."EDI DESADV Receive Time" := rInboundEDIPurchDocHeader."Time Received";
+      //A,gob-dst,16.05.2013,P0920
+      rPurchaseHeader.VALIDATE("Posting Date",rInboundEDIPurchDocHeader."Document Date");
+      //E,gob-dst,16.05.2013,P0920
+      rPurchaseHeader.MODIFY(TRUE);
+
+      rPurchaseLine.SETRANGE("Document Type",rPurchaseHeader."Document Type");
+      rPurchaseLine.SETRANGE("Document No.",rPurchaseHeader."No.");
+      rPurchaseLine.SETRANGE(Type,rPurchaseLine.Type::Item);
+      //A,gob-dst,16.05.2013,P0920
+      //rPurchaseLine.MODIFYALL("Qty. to Receive",0);
+      IF rPurchaseLine.FIND('-') THEN BEGIN
+        REPEAT
+          rPurchaseLine.VALIDATE("Qty. to Receive",0);
+          rPurchaseLine.VALIDATE("Qty. to Invoice",0);
+          rPurchaseLine.MODIFY;
+        UNTIL rPurchaseLine.NEXT = 0;
+      END;
+      //E,gob-dst,16.05.2013,P0920
+
+      rInboundEDIDocPurchLine.SETRANGE("Document No.",rInboundEDIPurchDocHeader."No.");
+      rInboundEDIDocPurchLine.SETRANGE("Skip accepting",FALSE);
+      rInboundEDIDocPurchLine.FIND('-');
+      REPEAT
+        rPurchaseLine.GET(rPurchaseLine."Document Type"::Order,rPurchaseHeader."No.",rInboundEDIDocPurchLine."Reference Line No.");
+
+        //IF (rInboundEDIPurchDocHeader."Order Type" = rInboundEDIPurchDocHeader."Order Type"::"Stock Order") AND
+        //  (rInboundEDIDocPurchLine.Quantity <> rPurchaseLine."Qty. to Receive") THEN
+        //  rPurchaseLine.VALIDATE("Qty. to Receive",rInboundEDIDocPurchLine.Quantity);
+        IF (STRPOS(rPurchaseLine."Purchasing Code",'-8') <> 0) OR (STRPOS(rPurchaseLine."Purchasing Code",'-13') <> 0) THEN
+          // S/P1104
+          // Additional test because the error messages were intercepted with GUIALLOWED in Table 39 q1
+          IF rPurchaseLine."Outstanding Quantity" >= rInboundEDIDocPurchLine.Quantity THEN
+          // E/P1104
+          rPurchaseLine.VALIDATE("Qty. to Receive",rInboundEDIDocPurchLine.Quantity);
+
+        IF rPurchaseHeader."Sell-to Customer No." = '' THEN BEGIN
+          rPurchaseLine.VALIDATE("Promised Receipt Date",rInboundEDIDocPurchLine."Promised Receipt Date");
+        END ELSE BEGIN
+          rPurchaseLine.VALIDATE("Promised Receipt Date",rInboundEDIDocPurchLine."Promised Receipt Date");
+          rPurchaseLine.VALIDATE("Promised Receipt Date 2",rInboundEDIDocPurchLine."Promised Receipt Date");
+        END;
+        rItem.GET(rPurchaseLine."No.");
+        IF (rItem."Vendor No." = rPurchaseLine."Buy-from Vendor No.") AND (rItem."Vendor Item No." = '') AND
+          (rInboundEDIDocPurchLine."Vendor Item No." <> '') THEN BEGIN
+          rItem."Vendor Item No." := rInboundEDIDocPurchLine."Vendor Item No.";
+          rItem.MODIFY;
+        END;
+        IF rInboundEDIDocPurchLine."Cross-Reference No." <> '' THEN
+          IF NOT rItemCrossRef.GET(rPurchaseLine."No.",rPurchaseLine."Variant Code",rPurchaseLine."Unit of Measure Code",
+                                    3,'',rInboundEDIDocPurchLine."Cross-Reference No.") THEN BEGIN
+            rItemCrossRef.INIT;
+            rItemCrossRef."Item No." := rPurchaseLine."No.";
+            rItemCrossRef."Variant Code" := rPurchaseLine."Variant Code";
+            rItemCrossRef."Unit of Measure" := rPurchaseLine."Unit of Measure Code";
+            rItemCrossRef."Cross-Reference Type" := rItemCrossRef."Cross-Reference Type"::"Bar Code";
+            rItemCrossRef."Cross-Reference No." := rInboundEDIDocPurchLine."Cross-Reference No.";
+            IF rItemCrossRef.INSERT THEN;
+          END;
+        rPurchaseLine.MODIFY;
+
+        EDIDHLShipmentCode_l.SETRANGE("Header Document Type",EDIDHLShipmentCode_l."Header Document Type"::DESADV);
+        EDIDHLShipmentCode_l.SETRANGE("Header Document No.",FORMAT(rInboundEDIPurchDocHeader."No."));
+        EDIDHLShipmentCode_l.SETRANGE("Document Type",EDIDHLShipmentCode_l."Document Type"::"Purchase Order");
+        EDIDHLShipmentCode_l.SETRANGE("Document No.",rPurchaseHeader."No.");
+        //A,gob-dst,16.05.2013,P00917
+        //EDIDHLShipmentCode_l.SETRANGE("Line No.",rInboundEDIDocPurchLine."Reference Line No.");
+        EDIDHLShipmentCode_l.SETRANGE("Line No.",rInboundEDIDocPurchLine."Line No.");
+        //E,gob-dst,16.05.2013,P00917
+        IF EDIDHLShipmentCode_l.FINDSET THEN BEGIN
+          //S/P1117/
+          //S/P1133
+          IF FPCGeneralSetup."Active Parcel Status History" IN
+            [FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+            FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+            FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New"]
+          THEN
+          //E/P1133
+            DHLParcelsStatusHistory_l.SETCURRENTKEY("Purchase Order Code","PO Line No.","Current Status",
+              "Time Stamp","DHL Shipment Code","Rhenus Entry");
+          //S/P1133
+          IF FPCGeneralSetup."Active Parcel Status History" IN
+            [FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+            FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+            FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History"]
+          THEN
+          //E/P1133
+            ParcelStatusHistory.SETCURRENTKEY(
+              "Purchase Doc. No.","Purchase Doc. Line No.","Purchase Doc. Type");
+          //E/P1117
+          REPEAT
+            //S/P1117
+            //S/P1133
+            IF FPCGeneralSetup."Active Parcel Status History" IN
+              [FPCGeneralSetup."Active Parcel Status History"::"Use Only Old DHL Parcel Status History",
+              FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+              FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New"]
+            THEN BEGIN
+            //E/P1133
+              DHLParcelsStatusHistory_l.SETRANGE("Purchase Order Code",EDIDHLShipmentCode_l."Document No.");
+              //A,gob-dst,16.05.2013,P00917
+              //DHLParcelsStatusHistory_l.SETRANGE("PO Line No.",EDIDHLShipmentCode_l."Line No.");
+              DHLParcelsStatusHistory_l.SETRANGE("PO Line No.",rInboundEDIDocPurchLine."Reference Line No.");
+              //E,gob-dst,16.05.2013,P00917
+              DHLParcelsStatusHistory_l.SETRANGE("Document No.",rPurchaseLine."Sales Order No.");
+              DHLParcelsStatusHistory_l.SETRANGE("Document Line No.",rPurchaseLine."Sales Order Line No.");
+              DHLParcelsStatusHistory_l.SETRANGE("DHL Shipment Code",EDIDHLShipmentCode_l."DHL Shipment Code");
+              IF DHLParcelsStatusHistory_l.ISEMPTY THEN BEGIN
+                DHLParcelsStatusHistory_l.INIT;
+                DHLParcelsStatusHistory_l."Entry No." := 0;
+                DHLParcelsStatusHistory_l."DHL Shipment Code" := EDIDHLShipmentCode_l."DHL Shipment Code";
+                //A,gob-dst,17.04.2013,P0883
+                //DHLParcelsStatusHistory_l."Piece-Code (Identifier)" := EDIDHLShipmentCode_l."DHL Shipment Code";
+                DHLParcelsStatusHistory_l."Shipping Agent" := EDIDHLShipmentCode_l."Shipping Agent";
+                IF DHLParcelsStatusHistory_l."Shipping Agent" = 'DHL' THEN
+                  DHLParcelsStatusHistory_l."Shipment through" := DHLParcelsStatusHistory_l."Shipment through"::DHL;
+                //E,gob-dst,17.04.2013,P0883
+                DHLParcelsStatusHistory_l."Document No." := rPurchaseLine."Sales Order No.";
+                DHLParcelsStatusHistory_l."Document Line No." := rPurchaseLine."Sales Order Line No.";
+                DHLParcelsStatusHistory_l."Document Type" := DHLParcelsStatusHistory_l."Document Type"::Order;
+                DHLParcelsStatusHistory_l."Purchase Order Code" := EDIDHLShipmentCode_l."Document No.";
+                DHLParcelsStatusHistory_l."PO Line No." := EDIDHLShipmentCode_l."Line No.";
+                DHLParcelsStatusHistory_l."Status Event" := EDIIntegratorSetup."Status Event for DESADV";
+                DHLParcelsStatusHistory_l."Status Code" := EDIIntegratorSetup."Status Event for DESADV";
+                DHLParcelsStatusHistory_l."Time Stamp" := CURRENTDATETIME;
+                //S/P0907
+                //DHLParcelsStatusHistory_l.INSERT;
+                DHLParcelsStatusHistory_l.INSERT(TRUE);
+                //E/P0907
+              END;
+            //S/P1133
+            END;
+
+            IF FPCGeneralSetup."Active Parcel Status History" IN
+              [FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use Old",
+              FPCGeneralSetup."Active Parcel Status History"::"Fill Both But Show And Use New",
+              FPCGeneralSetup."Active Parcel Status History"::"Use Only New Parcel Status History"]
+            THEN BEGIN
+            //E/P1133
+              ParcelStatusHistory.RESET;
+              ParcelStatusHistory.SETRANGE("Purchase Doc. No.",EDIDHLShipmentCode_l."Document No.");
+              ParcelStatusHistory.SETRANGE("Purchase Doc. Line No.",rInboundEDIDocPurchLine."Reference Line No.");
+              ParcelStatusHistory.SETRANGE("Document No.",rPurchaseLine."Sales Order No.");
+              ParcelStatusHistory.SETRANGE("Document Line No.",rPurchaseLine."Sales Order Line No.");
+              ParcelStatusHistory.SETRANGE("Tracking Code",EDIDHLShipmentCode_l."DHL Shipment Code");
+              CLEAR(CUParcelStatusHistoryMgmt);
+              IF ParcelStatusHistory.ISEMPTY THEN BEGIN
+                RecRef.GETTABLE(rPurchaseLine);
+                //H1142 31.07.14 DMA +++++++++++++++++++++++++
+                PromissedReceiptDateL := CREATEDATETIME(rInboundEDIDocPurchLine."Promised Receipt Date", 0T);
+                CUParcelStatusHistoryMgmt.SetDateTimeGlobal(PromissedReceiptDateL);
+                //H1142 31.07.14 DMA -------------------------
+                //P1297,P1117 17.11.14 gob-rhg +++++++++++++++++++++++++
+                CUParcelStatusHistoryMgmt.SetDateGlobals(0D,rInboundEDIDocPurchLine."Promised Receipt Date",0D);
+                CUParcelStatusHistoryMgmt.FillHistoryByDocLine(
+                  RecRef,                                       // Rec
+                  1,                                            // p_Command
+                  0,                                            // p_InfoDirection::  Incoming,Outgoing
+                  1,                                            // p_UsedInterface::  ,EDI,DHL,DocData,Drop Shipment,Rhenus,UPS
+                  EDIDHLShipmentCode_l."Shipping Agent",        // p_ShippingAgentCode
+                  EDIDHLShipmentCode_l."DHL Shipment Code",     // p_TrackingCode
+                  '',                                           // p_PieceCode
+                  EDIIntegratorSetup."Status Event for DESADV", // p_StatusCode
+                  EDIIntegratorSetup."Status Event for DESADV", // p_StatusRICCode
+                  '',                                           // p_Comment
+                  0);                                           // p_HandleStatusDescription
+                 //P1297,P1117 17.11.14 gob-rhg -------------------------
+              END;
+            //S/P1133
+            END;
+            //E/P1133
+            //E/P1117
+            IF SalesLine.GET(SalesLine."Document Type"::Order,rPurchaseLine."Sales Order No.",
+                             rPurchaseLine."Sales Order Line No.") THEN
+              IF SalesLine."DHL Shipment Number" = '' THEN BEGIN
+                SalesLine."DHL Shipment Number" := EDIDHLShipmentCode_l."DHL Shipment Code";
+                SalesLine.MODIFY;
+              END;
+          UNTIL EDIDHLShipmentCode_l.NEXT = 0;
+        END;
+
+      UNTIL rInboundEDIDocPurchLine.NEXT = 0;
+
+      cReleasePurchaseDocument.RUN(rPurchaseHeader);
+
+      rInboundEDIPurchDocHeader."Document Status" := rInboundEDIPurchDocHeader."Document Status"::Accepted;
+      rInboundEDIPurchDocHeader.MODIFY;
+
+      //A,gob-dst,17.04.2013,P0883
+      rPurchaseLine.SETRANGE("Document Type",rPurchaseHeader."Document Type");
+      rPurchaseLine.SETRANGE("Document No.",rPurchaseHeader."No.");
+      rPurchaseLine.SETRANGE(Type,rPurchaseLine.Type::Item);
+      rPurchaseLine.SETFILTER("Purchasing Code",'%1|%2','*-8','*-13');
+      // S/P1104
+      // Additional test before posting
+      rPurchaseLine.SETFILTER("Qty. to Receive",'<>0');
+      // E/P1104
+      IF NOT rPurchaseLine.ISEMPTY THEN
+      //A,gob-dst,16.05.2013,P0920
+      BEGIN
+        rPurchaseHeader.Receive := TRUE;
+      //E,gob-dst,16.05.2013,P0920
+        cPurchPost.RUN(rPurchaseHeader);
+      //A,gob-dst,16.05.2013,P0920
+      END;
+      //E,gob-dst,16.05.2013,P0920
+      //E,gob-dst,17.04.2013,P0883
+
+      //S/P1083
+      IF GUIALLOWED THEN
+      //E/P1083
+        MESSAGE(Text001,rPurchaseHeader."No.");
+    END;
+
+    BEGIN
+    {
+      P0907   08.05.2013    gob-mab   insert --> (true)
+      P0917   16.05.2013    gob-dst   Anpassung Line Status Import
+      P0920   16.05.2013    gob-dst   Anpassung Buchen Kanal 8 & 13
+      P1083   22.08.2013    gob-dst   Erfolgs-Message mit GUIALLOWED abfangen
+      P1104   12.09.2013    gob-sil   Anderung vor Bucken
+      P1297   17.11.2014    gob-rhg   Populate of the actual delivery date for DESADV
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation GOB & Home24 NAV Team      |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      P1117       08.10.13  gob-mlan  - Redesign of "DHL Parcel Status History"
+                                      - Code within with //S/P1117/++S+++++++ and //E/P1117/--E-------
+                                        will be replaced by the new code and/or it will be deactivated
+      P1133       06.11.13  gob-mlan  - Redesign of "DHL Parcel Status History"
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      *** Module: EDI ***
+      H0552       19.09.13  FX        Translation to ENU of the Text Constants
+      H0880       11.04.14  DMA       Update Startdate Sales Shipment on partner card when first DESADV is received
+      H1142       31.07.14  DMA       EDI: DESADV fills ADD with Import Timestamp instead of Planned/Promised Delivery Timestamp, CODECHAN
+    }
+    END.
+  }
+}
+

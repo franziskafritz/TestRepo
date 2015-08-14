@@ -1,0 +1,260 @@
+OBJECT Codeunit 81 Sales-Post (Yes/No)
+{
+  OBJECT-PROPERTIES
+  {
+    Date=10.03.15;
+    Time=12:22:53;
+    Modified=Yes;
+    Version List=NAVW15.00,GOB1.00,HME1200,T0082;
+  }
+  PROPERTIES
+  {
+    TableNo=36;
+    OnRun=BEGIN
+            SalesHeader.COPY(Rec);
+            Code;
+            Rec := SalesHeader;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst 'DEU=&Liefern,&Fakturieren,Liefern &und fakturieren;ENU=&Ship,&Invoice,Ship &and Invoice';
+      Text001@1001 : TextConst 'DEU=M”chten Sie die %1 buchen?;ENU=Do you want to post the %1?';
+      Text002@1002 : TextConst 'DEU=&Liefern,&Fakturieren,Liefern &und fakturieren;ENU=&Receive,&Invoice,Receive &and Invoice';
+      SalesHeader@1003 : Record 36;
+      SalesPost@1004 : Codeunit 80;
+      Selection@1005 : Integer;
+      "** HME ***********************"@1000000000 : TextConst;
+      TextHME001@1000000001 : TextConst 'ENU=Default location code for Sales Return Order is %1 as defined in %2.\Are you sure you want to use location %3 instead of %4 on line %5 ?';
+
+    LOCAL PROCEDURE Code@1();
+    VAR
+      "***HME************************"@1000000000 : Integer;
+      BatchPostDocumentL@1000000001 : Record 50043;
+      SalesAndReceivablesSetupL@1000000002 : Record 311;
+      SalesLineL@1000000003 : Record 37;
+      WarehouseMgmtL@1000000004 : Codeunit 50800;
+      SalesReturnTransitLocMgtL@1100409000 : Codeunit 50271;
+      "***TEC************************"@1100419000 : Integer;
+      MPPostingMgtL@1100409001 : Codeunit 50501;
+      MPDocMgtL@1000000005 : Codeunit 50500;
+      SaveInvoice@1100409002 : Boolean;
+      ManualPosting@1100409003 : Boolean;
+    BEGIN
+      //T0082 08.12.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      ManualPosting := MPPostingMgtL.DoSalesPostbyBatch(SalesHeader);
+      //T0082 08.12.14 TEC-GH --------------------------------------------------
+
+      WITH SalesHeader DO BEGIN
+        CASE "Document Type" OF
+          "Document Type"::Order:
+            BEGIN
+      //H0066 29.10.12 ARU PostProcess > Default to 'ship' +++++++++++
+      //      Selection := STRMENU(Text000,3);
+              Selection := STRMENU(Text000,1);
+      //H0066 29.10.12 ARU PostProcess > Default to 'ship' -----------
+              IF Selection = 0 THEN
+                EXIT;
+              Ship := Selection IN [1,3];
+              Invoice := Selection IN [2,3];
+              //T0082 25.11.14 tec-sh    +++++++++++++++++++++++++++++++++++
+              IF ManualPosting THEN BEGIN
+                IF Selection IN [1,3] THEN BEGIN
+                  MPPostingMgtL.InsertShippingSalesBatch(SalesHeader);
+                END;
+                IF Selection IN [2,3] THEN BEGIN
+                  MPPostingMgtL.InsertInvoiceSalesBatch(SalesHeader);
+                END;
+              END;
+              //T0082 25.11.14 tec-sh    -----------------------------------
+            END;
+          "Document Type"::"Return Order":
+            BEGIN
+              Selection := STRMENU(Text002,3);
+              IF Selection = 0 THEN
+                EXIT;
+              Receive := Selection IN [1,3];
+              Invoice := Selection IN [2,3];
+            END ELSE
+              IF NOT
+                 CONFIRM(
+                   Text001,FALSE,
+                   "Document Type")
+              THEN
+                EXIT;
+        END;
+        //A/gob-jvi/
+        //IF NOT CheckOpenPrepayment(SalesHeader) THEN EXIT;
+        //E/gob-jvi/
+
+        //T0014,H0114 30.06.14 MSL ++++++++++++++++++++++++++++++++++++++
+        {
+        //H0203  13.02.13  ABR  ++++++++++++++++++++++++++++++++++++++
+        IF ("Document Type" = "Document Type"::"Return Order") AND (NOT SalesHeader."Ignore Conf. Mail") THEN BEGIN
+        //H0203  13.02.13  ABR  --------------------------------------
+          IF (SalesHeader."Return Type" = SalesHeader."Return Type"::Return) AND (NOT ChargeLineExist(SalesHeader)) THEN
+            BatchPostDocumentL.CreateWhseConfEMailBatch(SalesHeader."No.",SalesHeader."Document Type")
+        END;
+        }
+        //T0014,H0114 30.06.14 MSL --------------------------------------
+
+        //H1200 30.06.14 EHN ++++++++++++++++++++++++++++++++++
+        IF SalesHeader."Document Type" = SalesHeader."Document Type"::"Return Order" THEN BEGIN
+          SalesAndReceivablesSetupL.GET;
+          IF SalesAndReceivablesSetupL."Use Only Def. Location For SR" THEN BEGIN
+            //T0060 25.02.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+            IF NOT MPDocMgtL.CheckMPReturnOrderLocationOK(SalesHeader) THEN
+              EXIT;
+            //T0060 25.02.15 CC-GH ---------------------------------------------------
+
+            SalesLineL.RESET;
+            SalesLineL.SETRANGE("Document Type", SalesLineL."Document Type"::"Return Order");
+            SalesLineL.SETRANGE("Document No.", SalesHeader."No.");
+            SalesLineL.SETFILTER("Return Qty. to Receive",'<>%1',0);
+            SalesLineL.SETFILTER("Location Code", '<>%1', SalesAndReceivablesSetupL."Default Sales Return Location");
+            //T0060 25.02.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++
+            SalesLineL.SETRANGE("Market Place",FALSE);
+            //T0060 25.02.15 CC-GH ---------------------------------------------------
+
+            IF SalesLineL.FIND('-') THEN BEGIN
+              REPEAT
+                IF NOT CONFIRM(TextHME001,FALSE,
+                               SalesAndReceivablesSetupL."Default Sales Return Location",
+                               SalesAndReceivablesSetupL.TABLECAPTION,
+                               SalesLineL."Location Code",
+                               SalesAndReceivablesSetupL."Default Sales Return Location",
+                               SalesLineL."Line No.") THEN
+                  EXIT;
+              UNTIL SalesLineL.NEXT = 0;
+            END;
+          END;
+        END;
+        //H1200 30.06.14 EHN ----------------------------------
+
+        //T0082 25.11.14 tec-sh    ++++++++++++++++++++++++++++++++++++++
+        IF ManualPosting THEN BEGIN
+          SaveInvoice := Invoice;
+          IF Ship THEN BEGIN
+            MPPostingMgtL.PostSalesBatchShip(SalesHeader);
+          END;
+          Invoice := SaveInvoice;
+          IF Invoice THEN BEGIN
+            MPPostingMgtL.PostSalesBatchInvoice(SalesHeader);
+          END;
+          //commit???
+        //T0060, 10.03.15 CC-GH     +++++++++++++++++++++++++++++++++++++
+        END ELSE IF (SalesHeader."Document Type" = SalesHeader."Document Type"::"Return Order") THEN BEGIN
+          MPPostingMgtL.RUN(SalesHeader);
+          COMMIT;
+        //T0060 10.03.15 CC-GH     -------------------------------------
+        END ELSE BEGIN
+        //T0082 25.11.14 tec-sh    -----------------------------------
+          SalesPost.RUN(SalesHeader);
+          COMMIT;
+        //T0082 25.11.14 tec-sh    ++++++++++++++++++++++++++++++++++++++
+        END;
+        //T0082 25.11.14 tec-sh    --------------------------------------
+      END;
+    END;
+
+    PROCEDURE "***GOBFunctions***"@1108200000();
+    BEGIN
+    END;
+
+    PROCEDURE CheckOpenPrepayment@1108200001(VAR SalesHeader2@1108200000 : Record 36) CrMemoPosted : Boolean;
+    VAR
+      CustLedgEntry@1108200001 : Record 21;
+      GOB001@1108200002 : TextConst 'DEU=M”chten Sie eine Gutschrift fr die Vorauszahlungen fr %1 %2 buchen?';
+      SalesPostPrepayments@1108200003 : Codeunit 442;
+      SalesHeader@1108200004 : Record 36;
+    BEGIN
+      CrMemoPosted:= TRUE;
+
+      CustLedgEntry.RESET;
+      CustLedgEntry.SETRANGE("Customer No.",SalesHeader2."Sell-to Customer No.");
+      CustLedgEntry.SETRANGE("Document Type",CustLedgEntry."Document Type"::Invoice);
+      CustLedgEntry.SETRANGE("Document No.",SalesHeader2."Last Prepayment No.");
+      CustLedgEntry.SETRANGE(Prepayment,TRUE);
+      CustLedgEntry.SETRANGE(Open,TRUE);
+
+      IF NOT CustLedgEntry.FINDFIRST THEN EXIT;
+
+
+      SalesHeader.COPY(SalesHeader2);
+      WITH SalesHeader DO BEGIN
+        IF NOT CONFIRM(GOB001,FALSE,"Document Type","No.") THEN
+          EXIT(FALSE);
+
+        SalesPostPrepayments.CreditMemo(SalesHeader);
+
+        COMMIT;
+        SalesHeader2 := SalesHeader;
+      END;
+    END;
+
+    PROCEDURE "**HME*************************"@1000000000();
+    BEGIN
+    END;
+
+    PROCEDURE ChargeLineExist@1000000001(SalesHeaderV@1000000001 : Record 36) : Boolean;
+    VAR
+      SalesLineL@1000000000 : Record 37;
+    BEGIN
+      //H0114  10.12.12  ABR  ++++++++++++++++++++++++++++++++++++++
+      SalesLineL.SETRANGE("Document Type",SalesHeaderV."Document Type");
+      SalesLineL.SETRANGE("Document No.",SalesHeaderV."No.");
+      SalesLineL.SETRANGE(Type,SalesLineL.Type::"Charge (Item)");
+      EXIT(NOT SalesLineL.ISEMPTY);
+      //H0114  10.12.12  ABR  --------------------------------------
+    END;
+
+    BEGIN
+    {
+      +----------------------------------------------+
+      | Copyright GOB Software & Systeme             |
+      +----------------------------------------------+
+      | FP Commerce                                  |
+      |                                              |
+      +----------------------------------------------+
+
+      Version    Datum       Berater    PSP-Code   Bemerkung
+      ---------------------------------------------------------------------------
+      V1.00      22.05.12    gob-jvi               Prfung ob offene Vorauszahlungsrechnung, Buchen nur wenn diese zuvor storniert wird
+
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+
+      H0066       29.10.12 ARU       PostProcess > Default to 'ship'
+
+      H0114       10.12.12 ABR       Create Whse. Confirm Mail
+      H0203       13.02.13 ABR       New Field: Ignore Conf. Mail
+      H1200       30.06.14 DMA       Ship Sales Returns via Return Transit location, CODECHANGE
+      T0014       30.06.14 MSL       FTTC 3 - Phase 1- Remove Ret. Whse. Mail Fields
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation Tectura & Home24 NAV Team  |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+
+      T0082       27.11.14  tec-sh    Post sales batch (Selection = 1|2), new function DefManualPosting
+      T0060       25.02.15  CC-GH     Allow MP-Ret as second Return Location
+    }
+    END.
+  }
+}
+

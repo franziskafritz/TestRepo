@@ -1,0 +1,168 @@
+OBJECT Codeunit 50049 NavConMgt2
+{
+  OBJECT-PROPERTIES
+  {
+    Date=05.08.15;
+    Time=15:13:33;
+    Modified=Yes;
+    Version List=DYN002;
+  }
+  PROPERTIES
+  {
+    OnRun=VAR
+            tempvar@1000000003 : BigText;
+            OutFile@1000000002 : File;
+            InStreamDataport@1000000001 : InStream;
+            BigT@1000000000 : BigText;
+            BigT2@1000000004 : BigText;
+            requestMessage@1000000005 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{88D96A05-F192-11D4-A65F-0040963251E5}:'Microsoft XML, v6.0'.DOMDocument60";
+            responseMessage@1000000006 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{88D96A05-F192-11D4-A65F-0040963251E5}:'Microsoft XML, v6.0'.DOMDocument60";
+          BEGIN
+            {OutFile.OPEN('C:\Users\nazar.sandyga\Documents\11.xml');
+            OutFile.CREATEINSTREAM(InStreamDataport);
+            BigT.READ(InStreamDataport);
+            ProcessRequest(BigT,BigT2);
+            }
+            CREATE(requestMessage);
+            CREATE(responseMessage);
+            requestMessage.load('C:\Temp\11.xml');
+            ProcessXMLRequest(requestMessage,responseMessage);
+            //responseMessage.save('C:\Users\nazar.sandyga\Documents\12.xml');
+          END;
+
+  }
+  CODE
+  {
+
+    LOCAL PROCEDURE ProcessXMLRequest@1170000000(VAR requestMessage@1170000001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{88D96A05-F192-11D4-A65F-0040963251E5}:'Microsoft XML, v6.0'.DOMDocument60";VAR responseMessage@1170000000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{88D96A05-F192-11D4-A65F-0040963251E5}:'Microsoft XML, v6.0'.DOMDocument60");
+    VAR
+      NavConMgt@1170000002 : Codeunit 50061;
+      xmlUtil@1170000008 : Codeunit 5095995;
+      shopCode@1170000007 : Code[10];
+      rootNode@1170000006 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMElement";
+      success@1170000005 : Boolean;
+      webshop@1170000004 : Record 5251553;
+      applicationServer@1170000003 : Record 5251552;
+    BEGIN
+      // Wird aufgerufen, wenn eine neue XML-Nachricht eintrifft
+      IF applicationServer.GET('NAS1') THEN;
+
+      //NavConMgt.RUN(applicationServer);
+      NavConMgt.SetAppCode('NAS1');
+      CLEAR(responseMessage);
+      IF ISCLEAR(responseMessage) THEN
+      CREATE(responseMessage);
+      NavConMgt.logRequestXml(requestMessage);
+      success := FALSE;
+      IF NOT NavConMgt.validateRequestXml(requestMessage) THEN BEGIN
+        NavConMgt.Log(TRUE, 'INVALID_XML_STRUCTURE');
+      END ELSE BEGIN
+        rootNode := requestMessage.documentElement;
+        // CHR070512 +
+        //shopCode := xmlUtil.GetElementAttributeText(rootNode, 'Header', 'shopID');
+        shopCode := xmlUtil.GetElementAttributeText(rootNode, 'Header', 'AppDom');
+        // CHR070512 -
+
+        success := NavConMgt.DispatchRequestXml(requestMessage, responseMessage);
+      END;
+
+      IF NOT success THEN BEGIN
+        NavConMgt.createErrorResponseXml(responseMessage);
+      END;
+
+      NavConMgt.logResponseXml(responseMessage,success);
+      //25.07.12  nas - save file on disc >>
+      IF applicationServer."Save XML-Documents" AND (applicationServer."Archive Folder" <> '') THEN BEGIN
+        requestMessage.save(applicationServer."Archive Folder" +
+          'Request_' +
+          FORMAT(CURRENTDATETIME,0,'<Day,2><Month,2><Year,4><Hours24><Minutes,2><Seconds,2><Second dec>') + '.xml');
+        responseMessage.save(applicationServer."Archive Folder" +
+          'Response_' +
+          FORMAT(CURRENTDATETIME,0,'<Day,2><Month,2><Year,4><Hours24><Minutes,2><Seconds,2><Second dec>') + '.xml');
+      END;
+      //25.07.12  nas - save file on disc <<
+    END;
+
+    PROCEDURE ProcessRequest@1170000001(VAR requestText@1170000003 : BigText;VAR responseText@1170000002 : BigText) : Code[10];
+    VAR
+      requestMessage@1170000001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{88D96A05-F192-11D4-A65F-0040963251E5}:'Microsoft XML, v6.0'.DOMDocument60";
+      responseMessage@1170000000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{88D96A05-F192-11D4-A65F-0040963251E5}:'Microsoft XML, v6.0'.DOMDocument60";
+      InStream@1170000006 : InStream;
+      OutStream@1170000005 : OutStream;
+      tempBlob@1170000004 : TEMPORARY Record 99008535;
+      Position@1000000004 : Integer;
+      ActLen@1000000003 : Integer;
+      Counter@1000000002 : Integer;
+      TempText@1000000001 : Text[1024];
+      xmlBigText@1000000000 : BigText;
+    BEGIN
+      CLEAR(requestMessage);
+
+      Position := 1;
+      ActLen := 1;
+      Counter := 1;
+      WHILE ActLen <> 0 DO BEGIN
+        ActLen := requestText.GETSUBTEXT(TempText,Position, 250);
+        IF TempText <> '' THEN BEGIN
+          TempText := Ascii2Ansi(TempText);
+          IF Counter = 1 THEN BEGIN
+            Counter := STRPOS(LOWERCASE(TempText),'"utf-8"');
+            IF Counter <> 0 THEN BEGIN
+              TempText := COPYSTR(TempText,1,Counter) + 'windows-1250' + COPYSTR(TempText,Counter + 6);
+              Counter := 2;
+            END;
+          END;
+          xmlBigText.ADDTEXT(TempText);
+          CLEAR(TempText);
+        END;
+        Position += 250;
+      END;
+
+
+
+      tempBlob.INIT;
+      tempBlob."Primay Key" := 1;
+      tempBlob.Blob.CREATEOUTSTREAM(OutStream);
+      tempBlob.Blob.CREATEINSTREAM(InStream);
+      xmlBigText.WRITE(OutStream);
+      IF ISCLEAR(requestMessage) THEN
+        CREATE(requestMessage);
+
+      IF NOT requestMessage.load(InStream) THEN EXIT('NOTOKText');
+      //requestMessage.save('C:\temp\11.xml');
+
+      ProcessXMLRequest(requestMessage,responseMessage);
+
+      tempBlob.INIT;
+      tempBlob."Primay Key" := 1;
+
+      tempBlob.Blob.CREATEOUTSTREAM(OutStream);
+      responseMessage.save(OutStream);
+      tempBlob.CALCFIELDS(Blob);
+      tempBlob.Blob.CREATEINSTREAM(InStream);
+      responseText.READ(InStream);
+      //responseMessage.save('C:\temp\12.xml');
+    END;
+
+    LOCAL PROCEDURE Ansi2Ascii@10(_String@1150001 : Text[1024]) _Output@1150000 : Text[1024];
+    BEGIN
+      // Converts from ANSI to ASCII
+      EXIT(CONVERTSTR(_String,'ÇüéâäàåçêëèïîìÄÅÉæÆôöòûùÿÖÜø£Ø×ƒáíóúñÑªº¿®ÁÂÀÊËÈÍÎÏÌÓßÔÒÚÛÙ',
+                              '€‚ƒ„…†‡ˆ‰Š‹Œ‘’“”•–—˜™š›œŸ ¡¢£¤¥¦§¨©µ¶·ÒÓÔÖ×ØŞàáâãéêë'));
+    END;
+
+    LOCAL PROCEDURE Ascii2Ansi@1150001(_String@1150001 : Text[1024]) @1150000 : Text[1024];
+    BEGIN
+      // Converts from ASCII to ANSI
+      EXIT(CONVERTSTR(_String,'€‚ƒ„…†‡ˆ‰Š‹Œ‘’“”•–—˜™š›œŸ ¡¢£¤¥¦§¨©µ¶·ÒÓÔÖ×ØŞàáâãéêë',
+                              'ÇüéâäàåçêëèïîìÄÅÉæÆôöòûùÿÖÜø£Ø×ƒáíóúñÑªº¿®ÁÂÀÊËÈÍÎÏÌÓßÔÒÚÛÙ'));
+    END;
+
+    BEGIN
+    {
+      DYNY002 14.08.12 chrmu   new nav connector via webservice
+    }
+    END.
+  }
+}
+

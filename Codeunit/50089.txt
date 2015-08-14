@@ -1,0 +1,226 @@
+OBJECT Codeunit 50089 CC Capturing Services
+{
+  OBJECT-PROPERTIES
+  {
+    Date=01.12.14;
+    Time=16:55:28;
+    Modified=Yes;
+    Version List=HME1850;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+            //Exit when code unit has been called directly.
+            EXIT;
+          END;
+
+  }
+  CODE
+  {
+
+    PROCEDURE "****HME***********************"@1000000003();
+    BEGIN
+    END;
+
+    PROCEDURE CreateCapturingEntries@1000000002(SalesOrderNoV@1000000000 : Code[20]);
+    VAR
+      "***HME************************"@1000000001 : Integer;
+      SOHeaderL@1000000002 : Record 36;
+      CCCaptureEntryL@1000000003 : Record 50317;
+      EntryNoL@1000000004 : Integer;
+      CaptureAmountL@1000000005 : Decimal;
+    BEGIN
+      //Get SO to capture
+      SOHeaderL.GET(SOHeaderL."Document Type"::Order, SalesOrderNoV);
+      SOHeaderL.CALCFIELDS("Amount Including VAT");
+
+      IF SOHeaderL."Completely Captured" THEN
+        EXIT;
+
+      //Check Capturing entries if and what has been captured so far
+      CCCaptureEntryL.SETCURRENTKEY("Order No.");
+      CCCaptureEntryL.SETRANGE("Order No.",SalesOrderNoV);
+      IF CCCaptureEntryL.FINDSET(FALSE,FALSE) THEN
+        CCCaptureEntryL.CALCSUMS("Capture Amount");
+
+      CaptureAmountL := SOHeaderL."Amount Including VAT" - CCCaptureEntryL."Capture Amount";
+
+      CCCaptureEntryL.RESET;
+
+      IF CaptureAmountL > 0 THEN BEGIN
+        IF CCCaptureEntryL.RECORDLEVELLOCKING THEN
+          CCCaptureEntryL.LOCKTABLE;
+        IF CCCaptureEntryL.FINDLAST THEN
+          EntryNoL := CCCaptureEntryL."Entry No.";
+
+        EntryNoL += 1;
+        CCCaptureEntryL.RESET;
+
+        // Write new CC Capturing Entries
+        CCCaptureEntryL.INIT;
+        CCCaptureEntryL."Entry No." := EntryNoL;
+        CCCaptureEntryL."Order No." := SalesOrderNoV;
+        CCCaptureEntryL."Order Amount incl. VAT" := SOHeaderL."Amount Including VAT";
+        CCCaptureEntryL."Capture Amount" := CaptureAmountL;
+        CCCaptureEntryL.Currency := SOHeaderL."Currency Code";
+        CCCaptureEntryL."Capture ID No." := SalesOrderNoV;
+        CCCaptureEntryL."Payment Method Code" := SOHeaderL."Payment Method Code";
+        CCCaptureEntryL."Capture Date" := TODAY;
+        //H1850  nst  24.11.14  +++++++++++++++++++++++++
+        CCCaptureEntryL."Order Date" := SOHeaderL."Order Date";
+        //H1850  nst  24.11.14  -------------------------
+        CCCaptureEntryL.INSERT(TRUE);
+        COMMIT;
+        // Check whether SO is completely captured
+        SetCompletelyCaptured(SalesOrderNoV,SOHeaderL."Amount Including VAT");
+
+      END ELSE
+        EXIT;
+    END;
+
+    PROCEDURE SetCompletelyCaptured@1000000000(SONoV@1000000000 : Code[20];InvoiceAmtV@1000000003 : Decimal);
+    VAR
+      "***HME************************"@1000000004 : Integer;
+      SalesHeaderL@1000000001 : Record 36;
+      CaptureEntryL@1000000002 : Record 50317;
+    BEGIN
+      //Calculate actual capture amount
+      CaptureEntryL.SETCURRENTKEY("Order No.");
+      CaptureEntryL.SETRANGE("Order No.", SONoV);
+      IF CaptureEntryL.FINDSET(FALSE,FALSE) THEN
+        CaptureEntryL.CALCSUMS("Capture Amount")
+      ELSE
+        EXIT;
+
+      // If captured amount = total invoice amount flag document completely captured
+      IF CaptureEntryL."Capture Amount" = InvoiceAmtV THEN BEGIN
+        SalesHeaderL.GET(SalesHeaderL."Document Type"::Order,SONoV);
+        IF NOT SalesHeaderL."Completely Captured" THEN BEGIN
+          SalesHeaderL."Completely Captured" := TRUE;
+          SalesHeaderL.MODIFY;
+        END;
+      END;
+    END;
+
+    PROCEDURE CapturePartialAmount@1000000001(SalesOrderNoV@1000000000 : Code[20];AmountToCaptureV@1000000001 : Decimal;DocNoV@1000000008 : Code[20]);
+    VAR
+      "***HME************************"@1000000007 : Integer;
+      SalesHeaderL@1000000002 : Record 36;
+      CaptureEntriesL@1000000003 : Record 50317;
+      ActualCaptureAmt@1000000004 : Decimal;
+      CCCaptureEntryL@1000000005 : Record 50317;
+      EntryNoL@1000000006 : Integer;
+    BEGIN
+      // Create Capture Entries for partial invoices.
+      SalesHeaderL.GET(SalesHeaderL."Document Type"::Order, SalesOrderNoV);
+
+      //Exit if SO has been captured completely already
+      IF SalesHeaderL."Completely Captured" THEN
+        EXIT
+      ELSE
+        SalesHeaderL.CALCFIELDS("Amount Including VAT");
+
+      CaptureEntriesL.SETCURRENTKEY("Order No.");
+      CaptureEntriesL.SETRANGE("Order No.",SalesOrderNoV);
+      IF CaptureEntriesL.FINDSET(FALSE,FALSE) THEN
+        CaptureEntriesL.CALCSUMS("Capture Amount");
+
+      IF CaptureEntriesL."Capture Amount" + AmountToCaptureV > SalesHeaderL."Amount Including VAT" THEN
+        ActualCaptureAmt := SalesHeaderL."Amount Including VAT" - CaptureEntriesL."Capture Amount"
+      ELSE
+        ActualCaptureAmt := AmountToCaptureV;
+
+      //H1850  nst  24.11.14  +++++++++++++++++++++++++
+      IF ActualCaptureAmt > 0 THEN BEGIN
+      //H1850  nst  24.11.14  -------------------------
+        IF CCCaptureEntryL.RECORDLEVELLOCKING THEN
+          CCCaptureEntryL.LOCKTABLE;
+        IF CCCaptureEntryL.FINDLAST THEN
+          EntryNoL := CCCaptureEntryL."Entry No.";
+
+        EntryNoL += 1;
+        CCCaptureEntryL.RESET;
+
+        // Write new CC Capturing Entries
+        CCCaptureEntryL.INIT;
+        CCCaptureEntryL."Entry No." := EntryNoL;
+        CCCaptureEntryL."Order No." := SalesOrderNoV;
+        CCCaptureEntryL."Order Amount incl. VAT" := SalesHeaderL."Amount Including VAT";
+        CCCaptureEntryL."Capture Amount" := ActualCaptureAmt;
+        CCCaptureEntryL.Currency := SalesHeaderL."Currency Code";
+        CCCaptureEntryL."Capture ID No." := DocNoV;
+        CCCaptureEntryL."Payment Method Code" := SalesHeaderL."Payment Method Code";
+        CCCaptureEntryL."Capture Date" := TODAY;
+        //H1850  nst  24.11.14  +++++++++++++++++++++++++
+        CCCaptureEntryL."Order Date" := SalesHeaderL."Order Date";
+        //H1850  nst  24.11.14  -------------------------
+        CCCaptureEntryL.INSERT(TRUE);
+
+        // Check whether SO is completely captured
+        SetCompletelyCaptured(SalesOrderNoV,SalesHeaderL."Amount Including VAT");
+      //H1850  nst  24.11.14  +++++++++++++++++++++++++
+      END ELSE
+        EXIT;
+      //H1850  nst  24.11.14  -------------------------
+    END;
+
+    PROCEDURE CheckCompletelyCaptured@1000000004(SONoV@1000000000 : Code[20];InvoiceAmtV@1000000003 : Decimal) : Boolean;
+    VAR
+      "***HME************************"@1000000004 : Integer;
+      SalesHeaderL@1000000001 : Record 36;
+      CaptureEntryL@1000000002 : Record 50317;
+    BEGIN
+      //Calculate actual capture amount
+      CaptureEntryL.SETCURRENTKEY("Order No.");
+      CaptureEntryL.SETRANGE("Order No.", SONoV);
+      IF CaptureEntryL.FINDSET(FALSE,FALSE) THEN
+        CaptureEntryL.CALCSUMS("Capture Amount")
+      ELSE
+        EXIT(FALSE);
+
+      // If captured amount = total invoice amount flag document completely captured
+      IF CaptureEntryL."Capture Amount" >= InvoiceAmtV THEN
+        EXIT(TRUE)
+      ELSE
+        EXIT(FALSE);
+    END;
+
+    PROCEDURE Reprocess@1000000005();
+    VAR
+      "****HME***********************"@1000000000 : Integer;
+      CCCapturingEntriesL@1000000001 : Record 50317;
+      SIIFilLogL@1000000002 : Codeunit 50123;
+    BEGIN
+      //Reprocess all unprocessed CC Entries
+      CCCapturingEntriesL.SETRANGE(Status,CCCapturingEntriesL.Status::Unprocessed);
+      IF CCCapturingEntriesL.FINDSET(FALSE,FALSE) THEN
+        REPEAT
+          SIIFilLogL.Triggered_CreditCardCapture(CCCapturingEntriesL."Order No.",CCCapturingEntriesL."Capture Amount",
+                                                 CCCapturingEntriesL."Capture ID No.", CCCapturingEntriesL."Entry No.");
+          CCCapturingEntriesL.Status := CCCapturingEntriesL.Status::Processed;
+          CCCapturingEntriesL.MODIFY;
+        UNTIL CCCapturingEntriesL.NEXT = 0;
+      EXIT;
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date     Shortcut  Description
+      _____________________________________________
+      H0677       03.09.14  nst      Object created
+                                     CC capturing functions
+      H1850       24.11.14  nst      Bugfix 0 Amount
+                                     Fill Order date to CC Entries
+                                     New function: Reprocess
+    }
+    END.
+  }
+}
+

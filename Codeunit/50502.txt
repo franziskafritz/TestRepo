@@ -1,0 +1,568 @@
+OBJECT Codeunit 50502 MP Commission Mgt
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02.04.15;
+    Time=14:00:30;
+    Modified=Yes;
+    Version List=HME3926;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text10@1100409000 : TextConst 'DEU=Der Kreditor %1 wurde nicht als Marktplatzpartner angelegt!;ENU=Vendor % was not setup as market place partner!';
+
+    PROCEDURE InsertModifyMPCommissionLine@1100409000(SalesLineV@1100409000 : Record 37);
+    VAR
+      MPCommissionLineL@1100409001 : Record 50503;
+      MPCommissionLineLinkedL@1100409002 : Record 50503;
+      MarketPlacePartnerL@1100409003 : Record 50502;
+      ItemL@1100409004 : Record 27;
+      eBayNavCWebshopItemL@1100409005 : Record 5251566;
+      CompanyInformationL@1100409006 : Record 79;
+      SalesHeaderL@1100409007 : Record 36;
+      CurrencyL@1100409009 : Record 4;
+      CurrExchRateL@1100409010 : Record 330;
+      GLSetupL@1000000002 : Record 98;
+      MPCommLineEntryNoL@1000000001 : Integer;
+      VATL@1000000000 : Decimal;
+    BEGIN
+      IF NOT SalesLineV."Market Place" THEN BEGIN
+        EXIT;
+      END;
+
+      IF (SalesLineV.Type <> SalesLineV.Type::Item) THEN BEGIN
+        EXIT;
+      END;
+
+      IF (SalesLineV."Document Type" <> SalesLineV."Document Type"::Order) AND
+      (SalesLineV."Document Type" <> SalesLineV."Document Type"::"Return Order") THEN BEGIN
+        EXIT;
+      END;
+
+      MPCommissionLineL.SETCURRENTKEY("Document Type","Document No.","Line No.");
+      MPCommissionLineL.SETRANGE("Document Type",SalesLineV."Document Type");
+      MPCommissionLineL.SETRANGE("Document No.",SalesLineV."Document No.");
+      MPCommissionLineL.SETRANGE("Line No.",SalesLineV."Line No.");
+      IF NOT MPCommissionLineL.FINDFIRST THEN BEGIN
+        MPCommissionLineL.LOCKTABLE;
+        MPCommissionLineL.RESET;
+        IF MPCommissionLineL.FINDLAST THEN BEGIN
+          MPCommLineEntryNoL := MPCommissionLineL."Entry No.";
+        END;
+        MPCommLineEntryNoL := MPCommLineEntryNoL + 1;
+
+        MPCommissionLineL.INIT;
+        MPCommissionLineL."Entry No." := MPCommLineEntryNoL;
+        MPCommissionLineL."Document Type" := SalesLineV."Document Type";
+        MPCommissionLineL."Document No." := SalesLineV."Document No.";
+        MPCommissionLineL."Line No." := SalesLineV."Line No.";
+        MPCommissionLineL."Create Date" := TODAY;
+        MPCommissionLineL.INSERT;
+      END ELSE BEGIN
+        IF (MPCommissionLineL."Document No. (order release)" <> '') THEN BEGIN
+          EXIT;
+        END;
+        //T0094 20.01.15 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+        IF (MPCommissionLineL."Doc. No. (commission d. Paym.)" <> '') OR (MPCommissionLineL."Doc. No. (liabilites due Paym)" <> '') THEN
+          EXIT;
+        IF MPCommissionLineL.Canceled THEN BEGIN
+          EXIT; // Same as reported
+        END;
+        //T0094 20.01.15 TEC-GH --------------------------------------------------
+      END;
+
+      IF SalesHeaderL.GET(SalesLineV."Document Type",SalesLineV."Document No.") THEN;
+
+      IF MarketPlacePartnerL.GET(SalesLineV."Vendor No.") THEN BEGIN
+          MPCommissionLineL."Commission Recipient No." := MarketPlacePartnerL."Market Place Partner";
+      END ELSE BEGIN
+        ERROR (Text10,MarketPlacePartnerL."Market Place Partner");
+      END;
+
+      IF SalesHeaderL."Prices Including VAT" AND (SalesLineV."VAT %" <> 0) THEN BEGIN
+        IF SalesLineV."Currency Code" <> '' THEN BEGIN
+          CurrencyL.GET(SalesLineV."Currency Code");
+        END ELSE BEGIN
+          CurrencyL.InitRoundingPrecision;
+        END;
+        MPCommissionLineL."Net Sales Price" :=
+          ROUND(SalesLineV."Unit Price" / (1 + SalesLineV."VAT %" / 100), CurrencyL."Unit-Amount Rounding Precision");
+        MPCommissionLineL."Gross Sales Price" := SalesLineV."Unit Price";
+      END ELSE BEGIN
+        MPCommissionLineL."Net Sales Price" := SalesLineV."Unit Price";
+        IF (SalesLineV."VAT %" <> 0) THEN BEGIN
+          MPCommissionLineL."Gross Sales Price" := SalesLineV."Unit Price" * (1 + SalesLineV."VAT %" / 100);
+        END ELSE BEGIN
+          MPCommissionLineL."Gross Sales Price" := SalesLineV."Unit Price";
+        END;
+      END;
+
+      GLSetupL.GET;
+      GLSetupL.TESTFIELD("Unit-Amount Rounding Precision");
+      IF SalesHeaderL."Currency Code" <> '' THEN BEGIN
+        MPCommissionLineL."Gross Sales Price (LCY)" :=
+          ROUND(
+            CurrExchRateL.ExchangeAmtFCYToLCY(
+              SalesHeaderL."Posting Date",SalesHeaderL."Currency Code",
+              MPCommissionLineL."Gross Sales Price",SalesHeaderL."Currency Factor"),
+            GLSetupL."Unit-Amount Rounding Precision")
+      END ELSE
+          MPCommissionLineL."Gross Sales Price (LCY)" := MPCommissionLineL."Gross Sales Price";
+
+      IF SalesHeaderL."Currency Code" <> '' THEN BEGIN
+        MPCommissionLineL."Net Sales Price (LCY)" :=
+          ROUND(
+            CurrExchRateL.ExchangeAmtFCYToLCY(
+              SalesHeaderL."Posting Date",SalesHeaderL."Currency Code",
+              MPCommissionLineL."Net Sales Price",SalesHeaderL."Currency Factor"),
+            GLSetupL."Unit-Amount Rounding Precision")
+      END ELSE
+        MPCommissionLineL."Net Sales Price (LCY)" := MPCommissionLineL."Net Sales Price";
+
+      MPCommissionLineL."VAT %" := SalesLineV."VAT %";
+      MPCommissionLineL.Quantity := SalesLineV.Quantity;
+      MPCommissionLineL."Quantity (Base)":= SalesLineV."Quantity (Base)";
+      MPCommissionLineL."Currency Code" := SalesLineV."Currency Code";
+
+      IF ItemL.GET(SalesLineV."No.") THEN BEGIN
+        MPCommissionLineL."Net Purchase Price Per Piece" := ItemL."Net PP piece";
+      END;
+
+      IF CompanyInformationL.GET THEN BEGIN
+        IF (SalesHeaderL."Sell-to Country/Region Code" <> CompanyInformationL."Country/Region Code") THEN BEGIN
+          IF eBayNavCWebshopItemL.GET(SalesHeaderL."Website No.",SalesLineV."No.") THEN BEGIN
+            MPCommissionLineL."Costs Drop Shipment" := eBayNavCWebshopItemL."Actual Absolute PC2 (Dropship)";
+          END;
+        END;
+      END;
+
+      MPCommissionLineL."Net Commission Amount" := ((MPCommissionLineL."Gross Sales Price (LCY)" / (1 + SalesLineV."VAT %" / 100))
+                                             - ItemL."Net PP piece"
+                                             - eBayNavCWebshopItemL."Actual Absolute PC2 (Dropship)") * MPCommissionLineL.Quantity;
+
+      //T0062 04.12.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      MPCommissionLineL."Net Commission Amount" := ROUND(MPCommissionLineL."Net Commission Amount", GLSetupL."Amount Rounding Precision"
+      );
+      MPCommissionLineL."Gross Sales Amount (LCY)" := ROUND(MPCommissionLineL."Gross Sales Price (LCY)"*MPCommissionLineL.Quantity,
+        GLSetupL."Amount Rounding Precision");
+      MPCommissionLineL."Net Sales Amount (LCY)" := ROUND(MPCommissionLineL."Net Sales Price (LCY)"*MPCommissionLineL.Quantity,
+        GLSetupL."Amount Rounding Precision");
+      //T0062 04.12.14 TEC-GH --------------------------------------------------
+
+      //Return Order
+      IF (SalesHeaderL."Document Type" = SalesHeaderL."Document Type"::"Return Order") THEN BEGIN
+        MPCommissionLineL."Net Commission Amount" :=   -MPCommissionLineL."Net Commission Amount";
+        MPCommissionLineL."Gross Sales Amount (LCY)" := -MPCommissionLineL."Gross Sales Amount (LCY)";
+        MPCommissionLineL."Net Sales Amount (LCY)" := -MPCommissionLineL."Net Sales Amount (LCY)";
+      END;
+
+      IF (MPCommissionLineL."Gross Sales Amount (LCY)" <> 0) THEN BEGIN
+        MPCommissionLineL."Net Commission %" := MPCommissionLineL."Net Commission Amount"
+                                                /MPCommissionLineL."Gross Sales Amount (LCY)" * 100;
+      END;
+
+      MPCommissionLineL."Linked to Sales Order No." := SalesLineV."Linked to Sales Order No.";
+      MPCommissionLineL."Linked to Sales Order Line No." := SalesLineV."Linked to Sales Order Line No.";
+      MPCommissionLineL."External Document No."          := SalesHeaderL."External Document No.";
+      MPCommissionLineL."Item No."                       := SalesLineV."No.";
+      MPCommissionLineL."Item Description"               := SalesLineV.Description;
+      //T0062 07.01.15 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      MPCommissionLineL."Order Date" := SalesHeaderL."Order Date";
+      MPCommissionLineL."Actual Delivery Date" := SalesLineV."Actual Delivery Date";
+      //T0062 07.01.15 TEC-GH --------------------------------------------------
+      //T0062 12.01.15 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      MPCommissionLineL."Payment received" := SalesHeaderL."Payment received";
+      MPCommissionLineL."Payment received from" := SalesHeaderL."Payment received from";
+      MPCommissionLineL."Payment received at" := SalesHeaderL."Payment received at";
+      //T0062 12.01.15 TEC-GH --------------------------------------------------
+
+      //T0083, H3906 17.03.15 CC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF SalesLineV."Purchase Order No." <> '' THEN BEGIN
+        MPCommissionLineL."Commission No. (MPDS)" := SalesLineV."Purchase Order No.";
+      END ELSE IF SalesLineV."Special Order Purchase No." <> '' THEN BEGIN
+        MPCommissionLineL."Commission No. (MPDS)" := SalesLineV."Special Order Purchase No.";
+      END;
+      //T0083, H3906 17.03.15 CC-GH --------------------------------------------------
+      //H3926 01.04.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF (MPCommissionLineL."Commission No. (MPDS)" = '') AND (MPCommissionLineL."Linked to Sales Order No." <> '') THEN BEGIN
+        // Get Commission No from Original Line
+        MPCommissionLineLinkedL.RESET;
+        MPCommissionLineLinkedL.SETCURRENTKEY("Document Type", "Document No.", "Line No.");
+        MPCommissionLineLinkedL.SETRANGE("Document Type", MPCommissionLineL."Document Type"::Order);
+        MPCommissionLineLinkedL.SETRANGE("Document No.", MPCommissionLineL."Linked to Sales Order No.");
+        MPCommissionLineLinkedL.SETRANGE("Line No.", MPCommissionLineL."Linked to Sales Order Line No.");
+        MPCommissionLineLinkedL.SETFILTER("Commission No. (MPDS)",'<>%1','');
+        IF MPCommissionLineLinkedL.FINDLAST THEN BEGIN // Last shall be best guess
+          IF MPCommissionLineLinkedL."Commission No. (MPDS)" = '' THEN BEGIN
+            MPCommissionLineLinkedL."Commission No. (MPDS)" := GetCommissionNo(MPCommissionLineLinkedL);
+            IF MPCommissionLineLinkedL."Commission No. (MPDS)" <> '' THEN BEGIN
+              MPCommissionLineLinkedL.MODIFY;
+            END;
+          END;
+          MPCommissionLineL."Commission No. (MPDS)" := MPCommissionLineLinkedL."Commission No. (MPDS)";
+        END;
+      END;
+      //H3926 01.04.15 CC-CH ---------------------------------------------------------
+      //T0061, H3874 16.03.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++
+      CASE SalesLineV."Document Type" OF
+        SalesLineV."Document Type"::Order:
+          MPCommissionLineL."Reporting Periode Date" := MPCommissionLineL."Order Released at";
+        ELSE
+          MPCommissionLineL."Reporting Periode Date" := MPCommissionLineL."Invoice Posting Date";
+      END;
+      //T0061, H3874 16.03.15 CC-GH --------------------------------------------------
+      MPCommissionLineL.MODIFY;
+    END;
+
+    PROCEDURE SetInvoicePostingDate@1100409001(SalesLineV@1100409002 : Record 37;PostingDateV@1000000000 : Date;PostingNoV@1000000001 : Code[20]);
+    VAR
+      MPCommissionLineL@1100409000 : Record 50503;
+    BEGIN
+      //T0062 07.01.15 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      MPCommissionLineL.SETCURRENTKEY("Document Type","Document No.","Line No.");
+      MPCommissionLineL.SETRANGE("Document Type",SalesLineV."Document Type");
+      MPCommissionLineL.SETRANGE("Document No.",SalesLineV."Document No.");
+      MPCommissionLineL.SETRANGE("Line No.",SalesLineV."Line No.");
+      IF MPCommissionLineL.FINDSET(TRUE) THEN BEGIN
+        REPEAT
+          MPCommissionLineL."Invoice Posting Date" := PostingDateV;
+          MPCommissionLineL."Actual Delivery Date" := SalesLineV."Actual Delivery Date";
+          MPCommissionLineL."Posting No" := PostingNoV;
+          //H3874 16.03.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++
+          IF MPCommissionLineL."Reporting Periode Date" = 0D THEN BEGIN
+            MPCommissionLineL."Reporting Periode Date" := PostingDateV;
+          END;
+          //H3874 16.03.15 CC-GH --------------------------------------------------
+          MPCommissionLineL.MODIFY;
+        UNTIL MPCommissionLineL.NEXT = 0;
+      END;
+      //T0062 07.01.15 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE SetPaymentRecive@1000000002(SalesHeaderV@1000000000 : Record 36);
+    VAR
+      MPCommissionLineL@1000000001 : Record 50503;
+    BEGIN
+      //T0062 12.01.15 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      MPCommissionLineL.RESET;
+      MPCommissionLineL.SETCURRENTKEY("Document Type","Document No.");
+      MPCommissionLineL.SETRANGE("Document Type", SalesHeaderV."Document Type");
+      MPCommissionLineL.SETRANGE("Document No.", SalesHeaderV."No.");
+      MPCommissionLineL.MODIFYALL("Payment received", SalesHeaderV."Payment received");
+      MPCommissionLineL.MODIFYALL("Payment received from", SalesHeaderV."Payment received from");
+      MPCommissionLineL.MODIFYALL("Payment received at", SalesHeaderV."Payment received at");
+      //T0062 12.01.15 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE SetPurchOrderNo@1000000003(SalesLineV@1000000000 : Record 37);
+    VAR
+      MPCommissionLineL@1000000001 : Record 50503;
+    BEGIN
+      //T0094, H3906 17.03.15 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      MPCommissionLineL.RESET;
+      MPCommissionLineL.SETCURRENTKEY("Document Type","Document No.");
+      MPCommissionLineL.SETRANGE("Document Type", SalesLineV."Document Type");
+      MPCommissionLineL.SETRANGE("Document No.", SalesLineV."Document No.");
+      MPCommissionLineL.SETRANGE("Line No.",SalesLineV."Line No.");
+      IF SalesLineV."Purchase Order No." <> '' THEN BEGIN
+        MPCommissionLineL.MODIFYALL("Commission No. (MPDS)",SalesLineV."Purchase Order No.");
+      END ELSE IF SalesLineV."Special Order Purchase No." <> '' THEN BEGIN
+        MPCommissionLineL.MODIFYALL("Commission No. (MPDS)",SalesLineV."Special Order Purchase No.");
+      END;
+      //T0094, H3906 17.01.15 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE DeleteMPCommissionLine@1100409002(SalesLineV@1100409000 : Record 37);
+    VAR
+      MPCommissionLineL@1100409001 : Record 50503;
+    BEGIN
+      //Table 37 delete(true), C80 (deletion without true)
+      //T0094 22.01.15 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Remove false merge
+      //T0061 10.12.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      CancelSalesLine(SalesLineV); // Handel Delelation as Cancel
+      //T0061 10.12.14 TEC-GH --------------------------------------------------
+      //T0094 22.01.15 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE CancelSalesLine@1000000000(SalesLineV@1000000000 : Record 37);
+    VAR
+      MPCommissionLineL@1000000001 : Record 50503;
+      MPCommissionLineTotalL@1000000003 : Record 50503;
+      MPCommissionLineNewL@1000000005 : Record 50503;
+      LastMPCommissionLineReportedL@1000000004 : Record 50503;
+      SalesHeaderL@1000000002 : Record 36;
+      LastEntryNoL@1000000008 : Integer;
+    BEGIN
+      //T0061 04.12.14 TEC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      IF NOT SalesLineV."Market Place" THEN BEGIN
+        EXIT;
+      END;
+
+      IF (SalesLineV.Type <> SalesLineV.Type::Item) THEN BEGIN
+        EXIT;
+      END;
+
+      IF (SalesLineV."Document Type" <> SalesLineV."Document Type"::Order) AND
+         (SalesLineV."Document Type" <> SalesLineV."Document Type"::"Return Order")
+      THEN BEGIN
+        EXIT;
+      END;
+
+      CLEAR(MPCommissionLineTotalL);
+      CLEAR(MPCommissionLineNewL);
+      CLEAR(LastMPCommissionLineReportedL);
+      MPCommissionLineL.LOCKTABLE;
+      MPCommissionLineL.SETCURRENTKEY("Document Type","Document No.","Line No.");
+      MPCommissionLineL.SETRANGE("Document Type",SalesLineV."Document Type");
+      MPCommissionLineL.SETRANGE("Document No.",SalesLineV."Document No.");
+      MPCommissionLineL.SETRANGE("Line No.",SalesLineV."Line No.");
+      IF MPCommissionLineL.FINDSET THEN BEGIN
+        REPEAT
+          IF NOT MPCommissionLineL.Canceled THEN BEGIN // Skip allready Canceld Lines
+            LastMPCommissionLineReportedL := MPCommissionLineL;
+            MPCommissionLineTotalL."Net Commission Amount" +=  MPCommissionLineL."Net Commission Amount";
+            MPCommissionLineTotalL."Gross Sales Amount (LCY)" += MPCommissionLineL."Gross Sales Amount (LCY)";
+            MPCommissionLineTotalL."Net Sales Amount (LCY)" += MPCommissionLineL."Net Sales Amount (LCY)";
+            MPCommissionLineL.Canceled := TRUE;
+            MPCommissionLineL."Confirm Canceled Date" := WORKDATE;
+            MPCommissionLineL.MODIFY;
+          END;
+         UNTIL MPCommissionLineL.NEXT = 0;
+      END;
+
+      MPCommissionLineL.RESET;
+      IF MPCommissionLineL.FINDLAST THEN BEGIN
+        LastEntryNoL := MPCommissionLineL."Entry No.";
+      END ELSE BEGIN
+        LastEntryNoL := 0;
+      END;
+
+      IF (MPCommissionLineTotalL."Net Commission Amount" <> 0) OR
+         (MPCommissionLineTotalL."Gross Sales Amount (LCY)" <> 0) OR
+         (MPCommissionLineTotalL."Net Sales Amount (LCY)" <> 0)
+      THEN BEGIN
+        // Insert Cancel Line
+        MPCommissionLineNewL := LastMPCommissionLineReportedL;
+        MPCommissionLineNewL."Create Date" := TODAY;
+        MPCommissionLineNewL."Doc. No. (commission d. Paym.)" := '';
+        MPCommissionLineNewL."Closed (Commission due paym.)" := 0D;
+        MPCommissionLineNewL."Doc. No. (liabilites due Paym)" := '';
+        MPCommissionLineNewL."Closed (liabilities due Paym.)" := 0D;
+        MPCommissionLineNewL."Document No. (order release)" := '';
+        MPCommissionLineNewL."Closed(order release)" := 0D;
+
+        MPCommissionLineNewL.Quantity := -MPCommissionLineNewL.Quantity;
+        MPCommissionLineNewL."Quantity (Base)" := -MPCommissionLineNewL."Quantity (Base)";
+
+        MPCommissionLineNewL."Net Commission Amount" := -MPCommissionLineTotalL."Net Commission Amount";
+        MPCommissionLineNewL."Gross Sales Amount (LCY)" := -MPCommissionLineTotalL."Gross Sales Amount (LCY)";
+        MPCommissionLineNewL."Net Sales Amount (LCY)" := -MPCommissionLineTotalL."Net Sales Amount (LCY)";
+        LastEntryNoL += 1;
+        MPCommissionLineNewL."Entry No." := LastEntryNoL;
+        MPCommissionLineNewL.Canceled := TRUE;
+        MPCommissionLineNewL."Confirm Canceled Date" := WORKDATE;
+        //T0061, H3874 16.03.15 TEC-GH +++++++++++++++++++++++++++++++++++++++++++++++++
+        CASE SalesLineV."Document Type" OF
+          SalesLineV."Document Type"::Order:
+            BEGIN
+              MPCommissionLineNewL."Reporting Periode Date" := MPCommissionLineNewL."Confirm Canceled Date";
+            END;
+          SalesLineV."Document Type"::"Return Order":
+            BEGIN
+              MPCommissionLineNewL."Reporting Periode Date" := 0D;
+            END;
+        END;
+        MPCommissionLineNewL."Cancel Entry" := TRUE;
+        //T0061, H3874 16.03.15 TEC-GH --------------------------------------------------
+        MPCommissionLineNewL.INSERT;
+      END;
+      //T0061 04.12.14 TEC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE CheckOrderState@1000000001(SalesHeaderV@1000000000 : Record 36);
+    VAR
+      CommisionLineL@1000000001 : Record 50503;
+    BEGIN
+      //T0062, H3874 16.03.14 CC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Set Order Release Date in all not Filled entrys
+      CASE SalesHeaderV."Document Type" OF
+        SalesHeaderV."Document Type"::Order:
+          BEGIN
+            CASE SalesHeaderV.Status OF
+              SalesHeaderV.Status::Released:
+                BEGIN
+                  CommisionLineL.RESET;
+                  CommisionLineL.SETCURRENTKEY("Document Type","Document No.","Line No.");
+                  CommisionLineL.SETRANGE("Document Type", SalesHeaderV."Document Type");
+                  CommisionLineL.SETRANGE("Document No.", SalesHeaderV."No.");
+                  CommisionLineL.SETRANGE("Order Released at",0D);
+                  //T0061 26.01.15 TEC-GH +++++++++++++++++++++++++++++++++++++++++++++++++
+                  CommisionLineL.SETRANGE("Reporting Periode Date",0D);
+                  CommisionLineL.MODIFYALL("Reporting Periode Date",TODAY);
+                  CommisionLineL.SETRANGE("Reporting Periode Date");
+                  //T0061 26.01.15 TEC-GH --------------------------------------------------
+                  CommisionLineL.MODIFYALL("Order Released at",TODAY);
+                END;
+            END;
+          END;
+        //H3926 01.04.15 CC-GH +++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        SalesHeaderV."Document Type"::"Return Order":
+          BEGIN
+            CASE SalesHeaderV.Status OF
+              SalesHeaderV.Status::Released:
+                BEGIN
+                  CommisionLineL.RESET;
+                  CommisionLineL.SETCURRENTKEY("Document Type","Document No.","Line No.");
+                  CommisionLineL.SETRANGE("Document Type", SalesHeaderV."Document Type");
+                  CommisionLineL.SETRANGE("Document No.", SalesHeaderV."No.");
+                  CommisionLineL.SETRANGE("Order Released at",0D);
+                  CommisionLineL.MODIFYALL("Order Released at",TODAY);
+                END;
+            END;
+          END;
+        //H3926 01.04.15 CC-GH ---------------------------------------------------------
+      END;
+      //T0062, H3874 16.03.15 CC-GH --------------------------------------------------
+    END;
+
+    PROCEDURE GetCommissionNo4Rebuy@1000000004(PurchInvoiceLineV@1000000000 : Record 123) : Code[20];
+    VAR
+      PreviousPurchInvLineL@1000000001 : Record 123;
+      ItemLegderEntryL@1000000003 : Record 32;
+      TransferReceiptLineL@1000000004 : Record 5747;
+      MPCommissionLineL@1000000002 : Record 50503;
+    BEGIN
+      //H3926 01.04.15 CC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Not performant Operation
+      // Line before actual Line is to Reduce Qty on MP-REBUY Location
+      // -> Linked to Item Ledger Entry
+      // -> Linked to Transfer Receipt by Document Type, Document No Document Line No
+      // -> Linked to MP Commission Line by Fields Linkted to Sales Order / Line
+      // Get Commission No from there
+
+      IF PurchInvoiceLineV.Type <> PurchInvoiceLineV.Type::Item THEN
+        EXIT(''); // Must be Item
+
+      PreviousPurchInvLineL.RESET;
+      PreviousPurchInvLineL.SETRANGE("Document No.", PurchInvoiceLineV."Document No.");
+      PreviousPurchInvLineL.SETRANGE("Line No.", 0, PurchInvoiceLineV."Line No."-1);
+      IF NOT PreviousPurchInvLineL.FINDLAST THEN
+        EXIT(''); // No Counter Part
+
+      IF (PreviousPurchInvLineL.Type <> PurchInvoiceLineV.Type) OR
+         (PreviousPurchInvLineL."No." <> PurchInvoiceLineV."No.") OR
+         (PreviousPurchInvLineL.Quantity <> -PurchInvoiceLineV.Quantity) OR
+         (PreviousPurchInvLineL."Appl.-to Item Entry" = 0)
+      THEN
+        EXIT(''); // No Couterpart of Line
+
+      IF NOT ItemLegderEntryL.GET(PreviousPurchInvLineL."Appl.-to Item Entry") THEN
+        EXIT(''); // No Item Ledger Entry
+
+      IF ItemLegderEntryL."Document Type" <> ItemLegderEntryL."Document Type"::"Transfer Receipt" THEN
+        EXIT(''); // Posted by Receipt
+
+      IF NOT TransferReceiptLineL.GET(ItemLegderEntryL."Document No.", ItemLegderEntryL."Document Line No.") THEN
+        EXIT(''); // No Receipt Line
+
+      MPCommissionLineL.RESET;
+      MPCommissionLineL.SETCURRENTKEY("Document Type", "Document No.", "Line No.");
+      MPCommissionLineL.SETRANGE("Document Type", TransferReceiptLineL."Linked Sales Doc. Type");
+      MPCommissionLineL.SETRANGE("Document No.", TransferReceiptLineL."Linked Sales Doc. No.");
+      MPCommissionLineL.SETRANGE("Line No.", TransferReceiptLineL."Linked Sales Line No.");
+      MPCommissionLineL.SETRANGE("Commission Recipient No.",PurchInvoiceLineV."Buy-from Vendor No."); // Security
+      IF NOT MPCommissionLineL.FINDLAST THEN
+        EXIT('');
+
+      EXIT(GetCommissionNo(MPCommissionLineL));
+      //H3926 01.04.15 CC-GH ----------------------------------------------------------
+    END;
+
+    PROCEDURE GetCommissionNo@1000000005(MPCommissionLineV@1000000000 : Record 50503) : Code[20];
+    VAR
+      MPCommissionLineL@1000000001 : Record 50503;
+      MarketPlacePartner@1000000003 : Record 50502;
+      PurchRcptLine@1000000002 : Record 121;
+    BEGIN
+      //H3926 01.04.15 CC-GH ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Not performant Operation
+      // -> Linked to MP Commission Line by Fields Linkted to Sales Order / Line
+      // Get Commission No from there
+      IF MPCommissionLineV."Commission No. (MPDS)" <> '' THEN
+        EXIT(MPCommissionLineV."Commission No. (MPDS)"); // Asume is allready done
+
+      IF MPCommissionLineV."Linked to Sales Order No." <> '' THEN BEGIN
+        MPCommissionLineL.RESET;
+        MPCommissionLineL.SETCURRENTKEY("Document Type", "Document No.", "Line No.");
+        MPCommissionLineL.SETRANGE("Document Type", MPCommissionLineV."Document Type"::Order);
+        MPCommissionLineL.SETRANGE("Document No.", MPCommissionLineV."Linked to Sales Order No.");
+        MPCommissionLineL.SETRANGE("Line No.", MPCommissionLineV."Linked to Sales Order Line No.");
+        IF NOT MPCommissionLineL.FINDLAST THEN
+          EXIT(''); // Commission for Linked Sales Order don't exist
+      END ELSE BEGIN
+        MPCommissionLineL := MPCommissionLineV;
+      END;
+
+      IF MPCommissionLineL."Commission No. (MPDS)" <> '' THEN
+        EXIT(MPCommissionLineL."Commission No. (MPDS)"); // Ok is done
+
+      IF NOT MarketPlacePartner.GET(MPCommissionLineL."Commission Recipient No.") THEN
+        EXIT('');
+
+      PurchRcptLine.RESET;
+      PurchRcptLine.SETCURRENTKEY("Buy-from Vendor No.");
+      IF MarketPlacePartner."Vendor No" <> '' THEN BEGIN
+        PurchRcptLine.SETRANGE("Buy-from Vendor No.",MarketPlacePartner."Vendor No");
+      END ELSE BEGIN
+        PurchRcptLine.SETRANGE("Buy-from Vendor No.",MarketPlacePartner."Market Place Partner");
+      END;
+
+      PurchRcptLine.SETRANGE("Sales Order No.", MPCommissionLineL."Document No.");
+      PurchRcptLine.SETRANGE("Sales Order Line No.", MPCommissionLineL."Line No.");
+      IF PurchRcptLine.FINDLAST THEN
+        EXIT(PurchRcptLine."Order No.");
+
+      PurchRcptLine.SETRANGE("Sales Order No.");
+      PurchRcptLine.SETRANGE("Sales Order Line No.");
+
+      PurchRcptLine.SETRANGE("Special Order Sales No.", MPCommissionLineL."Document No.");
+      PurchRcptLine.SETRANGE("Special Order Sales Line No.", MPCommissionLineL."Line No.");
+      IF PurchRcptLine.FINDLAST THEN
+        EXIT(PurchRcptLine."Order No.");
+
+      EXIT('');
+      //H3926 01.04.15 CC-GH ----------------------------------------------------------
+    END;
+
+    BEGIN
+    {
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |     Cooperation Tectura & Home24 NAV Team  |
+      |                                            |
+      +--------------------------------------------+
+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      T0062       30.10.14  TEC-SH    Create Object
+      T0061       04.12.14  TEC-GH    New Function CancelSalesLine,
+      T0083       12.01.15  TEC-GH    Fill additional Info for summary document
+      T0094       22.01.15  TEC-GH    BugFix Unmerge T0083, T0061
+      H3874       16.03.15  CC-GH     Set Reporting Date for Return Order only when Invoiced
+      H3906       17.03.15  CC-GH     Do Not overright Commission No. (MPDS) with blank
+      H3926       01.04.15  CC-GH     Sales Return - Transfer Commission No from Sales Order
+    }
+    END.
+  }
+}
+

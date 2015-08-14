@@ -1,0 +1,565 @@
+OBJECT Codeunit 82861 Inbound EDI Purch. Order Conf.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=17.02.15;
+    Time=12:00:00;
+    Modified=Yes;
+    Version List=EDIINT6.02,P0876,HME1731;
+  }
+  PROPERTIES
+  {
+    TableNo=82868;
+    OnRun=BEGIN
+            UpdatePurchaseOrder(Rec);
+          END;
+
+  }
+  CODE
+  {
+
+    PROCEDURE UpdatePurchaseOrder@1000000000(rInboundEDIPurchDocHeader@1000000000 : Record 82868);
+    VAR
+      rPurchaseHeader@1000000001 : Record 38;
+      rPurchaseLine@1000000002 : Record 39;
+      Text000@1000000003 : TextConst 'DEU=Soll die Bestellung %1 aktualisiert werden?;ENU=Do you want to update the Order No. %1?';
+      rInboundEDIDocPurchLine@1000000004 : Record 82869;
+      Text001@1000000005 : TextConst 'ENU=The Order No. %1 has been updated.';
+      rEDIPartnerDocumentType@1000000006 : Record 82852;
+      rItemCrossRef@1000000007 : Record 5717;
+      rItem@1000000008 : Record 27;
+      EDIIntegratorSetup@1000000009 : Record 82850;
+      SalesLine@1000000010 : Record 37;
+      ChannelMgt@1000000011 : Codeunit 50093;
+      ReleasePurchaseDocument@1000000012 : Codeunit 415;
+      ExpectedReceptDate@1000000013 : Date;
+      "*** HME *******"@1000000014 : Integer;
+      ItemL@1000000015 : Record 27;
+      eBayCodeL@1000000016 : Record 5095817;
+    BEGIN
+      IF GUIALLOWED THEN
+        IF NOT CONFIRM(STRSUBSTNO(Text000, rInboundEDIPurchDocHeader."Purchase Document No."),TRUE) THEN
+          EXIT;
+
+      EDIIntegratorSetup.GET();
+
+      rEDIPartnerDocumentType.GET(rInboundEDIPurchDocHeader."EDI Sender Partner Code",
+        rEDIPartnerDocumentType."Document Direction"::Inbound,'ORDRSP');
+
+      //H0880 20140411 DMA +++++++++++++++++++++++++++++++
+      IF rEDIPartnerDocumentType."ORDRSP  Startdate" = 0D THEN
+      BEGIN
+        rEDIPartnerDocumentType."ORDRSP  Startdate" := rInboundEDIPurchDocHeader."Date Received";
+        rEDIPartnerDocumentType.MODIFY;
+      END;
+      //H0880 20140411 DMA -------------------------------
+
+      //rEDIPartnerDocumentType.TESTFIELD("Order Status");
+      rPurchaseHeader.GET(rPurchaseHeader."Document Type"::Order, rInboundEDIPurchDocHeader."Purchase Document No.");
+      ReleasePurchaseDocument.Reopen(rPurchaseHeader);
+
+      IF rInboundEDIPurchDocHeader."Message Status" <> rInboundEDIPurchDocHeader."Message Status"::Rejected THEN BEGIN
+
+        IF rPurchaseHeader."Sell-to Customer No." = '' THEN
+          rPurchaseHeader.VALIDATE("Promised Receipt Date",rInboundEDIPurchDocHeader."Promised Receipt Date");
+        rPurchaseHeader."Vendor Order No." := rInboundEDIPurchDocHeader."Vendor Order No.";
+        rPurchaseHeader.VALIDATE("Vendor Authorization No.",rInboundEDIPurchDocHeader."Vendor Order No.");
+        //A,gob-dst,13.02.2013,P0780
+        rPurchaseHeader."EDI ORDRSP Receive Date" := rInboundEDIPurchDocHeader."Date Received";
+        rPurchaseHeader."EDI ORDRSP Receive Time" := rInboundEDIPurchDocHeader."Time Received";
+        //E,gob-dst,13.02.2013,P0780
+        rPurchaseHeader.MODIFY(TRUE);
+
+        // S/20.02.2013/gob-sil/P0813
+        IF DifferentShipmentDate(rInboundEDIPurchDocHeader) THEN BEGIN
+          SplittLine(rInboundEDIPurchDocHeader)
+        END ELSE BEGIN
+        // E/20.02.2013/gob-sil/P0813
+
+        rInboundEDIDocPurchLine.SETRANGE("Document No.",rInboundEDIPurchDocHeader."No.");
+        rInboundEDIDocPurchLine.SETRANGE("Skip accepting",FALSE);
+        rInboundEDIDocPurchLine.FINDFIRST;
+        REPEAT
+          rPurchaseLine.GET(rPurchaseLine."Document Type"::Order,rPurchaseHeader."No.",rInboundEDIDocPurchLine."Reference Line No.");
+          // H0622 FX 09.10.13 ++++++++++++++++
+          ExpectedReceptDate := rPurchaseLine."Expected Receipt Date";
+          // H0622 FX 09.10.13 -----------------
+          IF rInboundEDIDocPurchLine."Line Status" = rInboundEDIDocPurchLine."Line Status"::Rejected THEN BEGIN
+            IF rInboundEDIPurchDocHeader."Order Type" = rInboundEDIPurchDocHeader."Order Type"::"Stock Order" THEN
+              rPurchaseLine.Cancel(FALSE)
+            ELSE BEGIN
+              IF rInboundEDIPurchDocHeader."Order Type" = rInboundEDIPurchDocHeader."Order Type":: "Drop Shipment" THEN
+                SalesLine.GET(SalesLine."Document Type"::Order,rPurchaseLine."Sales Order No.",rPurchaseLine."Sales Order Line No.");
+              IF rInboundEDIPurchDocHeader."Order Type" = rInboundEDIPurchDocHeader."Order Type"::"Cross Docking" THEN
+                SalesLine.GET(SalesLine."Document Type"::Order,rPurchaseLine."Special Order Sales No.",
+                  rPurchaseLine."Special Order Sales Line No.");
+
+              SalesLine.VALIDATE("Return Reason Code",EDIIntegratorSetup."Return Reason for Cancellation");
+              SalesLine.MODIFY;
+              ChannelMgt.CancelDropShipment(SalesLine,FALSE);
+            END;
+          END ELSE BEGIN
+            IF (rInboundEDIPurchDocHeader."Order Type" = rInboundEDIPurchDocHeader."Order Type"::"Stock Order") AND
+              (rInboundEDIDocPurchLine.Quantity <> rPurchaseLine.Quantity) THEN BEGIN
+              rPurchaseLine.VALIDATE("Original Quantity",rPurchaseLine.Quantity);
+              rPurchaseLine.VALIDATE(Quantity,rInboundEDIDocPurchLine.Quantity);
+            END;
+            IF rPurchaseHeader."Promised Receipt Date" <> 0D THEN
+              rPurchaseLine.VALIDATE("Promised Receipt Date",rPurchaseHeader."Promised Receipt Date")
+            ELSE
+              rPurchaseLine.VALIDATE("Promised Receipt Date",rInboundEDIDocPurchLine."Promised Receipt Date");
+            //A,gob-dst,17.01.2013,P0749
+            //IF rPurchaseHeader."Sell-to Customer No." = '' THEN
+            //A,gob-dst,13.02.2013,P0780
+            //IF rPurchaseHeader."Sell-to Customer No." <> '' THEN
+            //E,gob-dst,13.02.2013,P0780
+            //E,gob-dst,17.01.2013,P0749
+
+            //H0902 20140422  DMA ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            IF (rInboundEDIDocPurchLine."Promised Receipt Date" = 0D) AND (rInboundEDIDocPurchLine."Planned Delivery Date" = 0D)THEN
+              rPurchaseLine.VALIDATE("Promised Receipt Date 2",rInboundEDIPurchDocHeader."Date Received")
+            ELSE
+            //H0902 20140422  DMA ----------------------------------------------------------------------------
+             rPurchaseLine.VALIDATE("Promised Receipt Date 2",rInboundEDIDocPurchLine."Promised Receipt Date");
+
+            //H0902 20140422  DMA ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            CASE COPYSTR(rPurchaseLine."Purchasing Code", 1, 3) OF
+              'GER':
+                BEGIN
+                  IF (rInboundEDIDocPurchLine."Promised Receipt Date" = 0D) AND
+                    (rInboundEDIDocPurchLine."Planned Delivery Date" <> 0D) THEN BEGIN
+                      IF ItemL.GET(rInboundEDIDocPurchLine."No.") THEN BEGIN
+                        IF eBayCodeL.GET(eBayCodeL.Type::"Shipping Code", ItemL."Shipping Code") THEN
+                        BEGIN
+                          IF eBayCodeL."WS Match Shipping Code" = 'PARCELSERVICE' THEN
+                            rPurchaseLine.VALIDATE("Promised Receipt Date 2",
+                              CALCDATE('+2D', rInboundEDIDocPurchLine."Planned Delivery Date"))
+                          ELSE
+                            rPurchaseLine.VALIDATE("Promised Receipt Date 2",
+                              CALCDATE('+5D', rInboundEDIDocPurchLine."Planned Delivery Date"))
+                        END;
+                      END;
+                  END;
+                END;
+              'AT-':
+                BEGIN
+                  IF (rInboundEDIDocPurchLine."Promised Receipt Date" = 0D) AND
+                    (rInboundEDIDocPurchLine."Planned Delivery Date" <> 0D) THEN BEGIN
+                      IF ItemL.GET(rInboundEDIDocPurchLine."No.") THEN BEGIN
+                        IF eBayCodeL.GET(eBayCodeL.Type::"Shipping Code", ItemL."Shipping Code") THEN
+                        BEGIN
+                          IF eBayCodeL."WS Match Shipping Code" = 'PARCELSERVICE' THEN
+                            rPurchaseLine.VALIDATE("Promised Receipt Date 2",
+                              CALCDATE('+4D', rInboundEDIDocPurchLine."Planned Delivery Date"))
+                          ELSE
+                            rPurchaseLine.VALIDATE("Promised Receipt Date 2",
+                              CALCDATE('+15D', rInboundEDIDocPurchLine."Planned Delivery Date"))
+                        END;
+                      END;
+                  END;
+                END;
+              'NL-':
+                BEGIN
+                  IF (rInboundEDIDocPurchLine."Promised Receipt Date" = 0D) AND
+                    (rInboundEDIDocPurchLine."Planned Delivery Date" <> 0D) THEN BEGIN
+                      IF ItemL.GET(rInboundEDIDocPurchLine."No.") THEN BEGIN
+                        IF eBayCodeL.GET(eBayCodeL.Type::"Shipping Code", ItemL."Shipping Code") THEN
+                        BEGIN
+                          IF eBayCodeL."WS Match Shipping Code" = 'PARCELSERVICE' THEN
+                            rPurchaseLine.VALIDATE("Promised Receipt Date 2",
+                              CALCDATE('+4D', rInboundEDIDocPurchLine."Planned Delivery Date"))
+                          ELSE
+                            rPurchaseLine.VALIDATE("Promised Receipt Date 2",
+                              CALCDATE('+10D', rInboundEDIDocPurchLine."Planned Delivery Date"))
+                        END;
+                      END;
+                  END;
+                END;
+              'FR-', 'CH-':
+                BEGIN
+                  IF (rInboundEDIDocPurchLine."Promised Receipt Date" = 0D) AND
+                    (rInboundEDIDocPurchLine."Planned Delivery Date" <> 0D) THEN BEGIN
+                      IF ItemL.GET(rInboundEDIDocPurchLine."No.") THEN BEGIN
+                        IF eBayCodeL.GET(eBayCodeL.Type::"Shipping Code", ItemL."Shipping Code") THEN
+                        BEGIN
+                          IF eBayCodeL."WS Match Shipping Code" = 'PARCELSERVICE' THEN
+                            rPurchaseLine.VALIDATE("Promised Receipt Date 2",
+                              CALCDATE('+5D', rInboundEDIDocPurchLine."Planned Delivery Date"))
+                          ELSE
+                            rPurchaseLine.VALIDATE("Promised Receipt Date 2",
+                              CALCDATE('+15D', rInboundEDIDocPurchLine."Planned Delivery Date"))
+                        END;
+                      END;
+                  END;
+                END;
+            END;
+
+            //H0902 20140422  DMA ----------------------------------------------------------------------------
+
+            //A,gob-dst,19.04.2013,P0883
+            rPurchaseLine."Planned Shipment Date" := rInboundEDIDocPurchLine."Planned Delivery Date";
+            //E,gob-dst,19.04.2013,P0883
+            //IF (rPurchaseLine."No." = '') AND (rInboundEDIDocPurchLine."Vendor Item No." <> '') THEN
+            //  rPurchaseLine."No." := rInboundEDIDocPurchLine."Vendor Item No.";
+            rItem.GET(rPurchaseLine."No.");
+            IF (rItem."Vendor No." = rPurchaseLine."Buy-from Vendor No.") AND (rItem."Vendor Item No." = '') AND
+              (rInboundEDIDocPurchLine."Vendor Item No." <> '') THEN BEGIN
+              rItem."Vendor Item No." := rInboundEDIDocPurchLine."Vendor Item No.";
+              rItem.MODIFY;
+            END;
+            IF rInboundEDIDocPurchLine."Cross-Reference No." <> '' THEN
+              IF NOT rItemCrossRef.GET(rPurchaseLine."No.",rPurchaseLine."Variant Code",rPurchaseLine."Unit of Measure Code",
+                3,'',rInboundEDIDocPurchLine."Cross-Reference No.") THEN BEGIN
+                rItemCrossRef.INIT;
+                rItemCrossRef."Item No." := rPurchaseLine."No.";
+                rItemCrossRef."Variant Code" := rPurchaseLine."Variant Code";
+                rItemCrossRef."Unit of Measure" := rPurchaseLine."Unit of Measure Code";
+                rItemCrossRef."Cross-Reference Type" := rItemCrossRef."Cross-Reference Type"::"Bar Code";
+                rItemCrossRef."Cross-Reference No." := rInboundEDIDocPurchLine."Cross-Reference No.";
+                IF rItemCrossRef.INSERT THEN
+                  ;
+              END;
+
+            //H1731 09.12.14 EHN +++++++++++++++++++++++++++
+            IF (rInboundEDIDocPurchLine."Vendor Item No." <> '') AND
+               (rInboundEDIDocPurchLine."Vendor Item No." <> rPurchaseLine."Vendor Item No.") THEN
+              rPurchaseLine."Vendor Item No." := rInboundEDIDocPurchLine."Vendor Item No.";
+            //H1731 09.12.14 EHN ---------------------------
+            rPurchaseLine.MODIFY;
+
+            // H0643 FX 09.10.13 +++++++++++++++++++
+            IF rPurchaseLine."Expected Receipt Date" <> ExpectedReceptDate THEN BEGIN
+              IF rPurchaseLine."Order Status Code" < '30' THEN
+                rPurchaseLine.VALIDATE("Order Status Code", '20');
+              rPurchaseLine."Expected Receipt Date" := ExpectedReceptDate;
+              rPurchaseLine.MODIFY(FALSE);
+            END;
+            // H0643 FX 09.10.13 --------------------
+
+          END;
+        UNTIL rInboundEDIDocPurchLine.NEXT = 0;
+
+        //rPurchaseHeader.Status := rPurchaseHeader.Status::Released;
+        //rPurchaseHeader.MODIFY;
+        ReleasePurchaseDocument.RUN(rPurchaseHeader);
+        // S/20.02.2013/gob-sil/P0813
+        END;
+        // E/20.02.2013/gob-sil/P0813
+
+      END ELSE BEGIN
+        //A,gob-dst,13.02.2013,P0780
+        rPurchaseHeader."EDI ORDRSP Receive Date" := rInboundEDIPurchDocHeader."Date Received";
+        rPurchaseHeader."EDI ORDRSP Receive Time" := rInboundEDIPurchDocHeader."Time Received";
+        rPurchaseHeader.MODIFY(TRUE);
+        //E,gob-dst,13.02.2013,P0780
+
+        rPurchaseLine.SETRANGE("Document Type",rPurchaseHeader."Document Type");
+        rPurchaseLine.SETRANGE("Document No.",rPurchaseHeader."No.");
+        rPurchaseLine.MODIFYALL("Return Reason Code",'EDI');
+        rPurchaseLine.FINDFIRST;
+        REPEAT
+
+          IF rInboundEDIPurchDocHeader."Order Type" = rInboundEDIPurchDocHeader."Order Type"::"Stock Order" THEN
+            rPurchaseLine.Cancel(TRUE)
+          ELSE BEGIN
+            IF rInboundEDIPurchDocHeader."Order Type" = rInboundEDIPurchDocHeader."Order Type":: "Drop Shipment" THEN
+              SalesLine.GET(SalesLine."Document Type"::Order,rPurchaseLine."Sales Order No.",SalesLine."Line No.");
+            IF rInboundEDIPurchDocHeader."Order Type" = rInboundEDIPurchDocHeader."Order Type"::"Cross Docking" THEN
+              SalesLine.GET(SalesLine."Document Type"::Order,rPurchaseLine."Special Order Sales No.",
+                rPurchaseLine."Special Order Sales Line No.");
+
+            SalesLine.VALIDATE("Return Reason Code",EDIIntegratorSetup."Return Reason for Cancellation");
+            SalesLine.MODIFY;
+            ChannelMgt.CancelDropShipment(SalesLine,FALSE);
+          END;
+
+        UNTIL rPurchaseLine.NEXT = 0;
+      END;
+
+      rInboundEDIPurchDocHeader."Document Status" := rInboundEDIPurchDocHeader."Document Status"::Accepted;
+      rInboundEDIPurchDocHeader.MODIFY;
+
+      //S/P1083
+      IF GUIALLOWED THEN
+      //E/P1083
+        MESSAGE(Text001, rPurchaseHeader."No.");
+    END;
+
+    PROCEDURE "***P0813 Fct***"@1000000002();
+    BEGIN
+    END;
+
+    PROCEDURE DifferentShipmentDate@1000000001(pEDIPurchHeader@1000000000 : Record 82868) : Boolean;
+    VAR
+      lEDIPurchLine@1000000001 : Record 82869;
+      lEDIPurchLine2@1000000003 : Record 82869;
+      EmptyLine@1000000002 : Boolean;
+    BEGIN
+      CASE COPYSTR(pEDIPurchHeader."Purchase Document No.",1,3) OF
+        'PO1': BEGIN END;
+        ELSE
+          EXIT(FALSE);
+      END;
+
+      lEDIPurchLine.SETRANGE("Document No.",pEDIPurchHeader."No.");
+      // S/P1089
+      //IF lEDIPurchLine.FINDFIRST THEN
+      //  lEDIPurchLine.SETFILTER("Promised Receipt Date",'<>%1',lEDIPurchLine."Promised Receipt Date");
+      IF lEDIPurchLine.FIND('-') THEN BEGIN
+        REPEAT
+          lEDIPurchLine2.SETRANGE("Reference Line No.",lEDIPurchLine."Reference Line No.");
+          lEDIPurchLine2.SETRANGE("No.",lEDIPurchLine."No.");
+          lEDIPurchLine2.SETFILTER("Line No.",'<>%1',lEDIPurchLine."Line No.");
+          lEDIPurchLine2.SETFILTER("Promised Receipt Date",'<>%1',lEDIPurchLine."Promised Receipt Date");
+          EmptyLine := lEDIPurchLine2.ISEMPTY;
+        UNTIL (lEDIPurchLine.NEXT = 0) OR (NOT EmptyLine);
+      END;
+
+      //EXIT(NOT lEDIPurchLine.ISEMPTY);
+      EXIT(NOT EmptyLine);
+      // E/P1089
+    END;
+
+    PROCEDURE SplittLine@1000000003(VAR vEDIPurchHeader@1000000001 : Record 82868);
+    VAR
+      lItem@1000000007 : Record 27;
+      lPurchHeader@1000000004 : Record 38;
+      lPurchHeaderNew@1000000005 : Record 38;
+      lPurchLine@1000000000 : Record 39;
+      lEDIPurchLine@1000000003 : Record 82869;
+      lFilterString@1000000002 : Text[1024];
+      lReleasePurchaseDocument@1000000006 : Codeunit 415;
+      SalesLine@1000000009 : Record 37;
+      ChannelMgt@1000000008 : Codeunit 50093;
+      EDIIntegratorSetup@1000000010 : Record 82850;
+      rItemCrossRef@1000000011 : Record 5717;
+      lEDIPurchLine2@1000000012 : Record 82869;
+      LastRefLineNo@1000000013 : Integer;
+      lPurchLine2@1000000014 : Record 39;
+    BEGIN
+      lEDIPurchLine.SETRANGE("Document No.",vEDIPurchHeader."No.");
+      // S/P1089
+      lEDIPurchLine.SETRANGE("Skip accepting",FALSE);
+      // E/P1089
+      lEDIPurchLine.SETRANGE("Line Status",lEDIPurchLine."Line Status"::Rejected);
+      IF lEDIPurchLine.FINDSET THEN BEGIN
+        // AbbrÅche wie zuvor, blind kopiert, in Schleife transformiert
+        EDIIntegratorSetup.GET();
+        REPEAT
+          lPurchLine.GET(lPurchLine."Document Type"::Order,vEDIPurchHeader."Purchase Document No.",lEDIPurchLine."Reference Line No.");
+          IF vEDIPurchHeader."Order Type" = vEDIPurchHeader."Order Type"::"Stock Order" THEN
+            lPurchLine.Cancel(FALSE)
+          ELSE BEGIN
+            IF vEDIPurchHeader."Order Type" = vEDIPurchHeader."Order Type":: "Drop Shipment" THEN
+              SalesLine.GET(SalesLine."Document Type"::Order,lPurchLine."Sales Order No.",lPurchLine."Sales Order Line No.");
+            IF vEDIPurchHeader."Order Type" = vEDIPurchHeader."Order Type"::"Cross Docking" THEN
+              SalesLine.GET(SalesLine."Document Type"::Order,lPurchLine."Special Order Sales No.",
+                lPurchLine."Special Order Sales Line No.");
+            SalesLine.VALIDATE("Return Reason Code",EDIIntegratorSetup."Return Reason for Cancellation");
+            SalesLine.MODIFY;
+            ChannelMgt.CancelDropShipment(SalesLine,FALSE);
+          END;
+        UNTIL (lEDIPurchLine.NEXT = 0);
+      END;
+
+      lEDIPurchLine.SETFILTER("Line Status",'%1|%2',lEDIPurchLine."Line Status"::Accepted,lEDIPurchLine."Line Status"::Changed);
+      IF NOT lEDIPurchLine.FIND('-') THEN
+        EXIT;
+
+      // aktualisiere Kreditor-Artikel-Nr. und Referenzen, wie zuvor, blind kopiert, als Schleife
+      REPEAT
+        lPurchLine.GET(lPurchLine."Document Type"::Order,vEDIPurchHeader."Purchase Document No.",lEDIPurchLine."Reference Line No.");
+        lItem.GET(lPurchLine."No.");
+        IF (lItem."Vendor No." = lPurchLine."Buy-from Vendor No.") AND (lItem."Vendor Item No." = '') AND
+          (lEDIPurchLine."Vendor Item No." <> '') THEN BEGIN
+          lItem."Vendor Item No." := lEDIPurchLine."Vendor Item No.";
+          lItem.MODIFY;
+        END;
+        IF lEDIPurchLine."Cross-Reference No." <> '' THEN
+          IF NOT rItemCrossRef.GET(lPurchLine."No.",lPurchLine."Variant Code",lPurchLine."Unit of Measure Code",
+            3,'',lEDIPurchLine."Cross-Reference No.") THEN BEGIN
+            rItemCrossRef.INIT;
+            rItemCrossRef."Item No." := lPurchLine."No.";
+            rItemCrossRef."Variant Code" := lPurchLine."Variant Code";
+            rItemCrossRef."Unit of Measure" := lPurchLine."Unit of Measure Code";
+            rItemCrossRef."Cross-Reference Type" := rItemCrossRef."Cross-Reference Type"::"Bar Code";
+            rItemCrossRef."Cross-Reference No." := lEDIPurchLine."Cross-Reference No.";
+            IF rItemCrossRef.INSERT THEN;
+          END;
+      UNTIL (lEDIPurchLine.NEXT = 0);
+
+      // S/P1089
+      //lEDIPurchLine.FINDFIRST;
+      lEDIPurchLine.SETCURRENTKEY("Document No.","Reference Line No.","Skip accepting",
+        "No.","Line No.","Promised Receipt Date","Line Status");
+      // E/P1089
+      lPurchHeader.GET(lPurchHeader."Document Type"::Order,vEDIPurchHeader."Purchase Document No.");
+      CLEAR(lPurchLine);
+      // S/P1089
+      LastRefLineNo := 0;
+
+      lEDIPurchLine.FIND('-');
+      REPEAT
+        IF LastRefLineNo <> lEDIPurchLine."Reference Line No." THEN BEGIN
+          lEDIPurchLine2.SETCURRENTKEY("Document No.","Reference Line No.","Skip accepting"
+                                      ,"No.","Line No.","Promised Receipt Date","Line Status");
+          lEDIPurchLine2.SETRANGE("Document No.",lEDIPurchLine."Document No.");
+          lEDIPurchLine2.SETRANGE("Skip accepting",FALSE);
+          lEDIPurchLine2.SETRANGE("Reference Line No.",lEDIPurchLine."Reference Line No.");
+          lEDIPurchLine2.SETRANGE("No.",lEDIPurchLine."No.");
+          lEDIPurchLine2.SETFILTER("Line No.",'<>%1',lEDIPurchLine."Line No.");
+          lEDIPurchLine2.SETFILTER("Promised Receipt Date",'<>%1',lEDIPurchLine."Promised Receipt Date");
+          lPurchLine.GET(lPurchLine."Document Type"::Order,vEDIPurchHeader."Purchase Document No.",lEDIPurchLine."Reference Line No.");
+          lPurchLine.VALIDATE("Promised Receipt Date",lEDIPurchLine."Promised Receipt Date");
+          lPurchLine.VALIDATE("Promised Receipt Date 2",lEDIPurchLine."Promised Receipt Date");
+          IF (vEDIPurchHeader."Order Type" = vEDIPurchHeader."Order Type"::"Stock Order") AND
+            (lEDIPurchLine.Quantity <> lPurchLine.Quantity) THEN BEGIN
+            lEDIPurchLine2.CALCSUMS(Quantity);
+            lPurchLine.VALIDATE("Original Quantity",lPurchLine.Quantity);
+            lPurchLine.VALIDATE(Quantity,lEDIPurchLine2.Quantity + lEDIPurchLine.Quantity);
+          END;
+          lPurchLine.MODIFY;
+          IF lEDIPurchLine2.FINDSET THEN
+            REPEAT
+              lPurchLine.GET(lPurchLine."Document Type"::Order,vEDIPurchHeader."Purchase Document No."
+                            ,lEDIPurchLine2."Reference Line No.");
+              lPurchLine.VALIDATE("Split Quantity",lEDIPurchLine2.Quantity);
+              //A,gob-dst,28.10.2013,P1134
+              //lPurchLine.VALIDATE("Split Avise Date",lEDIPurchLine2."Promised Receipt Date");
+              lPurchLine.VALIDATE("Split AB Date",lEDIPurchLine2."Promised Receipt Date");
+              //E,gob-dst,28.10.2013,P1134
+              lPurchLine.MODIFY;
+              lPurchHeader.CreateNewPurchLines(lPurchHeader);
+              lPurchLine2.RESET;
+              lPurchLine2.SETRANGE("Document No.",lPurchHeader."No.");
+              lPurchLine2.FINDLAST;
+              //lPurchLine2.VALIDATE("Order Status Code",'10');
+              //A,gob-dst,28.10.2013,P1134
+              //IF lPurchLine2."Promised Receipt Date 2" = 0D THEN BEGIN
+              //  lPurchLine2.VALIDATE("Promised Receipt Date 2",lEDIPurchLine2."Promised Receipt Date");
+              //END;
+              //E,gob-dst,28.10.2013,P1134
+              lPurchLine2.MODIFY;
+            UNTIL lEDIPurchLine2.NEXT = 0;
+        END;
+        LastRefLineNo := lEDIPurchLine."Reference Line No.";
+      UNTIL lEDIPurchLine.NEXT = 0;
+
+      {
+      // Initialisere erst alle Zeilen, wie die erste EDI Zeile
+      lPurchLine.RESET;
+      lPurchLine.SETRANGE("Document Type",lPurchLine."Document Type"::Order);
+      lPurchLine.SETRANGE("Document No.",vEDIPurchHeader."Purchase Document No.");
+      IF lPurchLine.FINDSET THEN BEGIN
+        REPEAT
+          lPurchLine.VALIDATE("Promised Receipt Date",lEDIPurchLine."Promised Receipt Date");
+          lPurchLine.VALIDATE("Promised Receipt Date 2",lEDIPurchLine."Promised Receipt Date");
+          lPurchLine.MODIFY;
+        UNTIL (lPurchLine.NEXT = 0);
+      END;
+      // fÅr abweichende Daten
+      lFilterString := '<>' + FORMAT(lEDIPurchLine."Promised Receipt Date");
+      lEDIPurchLine.SETFILTER("Promised Receipt Date",lFilterString);
+      IF lEDIPurchLine.FINDFIRST THEN BEGIN
+        lPurchLine.MODIFYALL("Split Quantity",0);
+        REPEAT
+          lFilterString += '&<>' + FORMAT(lEDIPurchLine."Promised Receipt Date");
+          // Filter auf aktuelles Datum: mehrere gleiche Zeilen?
+          lEDIPurchLine.SETRANGE("Promised Receipt Date",lEDIPurchLine."Promised Receipt Date");
+          lEDIPurchLine.FINDSET;
+          REPEAT
+                          lPurchLine.GET(lPurchLine."Document Type"::Order,vEDIPurchHeader."Purchase Document No.",lEDIPurchLine."Referenc
+      e
+      Li
+      ne
+      N
+      o.
+      ")
+      ;
+            lPurchLine.VALIDATE("Split Quantity",lEDIPurchLine.Quantity);
+            lPurchLine.MODIFY;
+          UNTIL (lEDIPurchLine.NEXT = 0);
+          lPurchHeader.SplitPurchOrder(lPurchHeader);
+          // Suche neue Zeile
+          lPurchHeaderNew.SETRANGE("Document Type",lPurchHeaderNew."Document Type"::Order);
+          lPurchHeaderNew.SETFILTER("No.",'%1',lPurchHeader."No." + '?');
+          lPurchHeaderNew.FINDLAST;
+          lEDIPurchLine.FINDSET;
+          // aktualisiere Datum
+          REPEAT
+            lPurchLine.GET(lPurchLine."Document Type"::Order,lPurchHeaderNew."No.",lEDIPurchLine."Reference Line No.");
+            lPurchLine.VALIDATE("Promised Receipt Date",lEDIPurchLine."Promised Receipt Date");
+            lPurchLine.VALIDATE("Promised Receipt Date 2",lEDIPurchLine."Promised Receipt Date");
+            lPurchLine.MODIFY;
+          UNTIL (lEDIPurchLine.NEXT = 0);
+          // Freigabe neues Dokument
+          lReleasePurchaseDocument.RUN(lPurchHeaderNew);
+          // Setze neuen Filter, ob sonst noch Zeilen vorhanden sind
+          lEDIPurchLine.SETFILTER("Promised Receipt Date",lFilterString);
+        UNTIL (NOT lEDIPurchLine.FINDFIRST);
+      END;
+      }
+      // E/P1089
+
+      // Freigabe altes Dokument
+      lReleasePurchaseDocument.RUN(lPurchHeader);
+      // E-Mail versenden
+      // S/P1089
+      //SendNewEmail(lPurchHeader);
+      // E/P1089
+    END;
+
+    PROCEDURE SendNewEmail@1000000004(pPurchHeader@1000000002 : Record 38);
+    VAR
+      BatchDoc@1000000000 : Record 50043;
+      BatchPostDoc@1000000001 : Record 50043;
+    BEGIN
+      BatchDoc.RESET;
+      BatchDoc.SETRANGE("Action Type",BatchDoc."Action Type" :: "Purch. EMail");
+      BatchDoc.SETRANGE("Document Type",BatchDoc."Document Type" :: Order);
+      BatchDoc.SETRANGE("Document No.",pPurchHeader."No.");
+      IF NOT BatchDoc.ISEMPTY THEN
+        ;
+      BatchPostDoc.CreatePurchEMailBatch(pPurchHeader);
+      BatchDoc.RESET;
+      BatchDoc.SETRANGE("Action Type",BatchDoc."Action Type" :: "Purch. EMail");
+      BatchDoc.SETRANGE("Document Type",BatchDoc."Document Type" :: Order);
+      BatchDoc.SETRANGE("Document No.",pPurchHeader."No.");
+      IF BatchDoc.FINDFIRST THEN BEGIN
+        BatchDoc."Document Type" := BatchDoc."Document Type" :: "Splitted Order";
+        BatchDoc.MODIFY;
+      END;
+    END;
+
+    BEGIN
+    {
+      EDIINT  gob-lku   14.11.2012   Anpassungen der Funktion
+      P0813   gob-sil   20.02.2013   Splitt-Funktion fÅr abw. Lieferdatum
+      P1083   gob-dst   22.08.2013   Erfolgs-Message mit GUIALLOWED abfangen
+      P1089   gob-lku   28.08.2013   EDI ORDRSP fÅr Rhenus WEA Umstellung
+      P1134   gob-dst   28.10.2013   Zeilensplitting anhand AB-Datum, nicht Avise-Datum
+
+      +--------------------------------------------+
+      |                                            |
+      |                  Home24                    |
+      |       Internal Customizing by NAV-Team     |
+      |                                            |
+      +--------------------------------------------+
+
+      Project No. Date      Shortcut  Description
+      _____________________________________________
+      *** Module: EDI ***
+      H0552       19.09.13  FX        Translation to ENU of the Text Constants
+
+      *** Module: Bugfixing ***
+      H0602       09.10.13  FX        Bugfix: Avise-Date is overwritten when Accepting an ORDRSP
+      H0622       22.10.13  FX        Bugfix of the bugfix: Avise-Date is overwritten when Accepting an ORDRSP
+      H0643       28.10.13  FX        New logic in: Avise-Date is overwritten when Accepting an ORDRSP
+      H0880       11.04.14  DMA       Update ORDRSP Date on partner card when first ORDRSP is received
+      H0902       22.04.14  DMA       Use "Promised Receipt Date" as AB-Date if Planned Delivery Date is empty in Purchase Order
+      H1731       09.12.14  EHN       Phase 2: spare part - EDI & CSV adjustment
+    }
+    END.
+  }
+}
+

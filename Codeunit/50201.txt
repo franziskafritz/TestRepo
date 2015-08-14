@@ -1,0 +1,601 @@
+OBJECT Codeunit 50201 Backup Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02.09.13;
+    Time=14:59:54;
+    Version List=HME0513;
+  }
+  PROPERTIES
+  {
+    SingleInstance=Yes;
+    OnRun=VAR
+            Question@1000 : Text[1024];
+            Bool@1102601000 : Boolean;
+          BEGIN
+            IsEnabled := TRUE;
+
+            IF NOT ISSERVICETIER THEN
+              SetUsePersistentBackup(CONFIRM('Persist backups in seperate company?'));
+
+            SetEnabled(CONFIRM('Enable default fixture restore?'));
+
+            IF BackupExists(DefaultFixtureName) THEN
+              Question := 'Restore default fixture now?'
+            ELSE
+              Question := 'Create default fixture now?';
+
+            IF CONFIRM(Question) THEN BEGIN
+              Bool := IsEnabled;
+              SetEnabled(TRUE);
+              DefaultFixture;
+              SetEnabled(Bool)
+            END
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      ObjectTemp@1102601006 : TEMPORARY Record 2000000001;
+      TableBackups@1102601001 : ARRAY [7,1000] OF RecordRef;
+      TableBackupsCurrentIndices@1102601000 : ARRAY [7] OF Integer;
+      BackupRegister@1102601002 : ARRAY [7] OF Text[30];
+      BackupNotFoundError@1102601003 : TextConst 'ENU=Could not find backup %1.';
+      Initialized@1102601005 : Boolean;
+      SharedFixtureFilter@1102601004 : Text[1024];
+      PersistentBackupDisabled@1001 : Boolean;
+      IsEnabled@1000 : Boolean;
+
+    PROCEDURE DefaultFixture@6();
+    BEGIN
+      // Restore or backup the default fixture (all tables) if enabled (else do nothing)
+      // Use SetEnabled(TRUE) to enable this functionality
+
+      IF NOT IsEnabled THEN
+        EXIT;
+
+      // Create a backup of the default fixture at the first call.
+      IF BackupExists(DefaultFixtureName) THEN
+        RestoreDatabase(DefaultFixtureName)
+      ELSE
+        BackupDatabase(DefaultFixtureName)
+    END;
+
+    PROCEDURE BackupSharedFixture@1102601008(Filter@1102601000 : Text[1024]);
+    BEGIN
+      // Backup the tables within the filter as a shared fixture to a reserved backup.
+
+      Initialize;
+      BackupRegister[2] := SharedFixtureName;
+
+      // Set shared fixture name and filter
+      SharedFixtureFilter := Filter;
+
+      ObjectTemp.SETFILTER(ID,SharedFixtureFilter);
+      IF ObjectTemp.FINDSET THEN BEGIN
+        REPEAT
+          DeleteTableFromBackupNo(2,ObjectTemp.ID);
+          BackupTable(SharedFixtureName,ObjectTemp.ID)
+        UNTIL ObjectTemp.NEXT = 0
+      END
+    END;
+
+    PROCEDURE RestoreSharedFixture@1102601009();
+    BEGIN
+      // Restore the tables from the shared fixture
+
+      // If no shared fixture backup has been created: exit
+      IF SharedFixtureName = '' THEN
+        EXIT;
+
+      ObjectTemp.SETFILTER(ID,SharedFixtureFilter);
+      IF ObjectTemp.FINDSET THEN
+        REPEAT
+          RestoreTableFromBackupNo(2,COMPANYNAME,ObjectTemp.ID)
+        UNTIL ObjectTemp.NEXT = 0
+    END;
+
+    PROCEDURE BackupDatabase@37(Backup@1102601000 : Text[30]);
+    VAR
+      BackupNo@1102601001 : Integer;
+    BEGIN
+      // Create a backup of the current database named <Backup>.
+      // An error is thrown if backup <Backup> already exists.
+
+      Initialize;
+
+      BackupNo := InitBackup(Backup);
+      ObjectTemp.RESET;
+      IF ObjectTemp.FINDSET THEN
+        REPEAT
+          BackupTableInBackupNo(BackupNo,COMPANYNAME,ObjectTemp.ID);
+        UNTIL ObjectTemp.NEXT = 0;
+
+      // Create a persistent backup when necessary.
+      IF UsePersistentBackup THEN
+        IF ObjectTemp.FINDSET THEN
+          REPEAT
+            RestoreTableFromBackupNo(BackupNo,Backup,ObjectTemp.ID);
+          UNTIL ObjectTemp.NEXT = 0
+    END;
+
+    PROCEDURE RestoreDatabase@38(Backup@1102601000 : Text[30]);
+    VAR
+      GLEntry@1003 : Record 17;
+      ProgressDialog@1000 : Dialog;
+      OK@1004 : Boolean;
+      BackupNo@1102601001 : Integer;
+      Increment@1001 : Decimal;
+      Progress@1002 : Decimal;
+    BEGIN
+      // Restore the backup named <Backup>.
+      // An error is thrown if backup <Backup> does not exist.
+      // Throw an error if backup <Backup> does not exist.
+
+      BackupNo := GetBackupNo(Backup);
+
+      IF BackupNo = 0 THEN
+        ERROR(BackupNotFoundError,Backup);
+
+      ProgressDialog.OPEN('Restoring database from memory@1@@@@\Table#2########');
+      ObjectTemp.RESET;
+      Increment := 9998 / (ObjectTemp.COUNT - 1);
+      IF ObjectTemp.FINDSET THEN
+        REPEAT
+          ProgressDialog.UPDATE(1,ROUND(Progress,1));
+          ProgressDialog.UPDATE(2,ObjectTemp.ID);
+          Progress += Increment;
+          RestoreTableFromBackupNo(BackupNo,COMPANYNAME,ObjectTemp.ID)
+        UNTIL ObjectTemp.NEXT = 0;
+      ProgressDialog.CLOSE;
+
+      // Set workdate to date of last transaction or today
+      GLEntry.SETCURRENTKEY("G/L Account No.","Posting Date");
+      OK := TRUE;
+      REPEAT
+        GLEntry.SETFILTER("G/L Account No.",'>%1',GLEntry."G/L Account No.");
+        GLEntry.SETFILTER("Posting Date",'>%1',GLEntry."Posting Date");
+        IF GLEntry.FINDFIRST THEN BEGIN
+          GLEntry.SETRANGE("G/L Account No.",GLEntry."G/L Account No.");
+          GLEntry.SETRANGE("Posting Date");
+          GLEntry.FINDLAST;
+        END ELSE
+          OK := FALSE
+      UNTIL NOT OK;
+
+      IF GLEntry."Posting Date" = 0D THEN
+        WORKDATE := TODAY
+      ELSE
+        WORKDATE := NORMALDATE(GLEntry."Posting Date")
+    END;
+
+    PROCEDURE BackupTable@1102601000(Backup@1102601000 : Text[30];TableNo@1102601001 : Integer);
+    VAR
+      BackupNo@1102601002 : Integer;
+    BEGIN
+      // Backup table <TableNo> in backup <Backup>.
+      // Initialize a backup named <Backup> if backup <Backup> does not exist.
+      // If a backup of table <TableNo> already exists in backup <Backup>
+      // nothing happens.
+
+      BackupNo := GetBackupNo(Backup);
+      IF BackupNo = 0 THEN
+        BackupNo := InitBackup(Backup);
+
+      BackupTableInBackupNo(BackupNo,COMPANYNAME,TableNo)
+    END;
+
+    PROCEDURE RestoreTable@1102601002(Backup@1102601000 : Text[30];TableNo@1102601001 : Integer);
+    VAR
+      BackupNo@1102601002 : Integer;
+    BEGIN
+      // Restore table <TableNo> from backup <Backup>
+      // If no backup of table <TableNo> exists in backup <Backup>,
+      // the table is emptied.
+      // Throw an error if backup <Backup> does not exist.
+
+      BackupNo := GetBackupNo(Backup);
+
+      IF BackupNo = 0 THEN
+        ERROR(BackupNotFoundError,Backup);
+
+      RestoreTableFromBackupNo(BackupNo,COMPANYNAME,TableNo)
+    END;
+
+    PROCEDURE DeleteAll@1102601005();
+    VAR
+      Company@1000 : Record 2000000006;
+      i@1102601000 : Integer;
+    BEGIN
+      // Delete all backups (including persistent backups).
+
+      // never delete the default and shared fixture backups
+      FOR i := 3 TO MaxBackups DO BEGIN
+        DeleteBackupNo(i);
+        IF UsePersistentBackup THEN
+          IF Company.GET(BackupRegister[i]) THEN
+            Company.DELETE;
+      END
+    END;
+
+    PROCEDURE DeleteBackup@1102601007(Backup@1102601000 : Text[30]);
+    VAR
+      Company@1000 : Record 2000000006;
+    BEGIN
+      // Delete backup <Backup> (including its persisted backup).
+
+      DeleteBackupNo(BackupNameToNo(Backup));
+
+      IF UsePersistentBackup AND (Backup <> COMPANYNAME) AND Company.GET(Backup) THEN
+        Company.DELETE
+    END;
+
+    PROCEDURE DeleteTable@1102601012(Backup@1102601000 : Text[30];TableNo@1102601001 : Integer);
+    BEGIN
+      // Delete table <TableNo> from backup <Backup> (both in-memory and persisted backup).
+
+      DeleteTableFromBackupNo(BackupNameToNo(Backup),TableNo)
+    END;
+
+    PROCEDURE BackupExists@1102601011(Backup@1102601000 : Text[30]) : Boolean;
+    BEGIN
+      EXIT(BackupNoExists(GetBackupNo(Backup)))
+    END;
+
+    PROCEDURE SetUsePersistentBackup@4(Bool@1000 : Boolean);
+    BEGIN
+      // Enable or disable persisted backups.
+
+      PersistentBackupDisabled := NOT Bool
+    END;
+
+    PROCEDURE UsePersistentBackup@5() : Boolean;
+    BEGIN
+      EXIT(NOT (ISSERVICETIER OR PersistentBackupDisabled))
+    END;
+
+    LOCAL PROCEDURE BackupTableInBackupNo@17(BackupNo@1102601000 : Integer;CompanyName@1001 : Text[1024];TableNo@1000 : Integer);
+    VAR
+      RecordRef@1002 : RecordRef;
+      BackupRecordRef@1003 : RecordRef;
+    BEGIN
+      // Backup table <TableNo> in company <ComanyName> to backup <BackupNo>.
+      // If a non-empty backup of table <TableNo> already exists in backup <BackupNo>,
+      // nothing happens.
+      // If table <TableNo> is empty, nothing happens.
+
+      RecordRef.OPEN(TableNo,FALSE,CompanyName);
+      // we only backup non-empty tables
+      IF NOT RecordRef.FINDSET THEN
+        EXIT;
+
+      IF GetTableBackup(BackupNo,TableNo,BackupRecordRef) THEN BEGIN
+        // Table has been backed up before: only continue if it is empty.
+        // This implies that the table backup was deleted and we don't need to use a new index
+        IF BackupRecordRef.FINDFIRST THEN
+          // ... do nothing when backup is not empty
+          EXIT
+      END
+      ELSE
+        BackupRecordRef.OPEN(TableNo,TRUE);
+
+      REPEAT
+        CopyFields(RecordRef,BackupRecordRef);
+        BackupRecordRef.INSERT
+      UNTIL RecordRef.NEXT = 0;
+      InsertTableBackup(BackupNo,BackupRecordRef)
+    END;
+
+    LOCAL PROCEDURE RestoreTableFromBackupNo@18(BackupNo@1102601000 : Integer;CompanyName@1005 : Text[1024];TableNo@1000 : Integer);
+    VAR
+      RecordRef@1001 : RecordRef;
+      BackupRecordRef@1002 : RecordRef;
+      RecordsRemoved@1003 : Boolean;
+      BackupRecordCount@1004 : Integer;
+    BEGIN
+      // Restore table <TableNo> in company <CompanyName> from backup <BackupNo>.
+      // If a backup of table <TableNo> does not exists in backup <BackupNo>
+      // table <TableNo> is emptied.
+
+      RecordRef.OPEN(TableNo,FALSE,CompanyName);
+      // if the table has not been backed up: empty table, exit
+      IF NOT GetTableBackup(BackupNo,TableNo,BackupRecordRef) THEN BEGIN
+        RecordRef.DELETEALL;
+        EXIT
+      END;
+
+      // if the table in the backup is empty: empty table, exit
+      IF NOT BackupRecordRef.FINDSET THEN BEGIN
+        RecordRef.DELETEALL;
+        EXIT
+      END;
+
+      // if the current table is empty: copy all backed up records, exit
+      IF NOT RecordRef.FINDFIRST THEN BEGIN
+        REPEAT
+          CopyFields(BackupRecordRef,RecordRef);
+          RecordRef.INSERT;
+        UNTIL BackupRecordRef.NEXT = 0;
+        EXIT
+      END;
+
+      // restore records removed from or modified in the current table since backup-time
+      REPEAT
+        IF RecordRef.GET(BackupRecordRef.RECORDID) THEN BEGIN
+          IF NOT AreEqualRecords(RecordRef,BackupRecordRef) THEN BEGIN
+            CopyFields(BackupRecordRef,RecordRef);
+            RecordRef.MODIFY
+          END
+        END
+        ELSE BEGIN
+          RecordsRemoved := TRUE;
+          // restore removed records
+          CopyFields(BackupRecordRef,RecordRef);
+          RecordRef.INSERT
+        END;
+        BackupRecordCount += 1
+      UNTIL BackupRecordRef.NEXT = 0;
+
+      // if no records have been removed and the record count has not changed, no records were inserted either
+      IF NOT RecordsRemoved THEN
+        IF RecordRef.COUNT = BackupRecordCount THEN
+          EXIT;
+
+      // delete records inserted in the current table since backup-time
+      RecordRef.FINDSET;
+      REPEAT
+        IF NOT BackupRecordRef.GET(RecordRef.RECORDID) THEN
+          RecordRef.DELETE;
+      UNTIL RecordRef.NEXT = 0
+    END;
+
+    LOCAL PROCEDURE RestoreCompanyBackupToMemory@7(Backup@1000 : Text[30]) : Integer;
+    VAR
+      ProgressDialog@1002 : Dialog;
+      BackupNo@1001 : Integer;
+      Increment@1003 : Decimal;
+      Progress@1004 : Decimal;
+    BEGIN
+      Initialize;
+      BackupNo := GetAvailableBackupNo;
+
+      ProgressDialog.OPEN('Restoring database from company@1@@@@\Table#2########');
+      ObjectTemp.RESET;
+      Increment := 9998 / (ObjectTemp.COUNT - 1);
+      IF ObjectTemp.FINDSET THEN
+        REPEAT
+          ProgressDialog.UPDATE(1,ROUND(Progress,1));
+          ProgressDialog.UPDATE(2,ObjectTemp.ID);
+          Progress += Increment;
+          BackupTableInBackupNo(BackupNo,Backup,ObjectTemp.ID);
+        UNTIL ObjectTemp.NEXT = 0;
+      ProgressDialog.CLOSE;
+
+      BackupRegister[BackupNo] := Backup;
+
+      EXIT(BackupNo)
+    END;
+
+    LOCAL PROCEDURE DeleteBackupNo@1102601003(BackupNo@1102601000 : Integer);
+    BEGIN
+      // Delete backup <BackupNo>.
+      // If backup <BackupNo> does not exist, nothing happens.
+
+      IF BackupNoExists(BackupNo) THEN BEGIN
+        CLEAR(TableBackups[BackupNo]);
+        TableBackupsCurrentIndices[BackupNo] := 0;
+        BackupRegister[BackupNo] := ''
+      END
+    END;
+
+    LOCAL PROCEDURE DeleteTableFromBackupNo@1102601031(BackupNo@1102601000 : Integer;TableNo@1102601001 : Integer);
+    VAR
+      BackupRecordRef@1102601002 : RecordRef;
+    BEGIN
+      // We delete a table backup by deleting all records in it.
+      // Note that for performance reasons we will not rearrange the backup array.
+
+      IF BackupNoExists(BackupNo) THEN
+        IF GetTableBackup(BackupNo,TableNo,BackupRecordRef) THEN
+          BackupRecordRef.DELETEALL;
+    END;
+
+    LOCAL PROCEDURE AreEqualRecords@29(VAR Left@1000 : RecordRef;VAR Right@1001 : RecordRef) : Boolean;
+    VAR
+      LeftFieldRef@1003 : FieldRef;
+      RightFieldRef@1004 : FieldRef;
+      i@1002 : Integer;
+    BEGIN
+      // Records <Left> and <Right> are considered equal when each (Normal) <Left> field has the same value
+      // as the <Right> field with the same index.
+      // Note that for performance reasons this function does not take into account,
+      // whether the two records have the same number of fields.
+
+      FOR i := 1 TO Left.FIELDCOUNT DO BEGIN
+        LeftFieldRef := Left.FIELDINDEX(i);
+        IF FORMAT(LeftFieldRef.CLASS) = 'Normal' THEN BEGIN
+          RightFieldRef := Right.FIELDINDEX(i);
+          IF LeftFieldRef.VALUE <> RightFieldRef.VALUE THEN
+            EXIT(FALSE)
+        END
+      END;
+
+      EXIT(TRUE)
+    END;
+
+    LOCAL PROCEDURE GetTableBackup@20(BackupNo@1102601000 : Integer;TableNo@1000 : Integer;VAR RecordRef@1001 : RecordRef) : Boolean;
+    VAR
+      i@1002 : Integer;
+    BEGIN
+      // Return the backup of table <TableNo> in backup <BackupNo> in <RecordRef>
+      // Return FALSE if no backup of table <TableNo> exists in backup <BackupNo>.
+
+      IF TableBackupsCurrentIndices[BackupNo] = 0 THEN
+        EXIT(FALSE);
+
+      FOR i := 1 TO TableBackupsCurrentIndices[BackupNo] DO
+        IF TableBackups[BackupNo][i].NUMBER = TableNo THEN BEGIN
+          RecordRef := TableBackups[BackupNo][i];
+          EXIT(TRUE)
+        END;
+
+      EXIT(FALSE)
+    END;
+
+    LOCAL PROCEDURE InsertTableBackup@1(BackupNo@1000 : Integer;RecordRef@1001 : RecordRef);
+    BEGIN
+      TableBackupsCurrentIndices[BackupNo] += 1;
+      TableBackups[BackupNo][TableBackupsCurrentIndices[BackupNo]] := RecordRef
+    END;
+
+    LOCAL PROCEDURE CopyFields@23(Source@1000 : RecordRef;VAR Destination@1001 : RecordRef);
+    VAR
+      SourceFieldRef@1003 : FieldRef;
+      DestinationFieldRef@1004 : FieldRef;
+      i@1002 : Integer;
+    BEGIN
+      FOR i := 1 TO Source.FIELDCOUNT DO BEGIN
+        SourceFieldRef := Source.FIELDINDEX(i);
+        IF FORMAT(SourceFieldRef.CLASS) = 'Normal' THEN BEGIN
+          DestinationFieldRef := Destination.FIELDINDEX(i);
+          DestinationFieldRef.VALUE(SourceFieldRef.VALUE)
+        END;
+      END
+    END;
+
+    LOCAL PROCEDURE GetBackupNo@1102601004(Backup@1102601000 : Text[30]) Result : Integer;
+    VAR
+      Company@1000 : Record 2000000006;
+    BEGIN
+      Result := BackupNameToNo(Backup);
+      IF (Result = 0) AND UsePersistentBackup THEN
+        IF Company.GET(Backup) THEN
+          Result := RestoreCompanyBackupToMemory(Backup)
+    END;
+
+    PROCEDURE BackupNameToNo@8(Backup@1000 : Text[30]) : Integer;
+    VAR
+      i@1001 : Integer;
+    BEGIN
+      FOR i := 1 TO MaxBackups DO
+        IF BackupRegister[i] = Backup THEN
+          EXIT(i);
+
+      EXIT(0)
+    END;
+
+    LOCAL PROCEDURE InitBackup@1102601019(Backup@1102601000 : Text[30]) Result : Integer;
+    VAR
+      Company@1000 : Record 2000000006;
+    BEGIN
+      IF BackupExists(Backup) THEN
+        ERROR('Backup %1 already exists.',Backup);
+
+      IF Backup = '' THEN
+        ERROR('Empty string is not a valid backup name.');
+
+      IF Backup = DefaultFixtureName THEN
+        Result := 1
+      ELSE
+        Result := GetAvailableBackupNo;
+      BackupRegister[Result] := Backup;
+
+      IF UsePersistentBackup THEN BEGIN
+        Company.Name := Backup;
+        Company.INSERT
+      END
+    END;
+
+    LOCAL PROCEDURE GetAvailableBackupNo@9() : Integer;
+    VAR
+      i@1000 : Integer;
+    BEGIN
+      // First two elements are reserved for the default and shared fixture backups
+      FOR i := 3 TO MaxBackups DO
+        IF BackupRegister[i] = '' THEN
+          EXIT(i);
+
+      ERROR('Cannot create more than %1 backups.',MaxBackups - 2)
+    END;
+
+    LOCAL PROCEDURE BackupNoExists@1102601017(BackupNo@1102601000 : Integer) : Boolean;
+    BEGIN
+      IF NOT (BackupNo IN [1..MaxBackups]) THEN
+        EXIT(FALSE);
+
+      EXIT(BackupRegister[BackupNo] <> '')
+    END;
+
+    PROCEDURE Initialize@1102601006();
+    VAR
+      Object@1102601000 : Record 2000000001;
+    BEGIN
+      IF Initialized THEN
+        EXIT;
+
+      Object.SETRANGE(Type,Object.Type::Table);
+      Object.SETFILTER(ID,TableFilter);
+      Object.FINDSET;
+      REPEAT
+        ObjectTemp.ID := Object.ID;
+        ObjectTemp.INSERT
+      UNTIL Object.NEXT = 0;
+
+      Initialized := TRUE
+    END;
+
+    LOCAL PROCEDURE TableFilter@2() : Text[1024];
+    BEGIN
+      EXIT('1..471|473..99999|150000..1999999999')
+    END;
+
+    PROCEDURE DefaultFixtureName@11() : Text[30];
+    BEGIN
+      EXIT('Default Fixture')
+    END;
+
+    PROCEDURE SharedFixtureName@12() : Text[30];
+    BEGIN
+      EXIT('Shared Fixture')
+    END;
+
+    LOCAL PROCEDURE MaxBackups@3() : Integer;
+    BEGIN
+      EXIT(ARRAYLEN(TableBackups,1))
+    END;
+
+    PROCEDURE SetEnabled@10(Enabled@1000 : Boolean);
+    BEGIN
+      IsEnabled := Enabled;
+    END;
+
+    PROCEDURE DeleteAllData@15();
+    VAR
+      Object@1002 : Record 2000000001;
+      RecRef@1001 : RecordRef;
+    BEGIN
+      // delete from all objects
+      Object.SETRANGE(Type,Object.Type::Table);
+      Object.SETFILTER(ID,'1..99999|150000..1999999999'); // exclude System tables and test data
+      IF Object.FINDSET THEN
+        REPEAT
+          // open a record ref to the table
+          RecRef.OPEN(Object.ID);
+          RecRef.DELETEALL;
+          RecRef.CLOSE
+        UNTIL Object.NEXT = 0
+    END;
+
+    BEGIN
+    {
+      This codeunit contains a number of function triggers to create and restore backups in temporary tables.
+      Backups can be made and restored for individual tables, a set of tables, or the all tables in the database.
+
+      By default backups only exists for the lifetime of a client session (as long as connected to the same database).
+      On the classic client it is possible to enable persitent backups (in a seperate company) using SetUsePersistentBackup(TRUE).
+    }
+    END.
+  }
+}
+
